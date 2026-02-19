@@ -83,6 +83,16 @@ There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (ve
 
 The companion app runs entirely over WiFi at `http://192.168.1.217:19110` (adjust the IP to match your glasses — check Settings → WiFi on the glasses to find it). From there you can configure everything: API keys, AI model, OAuth, TapRadio stations, and more.
 
+### Connecting Without WiFi (ADB Port Forwarding)
+
+If you're on a mobile hotspot or don't have a shared WiFi network between your computer and the glasses, you can use **ADB port forwarding over USB** to access the companion app:
+
+```bash
+adb forward tcp:19110 tcp:19110
+```
+
+Then open **http://localhost:19110** in any browser on your computer. This tunnels the connection through the USB cable — no WiFi required. Keep the USB cable connected while configuring.
+
 ### Optional Configuration
 
 - **Google OAuth** — Enable Google Maps, Places, and Calendar integration by setting up OAuth credentials in the companion app's Setup tab

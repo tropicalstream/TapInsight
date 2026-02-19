@@ -443,6 +443,18 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
 
     fun handleFocusedCardTap(): FocusedTapResult {
         if (hudModeEnabled) return FocusedTapResult.IGNORED
+
+        // ── Check if the focused card is "New Chat" BEFORE applying scroll/settle
+        //    guards — activating the assistant should always respond on first tap.
+        val earlyIdx = coerceFocusedIndex()
+        val isNewChat = earlyIdx < 0 || adapter.isNewChatCard(earlyIdx)
+        if (isNewChat) {
+            // Clear any lingering scroll/snap state so we don't block next time
+            tapBlockedUntilSnap = false
+            isSettled = true
+            return FocusedTapResult.ACTIVATE_ASSISTANT
+        }
+
         val now = SystemClock.uptimeMillis()
         if (!isSettled || now < velocityTapBlockUntilMs) {
             return FocusedTapResult.IGNORED

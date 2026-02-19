@@ -95,7 +95,7 @@ class MainActivity : AppCompatActivity() {
         private const val VOICE_ACTIVATE_BEEP_MS = 90
         private const val VOICE_TIMEOUT_BEEP_MS = 180
         private const val VOICE_LISTEN_START_DELAY_MS = 220L
-        private const val VOICE_ACTIVATION_DEBOUNCE_MS = 800L
+        private const val VOICE_ACTIVATION_DEBOUNCE_MS = 400L
         private const val GEMINI_LIVE_IDLE_TIMEOUT_MS = 5_000L
         private const val GEMINI_LIVE_ACTIVITY_HEARTBEAT_MS = 250L
         private const val GEMINI_LIVE_CONNECT_TIMEOUT_MS = 15_000L
@@ -1155,9 +1155,12 @@ class MainActivity : AppCompatActivity() {
             releaseGeminiAudioCapture(cancelOnly = true)
             viewModel.deactivateVoiceAssistant()
             showListeningOverlay(false)
-            // Always return after teardown — let the async WebSocket close finish
-            // before the next tap starts a fresh session.
-            showHudNotification("Session ended. Tap again.")
+            // Brief pause to let WebSocket close, then start fresh session
+            // automatically — no second tap required.
+            uiHandler.postDelayed({
+                lastVoiceActivationMs = 0L  // reset debounce so activation proceeds
+                activateChatVoiceAssistant()
+            }, 300L)
             return
         }
 
