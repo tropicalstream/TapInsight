@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AITap Browser Settings</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;padding:16px;max-width:640px;margin:0 auto}
+  h1{color:#00e5ff;font-size:22px;margin-bottom:2px}
+  .sub{color:#888;font-size:13px;margin-bottom:20px}
+  .nav{display:flex;gap:0;margin-bottom:20px;border-radius:8px;overflow:hidden;border:1px solid #333}
+  .nav a{flex:1;padding:10px;text-align:center;text-decoration:none;font-size:13px;font-weight:600;color:#aaa;background:#1a1a1a;transition:all .2s}
+  .nav a.active{background:#00e5ff;color:#000}
+  .nav a:hover:not(.active){background:#222}
+  .step{background:#1a1a1a;border-radius:10px;padding:16px;margin-bottom:14px;border-left:3px solid #333}
+  .step-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .step-num{background:#222;color:#00e5ff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0}
+  .step-title{font-size:15px;font-weight:600;color:#fff}
+  .step-desc{font-size:12px;color:#999;margin-bottom:10px;line-height:1.5}
+  .help-btn{background:#222;color:#00e5ff;border:1px solid #333;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+  .help-btn:hover{background:#00e5ff;color:#000}
+  label{display:flex;align-items:center;gap:6px;font-size:12px;color:#aaa;margin-bottom:4px;margin-top:10px}
+  label:first-of-type{margin-top:0}
+  input[type="text"],textarea{width:100%;padding:10px;background:#111;border:1px solid #333;border-radius:6px;color:#fff;font-size:14px;font-family:inherit}
+  input:focus,textarea:focus{border-color:#00e5ff;outline:none}
+  textarea{min-height:60px;resize:vertical;font-family:'SF Mono',Menlo,monospace;font-size:12px}
+  select{width:100%;padding:10px;background:#111;border:1px solid #333;border-radius:6px;color:#fff;font-size:14px}
+  .hint{font-size:11px;color:#666;margin-top:2px}
+  .btn-row{display:flex;gap:10px;margin-top:16px}
+  button{flex:1;padding:12px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:opacity .2s}
+  button:active{opacity:.7}
+  .btn-save{background:#00e5ff;color:#000}
+  .btn-reset{background:#333;color:#ccc}
+  .btn-add{background:#222;color:#00e5ff;border:1px solid #333;flex:none;padding:8px 16px;font-size:12px;margin-top:8px}
+  .btn-remove{background:#ff5252;color:#fff;flex:none;padding:4px 10px;font-size:11px;border-radius:4px;margin-left:8px}
+  .status{text-align:center;font-size:13px;margin-top:10px;min-height:20px}
+  .status.ok{color:#4caf50}.status.err{color:#f44336}
+  .cookie-entry{background:#111;border:1px solid #222;border-radius:6px;padding:10px;margin-top:8px}
+  .cookie-entry .domain-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+  .cookie-entry input[type="text"]{font-size:13px;padding:8px}
+  .cookie-entry textarea{min-height:50px;font-size:11px}
+  .quick-sites{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .quick-site{background:#222;border:1px solid #333;border-radius:6px;padding:6px 12px;font-size:12px;color:#ccc;cursor:pointer}
+  .quick-site:hover{background:#00e5ff;color:#000;border-color:#00e5ff}
+  .modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:100;padding:20px;overflow-y:auto}
+  .modal.show{display:block}
+  .modal-content{background:#1a1a1a;border-radius:12px;padding:20px;max-width:520px;margin:40px auto;border:1px solid #333}
+  .modal h3{color:#00e5ff;margin-bottom:10px;font-size:16px}
+  .modal p,.modal li{font-size:13px;line-height:1.7;color:#ccc}
+  .modal ol{padding-left:20px;margin:10px 0}
+  .modal code{background:#222;padding:2px 6px;border-radius:3px;font-size:12px;color:#00e5ff}
+  .modal .close-btn{background:#333;color:#ccc;padding:8px 16px;border:none;border-radius:6px;cursor:pointer;margin-top:12px;font-size:13px}
+</style>
+</head>
+<body>
+
+<h1>AITap Browser</h1>
+<p class="sub">TapBrowser settings &amp; login sync</p>
+
+<div class="nav">
+  <a href="/">Setup</a>
+  <a href="/browser" class="active">Browser</a>
+  <a href="/dashboard">Dashboard</a>
+  <a href="/radio">TapRadio</a>
+</div>
+
+<!-- Display Settings -->
+<div class="step">
+  <div class="step-head">
+    <div class="step-num">1</div>
+    <div class="step-title">Display Settings</div>
+  </div>
+  <label>Desktop Mode <button class="help-btn" onclick="showHelp('desktop')">?</button></label>
+  <select id="webDesktopMode"><option value="false">Mobile (default)</option><option value="true">Desktop</option></select>
+  <div class="hint">Desktop mode requests full-size pages. Some sites work better in desktop mode on the HUD.</div>
+
+  <label>Force Dark Mode</label>
+  <select id="webForceDarkMode"><option value="true">On (default)</option><option value="false">Off</option></select>
+  <div class="hint">Applies dark theme to web pages for better visibility on the MicroLED display.</div>
+
+  <label>Pointer Sensitivity (0.4 &ndash; 1.8)</label>
+  <input type="text" id="webPointerSensitivity" placeholder="1.0">
+  <div class="hint">Controls trackpad cursor speed in the browser. Lower = more precise, higher = faster.</div>
+</div>
+
+<!-- Cookie Sync -->
+<div class="step">
+  <div class="step-head">
+    <div class="step-num">2</div>
+    <div class="step-title">Login Sync</div>
+    <button class="help-btn" onclick="showHelp('cookies')">?</button>
+  </div>
+  <p class="step-desc">Log into websites on your phone, then sync the session to TapBrowser on your glasses. This avoids typing passwords on the X3 keyboard.</p>
+
+  <p class="step-desc" style="color:#ccc"><b>Quick add:</b> Click a site to add it</p>
+  <div class="quick-sites">
+    <span class="quick-site" onclick="addSite('.google.com','Google (YouTube, Calendar, etc.)')">Google</span>
+    <span class="quick-site" onclick="addSite('.youtube.com','YouTube')">YouTube</span>
+    <span class="quick-site" onclick="addSite('calendar.google.com','Google Calendar')">Calendar</span>
+    <span class="quick-site" onclick="addSite('radio.garden','Radio Garden')">Radio Garden</span>
+    <span class="quick-site" onclick="addSite('.reddit.com','Reddit')">Reddit</span>
+    <span class="quick-site" onclick="addSite('.twitter.com','Twitter/X')">Twitter</span>
+  </div>
+
+  <div id="cookieList"></div>
+  <button class="btn-add" onclick="addSite('','')">+ Add Site</button>
+</div>
+
+<div class="btn-row">
+  <button class="btn-save" onclick="saveAll()">Save Settings</button>
+  <button class="btn-reset" onclick="loadAll()">Reload</button>
+</div>
+<div id="status" class="status"></div>
+
+<!-- Help Modal -->
+<div class="modal" id="helpModal">
+  <div class="modal-content">
+    <h3 id="helpTitle"></h3>
+    <div id="helpBody"></div>
+    <button class="close-btn" onclick="closeHelp()">Close</button>
+  </div>
+</div>
+
+<script>
+const BROWSER_FIELDS = {
+  webDesktopMode:        { key: 'web_desktop_mode',         type: 'bool'  },
+  webForceDarkMode:      { key: 'web_force_dark_mode',      type: 'bool'  },
+  webPointerSensitivity: { key: 'web_pointer_sensitivity',  type: 'float' }
+};
+
+const HELP = {
+  desktop: {
+    title: 'Desktop Mode',
+    body: `<p>When enabled, TapBrowser requests desktop versions of websites instead of mobile.</p>
+<p>This is useful for sites like Google Calendar that have better desktop interfaces. However, some sites may be harder to navigate on the small HUD.</p>`
+  },
+  cookies: {
+    title: 'How Login Sync Works',
+    body: `<p>Since typing on the X3 Pro keyboard is difficult, you can log into websites on your phone and transfer the session cookies to TapBrowser.</p>
+<p><b>Steps:</b></p>
+<ol>
+<li>On your phone or computer, open Chrome and go to the site (e.g. youtube.com)</li>
+<li>Log in normally</li>
+<li>Open Chrome DevTools (desktop: F12, or phone: <code>chrome://inspect</code> from a connected computer)</li>
+<li>In the Console tab, paste this command:<br><code>document.cookie</code></li>
+<li>Copy the entire output</li>
+<li>Paste it into the Cookie String field here</li>
+<li>Click Save Settings</li>
+</ol>
+<p><b>Alternative (easier):</b> Use the <a href="https://chromewebstore.google.com/detail/editthiscookie/fngmhnnpilhplaeedifhccceomclgfbg" target="_blank" style="color:#00e5ff">EditThisCookie</a> browser extension to export cookies.</p>
+<p><b>Note:</b> Session cookies expire when you log out or after a period of inactivity. You may need to re-sync periodically.</p>`
+  }
+};
+
+let cookieEntries = [];
+let nextCookieId = 0;
+
+function showHelp(key){const h=HELP[key];if(!h)return;document.getElementById('helpTitle').textContent=h.title;document.getElementById('helpBody').innerHTML=h.body;document.getElementById('helpModal').classList.add('show')}
+function closeHelp(){document.getElementById('helpModal').classList.remove('show')}
+function showStatus(msg,cls){const e=document.getElementById('status');e.textContent=msg;e.className='status '+(cls||'');if(cls==='ok')setTimeout(()=>{e.textContent=''},4000)}
+
+function addSite(domain, label) {
+  // Don't add duplicate domains
+  if (domain && cookieEntries.some(e => e.domain === domain)) {
+    showStatus('Domain already added.', 'err');
+    return;
+  }
+  const id = nextCookieId++;
+  cookieEntries.push({ id, domain, cookies: '', label: label || '' });
+  renderCookieList();
+}
+
+function removeSite(id) {
+  cookieEntries = cookieEntries.filter(e => e.id !== id);
+  renderCookieList();
+}
+
+function renderCookieList() {
+  const list = document.getElementById('cookieList');
+  list.innerHTML = cookieEntries.map(e => `
+    <div class="cookie-entry" data-id="${e.id}">
+      <div class="domain-row">
+        <input type="text" value="${escHtml(e.domain)}" placeholder=".example.com" onchange="updateEntry(${e.id},'domain',this.value)" style="flex:1">
+        <button class="btn-remove" onclick="removeSite(${e.id})">Remove</button>
+      </div>
+      <label style="margin-top:4px">${e.label ? escHtml(e.label) + ' — ' : ''}Cookie String</label>
+      <textarea placeholder="Paste cookie string from browser console: document.cookie" onchange="updateEntry(${e.id},'cookies',this.value)">${escHtml(e.cookies)}</textarea>
+    </div>
+  `).join('');
+}
+
+function updateEntry(id, field, value) {
+  const entry = cookieEntries.find(e => e.id === id);
+  if (entry) entry[field] = value;
+}
+
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function hasBridge(){return typeof AiTapBridge!=='undefined'}
+
+function loadAll(){
+  if(!hasBridge()){showStatus('Open this page from within AITap on your glasses.','err');return}
+
+  // Load browser display settings
+  for(const[id,cfg]of Object.entries(BROWSER_FIELDS)){
+    const el=document.getElementById(id);
+    try{el.value=AiTapBridge.getString(cfg.key)||''}catch(e){}
+  }
+
+  // Load cookies
+  try {
+    const raw = AiTapBridge.getString('browser_cookies');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      cookieEntries = parsed.map((e, i) => ({ ...e, id: i }));
+      nextCookieId = cookieEntries.length;
+    }
+  } catch(e) { console.error('Cookie load error:', e); }
+  renderCookieList();
+  showStatus('Settings loaded.','ok');
+}
+
+function saveAll(){
+  if(!hasBridge()){showStatus('Open this page from within AITap on your glasses.','err');return}
+
+  // Save browser display settings
+  for(const[id,cfg]of Object.entries(BROWSER_FIELDS)){
+    const el=document.getElementById(id);const v=el.value.trim();
+    try{
+      if(cfg.type==='float')AiTapBridge.putFloat(cfg.key,parseFloat(v)||1.0);
+      else if(cfg.type==='bool')AiTapBridge.putBoolean(cfg.key,v==='true');
+      else AiTapBridge.putString(cfg.key,v);
+    }catch(e){showStatus('Error: '+e.message,'err');return}
+  }
+
+  // Sync cookie textarea values back to entries
+  document.querySelectorAll('.cookie-entry').forEach(el => {
+    const id = parseInt(el.dataset.id);
+    const entry = cookieEntries.find(e => e.id === id);
+    if (entry) {
+      entry.domain = el.querySelector('input[type="text"]').value.trim();
+      entry.cookies = el.querySelector('textarea').value.trim();
+    }
+  });
+
+  // Save cookies as JSON
+  const cookieData = cookieEntries
+    .filter(e => e.domain)
+    .map(e => ({ domain: e.domain, cookies: e.cookies, label: e.label || '' }));
+  AiTapBridge.putString('browser_cookies', JSON.stringify(cookieData));
+
+  try{AiTapBridge.applyConfig()}catch(e){}
+  showStatus('Settings saved! Cookies will sync on next browser launch.','ok');
+}
+
+// Auto-load on page ready
+document.addEventListener('DOMContentLoaded', loadAll);
+</script>
+</body>
+</html>

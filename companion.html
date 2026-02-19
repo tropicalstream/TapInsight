@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TapInsight Companion — Quick Setup</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;padding:24px;max-width:680px;margin:0 auto;min-height:100vh}
+h1{color:#00e5ff;font-size:24px;margin-bottom:4px}
+.sub{color:#888;font-size:13px;margin-bottom:24px}
+.card{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:20px;margin-bottom:16px}
+.card h2{color:#00e5ff;font-size:16px;margin-bottom:12px}
+.card p{font-size:13px;color:#aaa;line-height:1.6;margin-bottom:12px}
+.warn{background:#332200;border-color:#664400;color:#ffcc66;font-size:12px;padding:12px 16px;border-radius:8px;margin-bottom:16px;line-height:1.5}
+.warn b{color:#ffdd88}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12px;color:#aaa;margin-bottom:4px;font-weight:600}
+.field .hint{font-size:11px;color:#666;margin-top:3px;line-height:1.4}
+.field input{width:100%;padding:12px;background:#111;border:1px solid #333;border-radius:8px;color:#fff;font-size:15px;font-family:monospace}
+.field input:focus{border-color:#00e5ff;outline:none}
+.field input.ip{font-size:18px;letter-spacing:1px;text-align:center}
+.btn{display:inline-block;padding:12px 24px;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;transition:all .15s;text-decoration:none}
+.btn.primary{background:#00e5ff;color:#000;width:100%;text-align:center;font-size:16px;padding:14px}
+.btn.primary:hover{background:#00b8d4}
+.btn.secondary{background:#1a1a1a;color:#00e5ff;border:1px solid #00e5ff;margin-top:8px;width:100%;text-align:center}
+.btn.secondary:hover{background:#002830}
+.connected{display:none;text-align:center;padding:20px;color:#a5d6a7;font-size:14px}
+.step{display:flex;gap:12px;margin-bottom:14px}
+.step .num{width:28px;height:28px;border-radius:50%;background:#00e5ff;color:#000;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px}
+.step .text{font-size:13px;color:#ccc;line-height:1.6}
+.step .text code{background:#222;padding:2px 6px;border-radius:4px;font-size:12px;color:#00e5ff}
+.divider{border:none;border-top:1px solid #222;margin:20px 0}
+.section-title{font-size:12px;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
+.status{padding:10px;border-radius:6px;font-size:12px;text-align:center;margin-bottom:12px;display:none}
+.status.ok{display:block;background:#1b5e20;color:#a5d6a7}
+.status.err{display:block;background:#b71c1c;color:#ef9a9a}
+.status.info{display:block;background:#0d47a1;color:#90caf9}
+.footer{text-align:center;color:#444;font-size:11px;margin-top:24px;line-height:1.6}
+.footer a{color:#00e5ff;text-decoration:none}
+.footer a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+
+<h1>TapInsight Companion</h1>
+<p class="sub">Connect to your RayNeo X3 Pro glasses over WiFi to configure the AI assistant, manage TapRadio stations, and more.</p>
+
+<div class="warn">
+  <b>Important:</b> Your phone/computer and the RayNeo X3 Pro glasses must be on the <b>same WiFi network</b>. The default IP below (192.168.1.217) is a common default — change it if your glasses have a different IP address. On the glasses, go to <b>Settings → WiFi → tap your connected network</b> to see the IP.
+  <br><br>
+  <b>Common LAN IP ranges:</b> 192.168.0.x, 192.168.1.x, 10.0.0.x, 172.16.x.x — update the IP below to match your network.
+</div>
+
+<div class="card">
+  <h2>Step 1 — Connect to Glasses</h2>
+
+  <div class="field">
+    <label>Glasses IP Address</label>
+    <input type="text" id="glassesIp" class="ip" value="192.168.1.217" placeholder="192.168.1.217">
+    <div class="hint">Find this in your glasses' WiFi settings. The companion server runs on port 19110.</div>
+  </div>
+
+  <div id="statusBar" class="status"></div>
+
+  <button class="btn primary" onclick="connectToGlasses()">Connect to Companion App</button>
+  <button class="btn secondary" onclick="testConnection()">Test Connection First</button>
+</div>
+
+<div class="card">
+  <h2>Step 2 — Quick Setup Guide</h2>
+
+  <div class="step">
+    <div class="num">1</div>
+    <div class="text">Install the TapInsight APK on your RayNeo X3 Pro via ADB:<br><code>adb install tapinsight-debug.apk</code></div>
+  </div>
+
+  <div class="step">
+    <div class="num">2</div>
+    <div class="text">Launch TapInsight on the glasses. The companion server starts automatically on port 19110.</div>
+  </div>
+
+  <div class="step">
+    <div class="num">3</div>
+    <div class="text">Enter the glasses' IP above and click <b>Connect</b>. This opens the full companion app where you can configure everything.</div>
+  </div>
+
+  <div class="step">
+    <div class="num">4</div>
+    <div class="text">In the companion app <b>Setup</b> tab, enter your <b>Gemini API key</b> (free from <a href="https://aistudio.google.com/apikey" target="_blank" style="color:#00e5ff">Google AI Studio</a>).</div>
+  </div>
+
+  <div class="step">
+    <div class="num">5</div>
+    <div class="text">Start talking! Tap the glasses touchpad to activate the AI assistant. It can see through the camera and respond by voice.</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>What You Can Configure</h2>
+  <p>Once connected, the companion app has four tabs:</p>
+
+  <hr class="divider">
+  <div class="section-title">Setup</div>
+  <p>Gemini API key, AI model selection, Google OAuth (for Maps/Calendar), Spotify credentials, system prompt customization, HUD display settings.</p>
+
+  <hr class="divider">
+  <div class="section-title">Browser</div>
+  <p>Manage bookmarks and browser settings for TapBrowser on the glasses.</p>
+
+  <hr class="divider">
+  <div class="section-title">Dashboard</div>
+  <p>Customize the TapBrowser homepage — rearrange, add, or remove quick-launch links.</p>
+
+  <hr class="divider">
+  <div class="section-title">TapRadio</div>
+  <p>Manage internet radio stations, search 30,000+ stations online, toggle favorites, and sync to the glasses.</p>
+</div>
+
+<div class="card">
+  <h2>Troubleshooting</h2>
+  <p><b>Can't connect?</b> Make sure TapInsight is running on the glasses and both devices are on the same WiFi. Try pinging the glasses IP from your terminal: <code>ping 192.168.1.217</code></p>
+  <p><b>Wrong IP?</b> Your router may assign a different IP. Check your glasses' WiFi settings or your router's connected devices list.</p>
+  <p><b>Firewall?</b> Ensure port 19110 isn't blocked by your network firewall.</p>
+</div>
+
+<div class="footer">
+  TapInsight — AI-Powered AR Companion for RayNeo X3 Pro<br>
+  Browser module based on <a href="https://github.com/informalTechCode/TAPLINKX3" target="_blank">TapLinkX3</a> by InformalTech &amp; glxblt76
+</div>
+
+<script>
+function getUrl() {
+  const ip = document.getElementById('glassesIp').value.trim();
+  if (!ip) { showStatus('Please enter the glasses IP address.', 'err'); return null; }
+  return 'http://' + ip + ':19110';
+}
+
+function connectToGlasses() {
+  const url = getUrl();
+  if (!url) return;
+  window.open(url, '_blank');
+}
+
+async function testConnection() {
+  const url = getUrl();
+  if (!url) return;
+  showStatus('Testing connection to ' + url + ' ...', 'info');
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const r = await fetch(url, { signal: controller.signal, mode: 'no-cors' });
+    clearTimeout(timeout);
+    showStatus('Connection appears reachable! Click "Connect to Companion App" to open it.', 'ok');
+  } catch(e) {
+    if (e.name === 'AbortError') {
+      showStatus('Connection timed out. Check that the glasses are on, TapInsight is running, and the IP is correct.', 'err');
+    } else {
+      // no-cors mode may throw but still succeed — try opening anyway
+      showStatus('Could not verify connection (may be blocked by CORS). Try clicking "Connect to Companion App" directly.', 'info');
+    }
+  }
+}
+
+function showStatus(msg, type) {
+  const bar = document.getElementById('statusBar');
+  bar.className = 'status ' + type;
+  bar.textContent = msg;
+}
+
+// Save/restore IP from localStorage
+const savedIp = localStorage.getItem('tapinsight_glasses_ip');
+if (savedIp) document.getElementById('glassesIp').value = savedIp;
+document.getElementById('glassesIp').addEventListener('change', function() {
+  localStorage.setItem('tapinsight_glasses_ip', this.value.trim());
+});
+</script>
+</body>
+</html>

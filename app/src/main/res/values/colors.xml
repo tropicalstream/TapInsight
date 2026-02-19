@@ -1,0 +1,8 @@
+<resources>
+    <color name="bg_panel">#000000</color>
+    <color name="bg_panel_soft">#66000000</color>
+    <color name="text_primary">#FFFFFFFF</color>
+    <color name="accent">#24E2A7</color>
+    <color name="accent_dark">#129A73</color>
+    <color name="warning">#FFAA00</color>
+</resources>

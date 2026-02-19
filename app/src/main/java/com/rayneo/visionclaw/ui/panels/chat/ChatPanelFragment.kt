@@ -1,0 +1,1027 @@
+package com.rayneo.visionclaw.ui.panels.chat
+
+import android.animation.ValueAnimator
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioManager
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.os.BatteryManager
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.view.LayoutInflater
+import android.view.Surface
+import android.view.TextureView
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
+import androidx.camera.core.Preview
+import androidx.core.content.ContextCompat
+import androidx.core.widget.NestedScrollView
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.rayneo.visionclaw.R
+import com.rayneo.visionclaw.core.model.ChatMessage
+import com.rayneo.visionclaw.ui.MainViewModel
+import com.rayneo.visionclaw.ui.VoiceOscilloscopeView
+import com.rayneo.visionclaw.ui.panels.TrackpadPanel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.abs
+import android.view.animation.AccelerateDecelerateInterpolator
+
+/**
+ * Chat card list for the RayNeo X3 Pro AR display.
+ *
+ * ## Scroll & Focus Design (third-generation approach)
+ *
+ * Previous attempts used a [LinearSnapHelper] subclass that conflicted
+ * with the trackpad-driven card navigation.  The X3 Pro has **no touch
+ * scrolling** — all input comes from the trackpad via [onTrackpadScroll].
+ * Therefore a SnapHelper (designed for finger flings) is the wrong tool.
+ *
+ * This version uses a purely index-driven approach:
+ *
+ *  1. [focusedCardIndex] is the single source of truth.
+ *  2. [onTrackpadScroll] increments / decrements the index.
+ *  3. [scrollToFocused] performs a 2-step center lock:
+ *     - coarse jump with `scrollToPositionWithOffset(...)`
+ *     - precise correction by measuring child-center vs. anchor-center.
+ *  4. After centering, [applyFocusVisuals] scales / fades / glows every
+ *     visible child.
+ *
+ * No SnapHelper.  No scroll-listener-driven focus inference.  No
+ * coordinate math that can drift out of sync with the platform.
+ */
+class ChatPanelFragment : Fragment(), TrackpadPanel {
+
+    private inner class DiscreteCarouselManager(context: Context) :
+        LinearLayoutManager(context, RecyclerView.VERTICAL, false) {
+        override fun canScrollVertically(): Boolean = false
+
+        fun scrollToFocus(position: Int) {
+            scrollToPositionWithOffset(position, computeFocusOffsetPx())
+        }
+    }
+
+    interface CoreEyeSurfaceListener {
+        fun onSurfaceAvailable()
+        fun onSurfaceDestroyed()
+    }
+
+    interface CardActionListener {
+        fun onAssistantRequested()
+    }
+
+    enum class FocusedTapResult {
+        OPENED_URL,
+        ACTIVATE_ASSISTANT,
+        IGNORED
+    }
+
+    enum class ConnectionStatus {
+        IDLE,
+        CONNECTING,
+        GEMINI_CONNECTED,
+        TOOLS_READY,
+        ERROR
+    }
+
+    private val viewModel: MainViewModel by activityViewModels()
+
+    private lateinit var root: View
+    private lateinit var hudContainer: LinearLayout
+    private lateinit var hudTime: TextView
+    private lateinit var hudCalendar: TextView
+    private lateinit var hudTasks: TextView
+    private lateinit var hudNews: TextView
+    private lateinit var hudCalendarCard: LinearLayout
+    private lateinit var hudTasksCard: LinearLayout
+    private lateinit var hudNewsCard: LinearLayout
+    private lateinit var hudBatteryIcon: ImageView
+    private lateinit var hudBatteryText: TextView
+    private lateinit var hudConnectionDot: View
+    private lateinit var hudConnectionText: TextView
+    private lateinit var chatRecycler: RecyclerView
+    private lateinit var chatStreamIndicator: TextView
+    private lateinit var readerOverlay: FrameLayout
+    private lateinit var readerScroll: NestedScrollView
+    private lateinit var readerText: TextView
+    private lateinit var inlineOscilloscope: VoiceOscilloscopeView
+    private lateinit var coreEyeContainer: FrameLayout
+    private lateinit var coreEyePreviewTexture: TextureView
+    private lateinit var coreEyeRing: View
+    private lateinit var coreEyeIdleIcon: ImageView
+
+    private val adapter = ChatAdapter(
+        onUrlTapped = { url -> viewModel.openUrl(url) },
+        onAssistantRequested = { cardActionListener?.onAssistantRequested() }
+    )
+    private lateinit var layoutManager: DiscreteCarouselManager
+
+    private var renderedAssistantMessages: List<ChatMessage> = emptyList()
+    private var lastMessageFingerprint = 0
+    private var accumulatedSwipeDeltaY = 0f
+    private var swipeStepConsumed = false
+    private var focusedCardIndex: Int = RecyclerView.NO_POSITION
+        set(value) {
+            field = value
+            // Keep the adapter in sync so that onBindViewHolder can apply
+            // correct focused/unfocused alpha for every card — including the
+            // New Chat sentinel — the instant it is bound.
+            adapter.focusedPosition = value
+        }
+    private var suppressFirstCollectorFocus = false
+    private var tapBlockedUntilSnap = false
+    private var swipeLockUntilMs = 0L
+    private var hudModeEnabled = false
+    private var readerCardUrl: String? = null          // URL of the card currently in reader mode
+    private var lastReaderTapMs = 0L                   // for double-tap detection in reader mode
+    private val DOUBLE_TAP_THRESHOLD_MS = 400L
+    private val pendingUrlOpenRunnable = Runnable {
+        val url = readerCardUrl ?: return@Runnable
+        viewModel.openUrl(url)
+        readerCardUrl = null
+        exitReaderMode(animated = false)
+    }
+    private var readerModeActive = false
+    private var isSettled = true
+    private var lastScrollSampleMs = 0L
+    private var velocityTapBlockUntilMs = 0L
+
+    private var coreEyeEnabled = false
+    private var coreEyeStreaming = false
+    private var coreEyeSurfaceReady = false
+    private var coreEyePulseAnimator: ValueAnimator? = null
+    private var coreEyeSurfaceListener: CoreEyeSurfaceListener? = null
+    private var cardActionListener: CardActionListener? = null
+
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val coreEyeStreamTimeoutRunnable = Runnable {
+        if (readerModeActive) {
+            return@Runnable
+        }
+        if (coreEyeEnabled) {
+            setCoreEyeStreamingVisuals(active = false)
+        }
+    }
+    private val swipeReleaseResetRunnable = Runnable {
+        // Reset one-swipe session state after a short idle pause.
+        accumulatedSwipeDeltaY = 0f
+        swipeStepConsumed = false
+        isSettled = true
+    }
+
+    private companion object {
+        private const val SWIPE_STEP_LOCK_MS = 250L
+        private const val CARD_NAV_MIN_DELTA = 0.35f
+        private const val FAST_SWIPE_DELTA = 6.0f
+        private const val SWIPE_RELEASE_RESET_MS = 280L
+        private const val TAP_SETTLE_DELAY_MS = 150L
+        private const val TAP_GUARD_VELOCITY_THRESHOLD_PX_PER_MS = 10f
+        private const val TAP_GUARD_BLOCK_MS = 180L
+
+        // ── Pop-out visual spec ──────────────────────────────────────────
+        private const val CARD_HEIGHT_DP = 220f
+        private const val CARD_FOCUS_SCALE = 1.15f
+        private const val CARD_FOCUS_ALPHA = 1.0f
+        private const val CARD_FOCUS_Z = 12f
+        private const val CARD_UNFOCUSED_SCALE = 0.75f
+        private const val CARD_UNFOCUSED_ALPHA = 0.15f
+        private const val CARD_UNFOCUSED_Z = 0f
+        private const val CARD_FOCUS_ANIM_MS = 200L
+        private const val CARD_FOCUS_GLOW_PX = 3
+        private const val CARD_FOCUS_GLOW_CORNER_DP = 14f
+        private const val CARD_FOCUS_GLOW_COLOR = 0xFF00FFFF.toInt()
+        private const val READER_SCROLL_SCALE = 48f
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Lifecycle
+    // ══════════════════════════════════════════════════════════════════════
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View = inflater.inflate(R.layout.fragment_chat_panel, container, false)
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        root = view
+        hudContainer = view.findViewById(R.id.hudContainer)
+        hudTime = view.findViewById(R.id.hudTime)
+        hudCalendar = view.findViewById(R.id.hudCalendar)
+        hudTasks = view.findViewById(R.id.hudTasks)
+        hudNews = view.findViewById(R.id.hudNews)
+        hudCalendarCard = view.findViewById(R.id.hudCalendarCard)
+        hudTasksCard = view.findViewById(R.id.hudTasksCard)
+        hudNewsCard = view.findViewById(R.id.hudNewsCard)
+        hudBatteryIcon = view.findViewById(R.id.hudBatteryIcon)
+        hudBatteryText = view.findViewById(R.id.hudBatteryText)
+        hudConnectionDot = view.findViewById(R.id.hudConnectionDot)
+        hudConnectionText = view.findViewById(R.id.hudConnectionText)
+        chatRecycler = view.findViewById(R.id.chatRecycler)
+        chatStreamIndicator = view.findViewById(R.id.chatStreamIndicator)
+        readerOverlay = view.findViewById(R.id.readerOverlay)
+        readerScroll = view.findViewById(R.id.readerScroll)
+        readerText = view.findViewById(R.id.readerText)
+        inlineOscilloscope = view.findViewById(R.id.chatInlineOscilloscope)
+        coreEyeContainer = view.findViewById(R.id.coreEyeContainer)
+        coreEyePreviewTexture = view.findViewById(R.id.coreEyePreviewTexture)
+        coreEyeRing = view.findViewById(R.id.coreEyeRing)
+        coreEyeIdleIcon = view.findViewById(R.id.coreEyeIdleIcon)
+
+        applyHudCardOrder()
+        configureCoreEyeView()
+        refreshBatteryStatusHud()
+        setConnectionStatus(ConnectionStatus.IDLE)
+        inlineOscilloscope.setCenterCutoutRadiusDp(62f)
+
+        layoutManager = DiscreteCarouselManager(requireContext())
+        chatRecycler.layoutManager = layoutManager
+        chatRecycler.adapter = adapter
+        chatRecycler.setHasFixedSize(false)
+        chatRecycler.clipChildren = false
+        chatRecycler.itemAnimator = null
+        // Disable direct touch scrolling; only trackpad gestures navigate cards.
+        chatRecycler.isNestedScrollingEnabled = false
+        chatRecycler.setOnTouchListener { _, _ -> true }
+        readerOverlay.visibility = View.GONE
+
+        chatRecycler.addOnScrollListener(
+            object : RecyclerView.OnScrollListener() {
+                override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                    applyFocusVisuals(animate = false)
+                }
+
+                override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                    if (newState == RecyclerView.SCROLL_STATE_IDLE) {
+                        applyFocusVisuals(animate = false)
+                        accumulatedSwipeDeltaY = 0f
+                        swipeStepConsumed = false
+                        tapBlockedUntilSnap = false
+                    }
+                }
+            }
+        )
+        chatRecycler.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            // Keep focus visuals synchronized when layout changes after manual
+            // index jumps (scrollToPositionWithOffset) and adapter rebinding.
+            applyFocusVisuals(animate = false)
+        }
+        // Catch cards that scroll back into view from the RecyclerView cache
+        // (these are re-attached without onBindViewHolder, so they keep stale
+        // alpha from when they were last focused).
+        chatRecycler.addOnChildAttachStateChangeListener(
+            object : RecyclerView.OnChildAttachStateChangeListener {
+                override fun onChildViewAttachedToWindow(view: View) {
+                    applyFocusVisuals(animate = false)
+                }
+                override fun onChildViewDetachedFromWindow(view: View) {}
+            }
+        )
+        chatRecycler.post {
+            focusedCardIndex = adapter.getLastContentPosition()
+            snapFocusedCard()
+            applyFocusVisuals(animate = false)
+        }
+
+        viewModel.hydrateAssistantHistory()
+        bindInitialHistoryFromSnapshot()
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    viewModel.messages.collect { messages ->
+                        val assistantMessages = messages.filterNot { it.fromUser }
+                        renderedAssistantMessages = assistantMessages
+                        adapter.submitMessages(assistantMessages)
+                        val fingerprint = assistantMessages.joinToString("|") { it.text }.hashCode()
+                        if (suppressFirstCollectorFocus) {
+                            suppressFirstCollectorFocus = false
+                            lastMessageFingerprint = fingerprint
+                            focusedCardIndex = adapter.getLastContentPosition()
+                            snapFocusedCard()
+                        } else if (fingerprint != lastMessageFingerprint) {
+                            lastMessageFingerprint = fingerprint
+                            focusCard(adapter.getLatestMessagePosition(), animate = true)
+                        } else {
+                            snapFocusedCard()
+                        }
+                    }
+                }
+                launch {
+                    viewModel.calendarSummary.collect { summary ->
+                        if (viewModel.preferences.hudShowCalendar && summary.isNotBlank()) {
+                            hudCalendar.text = summary
+                            hudCalendarCard.visibility = View.VISIBLE
+                        } else {
+                            hudCalendarCard.visibility = View.GONE
+                        }
+                    }
+                }
+                launch {
+                    viewModel.tasksSummary.collect { summary ->
+                        if (viewModel.preferences.hudShowTasks && summary.isNotBlank()) {
+                            hudTasks.text = summary
+                            hudTasksCard.visibility = View.VISIBLE
+                        } else {
+                            hudTasksCard.visibility = View.GONE
+                        }
+                    }
+                }
+                launch {
+                    viewModel.newsSummary.collect { summary ->
+                        if (viewModel.preferences.hudShowNews && summary.isNotBlank()) {
+                            hudNews.text = summary
+                            hudNewsCard.visibility = View.VISIBLE
+                        } else {
+                            hudNewsCard.visibility = View.GONE
+                        }
+                    }
+                }
+                launch {
+                    val formatter = SimpleDateFormat("EEE MMM dd • HH:mm:ss", Locale.US)
+                    while (true) {
+                        hudTime.text = formatter.format(Date())
+                        refreshBatteryStatusHud()
+                        delay(1000)
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onDestroyView() {
+        if (coreEyeSurfaceReady) {
+            coreEyeSurfaceListener?.onSurfaceDestroyed()
+        }
+        coreEyeSurfaceReady = false
+        coreEyePreviewTexture.surfaceTextureListener = null
+        uiHandler.removeCallbacks(coreEyeStreamTimeoutRunnable)
+        uiHandler.removeCallbacks(swipeReleaseResetRunnable)
+        chatStreamIndicator.animate().cancel()
+        coreEyePulseAnimator?.cancel()
+        coreEyePulseAnimator = null
+        super.onDestroyView()
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Trackpad input (TrackpadPanel)
+    // ══════════════════════════════════════════════════════════════════════
+
+    override fun onTrackpadPan(deltaX: Float, deltaY: Float): Boolean {
+        if (hudModeEnabled) return true
+        return onTrackpadScroll(deltaY)
+    }
+
+    override fun onTrackpadScroll(deltaY: Float): Boolean {
+        if (hudModeEnabled) return true
+        if (readerModeActive) {
+            val step = (deltaY * READER_SCROLL_SCALE).toInt()
+            if (step != 0) {
+                readerScroll.smoothScrollBy(0, step)
+            }
+            return true
+        }
+        val now = SystemClock.uptimeMillis()
+        if (now < swipeLockUntilMs) return true
+        if (abs(deltaY) < 0.01f) return true
+        if (adapter.itemCount <= 0) return true
+        isSettled = false
+        if (lastScrollSampleMs > 0L) {
+            val dtMs = (now - lastScrollSampleMs).coerceAtLeast(1L).toFloat()
+            val velocity = abs(deltaY) / dtMs
+            if (velocity > TAP_GUARD_VELOCITY_THRESHOLD_PX_PER_MS) {
+                velocityTapBlockUntilMs = now + TAP_GUARD_BLOCK_MS
+            }
+        }
+        lastScrollSampleMs = now
+        accumulatedSwipeDeltaY += deltaY
+        uiHandler.removeCallbacks(swipeReleaseResetRunnable)
+        uiHandler.postDelayed(
+            swipeReleaseResetRunnable,
+            maxOf(SWIPE_RELEASE_RESET_MS, TAP_SETTLE_DELAY_MS)
+        )
+        if (swipeStepConsumed) return true
+        if (abs(accumulatedSwipeDeltaY) < CARD_NAV_MIN_DELTA) return true
+        if (abs(accumulatedSwipeDeltaY) >= FAST_SWIPE_DELTA) tapBlockedUntilSnap = true
+
+        val direction = if (accumulatedSwipeDeltaY > 0f) 1 else -1
+        accumulatedSwipeDeltaY = 0f
+        swipeStepConsumed = true
+        val firstContent = adapter.getFirstContentPosition()
+        val lastContent = adapter.getLastContentPosition()
+        val current = coerceFocusedIndex()
+        val next = (current + direction).coerceIn(firstContent, lastContent)
+        if (next == current) return true
+        swipeLockUntilMs = now + SWIPE_STEP_LOCK_MS
+        playNavigationTick()
+        focusCard(next, animate = true)
+        return true
+    }
+
+    override fun onTrackpadSelect(): Boolean {
+        return handleFocusedCardTap() != FocusedTapResult.ACTIVATE_ASSISTANT
+    }
+
+    fun handleFocusedCardTap(): FocusedTapResult {
+        if (hudModeEnabled) return FocusedTapResult.IGNORED
+        val now = SystemClock.uptimeMillis()
+        if (!isSettled || now < velocityTapBlockUntilMs) {
+            return FocusedTapResult.IGNORED
+        }
+
+        // ── Reader mode is active ──
+        // Double-tap is handled externally by cyclePanelViaDoubleTap() →
+        // exitReaderModeFromOutside(), so only single-tap arrives here.
+        if (readerModeActive) {
+            val url = readerCardUrl
+            if (url != null) {
+                // Single tap on expanded URL card → open the URL
+                viewModel.openUrl(url)
+                readerCardUrl = null
+                exitReaderMode(animated = false)
+                return FocusedTapResult.OPENED_URL
+            } else {
+                // No URL — single tap exits reader mode
+                exitReaderMode(animated = true)
+                return FocusedTapResult.IGNORED
+            }
+        }
+
+        if (chatRecycler.scrollState != RecyclerView.SCROLL_STATE_IDLE) {
+            return FocusedTapResult.IGNORED
+        }
+        if (tapBlockedUntilSnap) {
+            snapFocusedCard()
+            tapBlockedUntilSnap = false
+            return FocusedTapResult.IGNORED
+        }
+        val idx = coerceFocusedIndex()
+        if (idx < 0) return FocusedTapResult.ACTIVATE_ASSISTANT
+        if (adapter.isNewChatCard(idx)) return FocusedTapResult.ACTIVATE_ASSISTANT
+
+        // ── Expand card into reader mode (both URL and non-URL cards) ──
+        readerCardUrl = adapter.getCardUrl(idx)
+        lastReaderTapMs = 0L
+        return if (enterReaderMode(idx, animated = true)) {
+            FocusedTapResult.IGNORED
+        } else {
+            readerCardUrl = null
+            FocusedTapResult.ACTIVATE_ASSISTANT
+        }
+    }
+
+    fun autoFocusLatestAssistantUrl() {
+        if (adapter.itemCount <= 0) return
+        val start = adapter.getLatestMessagePosition()
+        val first = adapter.getFirstContentPosition()
+        val urlPos = (start downTo first).firstOrNull { adapter.getCardUrl(it) != null }
+        focusCard(urlPos ?: start, animate = true)
+    }
+
+    fun clearFocus() {
+        if (readerModeActive) {
+            exitReaderMode(animated = false)
+        }
+        focusedCardIndex = RecyclerView.NO_POSITION
+        accumulatedSwipeDeltaY = 0f
+        swipeStepConsumed = false
+        isSettled = true
+        lastScrollSampleMs = 0L
+        velocityTapBlockUntilMs = 0L
+    }
+
+    override fun onTextInputFromHold(text: String): Boolean = false
+
+    override fun onHeadYaw(yawDegrees: Float) {
+        root.translationX = (yawDegrees * 1.25f).coerceIn(-40f, 40f)
+    }
+
+    override fun getReadableText(): String {
+        val messages = renderedAssistantMessages.takeLast(8)
+        return messages.joinToString("\n") { "Assistant: ${it.text}" }
+    }
+
+    fun isReaderModeActive(): Boolean = readerModeActive
+
+    /** Called from MainActivity when a double-tap should close reader mode
+     *  instead of cycling panels / launching TapBrowser. */
+    fun exitReaderModeFromOutside() {
+        uiHandler.removeCallbacks(pendingUrlOpenRunnable)
+        lastReaderTapMs = 0L
+        readerCardUrl = null
+        exitReaderMode(animated = true)
+    }
+
+    fun setStreamActiveIndicator(active: Boolean) {
+        if (!this::chatStreamIndicator.isInitialized) return
+        if (!active) {
+            chatStreamIndicator.animate().cancel()
+            chatStreamIndicator.alpha = 1f
+            chatStreamIndicator.visibility = View.GONE
+            return
+        }
+        chatStreamIndicator.visibility = View.VISIBLE
+        chatStreamIndicator.animate().cancel()
+        chatStreamIndicator.alpha = 1f
+        chatStreamIndicator.animate()
+            .alpha(0.28f)
+            .setDuration(520L)
+            .setInterpolator(AccelerateDecelerateInterpolator())
+            .withEndAction {
+                if (!isAdded || !this::chatStreamIndicator.isInitialized || chatStreamIndicator.visibility != View.VISIBLE) {
+                    return@withEndAction
+                }
+                chatStreamIndicator.animate()
+                    .alpha(1f)
+                    .setDuration(520L)
+                    .setInterpolator(AccelerateDecelerateInterpolator())
+                    .withEndAction {
+                        if (chatStreamIndicator.visibility == View.VISIBLE) {
+                            setStreamActiveIndicator(true)
+                        }
+                    }
+                    .start()
+            }
+            .start()
+    }
+
+    private fun enterReaderMode(position: Int, animated: Boolean): Boolean {
+        val text = adapter.getCardText(position)?.trim().orEmpty()
+        if (text.isBlank()) return false
+        readerModeActive = true
+        readerText.text = text
+        readerScroll.scrollTo(0, 0)
+        readerOverlay.visibility = View.VISIBLE
+        hudContainer.visibility = View.GONE
+        setStreamActiveIndicator(false)
+        hideVoiceOscilloscope()
+        coreEyeContainer.visibility = View.GONE
+        chatRecycler.alpha = 0.20f
+        applyFocusVisuals(animate = false)
+        if (!animated) {
+            readerOverlay.alpha = 1f
+            readerOverlay.scaleX = 1f
+            readerOverlay.scaleY = 1f
+            return true
+        }
+        readerOverlay.alpha = 0f
+        readerOverlay.scaleX = 0.96f
+        readerOverlay.scaleY = 0.96f
+        readerOverlay.animate()
+            .alpha(1f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(300L)
+            .setInterpolator(AccelerateDecelerateInterpolator())
+            .start()
+        return true
+    }
+
+    private fun exitReaderMode(animated: Boolean) {
+        if (!readerModeActive) return
+        readerModeActive = false
+        readerCardUrl = null
+        uiHandler.removeCallbacks(pendingUrlOpenRunnable)
+        val finalize: () -> Unit = {
+            readerOverlay.visibility = View.GONE
+            readerOverlay.alpha = 1f
+            readerOverlay.scaleX = 1f
+            readerOverlay.scaleY = 1f
+            hudContainer.visibility = View.VISIBLE
+            chatRecycler.alpha = 1f
+            if (!hudModeEnabled) {
+                coreEyeContainer.visibility = if (coreEyeEnabled) View.VISIBLE else View.GONE
+            }
+            snapFocusedCard()
+        }
+        if (!animated) {
+            finalize()
+            return
+        }
+        readerOverlay.animate().cancel()
+        readerOverlay.animate()
+            .alpha(0f)
+            .scaleX(0.97f)
+            .scaleY(0.97f)
+            .setDuration(250L)
+            .setInterpolator(AccelerateDecelerateInterpolator())
+            .withEndAction(finalize)
+            .start()
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // HUD
+    // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Reorder the HUD info cards (calendar, tasks, news) inside [hudContainer]
+     * based on the user's preferred display order stored in preferences.
+     * The first two children of hudContainer (time/battery row and connection row)
+     * are kept in place; only the card wrappers are reordered.
+     */
+    private fun applyHudCardOrder() {
+        val orderStr = viewModel.preferences.hudDisplayOrder
+        val cardMap = mapOf(
+            "calendar" to hudCalendarCard,
+            "tasks" to hudTasksCard,
+            "news" to hudNewsCard
+        )
+        // Remove all card views from hudContainer
+        cardMap.values.forEach { hudContainer.removeView(it) }
+        // Re-add in preferred order
+        val orderedKeys = orderStr.split(",").map { it.trim() }.filter { it in cardMap }
+        // Append any missing keys (in case prefs are incomplete)
+        val allKeys = orderedKeys + cardMap.keys.filter { it !in orderedKeys }
+        for (key in allKeys) {
+            cardMap[key]?.let { hudContainer.addView(it) }
+        }
+    }
+
+    fun isHudModeEnabled(): Boolean = hudModeEnabled
+
+    fun setHudModeEnabled(enabled: Boolean) {
+        if (!this::chatRecycler.isInitialized) return
+        if (hudModeEnabled == enabled) return
+        if (enabled && readerModeActive) {
+            exitReaderMode(animated = false)
+        }
+        hudModeEnabled = enabled
+        hudContainer.visibility = View.VISIBLE
+        chatRecycler.visibility = if (enabled) View.GONE else View.VISIBLE
+        if (enabled) {
+            setStreamActiveIndicator(false)
+        }
+        if (enabled) {
+            hideVoiceOscilloscope()
+            coreEyeContainer.visibility = View.GONE
+            coreEyeContainer.alpha = 1f
+        } else {
+            coreEyeContainer.visibility = if (coreEyeEnabled) View.VISIBLE else View.GONE
+            snapFocusedCard()
+        }
+    }
+
+    fun setConnectionStatus(status: ConnectionStatus) {
+        if (!isAdded || !::hudConnectionDot.isInitialized || !::hudConnectionText.isInitialized) return
+        val (label, color, alpha) = when (status) {
+            ConnectionStatus.IDLE -> Triple("—", 0xB3FFFFFF.toInt(), 0.72f)
+            ConnectionStatus.CONNECTING -> Triple("…", 0xFFFFC857.toInt(), 0.95f)
+            ConnectionStatus.GEMINI_CONNECTED -> Triple("G", 0xFF00E676.toInt(), 1f)
+            ConnectionStatus.TOOLS_READY -> Triple("G", 0xFF00E676.toInt(), 1f)
+            ConnectionStatus.ERROR -> Triple("ERR", 0xFFFF5B5B.toInt(), 1f)
+        }
+        hudConnectionText.text = label
+        hudConnectionText.setTextColor(color)
+        hudConnectionText.alpha = alpha
+
+        val dot = (hudConnectionDot.background as? GradientDrawable) ?: GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+        }
+        dot.setColor(color)
+        hudConnectionDot.background = dot
+        hudConnectionDot.alpha = alpha
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // CoreEye camera PIP
+    // ══════════════════════════════════════════════════════════════════════
+
+    fun setCoreEyeSurfaceListener(listener: CoreEyeSurfaceListener?) {
+        coreEyeSurfaceListener = listener
+        if (listener != null && coreEyeSurfaceReady) {
+            listener.onSurfaceAvailable()
+        }
+    }
+
+    fun setCardActionListener(listener: CardActionListener?) {
+        cardActionListener = listener
+    }
+
+    fun isCoreEyeSurfaceReady(): Boolean = coreEyeSurfaceReady
+
+    fun getCoreEyeSurfaceProvider(): Preview.SurfaceProvider? {
+        if (!this::coreEyePreviewTexture.isInitialized || !coreEyeSurfaceReady) return null
+        val executor = ContextCompat.getMainExecutor(requireContext())
+        return Preview.SurfaceProvider { request ->
+            val texture = coreEyePreviewTexture.surfaceTexture
+            if (texture == null || !coreEyeSurfaceReady) {
+                request.willNotProvideSurface()
+                return@SurfaceProvider
+            }
+            texture.setDefaultBufferSize(request.resolution.width, request.resolution.height)
+            val surface = Surface(texture)
+            request.provideSurface(surface, executor) { surface.release() }
+        }
+    }
+
+    fun setCoreEyeCaptureEnabled(enabled: Boolean) {
+        coreEyeEnabled = enabled
+        if (!enabled) {
+            uiHandler.removeCallbacks(coreEyeStreamTimeoutRunnable)
+            setCoreEyeStreamingVisuals(active = false)
+        }
+        if (!hudModeEnabled) {
+            coreEyeContainer.visibility = if (enabled) View.VISIBLE else View.GONE
+        }
+        coreEyeIdleIcon.visibility = if (enabled) View.GONE else View.VISIBLE
+    }
+
+    fun onCoreEyeFrameStreamed() {
+        if (!coreEyeEnabled) return
+        setCoreEyeStreamingVisuals(active = true)
+        uiHandler.removeCallbacks(coreEyeStreamTimeoutRunnable)
+        uiHandler.postDelayed(coreEyeStreamTimeoutRunnable, 1500L)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Oscilloscope
+    // ══════════════════════════════════════════════════════════════════════
+
+    fun pushVoiceOscilloscope(level: Float, color: Int) {
+        if (!::inlineOscilloscope.isInitialized) return
+        inlineOscilloscope.visibility = View.VISIBLE
+        inlineOscilloscope.pushLevel(level, color)
+    }
+
+    fun hideVoiceOscilloscope() {
+        if (!::inlineOscilloscope.isInitialized) return
+        inlineOscilloscope.stop()
+        inlineOscilloscope.visibility = View.GONE
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Focus management — pure index-driven, NO SnapHelper
+    // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Returns [focusedCardIndex] clamped to valid content range.
+     * If it was out of range, it is corrected in place.
+     */
+    private fun coerceFocusedIndex(): Int {
+        val first = adapter.getFirstContentPosition()
+        val last = adapter.getLastContentPosition()
+        if (focusedCardIndex in first..last) return focusedCardIndex
+        focusedCardIndex = last
+        return focusedCardIndex
+    }
+
+    /**
+     * Calculate the exact offset needed so the focused card center aligns with
+     * the vertical center of the RecyclerView's visible content area (the region
+     * between paddingTop and paddingBottom).  This keeps cards inside the
+     * recycler bounds and prevents them from overlapping the HUD above.
+     */
+    private fun computeFocusOffsetPx(): Int {
+        if (!this::chatRecycler.isInitialized) return 0
+        val density = resources.displayMetrics.density
+        val cardHeightPx = (CARD_HEIGHT_DP * density).toInt()
+        val visibleHeight = chatRecycler.height - chatRecycler.paddingTop - chatRecycler.paddingBottom
+        val centerOffset = (visibleHeight - cardHeightPx) / 2
+        return centerOffset.coerceAtLeast(0)
+    }
+
+    /** Set [focusedCardIndex] and place that card at the fixed focus offset. */
+    private fun focusCard(position: Int, animate: Boolean) {
+        val first = adapter.getFirstContentPosition()
+        val last = adapter.getLastContentPosition()
+        focusedCardIndex = position.coerceIn(first, last)
+        layoutManager.scrollToFocus(focusedCardIndex)
+        chatRecycler.post {
+            applyFocusVisuals(animate = animate)
+            // Second pass after layout settles to catch cards that became
+            // visible only after the scroll animation completed.
+            chatRecycler.postDelayed({ applyFocusVisuals(animate = false) }, 250L)
+        }
+        tapBlockedUntilSnap = false
+    }
+
+    private fun snapFocusedCard(): Boolean {
+        if (adapter.itemCount <= 0) return false
+        focusedCardIndex = coerceFocusedIndex()
+        layoutManager.scrollToFocus(focusedCardIndex)
+        chatRecycler.post {
+            applyFocusVisuals(animate = false)
+            chatRecycler.postDelayed({ applyFocusVisuals(animate = false) }, 250L)
+        }
+        return true
+    }
+
+    /**
+     * Walk every visible child and apply focused / unfocused styling.
+     *
+     * Uses [RecyclerView.getChildAt] instead of the LayoutManager's
+     * findFirst/LastVisibleItemPosition so that views re-attached from
+     * the RecyclerView cache (which are NOT rebound) are always caught.
+     */
+    private fun applyFocusVisuals(animate: Boolean) {
+        if (!this::chatRecycler.isInitialized) return
+        for (i in 0 until chatRecycler.childCount) {
+            val child = chatRecycler.getChildAt(i) ?: continue
+            val position = chatRecycler.getChildAdapterPosition(child)
+            if (position == RecyclerView.NO_POSITION) continue
+            if (!adapter.isContentPosition(position)) continue
+            val focusTarget = child.findViewById<View>(R.id.messageBubble) ?: child
+            val focused = position == focusedCardIndex
+            applyFocusGlow(focusTarget, focused && !readerModeActive)
+
+            val targetScale = if (focused) CARD_FOCUS_SCALE else CARD_UNFOCUSED_SCALE
+            val targetAlpha = if (focused) CARD_FOCUS_ALPHA else CARD_UNFOCUSED_ALPHA
+            val targetZ = if (focused) CARD_FOCUS_Z else CARD_UNFOCUSED_Z
+            setCardState(focusTarget, targetScale, targetAlpha, targetZ, animate)
+        }
+    }
+
+    private fun setCardState(
+        child: View,
+        scale: Float,
+        alpha: Float,
+        z: Float,
+        animate: Boolean
+    ) {
+        if (!animate) {
+            child.scaleX = scale
+            child.scaleY = scale
+            child.alpha = alpha
+            child.translationZ = z
+            return
+        }
+        val sameState =
+            abs(child.scaleX - scale) < 0.01f &&
+                abs(child.alpha - alpha) < 0.01f &&
+                abs(child.translationZ - z) < 0.01f
+        if (sameState) return
+
+        child.animate().cancel()
+        child.animate()
+            .scaleX(scale)
+            .scaleY(scale)
+            .alpha(alpha)
+            .translationZ(z)
+            .setDuration(CARD_FOCUS_ANIM_MS)
+            .setInterpolator(AccelerateDecelerateInterpolator())
+            .start()
+    }
+
+    private fun applyFocusGlow(target: View, focused: Boolean) {
+        if (!focused) {
+            if (target.foreground != null) target.foreground = null
+            return
+        }
+        val density = target.resources.displayMetrics.density
+        val glow = (target.foreground as? GradientDrawable) ?: GradientDrawable()
+        glow.shape = GradientDrawable.RECTANGLE
+        glow.cornerRadius = CARD_FOCUS_GLOW_CORNER_DP * density
+        glow.setColor(Color.TRANSPARENT)
+        glow.setStroke(CARD_FOCUS_GLOW_PX, CARD_FOCUS_GLOW_COLOR)
+        target.foreground = glow
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Startup binding
+    // ══════════════════════════════════════════════════════════════════════
+
+    private fun bindInitialHistoryFromSnapshot() {
+        val initialCards = viewModel.getAssistantCardsSnapshot()
+        renderedAssistantMessages = initialCards
+        adapter.submitMessages(initialCards)
+        lastMessageFingerprint = initialCards.joinToString("|") { it.text }.hashCode()
+        suppressFirstCollectorFocus = true
+        focusedCardIndex = adapter.getLastContentPosition()
+        snapFocusedCard()
+    }
+
+    private fun playNavigationTick() {
+        val audioManager = context?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        runCatching {
+            audioManager.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, 0.5f)
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // CoreEye surface management
+    // ══════════════════════════════════════════════════════════════════════
+
+    private fun configureCoreEyeView() {
+        coreEyeContainer.visibility = View.GONE
+        coreEyePreviewTexture.surfaceTextureListener =
+            object : TextureView.SurfaceTextureListener {
+                override fun onSurfaceTextureAvailable(
+                    surface: android.graphics.SurfaceTexture,
+                    width: Int,
+                    height: Int
+                ) {
+                    coreEyeSurfaceReady = true
+                    coreEyeSurfaceListener?.onSurfaceAvailable()
+                }
+
+                override fun onSurfaceTextureSizeChanged(
+                    surface: android.graphics.SurfaceTexture,
+                    width: Int,
+                    height: Int
+                ) = Unit
+
+                override fun onSurfaceTextureDestroyed(
+                    surface: android.graphics.SurfaceTexture
+                ): Boolean {
+                    coreEyeSurfaceReady = false
+                    coreEyeSurfaceListener?.onSurfaceDestroyed()
+                    return true
+                }
+
+                override fun onSurfaceTextureUpdated(
+                    surface: android.graphics.SurfaceTexture
+                ) = Unit
+            }
+        if (coreEyePreviewTexture.isAvailable) {
+            coreEyeSurfaceReady = true
+            coreEyeSurfaceListener?.onSurfaceAvailable()
+        }
+        coreEyeRing.visibility = View.GONE
+        coreEyeIdleIcon.visibility = View.VISIBLE
+        coreEyePreviewTexture.alpha = 1f
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Battery HUD
+    // ══════════════════════════════════════════════════════════════════════
+
+    private fun refreshBatteryStatusHud() {
+        if (!isAdded || !::hudBatteryText.isInitialized || !::hudBatteryIcon.isInitialized) return
+        val batteryIntent = runCatching {
+            requireContext().registerReceiver(
+                null,
+                IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            )
+        }.getOrNull() ?: return
+
+        val level = batteryIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+        val scale = batteryIntent.getIntExtra(BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1)
+        val status = batteryIntent.getIntExtra(
+            BatteryManager.EXTRA_STATUS,
+            BatteryManager.BATTERY_STATUS_UNKNOWN
+        )
+        val charging =
+            status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                status == BatteryManager.BATTERY_STATUS_FULL
+
+        val percent = if (level >= 0) ((level * 100f) / scale).toInt().coerceIn(0, 100) else -1
+        hudBatteryText.text = if (percent >= 0) "$percent%" else "--%"
+
+        val tint = when {
+            charging -> 0xFF00FFFF.toInt()
+            percent in 0..15 -> 0xFFFF5B5B.toInt()
+            percent in 16..35 -> 0xFFFFB14A.toInt()
+            else -> 0xFFFFFFFF.toInt()
+        }
+        hudBatteryIcon.alpha = if (percent >= 0) 1f else 0.5f
+        hudBatteryText.alpha = if (percent >= 0) 1f else 0.5f
+        hudBatteryIcon.setColorFilter(tint)
+        hudBatteryText.setTextColor(tint)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // CoreEye streaming ring animation
+    // ══════════════════════════════════════════════════════════════════════
+
+    private fun setCoreEyeStreamingVisuals(active: Boolean) {
+        if (coreEyeStreaming == active) return
+        coreEyeStreaming = active
+        if (active) {
+            coreEyeRing.visibility = View.VISIBLE
+            if (coreEyePulseAnimator == null) {
+                coreEyePulseAnimator = ValueAnimator.ofFloat(0.4f, 1f).apply {
+                    duration = 720L
+                    repeatMode = ValueAnimator.REVERSE
+                    repeatCount = ValueAnimator.INFINITE
+                    addUpdateListener { anim ->
+                        coreEyeRing.alpha = anim.animatedValue as Float
+                    }
+                }
+            }
+            coreEyePulseAnimator?.start()
+        } else {
+            coreEyePulseAnimator?.cancel()
+            coreEyeRing.alpha = 0f
+            coreEyeRing.visibility = View.GONE
+        }
+    }
+}

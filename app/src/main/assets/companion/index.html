@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AITap Setup</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;padding:16px;max-width:640px;margin:0 auto}
+  h1{color:#00e5ff;font-size:22px;margin-bottom:2px}
+  .sub{color:#888;font-size:13px;margin-bottom:20px}
+  .step{background:#1a1a1a;border-radius:10px;padding:16px;margin-bottom:14px;border-left:3px solid #333}
+  .step.active{border-left-color:#00e5ff}
+  .step.done{border-left-color:#4caf50}
+  .step-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .step-num{background:#222;color:#00e5ff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0}
+  .step.done .step-num{background:#4caf50;color:#fff}
+  .step-title{font-size:15px;font-weight:600;color:#fff}
+  .step-desc{font-size:12px;color:#999;margin-bottom:10px;line-height:1.5}
+  label{display:flex;align-items:center;gap:6px;font-size:12px;color:#aaa;margin-bottom:4px;margin-top:10px}
+  label:first-of-type{margin-top:0}
+  .help-btn{background:#222;color:#00e5ff;border:1px solid #333;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+  .help-btn:hover{background:#00e5ff;color:#000}
+  input[type="text"],input[type="password"],textarea{width:100%;padding:10px;background:#111;border:1px solid #333;border-radius:6px;color:#fff;font-size:14px;font-family:inherit}
+  input:focus,textarea:focus{border-color:#00e5ff;outline:none}
+  textarea{min-height:70px;resize:vertical}
+  .hint{font-size:11px;color:#666;margin-top:2px}
+  .link{color:#00e5ff;text-decoration:none;font-size:11px}
+  .link:hover{text-decoration:underline}
+  .btn-row{display:flex;gap:10px;margin-top:16px}
+  button{flex:1;padding:12px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:opacity .2s}
+  button:active{opacity:.7}
+  .btn-save{background:#00e5ff;color:#000}
+  .btn-reset{background:#333;color:#ccc}
+  .status{text-align:center;font-size:13px;margin-top:10px;min-height:20px}
+  .status.ok{color:#4caf50}.status.err{color:#f44336}
+  .pw-wrap{position:relative}
+  .pw-toggle{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:11px;color:#00e5ff;cursor:pointer;background:none;border:none}
+  .modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:100;padding:20px;overflow-y:auto}
+  .modal.show{display:block}
+  .modal-content{background:#1a1a1a;border-radius:12px;padding:20px;max-width:520px;margin:40px auto;border:1px solid #333}
+  .modal h3{color:#00e5ff;margin-bottom:10px;font-size:16px}
+  .modal p,.modal li{font-size:13px;line-height:1.7;color:#ccc}
+  .modal ol{padding-left:20px;margin:10px 0}
+  .modal .close-btn{background:#333;color:#ccc;padding:8px 16px;border:none;border-radius:6px;cursor:pointer;margin-top:12px;font-size:13px}
+  select{width:100%;padding:10px;background:#111;border:1px solid #333;border-radius:6px;color:#fff;font-size:14px}
+  .feature-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+  .feature{background:#111;border-radius:6px;padding:8px 10px;font-size:11px;color:#aaa;border:1px solid #222}
+  .feature b{color:#fff;display:block;margin-bottom:2px}
+</style>
+</head>
+<body>
+
+<h1>AITap Setup Guide</h1>
+<p class="sub">RayNeo X3 Pro &mdash; Follow each step in order</p>
+
+<div style="display:flex;gap:0;margin-bottom:20px;border-radius:8px;overflow:hidden;border:1px solid #333">
+  <a href="/" style="flex:1;padding:10px;text-align:center;text-decoration:none;font-size:13px;font-weight:600;background:#00e5ff;color:#000">Setup</a>
+  <a href="/browser" style="flex:1;padding:10px;text-align:center;text-decoration:none;font-size:13px;font-weight:600;color:#aaa;background:#1a1a1a">Browser</a>
+  <a href="/dashboard" style="flex:1;padding:10px;text-align:center;text-decoration:none;font-size:13px;font-weight:600;color:#aaa;background:#1a1a1a">Dashboard</a>
+  <a href="/radio" style="flex:1;padding:10px;text-align:center;text-decoration:none;font-size:13px;font-weight:600;color:#aaa;background:#1a1a1a">TapRadio</a>
+</div>
+
+<!-- Step 1: Google Cloud Project -->
+<div class="step" id="s1">
+  <div class="step-head">
+    <div class="step-num">1</div>
+    <div class="step-title">Google Cloud Project</div>
+    <button class="help-btn" onclick="showHelp('gcp')">?</button>
+  </div>
+  <p class="step-desc">Create a GCP project &mdash; this is the "home" where all your API keys live.</p>
+  <a class="link" href="https://console.cloud.google.com/projectcreate" target="_blank">Open Google Cloud Console &rarr;</a>
+</div>
+
+<!-- Step 2: Gemini API Key -->
+<div class="step" id="s2">
+  <div class="step-head">
+    <div class="step-num">2</div>
+    <div class="step-title">Gemini API Key</div>
+    <button class="help-btn" onclick="showHelp('gemini')">?</button>
+  </div>
+  <p class="step-desc">The core AI engine. Get a free key from Google AI Studio, linked to your GCP project.</p>
+  <label>Gemini API Key</label>
+  <div class="pw-wrap">
+    <input type="password" id="geminiKey" placeholder="AIza...">
+    <button class="pw-toggle" onclick="togglePw('geminiKey')">show</button>
+  </div>
+  <a class="link" href="https://aistudio.google.com/apikey" target="_blank">Get key from AI Studio &rarr;</a>
+
+  <label>Model Override <button class="help-btn" onclick="showHelp('model')">?</button></label>
+  <input type="text" id="geminiModel" placeholder="Leave blank for default">
+  <div class="hint">Default: gemini-2.5-flash-native-audio. Only change if you know what you're doing.</div>
+</div>
+
+<!-- Step 3: OAuth Consent Screen -->
+<div class="step" id="s3">
+  <div class="step-head">
+    <div class="step-num">3</div>
+    <div class="step-title">Google OAuth (Workspace Access)</div>
+    <button class="help-btn" onclick="showHelp('oauth')">?</button>
+  </div>
+  <p class="step-desc">Enables access to your Calendar, Keep, Contacts, and Tasks. Create a <b>Desktop application</b> OAuth client in your GCP project.</p>
+  <label>Google OAuth Client ID</label>
+  <input type="text" id="googleOAuthClientId" placeholder="xxxx.apps.googleusercontent.com">
+  <label>Google OAuth Client Secret</label>
+  <div class="pw-wrap">
+    <input type="password" id="googleOAuthClientSecret" placeholder="GOCSPX-...">
+    <button class="pw-toggle" onclick="togglePw('googleOAuthClientSecret')">show</button>
+  </div>
+  <a class="link" href="https://console.cloud.google.com/apis/credentials" target="_blank">GCP Credentials page &rarr;</a>
+  <div class="hint">Enable these APIs: Calendar, Keep, People (Contacts), Tasks</div>
+  <div style="margin-top:12px">
+    <button style="background:#4285F4;color:#fff;flex:none;padding:10px 20px;font-size:13px" onclick="authorizeGoogle()">Authorize with Google</button>
+    <span id="oauthStatus" style="font-size:12px;margin-left:10px;color:#999">Checking...</span>
+  </div>
+  <div id="codeEntrySection" style="display:none;margin-top:12px;padding:12px;background:#111;border-radius:8px;border:1px solid #333">
+    <p style="font-size:12px;color:#ff9800;margin-bottom:8px">After authorizing, Google will redirect to a page that says "can't connect" &mdash; that's normal! <b>Copy the entire URL</b> from that tab's address bar and paste it below:</p>
+    <input type="text" id="oauthCodeInput" placeholder="Paste the full URL from the address bar" style="margin-bottom:8px">
+    <button style="background:#4caf50;color:#fff;flex:none;padding:8px 16px;font-size:13px" onclick="submitOAuthCode()">Submit Code</button>
+    <span id="codeSubmitStatus" style="font-size:12px;margin-left:8px;color:#999"></span>
+  </div>
+</div>
+
+<!-- Step 4: Calendar API Key -->
+<div class="step" id="s4">
+  <div class="step-head">
+    <div class="step-num">4</div>
+    <div class="step-title">Google Calendar</div>
+    <button class="help-btn" onclick="showHelp('calendar')">?</button>
+  </div>
+  <p class="step-desc">Shows your next event on the HUD and lets Gemini query your schedule.</p>
+  <label>Calendar API Key</label>
+  <div class="pw-wrap">
+    <input type="password" id="calendarApiKey" placeholder="AIza...">
+    <button class="pw-toggle" onclick="togglePw('calendarApiKey')">show</button>
+  </div>
+  <label>Calendar ID</label>
+  <input type="text" id="calendarId" placeholder="primary">
+  <div class="hint">Use "primary" for your main calendar, or paste a specific calendar email address.</div>
+</div>
+
+<!-- Step 5: Google Maps / Routes -->
+<div class="step" id="s5">
+  <div class="step-head">
+    <div class="step-num">5</div>
+    <div class="step-title">Google Maps, Routes &amp; Places</div>
+    <button class="help-btn" onclick="showHelp('maps')">?</button>
+  </div>
+  <p class="step-desc">Live traffic, directions, nearby places, and commute times on your HUD. Uses the same type of API key as Gemini (you can reuse it or create a separate one).</p>
+  <label>Google Maps API Key</label>
+  <div class="pw-wrap">
+    <input type="password" id="googleMapsApiKey" placeholder="AIza...">
+    <button class="pw-toggle" onclick="togglePw('googleMapsApiKey')">show</button>
+  </div>
+  <div class="hint" style="margin-top:6px">Enable these 3 APIs in your GCP project:</div>
+  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
+    <a class="link" href="https://console.cloud.google.com/apis/library/directions-backend.googleapis.com" target="_blank" style="background:#222;padding:4px 10px;border-radius:4px;font-size:11px">Enable Directions API &rarr;</a>
+    <a class="link" href="https://console.cloud.google.com/apis/library/routes.googleapis.com" target="_blank" style="background:#222;padding:4px 10px;border-radius:4px;font-size:11px">Enable Routes API &rarr;</a>
+    <a class="link" href="https://console.cloud.google.com/apis/library/places-backend.googleapis.com" target="_blank" style="background:#222;padding:4px 10px;border-radius:4px;font-size:11px">Enable Places API &rarr;</a>
+  </div>
+</div>
+
+<!-- Step 6: Spotify -->
+<div class="step" id="s6">
+  <div class="step-head">
+    <div class="step-num">6</div>
+    <div class="step-title">Spotify (Optional)</div>
+    <button class="help-btn" onclick="showHelp('spotify')">?</button>
+  </div>
+  <p class="step-desc">Voice-controlled music playback. "Play jazz", "Skip this song", "What's playing?"</p>
+  <div style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:12px;margin:8px 0;font-size:12px;line-height:1.8">
+    <b style="color:#1DB954">How to set up Spotify:</b><br>
+    1. Go to <a href="https://developer.spotify.com/dashboard" target="_blank" style="color:#1DB954">developer.spotify.com/dashboard</a><br>
+    2. Log in with your Spotify account<br>
+    3. Click <b>"Create App"</b><br>
+    4. App name: <b>TapInsight</b>, Description: <b>AR glasses music control</b><br>
+    5. Redirect URI: <code style="background:#000;padding:2px 6px;border-radius:3px">http://localhost:8888/callback</code><br>
+    6. Check <b>"Web API"</b> under "Which API/SDKs are you planning to use?"<br>
+    7. Click <b>Save</b>, then go to <b>Settings</b><br>
+    8. Copy the <b>Client ID</b> and <b>Client Secret</b> below<br>
+    <span style="color:#999">Requires a Spotify Premium account for playback control.</span>
+  </div>
+  <label>Spotify Client ID</label>
+  <input type="text" id="spotifyClientId" placeholder="e.g. a1b2c3d4e5f6...">
+  <label>Spotify Client Secret</label>
+  <input type="password" id="spotifyClientSecret" placeholder="e.g. x9y8z7w6v5u4...">
+  <div class="hint">Both values are in your app's Settings page on the Spotify Developer Dashboard.</div>
+</div>
+
+<!-- Step 7: Personality & Prompt -->
+<div class="step" id="s7">
+  <div class="step-head">
+    <div class="step-num">7</div>
+    <div class="step-title">Personality &amp; Behavior</div>
+    <button class="help-btn" onclick="showHelp('personality')">?</button>
+  </div>
+  <p class="step-desc">Customize how AITap speaks and behaves.</p>
+  <label>Personality</label>
+  <textarea id="personality" placeholder="e.g. You are friendly and concise. Use casual language. Be proactive about suggesting things you see through the camera."></textarea>
+
+  <hr style="border-color:#333;margin:14px 0">
+  <div style="cursor:pointer;color:#00e5ff;font-size:14px;font-weight:600;margin-bottom:8px" onclick="document.getElementById('promptSections').style.display=document.getElementById('promptSections').style.display==='none'?'block':'none'">
+    &#9662; System Prompt Sections <span style="color:#888;font-weight:400;font-size:12px">(click to expand)</span>
+  </div>
+  <div id="promptSections" style="display:none">
+    <div class="hint" style="margin-bottom:10px">Edit individual sections of the AI system prompt. Leave blank to use defaults. Changes take effect on next voice session.</div>
+
+    <label>Identity</label>
+    <textarea id="promptIdentity" rows="3" placeholder="You are AITap, a proactive AI assistant integrated into RayNeo X3 AR glasses. You can see through the user's camera and hear their voice in real-time."></textarea>
+    <div class="hint">Who is AITap and what can it perceive.</div>
+
+    <label>Tool Routing Rules</label>
+    <textarea id="promptRoutingRules" rows="5" placeholder="TOOL ROUTING RULES: 1) For calendar questions, always call google_calendar. 2) For reminders/notes, call google_keep. 3) For directions, call google_routes. ..."></textarea>
+    <div class="hint">Rules for which tools Gemini should call for different types of queries.</div>
+
+    <label>Behavior &amp; Output</label>
+    <textarea id="promptBehavior" rows="5" placeholder="PROACTIVE BEHAVIOR: Offer to scan QR codes, read text aloud, guide assembly/cooking. HUD OUTPUT RULES: Keep responses to 1-6 lines. No stack traces or raw JSON."></textarea>
+    <div class="hint">Proactive behavior, HUD formatting, and privacy rules.</div>
+
+    <label>URL Rules</label>
+    <textarea id="promptUrlRules" rows="4" placeholder="URL RULES: All links must use https://. Prefer direct, known URLs. Only fall back to Google Search links when unsure."></textarea>
+    <div class="hint">How Gemini generates links. Edit this to control direct URLs vs. search links.</div>
+
+    <hr style="border-color:#333;margin:12px 0">
+    <label>Full Override (Advanced) <button class="help-btn" onclick="showHelp('sysprompt')">?</button></label>
+    <textarea id="customSystemPrompt" placeholder="Leave blank to use the section-based prompt above."></textarea>
+    <div class="hint">If set, this completely replaces ALL sections above (identity, routing, behavior, URL rules).</div>
+  </div>
+</div>
+
+<!-- Step 8: Audio -->
+<div class="step" id="s8">
+  <div class="step-head">
+    <div class="step-num">8</div>
+    <div class="step-title">Audio Settings</div>
+  </div>
+  <label>TTS Volume (0.0 - 1.0)</label>
+  <input type="text" id="ttsVolume" placeholder="0.80">
+  <label>TTS Muted</label>
+  <select id="ttsMuted"><option value="false">No</option><option value="true">Yes</option></select>
+</div>
+
+<!-- Step 9: HUD Display Settings -->
+<div class="step" id="s9">
+  <div class="step-head">
+    <div class="step-num">9</div>
+    <div class="step-title">HUD Display Settings</div>
+    <button class="help-btn" onclick="showHelp('hud')">?</button>
+  </div>
+  <p class="step-desc">Choose what appears on your AR glasses display.</p>
+  <label>Show Calendar Widget</label>
+  <select id="hudShowCalendar"><option value="true">Yes</option><option value="false">No</option></select>
+  <label>Show Traffic &amp; Commute</label>
+  <select id="hudShowTraffic"><option value="true">Yes</option><option value="false">No</option></select>
+  <label>Show Notifications</label>
+  <select id="hudShowNotifications"><option value="true">Yes</option><option value="false">No</option></select>
+  <label>Show Event Time &amp; Date</label>
+  <select id="hudShowEventTime"><option value="true">Yes</option><option value="false">No</option></select>
+  <div class="hint">Display the time and date alongside calendar event names on the HUD.</div>
+
+  <hr style="border-color:#333;margin:12px 0">
+  <label style="color:#00E676">Show Tasks / Reminders</label>
+  <select id="hudShowTasks"><option value="true">Yes</option><option value="false">No</option></select>
+  <div class="hint">Display pending Google Tasks on the HUD. Requires Tasks API enabled + OAuth with Tasks scope.</div>
+  <label>Tasks Item Count</label>
+  <input type="number" id="tasksItemCount" placeholder="5" min="1" max="10" value="5">
+  <div class="hint">Number of pending tasks to show on HUD (1&ndash;10).</div>
+
+  <hr style="border-color:#333;margin:12px 0">
+  <label style="color:#FFB14A">Show News Headlines</label>
+  <select id="hudShowNews"><option value="true">Yes</option><option value="false">No</option></select>
+  <div class="hint">Display top Google News headlines on the HUD. Uses public RSS &mdash; no API key needed.</div>
+  <label>News Item Count</label>
+  <input type="number" id="newsItemCount" placeholder="3" min="1" max="10" value="3">
+  <div class="hint">Number of news headlines to show on HUD (1&ndash;10).</div>
+  <label>News Refresh Interval (seconds)</label>
+  <input type="number" id="newsRefreshInterval" placeholder="600" min="60" max="3600">
+  <div class="hint">How often to refresh news headlines (60&ndash;3600 seconds). Default: 10 minutes.</div>
+
+  <hr style="border-color:#333;margin:12px 0">
+  <label>HUD Refresh Interval (seconds)</label>
+  <input type="number" id="hudRefreshInterval" placeholder="60" min="5" max="300">
+  <div class="hint">How often to update calendar, tasks, and traffic info (5&ndash;300 seconds). Lower = more battery use.</div>
+
+  <hr style="border-color:#333;margin:16px 0">
+  <label>HUD Display Order</label>
+  <p class="step-desc">Drag or use arrows to reorder how items appear on the HUD.</p>
+  <div id="hudOrderList" style="margin:8px 0"></div>
+  <input type="hidden" id="hudDisplayOrder" value="calendar,tasks,news">
+
+  <hr style="border-color:#333;margin:16px 0">
+  <label>Enabled Calendars</label>
+  <p class="step-desc">Select which Google Calendars appear on your HUD. Click "Load Calendars" to fetch your list.</p>
+  <button style="background:#555;color:#fff;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer;margin-bottom:8px" onclick="loadCalendarList()">Load Calendars</button>
+  <div id="calendarListContainer" style="display:none;margin-top:8px;padding:10px;background:#111;border-radius:6px;border:1px solid #333"></div>
+  <input type="hidden" id="enabledCalendarIds">
+  <input type="hidden" id="calendarItemCounts">
+</div>
+
+<!-- API Verification -->
+<div class="step">
+  <div class="step-head">
+    <div class="step-num" style="background:#ff9800;color:#000">!</div>
+    <div class="step-title">API Verification</div>
+  </div>
+  <p class="step-desc">Test that your APIs are properly configured and responding. Save your config first!</p>
+  <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">
+    <button style="background:#555;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('calendar')">Test Calendar</button>
+    <button style="background:#555;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('directions')">Test Directions</button>
+    <button style="background:#555;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('tasks')">Test Tasks</button>
+    <button style="background:#555;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('places')">Test Places</button>
+    <button style="background:#1a73e8;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('location')">&#128205; Test Location</button>
+    <button style="background:#e8710a;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('traffic')">&#128663; Test Traffic</button>
+  </div>
+  <div id="verifyResults" style="display:none;margin-top:12px;padding:10px;background:#111;border-radius:6px;border:1px solid #333;font-size:12px;color:#aaa;line-height:1.8"></div>
+</div>
+
+<!-- Feature Preview -->
+<div class="step">
+  <div class="step-head">
+    <div class="step-num" style="background:#00e5ff;color:#000">&#10003;</div>
+    <div class="step-title">What You'll Get</div>
+  </div>
+  <div class="feature-grid">
+    <div class="feature"><b>Smart Commute</b>Live traffic + ETA on HUD before events</div>
+    <div class="feature"><b>Floating Itinerary</b>Real-time calendar on your display</div>
+    <div class="feature"><b>Tasks &amp; Reminders</b>Pending to-dos from Google Tasks on your HUD</div>
+    <div class="feature"><b>Live News</b>Top headlines from Google News at a glance</div>
+    <div class="feature"><b>Quick Notes</b>"Remember this" &rarr; AI saves notes locally on glasses</div>
+    <div class="feature"><b>Vibe Sync</b>Voice-controlled Spotify playback</div>
+    <div class="feature"><b>Sonos Control</b>"Continue audio in the kitchen"</div>
+    <div class="feature"><b>Camera AI</b>QR codes, menus, signs auto-detected</div>
+  </div>
+</div>
+
+<div class="btn-row">
+  <button class="btn-save" onclick="saveAll()">Save Configuration</button>
+  <button class="btn-reset" onclick="loadAll()">Reload</button>
+</div>
+<div id="status" class="status"></div>
+
+<!-- Help Modal -->
+<div class="modal" id="helpModal">
+  <div class="modal-content">
+    <h3 id="helpTitle"></h3>
+    <div id="helpBody"></div>
+    <button class="close-btn" onclick="closeHelp()">Close</button>
+  </div>
+</div>
+
+<script>
+const FIELDS = {
+  geminiKey:           { key: 'gemini_api_key',         type: 'string' },
+  geminiModel:         { key: 'gemini_model_override',  type: 'string' },
+  calendarApiKey:      { key: 'calendar_api_key',       type: 'string' },
+  calendarId:          { key: 'calendar_id',            type: 'string' },
+  googleMapsApiKey:    { key: 'google_maps_api_key',    type: 'string' },
+  googleOAuthClientId:     { key: 'google_oauth_client_id',     type: 'string' },
+  googleOAuthClientSecret: { key: 'google_oauth_client_secret', type: 'string' },
+  spotifyClientId:         { key: 'spotify_client_id',          type: 'string' },
+  spotifyClientSecret:     { key: 'spotify_client_secret',      type: 'string' },
+  personality:         { key: 'personality',             type: 'string' },
+  customSystemPrompt:  { key: 'custom_system_prompt',   type: 'string' },
+  promptIdentity:      { key: 'prompt_identity',        type: 'string' },
+  promptRoutingRules:  { key: 'prompt_routing_rules',   type: 'string' },
+  promptBehavior:      { key: 'prompt_behavior',        type: 'string' },
+  promptUrlRules:      { key: 'prompt_url_rules',       type: 'string' },
+  ttsVolume:           { key: 'tts_volume',             type: 'float'  },
+  ttsMuted:            { key: 'tts_muted',              type: 'bool'   },
+  hudShowCalendar:     { key: 'hud_show_calendar',      type: 'bool'   },
+  hudShowTraffic:      { key: 'hud_show_traffic',       type: 'bool'   },
+  hudShowNotifications:{ key: 'hud_show_notifications', type: 'bool'   },
+  hudShowEventTime:    { key: 'hud_show_event_time',    type: 'bool'   },
+  hudShowTasks:        { key: 'hud_show_tasks',         type: 'bool'   },
+  hudShowNews:         { key: 'hud_show_news',          type: 'bool'   },
+  tasksItemCount:      { key: 'tasks_item_count',       type: 'int'    },
+  newsItemCount:       { key: 'news_item_count',        type: 'int'    },
+  newsRefreshInterval: { key: 'news_refresh_interval_seconds', type: 'int' },
+  hudRefreshInterval:  { key: 'hud_refresh_interval_seconds', type: 'int' },
+  enabledCalendarIds:  { key: 'enabled_calendar_ids',   type: 'string' },
+  calendarItemCounts:  { key: 'calendar_item_counts',   type: 'string' },
+  hudDisplayOrder:     { key: 'hud_display_order',      type: 'string' }
+};
+
+const HELP = {
+  gcp: {
+    title: 'Google Cloud Project',
+    body: `<p>A GCP project is the container for all your API keys and OAuth credentials.</p>
+<ol><li>Go to <a href="https://console.cloud.google.com/projectcreate" target="_blank" style="color:#00e5ff">console.cloud.google.com</a></li>
+<li>Click "New Project" and name it (e.g. "AITap")</li>
+<li>Note the Project ID &mdash; you'll select this project when creating keys</li>
+<li>Enable billing (required for some APIs, but most have generous free tiers)</li></ol>
+<p>All subsequent keys should be created inside this same project.</p>`
+  },
+  gemini: {
+    title: 'Gemini API Key',
+    body: `<p>This is the core AI engine that powers AITap's voice and vision.</p>
+<ol><li>Go to <a href="https://aistudio.google.com/apikey" target="_blank" style="color:#00e5ff">AI Studio</a></li>
+<li>Click "Create API Key"</li>
+<li>Select your GCP project from Step 1</li>
+<li>Copy the key (starts with AIza...)</li></ol>
+<p><b>Free tier:</b> 15 requests/minute, 1M tokens/day for Flash models.</p>
+<p><b>Important:</b> Keep this key secret. Never share it publicly.</p>`
+  },
+  model: {
+    title: 'Model Override',
+    body: `<p>AITap defaults to <code>gemini-2.5-flash-native-audio</code> for Live sessions (voice + camera). You can override this if you want to use a different model.</p>
+<p><b>Available models:</b></p>
+<ol><li><code>gemini-2.5-flash</code> &mdash; Fast, good for most tasks</li>
+<li><code>gemini-2.5-pro</code> &mdash; Slower but more capable</li></ol>
+<p>Leave blank to use the default. The Live audio session always uses the native-audio variant regardless of this setting.</p>`
+  },
+  oauth: {
+    title: 'Google OAuth Setup',
+    body: `<p>OAuth lets AITap access your personal Google data (Calendar, Keep, Contacts).</p>
+<ol><li>Go to <a href="https://console.cloud.google.com/auth/overview" target="_blank" style="color:#00e5ff">GCP Auth Platform</a></li>
+<li>Configure the OAuth consent screen:<br>&bull; User type: External<br>&bull; App name: "TapInsight"<br>&bull; Add your email as test user</li>
+<li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:#00e5ff">Credentials</a> &rarr; Create &rarr; OAuth Client ID</li>
+<li>Type: <b>Desktop application</b></li>
+<li>Copy both the Client ID and Client Secret</li></ol>
+<p><b>How authorization works:</b></p>
+<ol><li>Enter Client ID + Secret above, click "Authorize with Google"</li>
+<li>Sign in and grant permission in the popup</li>
+<li>Google redirects to a page that won't load &mdash; this is normal!</li>
+<li>Copy the authorization code from the URL bar and paste it back here</li></ol>
+<p><b>Enable these APIs</b> in <a href="https://console.cloud.google.com/apis/library" target="_blank" style="color:#00e5ff">API Library</a>:</p>
+<ol><li>Google Calendar API</li><li>Google Keep API</li><li>People API (Contacts)</li><li>Tasks API</li></ol>`
+  },
+  calendar: {
+    title: 'Google Calendar',
+    body: `<p>The Calendar API key lets AITap read your schedule and show upcoming events on the HUD.</p>
+<ol><li>Use the same API key from Step 2 (Gemini key), OR create a separate one</li>
+<li>Make sure Google Calendar API is enabled in your <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" style="color:#00e5ff">GCP project</a></li>
+<li>Calendar ID "primary" = your main Google calendar</li>
+<li>For a specific calendar: open Google Calendar &rarr; Settings &rarr; calendar &rarr; copy the Calendar ID (looks like an email)</li></ol>
+<p><b>What it enables:</b> "What's my next meeting?" / HUD shows upcoming events / "Am I free at 3pm?"</p>`
+  },
+  maps: {
+    title: 'Google Maps, Routes & Places',
+    body: `<p>Enables live traffic, turn-by-turn directions, nearby place discovery, and commute time calculations on your AR glasses.</p>
+<p><b>API Key:</b> This is the same kind of <code>AIza...</code> key as your Gemini key. You can reuse the same key or create a dedicated one in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:#00e5ff">GCP Credentials</a>.</p>
+<p><b>You need to enable 3 APIs:</b></p>
+<ol>
+<li><a href="https://console.cloud.google.com/apis/library/directions-backend.googleapis.com" target="_blank" style="color:#00e5ff">Directions API</a> &mdash; Calculates routes between two locations. Provides step-by-step turn-by-turn directions, total distance, estimated travel time, and real-time traffic duration. Supports driving, walking, transit, and bicycling modes.</li>
+<li><a href="https://console.cloud.google.com/apis/library/routes.googleapis.com" target="_blank" style="color:#00e5ff">Routes API</a> &mdash; Google's next-gen routing engine. Computes optimized routes and travel times with advanced features like route matrices (comparing multiple destinations), toll estimation, and eco-friendly routing. Works alongside the Directions API for the best results.</li>
+<li><a href="https://console.cloud.google.com/apis/library/places-backend.googleapis.com" target="_blank" style="color:#00e5ff">Places API (New)</a> &mdash; Discovers nearby businesses, restaurants, gas stations, and points of interest. Powers queries like "Find coffee near me" or "What restaurants are nearby?" Returns names, addresses, ratings, hours, and photos.</li>
+</ol>
+<p><b>What it enables:</b></p>
+<ol><li>"How's traffic to work?" &rarr; Live commute time with traffic</li>
+<li>"Navigate to Whole Foods" &rarr; Turn-by-turn on HUD</li>
+<li>"Find coffee near me" &rarr; Nearby cafe results</li>
+<li>Smart commute alerts before calendar events</li></ol>
+<p><b>Free tier:</b> Directions &amp; Routes: $200/month free credit (~40,000 requests). Places: same $200 credit pool.</p>`
+  },
+  spotify: {
+    title: 'Spotify Setup',
+    body: `<p>Control Spotify playback with your voice through the AR glasses.</p>
+<ol><li>Go to <a href="https://developer.spotify.com/dashboard" target="_blank" style="color:#00e5ff">Spotify Developer Dashboard</a></li>
+<li>Click "Create App"</li>
+<li>App name: "AITap", Description: "AR assistant"</li>
+<li>Set Redirect URI: <code>http://localhost:8888/callback</code></li>
+<li>Check "Web API" under APIs</li>
+<li>Copy the Client ID from Settings</li></ol>
+<p><b>What it enables:</b> "Play jazz" / "Skip this song" / "What's playing?" / Song title on HUD</p>`
+  },
+  personality: {
+    title: 'Personality',
+    body: `<p>This text is appended to the system prompt and shapes how AITap communicates.</p>
+<p><b>Examples:</b></p>
+<ol><li>"Be concise and direct. Use casual language. Proactively describe things you see through the camera."</li>
+<li>"Speak like a knowledgeable friend. Keep responses under 2 sentences unless asked for more detail."</li>
+<li>"You are a professional assistant. Be formal and thorough. Always suggest next steps."</li></ol>
+<p>Leave blank for the default AITap personality.</p>`
+  },
+  hud: {
+    title: 'HUD Display Settings',
+    body: `<p>Control what information appears on your AR glasses HUD overlay.</p>
+<ol><li><b>Calendar Widget:</b> Shows your next upcoming events at the top of the display. Pulls from the calendar configured in Step 4.</li>
+<li><b>Traffic &amp; Commute:</b> Displays live traffic conditions and estimated commute time before your next calendar event with a location.</li>
+<li><b>Notifications:</b> Floating notification bubbles that auto-dismiss after 3 seconds. Includes AI responses, alerts, and status updates.</li>
+<li><b>Event Time &amp; Date:</b> Show or hide the time and date next to each calendar event name on the HUD (e.g. "Feb 17 2:00 PM — Meeting").</li>
+<li><b style="color:#00E676">Tasks / Reminders:</b> Shows pending items from Google Tasks on the HUD in green. Requires the Tasks API to be enabled in GCP and OAuth re-authorization with Tasks scope.</li>
+<li><b style="color:#FFB14A">News Headlines:</b> Shows top headlines from Google News RSS in amber. No API key needed &mdash; uses the public feed. Control refresh interval separately.</li>
+<li><b>Refresh Interval:</b> How often (in seconds) to re-fetch calendar, tasks, and traffic data. Lower values = fresher data but more battery use. Default: 60 seconds.</li>
+<li><b>Enabled Calendars:</b> Click "Load Calendars" to see all Google Calendars under your account (including subscribed calendars like Academic Events, Holidays, etc.). Check the ones you want to appear on your HUD. Use the count dropdown next to each calendar to set how many events from that calendar appear (1&ndash;10).</li></ol>
+<p>Changes take effect after saving and restarting AITap.</p>`
+  },
+  sysprompt: {
+    title: 'System Prompt Sections',
+    body: `<p>The AI system prompt is broken into editable sections so you can fine-tune specific behaviors without replacing everything.</p>
+<p><b>Sections:</b></p>
+<ol><li><b>Identity</b> &mdash; Who AITap is and what it can perceive (camera, voice)</li>
+<li><b>Tool Routing Rules</b> &mdash; Which tools Gemini calls for calendar, music, navigation, etc.</li>
+<li><b>Behavior &amp; Output</b> &mdash; Proactive behaviors (QR scanning, text reading), HUD formatting limits, privacy rules</li>
+<li><b>URL Rules</b> &mdash; How links are generated (prefer direct URLs vs. search links)</li></ol>
+<p>Leave a section <b>blank</b> to use the built-in default. Edit only the sections you want to change.</p>
+<p>The <b>Full Override</b> field at the bottom replaces ALL sections if set &mdash; use it only if you want total control.</p>
+<p><b>Capabilities</b> (list of available tools) is auto-generated and cannot be edited.</p>`
+  }
+};
+
+function togglePw(id){const e=document.getElementById(id);e.type=e.type==='password'?'text':'password'}
+// ── HUD Display Order ─────────────────────────────────────────
+const HUD_ORDER_ITEMS = {
+  calendar: { label: 'Calendar Events', color: '#00E5FF' },
+  tasks:    { label: 'Tasks / Reminders', color: '#00E676' },
+  news:     { label: 'News Headlines',  color: '#FFB14A' }
+};
+
+function renderHudOrderList() {
+  const container = document.getElementById('hudOrderList');
+  const input = document.getElementById('hudDisplayOrder');
+  const order = input.value.split(',').map(s => s.trim()).filter(s => s in HUD_ORDER_ITEMS);
+  // Ensure all items present
+  Object.keys(HUD_ORDER_ITEMS).forEach(k => { if (!order.includes(k)) order.push(k); });
+  input.value = order.join(',');
+
+  container.innerHTML = '';
+  order.forEach((key, idx) => {
+    const item = HUD_ORDER_ITEMS[key];
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:4px;background:#1a1a2e;border:1px solid #333;border-radius:6px';
+
+    const num = document.createElement('span');
+    num.textContent = (idx + 1);
+    num.style.cssText = 'color:#888;font-size:13px;min-width:18px';
+
+    const upBtn = document.createElement('button');
+    upBtn.textContent = '\u25B2';
+    upBtn.style.cssText = 'background:none;border:1px solid #555;color:#aaa;cursor:pointer;font-size:11px;padding:2px 6px;border-radius:4px';
+    upBtn.disabled = idx === 0;
+    if (idx === 0) upBtn.style.opacity = '0.3';
+    upBtn.onclick = () => { swapHudOrder(idx, idx - 1); };
+
+    const downBtn = document.createElement('button');
+    downBtn.textContent = '\u25BC';
+    downBtn.style.cssText = 'background:none;border:1px solid #555;color:#aaa;cursor:pointer;font-size:11px;padding:2px 6px;border-radius:4px';
+    downBtn.disabled = idx === order.length - 1;
+    if (idx === order.length - 1) downBtn.style.opacity = '0.3';
+    downBtn.onclick = () => { swapHudOrder(idx, idx + 1); };
+
+    const label = document.createElement('span');
+    label.textContent = item.label;
+    label.style.cssText = 'color:' + item.color + ';font-size:14px;font-weight:600;flex:1';
+
+    row.append(num, upBtn, downBtn, label);
+    container.appendChild(row);
+  });
+}
+
+function swapHudOrder(fromIdx, toIdx) {
+  const input = document.getElementById('hudDisplayOrder');
+  const order = input.value.split(',').map(s => s.trim());
+  if (toIdx < 0 || toIdx >= order.length) return;
+  [order[fromIdx], order[toIdx]] = [order[toIdx], order[fromIdx]];
+  input.value = order.join(',');
+  renderHudOrderList();
+}
+
+function showHelp(key){const h=HELP[key];if(!h)return;document.getElementById('helpTitle').textContent=h.title;document.getElementById('helpBody').innerHTML=h.body;document.getElementById('helpModal').classList.add('show')}
+function closeHelp(){document.getElementById('helpModal').classList.remove('show')}
+function showStatus(msg,cls){const e=document.getElementById('status');e.textContent=msg;e.className='status '+(cls||'');if(cls==='ok')setTimeout(()=>{e.textContent=''},4000)}
+
+function hasBridge(){return typeof AiTapBridge!=='undefined'}
+
+function loadAll(){
+  if(!hasBridge()){showStatus('Open this page from within AITap on your glasses.','err');return}
+  for(const[id,cfg]of Object.entries(FIELDS)){
+    const el=document.getElementById(id);
+    try{el.value=AiTapBridge.getString(cfg.key)||''}catch(e){}
+  }
+  renderHudOrderList();
+  showStatus('Configuration loaded.','ok');
+}
+function saveAll(){
+  if(!hasBridge()){showStatus('Open this page from within AITap on your glasses.','err');return}
+  for(const[id,cfg]of Object.entries(FIELDS)){
+    const el=document.getElementById(id);const v=el.value.trim();
+    try{
+      if(cfg.type==='float')AiTapBridge.putFloat(cfg.key,parseFloat(v)||0.8);
+      else if(cfg.type==='bool')AiTapBridge.putBoolean(cfg.key,v==='true');
+      else AiTapBridge.putString(cfg.key,v);
+    }catch(e){showStatus('Error: '+e.message,'err');return}
+  }
+  try{AiTapBridge.applyConfig()}catch(e){}
+  showStatus('Configuration saved! Restart AITap to apply.','ok');
+}
+
+// ── OAuth ───────────────────────────────────────────────────────
+const OAUTH_REDIRECT_URI = 'http://localhost';
+
+function authorizeGoogle() {
+  const clientId = document.getElementById('googleOAuthClientId').value.trim();
+  if (!clientId) { showStatus('Enter your OAuth Client ID first.', 'err'); return; }
+
+  // Save config first so the server has the client ID + secret
+  saveAll();
+
+  const scopes = [
+    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/tasks.readonly',
+    'https://www.googleapis.com/auth/tasks'
+  ];
+  const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' +
+    'client_id=' + encodeURIComponent(clientId) +
+    '&redirect_uri=' + encodeURIComponent(OAUTH_REDIRECT_URI) +
+    '&response_type=code' +
+    '&scope=' + encodeURIComponent(scopes.join(' ')) +
+    '&access_type=offline' +
+    '&prompt=consent';
+
+  window.open(authUrl, '_blank');
+
+  // Show the code entry section
+  document.getElementById('codeEntrySection').style.display = 'block';
+  const statusEl = document.getElementById('oauthStatus');
+  statusEl.textContent = 'Waiting for code...';
+  statusEl.style.color = '#ff9800';
+}
+
+async function submitOAuthCode() {
+  const codeRaw = document.getElementById('oauthCodeInput').value.trim();
+  const submitStatus = document.getElementById('codeSubmitStatus');
+  if (!codeRaw) { submitStatus.textContent = 'Paste the code first.'; submitStatus.style.color = '#f44336'; return; }
+
+  // User might paste the full URL or just the code — extract it
+  let code = codeRaw;
+  if (code.includes('?code=') || code.includes('&code=')) {
+    try {
+      const url = new URL(code.startsWith('http') ? code : 'http://localhost' + code);
+      code = url.searchParams.get('code') || codeRaw;
+    } catch(e) { /* use raw value */ }
+  }
+  // Strip trailing &scope=... if user copied too much
+  if (code.includes('&')) code = code.split('&')[0];
+
+  submitStatus.textContent = 'Exchanging code...';
+  submitStatus.style.color = '#ff9800';
+
+  try {
+    const r = await fetch('/api/oauth/exchange', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ code: code, redirect_uri: OAUTH_REDIRECT_URI })
+    });
+    const result = await r.json();
+    if (r.ok && result.status === 'authorized') {
+      submitStatus.textContent = 'Authorized!';
+      submitStatus.style.color = '#4caf50';
+      document.getElementById('oauthStatus').textContent = 'Authorized';
+      document.getElementById('oauthStatus').style.color = '#4caf50';
+      document.getElementById('codeEntrySection').style.display = 'none';
+    } else {
+      submitStatus.textContent = result.error || 'Exchange failed. Check Client ID and Secret.';
+      submitStatus.style.color = '#f44336';
+    }
+  } catch(e) {
+    submitStatus.textContent = 'Network error: ' + e.message;
+    submitStatus.style.color = '#f44336';
+  }
+}
+
+async function checkOAuthStatus() {
+  const statusEl = document.getElementById('oauthStatus');
+  try {
+    const r = await fetch('/api/oauth/status');
+    if (r.ok) {
+      const s = await r.json();
+      if (s.authorized) {
+        statusEl.textContent = s.token_valid ? 'Authorized' : 'Authorized (token expired, will auto-refresh)';
+        statusEl.style.color = '#4caf50';
+      } else {
+        statusEl.textContent = 'Not authorized';
+        statusEl.style.color = '#999';
+      }
+    }
+  } catch(e) {
+    statusEl.textContent = 'Not authorized';
+    statusEl.style.color = '#999';
+  }
+}
+
+// ── API Verification ─────────────────────────────────────────────
+async function verifyApi(apiType) {
+  const resultsDiv = document.getElementById('verifyResults');
+  resultsDiv.style.display = 'block';
+  resultsDiv.innerHTML = '<span style="color:#ff9800">Testing ' + apiType + '...</span>';
+
+  try {
+    const r = await fetch('/api/verify/' + apiType);
+    if (!r.ok) {
+      resultsDiv.innerHTML = '<span style="color:#f44336">HTTP error: ' + r.status + '</span>';
+      return;
+    }
+    const data = await r.json();
+    const icon = data.status === 'success' ? '\u2713' : data.status === 'not_configured' ? '\u2014' : '\u2717';
+    const color = data.status === 'success' ? '#4caf50' : data.status === 'not_configured' ? '#999' : '#f44336';
+
+    let html = '<div style="color:' + color + '"><b>' + icon + ' ' + data.service + ':</b> ' + data.message + '</div>';
+    // Show diagnostic details
+    if (data.has_oauth !== undefined) html += '<div style="color:#888;margin-left:20px">OAuth: ' + (data.has_oauth ? 'Yes' : 'No') + ' | API Key: ' + (data.has_api_key ? 'Yes' : 'No') + '</div>';
+    if (data.calendar_id) html += '<div style="color:#888;margin-left:20px">Calendar ID: ' + data.calendar_id + '</div>';
+    resultsDiv.innerHTML = html;
+  } catch (e) {
+    resultsDiv.innerHTML = '<span style="color:#f44336">Error: ' + e.message + '</span>';
+  }
+}
+
+// ── Calendar List ─────────────────────────────────────────────
+async function loadCalendarList() {
+  const container = document.getElementById('calendarListContainer');
+  container.style.display = 'block';
+  container.innerHTML = '<span style="color:#ff9800">Loading calendars...</span>';
+
+  try {
+    const r = await fetch('/api/calendars');
+    if (!r.ok) { container.innerHTML = '<span style="color:#f44336">HTTP error: ' + r.status + '</span>'; return; }
+    const data = await r.json();
+
+    if (data.status === 'auth_required') {
+      container.innerHTML = '<span style="color:#ff9800">OAuth authorization required. Complete Step 6 first.</span>';
+      return;
+    }
+    if (data.status !== 'success') {
+      container.innerHTML = '<span style="color:#f44336">' + (data.message || 'Failed to load') + '</span>';
+      return;
+    }
+
+    const calendars = data.calendars || [];
+    if (calendars.length === 0) {
+      container.innerHTML = '<span style="color:#999">No calendars found.</span>';
+      return;
+    }
+
+    // Get currently enabled IDs and item counts
+    const enabledRaw = document.getElementById('enabledCalendarIds').value || '';
+    const enabledSet = new Set(enabledRaw.split(',').map(s => s.trim()).filter(Boolean));
+    let itemCounts = {};
+    try { itemCounts = JSON.parse(document.getElementById('calendarItemCounts').value || '{}'); } catch(e) {}
+
+    let html = '<div style="display:flex;gap:8px;padding:4px 0 8px;border-bottom:1px solid #444;margin-bottom:4px;font-size:11px;color:#888">'
+      + '<span style="width:26px"></span><span style="width:14px"></span><span style="flex:1">Calendar</span><span style="width:52px;text-align:center">Events</span></div>';
+
+    calendars.forEach(cal => {
+      const checked = enabledSet.size === 0 ? cal.primary : enabledSet.has(cal.id);
+      const count = itemCounts[cal.id] || 3;
+      const color = cal.backgroundColor || '#4285f4';
+      const badge = cal.primary ? ' <span style="color:#00e5ff;font-size:10px">(primary)</span>' : '';
+      const escapedId = cal.id.replace(/"/g,'&quot;');
+
+      // Build count dropdown options
+      let opts = '';
+      for (let i = 1; i <= 10; i++) {
+        opts += '<option value="' + i + '"' + (i === count ? ' selected' : '') + '>' + i + '</option>';
+      }
+
+      html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #222">'
+        + '<input type="checkbox" class="cal-check" data-cal-id="' + escapedId + '" ' + (checked ? 'checked' : '') + ' style="width:18px;height:18px;accent-color:' + color + '">'
+        + '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + color + ';flex-shrink:0"></span>'
+        + '<span style="flex:1;color:#ddd;font-size:13px">' + cal.summary + badge + '</span>'
+        + '<select class="cal-count" data-cal-id="' + escapedId + '" style="width:52px;padding:3px;background:#222;color:#fff;border:1px solid #444;border-radius:4px;font-size:12px">' + opts + '</select>'
+        + '</div>';
+    });
+    container.innerHTML = html;
+
+    // Wire up checkbox and count change events
+    container.querySelectorAll('.cal-check').forEach(cb => {
+      cb.addEventListener('change', updateCalendarSelections);
+    });
+    container.querySelectorAll('.cal-count').forEach(sel => {
+      sel.addEventListener('change', updateCalendarSelections);
+    });
+  } catch (e) {
+    container.innerHTML = '<span style="color:#f44336">Error: ' + e.message + '</span>';
+  }
+}
+
+function updateCalendarSelections() {
+  // Update enabled calendar IDs
+  const checks = document.querySelectorAll('.cal-check:checked');
+  const ids = Array.from(checks).map(cb => cb.getAttribute('data-cal-id'));
+  document.getElementById('enabledCalendarIds').value = ids.join(',');
+
+  // Update calendar item counts as JSON
+  const counts = {};
+  document.querySelectorAll('.cal-count').forEach(sel => {
+    const calId = sel.getAttribute('data-cal-id');
+    counts[calId] = parseInt(sel.value) || 3;
+  });
+  document.getElementById('calendarItemCounts').value = JSON.stringify(counts);
+}
+
+// Auto-load on page ready
+document.addEventListener('DOMContentLoaded', () => { loadAll(); checkOAuthStatus(); });
+</script>
+</body>
+</html>

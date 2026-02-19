@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>TapRadio</title>
+<style>
+:root {
+  --bg: #000; --card: #0a0a0a; --accent: #00e5ff; --text: #f5f5f5;
+  --muted: #777; --border: rgba(255,255,255,.08); --glow: rgba(0,229,255,.15);
+  --fav: #ff6d00;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;background:var(--bg);color:var(--text);
+  font-family:system-ui,'Segoe UI',Roboto,sans-serif;overflow:hidden}
+body{display:flex;flex-direction:column;max-width:960px;max-height:480px;margin:0 auto}
+
+.topbar{display:flex;align-items:center;gap:8px;padding:6px 10px;
+  background:rgba(255,255,255,.03);border-bottom:1px solid var(--border);flex-shrink:0}
+.topbar h1{font-size:14px;letter-spacing:.5px;color:var(--accent);flex-shrink:0}
+.topbar .now{flex:1;text-align:center;font-size:11px;color:var(--muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topbar .controls{display:flex;gap:6px;flex-shrink:0}
+.ctrl{width:32px;height:32px;border:none;border-radius:50%;
+  background:rgba(255,255,255,.08);color:var(--text);font-size:16px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;transition:all .15s}
+.ctrl:active{background:var(--accent);color:#000}
+.ctrl.playing{background:var(--accent);color:#000;box-shadow:0 0 12px var(--glow)}
+
+.genres{display:flex;gap:0;padding:0 8px;flex-shrink:0;overflow-x:auto;
+  border-bottom:1px solid var(--border);-webkit-overflow-scrolling:touch}
+.genres::-webkit-scrollbar{display:none}
+.genre{padding:7px 12px;font-size:11px;color:var(--muted);cursor:pointer;
+  border-bottom:2px solid transparent;white-space:nowrap;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;transition:all .15s}
+.genre.active{color:var(--accent);border-bottom-color:var(--accent)}
+.genre.fav{color:var(--fav)}
+.genre.fav.active{color:var(--fav);border-bottom-color:var(--fav)}
+
+.stations{flex:1;overflow-y:auto;padding:6px 8px;scroll-behavior:smooth;
+  -webkit-overflow-scrolling:touch}
+.stations::-webkit-scrollbar{width:3px}
+.stations::-webkit-scrollbar-thumb{background:rgba(255,255,255,.15);border-radius:4px}
+
+.station{display:flex;align-items:center;gap:10px;padding:8px 10px;
+  border-radius:10px;border:1px solid transparent;cursor:pointer;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;transition:all .15s}
+.station:active{background:rgba(255,255,255,.05)}
+.station.active{background:rgba(0,229,255,.06);border-color:rgba(0,229,255,.2)}
+.station .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;
+  background:var(--muted);transition:all .3s}
+.station.active .dot{background:var(--accent);box-shadow:0 0 8px var(--glow)}
+.station.active .dot.pulse{animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 4px var(--glow)}50%{box-shadow:0 0 14px var(--accent)}}
+.station .info{flex:1;min-width:0}
+.station .name{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.station .desc{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.station .genre-tag{font-size:10px;color:var(--muted);flex-shrink:0}
+.fav-btn{width:28px;height:28px;border:none;background:none;cursor:pointer;
+  font-size:16px;flex-shrink:0;opacity:.4;transition:all .15s;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+.fav-btn.on{opacity:1;color:var(--fav)}
+.fav-btn:active{transform:scale(1.3)}
+
+.vol-wrap{display:flex;align-items:center;gap:6px;padding:6px 14px;
+  border-top:1px solid var(--border);flex-shrink:0}
+.vol-wrap label{font-size:10px;color:var(--muted);flex-shrink:0}
+.vol-wrap input[type=range]{flex:1;height:4px;-webkit-appearance:none;
+  background:rgba(255,255,255,.15);border-radius:4px;outline:none}
+.vol-wrap input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;
+  width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer}
+.vol-pct{font-size:10px;color:var(--muted);min-width:28px;text-align:right}
+
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;
+  align-items:center;justify-content:center;z-index:50}
+.overlay.show{display:flex}
+.modal{background:#111;border:1px solid #333;border-radius:12px;padding:16px;
+  width:min(400px,90vw);max-height:80vh;overflow-y:auto}
+.modal h2{font-size:14px;color:var(--accent);margin-bottom:12px}
+.modal .field{margin-bottom:10px}
+.modal .field label{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
+.modal .field input{width:100%;padding:8px;
+  background:#0a0a0a;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px}
+.modal .field input:focus{border-color:var(--accent);outline:none}
+.modal-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+.mbtn{padding:6px 14px;border:1px solid #333;border-radius:6px;
+  background:#1a1a1a;color:#e0e0e0;cursor:pointer;font-size:12px;font-weight:600}
+.mbtn.primary{background:var(--accent);color:#000;border-color:var(--accent)}
+.mbtn.danger{border-color:#e53935;color:#ef5350}
+.empty{text-align:center;padding:24px;color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>&#128225; TapRadio</h1>
+  <div class="now" id="nowPlaying">Select a station</div>
+  <div class="controls">
+    <button class="ctrl" id="btnPrev" title="Previous" onclick="prevStation()">&#9664;</button>
+    <button class="ctrl" id="btnPlay" title="Play/Pause" onclick="togglePlay()">&#9654;</button>
+    <button class="ctrl" id="btnNext" title="Next" onclick="nextStation()">&#9654;&#9654;</button>
+    <button class="ctrl" id="btnAdd" title="Add Station" onclick="showAddModal()" style="font-size:18px">+</button>
+  </div>
+</div>
+
+<div class="genres" id="genreTabs"></div>
+<div class="stations" id="stationList"></div>
+
+<div class="vol-wrap">
+  <label>VOL</label>
+  <input type="range" min="0" max="100" value="70" id="volSlider" oninput="setVolume(this.value)">
+  <span class="vol-pct" id="volPct">70%</span>
+</div>
+
+<div class="overlay" id="editOverlay">
+  <div class="modal">
+    <h2 id="modalTitle">Add Station</h2>
+    <div class="field"><label>Station Name</label>
+      <input id="editName" placeholder="My Radio Station"></div>
+    <div class="field"><label>Stream URL (mp3/aac/ogg)</label>
+      <input id="editUrl" placeholder="https://stream.example.com/radio.mp3"></div>
+    <div class="field"><label>Genre</label>
+      <input id="editGenre" placeholder="Chill / Rock / Jazz / Latin / News"></div>
+    <div class="field"><label>Description (optional)</label>
+      <input id="editDesc" placeholder="Lo-fi beats from Seattle"></div>
+    <div class="modal-btns">
+      <button class="mbtn danger" id="btnDelete" onclick="deleteStation()" style="display:none">Delete</button>
+      <span style="flex:1"></span>
+      <button class="mbtn" onclick="hideModal()">Cancel</button>
+      <button class="mbtn primary" onclick="saveStation()">Save</button>
+    </div>
+  </div>
+</div>
+
+<audio id="audioEl" preload="none"></audio>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// TapRadio — IP Radio player for RayNeo X3 Pro
+// Shared storage key so the Companion App can sync stations.
+// ═══════════════════════════════════════════════════════════════════
+
+const STORAGE_KEY = 'tapradio_stations';
+const audio = document.getElementById('audioEl');
+let stations = [];
+let currentIdx = -1;
+let editIdx = -1;
+let activeGenre = 'All';
+
+const DEFAULT_STATIONS = [
+  { name: 'SomaFM Groove Salad', url: 'https://ice1.somafm.com/groovesalad-256-mp3', genre: 'Chill', desc: 'Ambient/downtempo for your day', fav: true },
+  { name: 'SomaFM Drone Zone', url: 'https://ice1.somafm.com/dronezone-256-mp3', genre: 'Ambient', desc: 'Atmospheric textures & drones', fav: false },
+  { name: 'SomaFM Space Station', url: 'https://ice1.somafm.com/spacestation-128-mp3', genre: 'Ambient', desc: 'Spaced-out ambient & experimental', fav: false },
+  { name: 'SomaFM DEF CON Radio', url: 'https://ice1.somafm.com/defcon-256-mp3', genre: 'Electronic', desc: 'DEF CON hacker conference radio', fav: false },
+  { name: 'SomaFM Lush', url: 'https://ice1.somafm.com/lush-128-mp3', genre: 'Chill', desc: 'Sensuous female-vocal electronic', fav: false },
+  { name: 'Radio Paradise Main', url: 'https://stream.radioparadise.com/mp3-192', genre: 'Eclectic', desc: 'Eclectic mix, ad-free since 2000', fav: true },
+  { name: 'Radio Paradise Mellow', url: 'https://stream.radioparadise.com/mellow-192', genre: 'Chill', desc: 'Mellow mix from Radio Paradise', fav: false },
+  { name: 'SomaFM Indie Pop Rocks', url: 'https://ice1.somafm.com/indiepop-128-mp3', genre: 'Rock', desc: 'Indie pop, dream pop, shoegaze', fav: false },
+  { name: 'SomaFM Underground 80s', url: 'https://ice1.somafm.com/u80s-256-mp3', genre: 'Rock', desc: 'Early 80s UK post-punk & new wave', fav: false },
+  { name: 'SomaFM Secret Agent', url: 'https://ice1.somafm.com/secretagent-256-mp3', genre: 'Jazz', desc: 'Spy-fi, lounge, bossa, & jazz', fav: true },
+  { name: 'KCSM Jazz', url: 'https://ice7.securenetsystems.net/KCSM2', genre: 'Jazz', desc: 'Bay Area jazz radio', fav: false },
+  { name: 'SomaFM Beat Blender', url: 'https://ice1.somafm.com/beatblender-128-mp3', genre: 'Electronic', desc: 'Deep house & downtempo', fav: false },
+  { name: 'SomaFM Fluid', url: 'https://ice1.somafm.com/fluid-128-mp3', genre: 'Electronic', desc: 'Instrumental hip-hop & future soul', fav: false },
+  { name: 'SomaFM ThistleRadio', url: 'https://ice1.somafm.com/thistle-128-mp3', genre: 'Folk', desc: 'Celtic, Americana, & roots', fav: false },
+  { name: 'KUSC Classical', url: 'https://kusc.streamguys1.com/kusc-128k', genre: 'Classical', desc: 'Southern California classical', fav: false },
+  { name: 'NPR Program Stream', url: 'https://npr-ice.streamguys1.com/live.mp3', genre: 'News', desc: 'NPR news & programs 24/7', fav: false },
+  { name: 'BBC World Service', url: 'https://stream.live.vc.bbcmedia.co.uk/bbc_world_service', genre: 'News', desc: 'Global news from BBC', fav: false },
+  { name: 'NASA Third Rock Radio', url: 'https://rfcmedia.streamguys1.com/thirdrock.mp3', genre: 'Rock', desc: 'Alt-rock from NASA', fav: false },
+];
+
+// ── Init ──────────────────────────────────────────────────────────
+async function init() {
+  await loadStations();
+  renderGenres();
+  renderStations();
+  audio.volume = 0.7;
+}
+
+async function loadStations() {
+  let data = null;
+
+  // 1) Try AndroidInterface bridge (reads SharedPreferences — same store companion app writes to)
+  try {
+    if (typeof AndroidInterface !== 'undefined' && AndroidInterface.getRadioStations) {
+      const raw = AndroidInterface.getRadioStations();
+      if (raw && raw.length > 2) data = JSON.parse(raw);
+    }
+  } catch(e) { console.warn('AndroidInterface.getRadioStations failed:', e); }
+
+  // 2) Try companion server API as fallback (same device, port 19110)
+  if (!data) {
+    try {
+      const r = await fetch('http://localhost:19110/api/radio', { signal: AbortSignal.timeout(2000) });
+      if (r.ok) {
+        const json = await r.json();
+        if (Array.isArray(json) && json.length) data = json;
+      }
+    } catch(e) { /* server not running or timeout — fall through */ }
+  }
+
+  // 3) Fall back to localStorage
+  if (!data) {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) data = JSON.parse(raw);
+    } catch(e) {}
+  }
+
+  if (data && data.length) {
+    stations = data.map(s => ({ ...s, fav: !!s.fav }));
+  } else {
+    stations = DEFAULT_STATIONS.map(s => ({...s}));
+  }
+  save();
+}
+
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(stations));
+  // Sync to Android SharedPreferences if available
+  try {
+    if (typeof AndroidInterface !== 'undefined' && AndroidInterface.saveRadioStations) {
+      AndroidInterface.saveRadioStations(JSON.stringify(stations));
+    }
+  } catch(e) {}
+  // Sync back to companion server (fire-and-forget)
+  try {
+    fetch('http://localhost:19110/api/radio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(stations)
+    }).catch(() => {});
+  } catch(e) {}
+}
+
+// ── Genre tabs ────────────────────────────────────────────────────
+function getGenres() {
+  const set = new Set();
+  stations.forEach(s => { if (s.genre) set.add(s.genre); });
+  const sorted = Array.from(set).sort();
+  // Favorites always first, then All, then genres
+  return ['Favorites', 'All', ...sorted];
+}
+
+function renderGenres() {
+  const el = document.getElementById('genreTabs');
+  el.innerHTML = getGenres().map(g => {
+    const isFav = g === 'Favorites';
+    const cls = (g === activeGenre ? ' active' : '') + (isFav ? ' fav' : '');
+    return `<div class="genre${cls}" onclick="filterGenre('${g}')">${isFav ? '\u2605 ' : ''}${g}</div>`;
+  }).join('');
+}
+
+function filterGenre(g) {
+  activeGenre = g;
+  renderGenres();
+  renderStations();
+}
+
+// ── Station list ──────────────────────────────────────────────────
+function filteredStations() {
+  if (activeGenre === 'Favorites') return stations.filter(s => s.fav);
+  if (activeGenre === 'All') return stations;
+  return stations.filter(s => s.genre === activeGenre);
+}
+
+function renderStations() {
+  const list = document.getElementById('stationList');
+  const filtered = filteredStations();
+  if (!filtered.length) {
+    list.innerHTML = activeGenre === 'Favorites'
+      ? '<div class="empty">No favorites yet — tap the \u2605 star on any station</div>'
+      : '<div class="empty">No stations in this category</div>';
+    return;
+  }
+  list.innerHTML = filtered.map(s => {
+    const realIdx = stations.indexOf(s);
+    const isActive = realIdx === currentIdx;
+    const playing = isActive && !audio.paused;
+    const favCls = s.fav ? ' on' : '';
+    return `<div class="station${isActive ? ' active' : ''}" onclick="playStation(${realIdx})" ondblclick="showEditModal(${realIdx})">
+      <div class="dot${playing ? ' pulse' : ''}"></div>
+      <div class="info">
+        <div class="name">${esc(s.name)}</div>
+        <div class="desc">${esc(s.desc || s.genre || '')}</div>
+      </div>
+      <div class="genre-tag">${esc(s.genre || '')}</div>
+      <button class="fav-btn${favCls}" onclick="event.stopPropagation();toggleFav(${realIdx})" title="Favorite">\u2605</button>
+    </div>`;
+  }).join('');
+}
+
+function toggleFav(idx) {
+  if (idx < 0 || idx >= stations.length) return;
+  stations[idx].fav = !stations[idx].fav;
+  save();
+  renderGenres();
+  renderStations();
+}
+
+// ── Playback ──────────────────────────────────────────────────────
+function playStation(idx) {
+  if (idx < 0 || idx >= stations.length) return;
+  if (idx === currentIdx && !audio.paused) { audio.pause(); updateUI(); return; }
+  currentIdx = idx;
+  audio.src = stations[idx].url;
+  audio.load();
+  audio.play().catch(e => console.warn('Play failed:', e));
+  updateUI();
+}
+
+function togglePlay() {
+  if (currentIdx < 0) { if (stations.length) playStation(0); return; }
+  if (audio.paused) {
+    if (!audio.src || audio.src === location.href) { audio.src = stations[currentIdx].url; audio.load(); }
+    audio.play().catch(e => console.warn('Play failed:', e));
+  } else { audio.pause(); }
+  updateUI();
+}
+
+function nextStation() {
+  const filtered = filteredStations();
+  if (!filtered.length) return;
+  const curInFiltered = filtered.indexOf(stations[currentIdx]);
+  const nextFi = (curInFiltered + 1) % filtered.length;
+  playStation(stations.indexOf(filtered[nextFi]));
+}
+
+function prevStation() {
+  const filtered = filteredStations();
+  if (!filtered.length) return;
+  const curInFiltered = filtered.indexOf(stations[currentIdx]);
+  const prevFi = (curInFiltered - 1 + filtered.length) % filtered.length;
+  playStation(stations.indexOf(filtered[prevFi]));
+}
+
+function setVolume(v) {
+  audio.volume = v / 100;
+  document.getElementById('volPct').textContent = v + '%';
+}
+
+function updateUI() {
+  const playing = currentIdx >= 0 && !audio.paused;
+  const btn = document.getElementById('btnPlay');
+  btn.innerHTML = playing ? '&#9646;&#9646;' : '&#9654;';
+  btn.classList.toggle('playing', playing);
+  const now = document.getElementById('nowPlaying');
+  if (currentIdx >= 0) {
+    const s = stations[currentIdx];
+    now.textContent = playing ? '\u25B6 ' + s.name : '\u23F8 ' + s.name;
+  } else { now.textContent = 'Select a station'; }
+  renderStations();
+}
+
+audio.addEventListener('playing', updateUI);
+audio.addEventListener('pause', updateUI);
+audio.addEventListener('ended', () => nextStation());
+audio.addEventListener('error', () => {
+  document.getElementById('nowPlaying').textContent = '\u26A0 Stream error \u2014 trying next...';
+  setTimeout(() => nextStation(), 2000);
+});
+
+// ── Add/Edit modal ────────────────────────────────────────────────
+function showAddModal() {
+  editIdx = -1;
+  document.getElementById('modalTitle').textContent = 'Add Station';
+  document.getElementById('editName').value = '';
+  document.getElementById('editUrl').value = '';
+  document.getElementById('editGenre').value = '';
+  document.getElementById('editDesc').value = '';
+  document.getElementById('btnDelete').style.display = 'none';
+  document.getElementById('editOverlay').classList.add('show');
+  document.getElementById('editName').focus();
+}
+
+function showEditModal(idx) {
+  editIdx = idx;
+  const s = stations[idx];
+  document.getElementById('modalTitle').textContent = 'Edit Station';
+  document.getElementById('editName').value = s.name;
+  document.getElementById('editUrl').value = s.url;
+  document.getElementById('editGenre').value = s.genre || '';
+  document.getElementById('editDesc').value = s.desc || '';
+  document.getElementById('btnDelete').style.display = '';
+  document.getElementById('editOverlay').classList.add('show');
+}
+
+function hideModal() { document.getElementById('editOverlay').classList.remove('show'); }
+
+function saveStation() {
+  const name = document.getElementById('editName').value.trim();
+  const url = document.getElementById('editUrl').value.trim();
+  const genre = document.getElementById('editGenre').value.trim();
+  const desc = document.getElementById('editDesc').value.trim();
+  if (!name || !url) { alert('Name and URL are required'); return; }
+  if (editIdx >= 0) {
+    stations[editIdx] = { ...stations[editIdx], name, url, genre, desc };
+  } else {
+    stations.push({ name, url, genre, desc, fav: false });
+  }
+  save(); renderGenres(); renderStations(); hideModal();
+}
+
+function deleteStation() {
+  if (editIdx < 0) return;
+  if (!confirm('Delete "' + stations[editIdx].name + '"?')) return;
+  if (currentIdx === editIdx) { audio.pause(); audio.src = ''; currentIdx = -1; }
+  else if (currentIdx > editIdx) currentIdx--;
+  stations.splice(editIdx, 1);
+  save(); renderGenres(); renderStations(); updateUI(); hideModal();
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// ── Keyboard shortcuts ───────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (document.getElementById('editOverlay').classList.contains('show')) return;
+  switch(e.key) {
+    case ' ': e.preventDefault(); togglePlay(); break;
+    case 'ArrowRight': nextStation(); break;
+    case 'ArrowLeft': prevStation(); break;
+    case 'ArrowUp': e.preventDefault(); setVolumeBy(5); break;
+    case 'ArrowDown': e.preventDefault(); setVolumeBy(-5); break;
+  }
+});
+function setVolumeBy(delta) {
+  const sl = document.getElementById('volSlider');
+  const v = Math.max(0, Math.min(100, parseInt(sl.value) + delta));
+  sl.value = v; setVolume(v);
+}
+
+// ── External sync (companion app can call these) ─────────────────
+window.tapRadioGetStations = () => JSON.stringify(stations);
+window.tapRadioSetStations = (json) => {
+  try { stations = JSON.parse(json); save(); renderGenres(); renderStations(); }
+  catch(e) { console.error('tapRadioSetStations error:', e); }
+};
+
+init();
+</script>
+</body>
+</html>
