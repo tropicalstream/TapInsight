@@ -1,14 +1,12 @@
 package com.rayneo.visionclaw.core.network
 
+import android.content.Context
 import android.util.Log
 import com.rayneo.visionclaw.core.storage.AppPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 /**
  * Manages the Google OAuth2 token lifecycle:
@@ -18,10 +16,7 @@ import java.util.concurrent.TimeUnit
  */
 class GoogleOAuthManager(
     private val prefs: AppPreferences,
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .build()
+    private val context: Context? = null
 ) {
 
     companion object {
@@ -29,6 +24,8 @@ class GoogleOAuthManager(
         private const val TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
         /** Refresh 5 minutes before actual expiry to avoid race conditions. */
         private const val EXPIRY_BUFFER_MS = 5 * 60 * 1000L
+        private const val CONNECT_TIMEOUT_MS = 10_000
+        private const val READ_TIMEOUT_MS = 15_000
     }
 
     // ── Public API ───────────────────────────────────────────────────────
@@ -62,18 +59,12 @@ class GoogleOAuthManager(
                 formBody.add("client_secret", clientSecret)
             }
 
-            val request = Request.Builder()
-                .url(TOKEN_ENDPOINT)
-                .post(formBody.build())
-                .build()
-
             try {
-                val response = client.newCall(request).execute()
-                val body = response.body?.string() ?: ""
-                Log.d(TAG, "Token exchange response: ${response.code}")
+                val (responseCode, body) = executeTokenRequest(formBody.build())
+                Log.d(TAG, "Token exchange response: $responseCode")
 
-                if (!response.isSuccessful) {
-                    Log.e(TAG, "Token exchange failed (${response.code}): $body")
+                if (responseCode !in 200..299) {
+                    Log.e(TAG, "Token exchange failed ($responseCode): $body")
                     return@withContext false
                 }
 
@@ -112,6 +103,7 @@ class GoogleOAuthManager(
 
         // Token still valid?
         if (System.currentTimeMillis() < prefs.googleOAuthTokenExpiryMs - EXPIRY_BUFFER_MS) {
+            Log.d(TAG, "Using cached access token")
             return@withContext accessToken
         }
 
@@ -147,19 +139,14 @@ class GoogleOAuthManager(
             formBody.add("client_secret", clientSecret)
         }
 
-        val request = Request.Builder()
-            .url(TOKEN_ENDPOINT)
-            .post(formBody.build())
-            .build()
-
         try {
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: ""
+            Log.d(TAG, "Refreshing Google OAuth access token")
+            val (responseCode, body) = executeTokenRequest(formBody.build())
 
-            if (!response.isSuccessful) {
-                Log.e(TAG, "Token refresh failed (${response.code}): $body")
+            if (responseCode !in 200..299) {
+                Log.e(TAG, "Token refresh failed ($responseCode): $body")
                 // If refresh token is invalid/revoked, clear everything
-                if (response.code == 400 || response.code == 401) {
+                if (responseCode == 400 || responseCode == 401) {
                     val lower = body.lowercase()
                     if (lower.contains("invalid_grant") || lower.contains("token has been revoked")) {
                         Log.w(TAG, "Refresh token revoked — clearing OAuth tokens")
@@ -194,5 +181,24 @@ class GoogleOAuthManager(
             Log.e(TAG, "Token refresh error", e)
             false
         }
+    }
+
+    private fun executeTokenRequest(formBody: FormBody): Pair<Int, String> {
+        val payload = buildString {
+            for (i in 0 until formBody.size) {
+                if (i > 0) append('&')
+                append(formBody.encodedName(i))
+                append('=')
+                append(formBody.encodedValue(i))
+            }
+        }
+        val response = ActiveNetworkHttp.postForm(
+            url = TOKEN_ENDPOINT,
+            encodedFormBody = payload,
+            headers = mapOf("Content-Type" to "application/x-www-form-urlencoded"),
+            connectTimeoutMs = CONNECT_TIMEOUT_MS,
+            readTimeoutMs = READ_TIMEOUT_MS
+        )
+        return response.code to response.body
     }
 }

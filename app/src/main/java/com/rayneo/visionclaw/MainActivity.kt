@@ -7,6 +7,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 // android.graphics.Bitmap import removed – no longer needed
 import android.graphics.Canvas
 import android.graphics.Color
@@ -48,14 +51,20 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.viewpager2.widget.ViewPager2
+import com.rayneo.visionclaw.core.assistant.AssistantIntent
+import com.rayneo.visionclaw.core.assistant.AssistantIntentParser
 import com.rayneo.visionclaw.core.audio.GeminiAudioPlayer
 import com.rayneo.visionclaw.core.audio.TtsController
 import com.rayneo.visionclaw.core.camera.FrameCaptureManager
 import com.rayneo.visionclaw.core.input.RayNeoArdkTrackpadBridge
 import com.rayneo.visionclaw.core.input.SpeechInputController
 import com.rayneo.visionclaw.core.input.TrackpadGestureEngine
+import com.rayneo.visionclaw.core.location.DeviceLocationResolver
+import com.rayneo.visionclaw.core.model.DeviceLocationContext
 import com.rayneo.visionclaw.core.tools.ToolDispatcher
 import com.rayneo.visionclaw.ui.MainPagerAdapter
 import com.rayneo.visionclaw.ui.MainViewModel
@@ -64,9 +73,11 @@ import com.rayneo.visionclaw.ui.VoiceOscilloscopeView
 import com.rayneo.visionclaw.ui.panels.TrackpadPanel
 import com.rayneo.visionclaw.ui.panels.chat.ChatPanelFragment
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import kotlin.math.abs
+import java.security.Security
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -113,9 +124,16 @@ class MainActivity : AppCompatActivity() {
         private const val TAP_BROWSER_ACTIVITY_CLASS = "com.TapLinkX3.app.MainActivity"
         private const val EXTRA_BROWSER_INITIAL_URL = "tapclaw_initial_url"
         private const val EXTRA_RETURN_TO_CHAT_ON_DOUBLE_TAP = "tapclaw_return_to_chat_double_tap"
+        private const val EXTRA_YOUTUBE_AUTOPLAY_QUERY = "tapclaw_youtube_autoplay_query"
+        private const val EXTRA_YOUTUBE_AUTOPLAY_MODE = "tapclaw_youtube_autoplay_mode"
         private const val GENERIC_SCROLL_SCALE = 22f
         private const val LOCATION_MIN_TIME_MS = 2_000L
         private const val LOCATION_MIN_DISTANCE_METERS = 2f
+        private const val LOCATION_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000L
+        private const val LOCATION_SNAPSHOT_TIMEOUT_MS = 5_000L
+        private const val LOCATION_SNAPSHOT_REFRESH_DEBOUNCE_MS = 15_000L
+        private const val LIVE_INPUT_SETTLE_MS = 900L
+        private const val LOCAL_DIRECT_OUTPUT_SUPPRESS_MS = 4_000L
     }
 
     private enum class GeminiLiveState {
@@ -152,6 +170,42 @@ class MainActivity : AppCompatActivity() {
             handleGeminiVoiceFailure("Gemini Live connection timed out. Try again.")
         }
     }
+    private val settledLiveInputRunnable = Runnable {
+        val safe = pendingLiveInputTranscript.trim()
+        if (safe.isBlank()) return@Runnable
+        if (safe == lastHandledLiveInputTranscript) return@Runnable
+
+        lastHandledLiveInputTranscript = safe
+        lastToolAssistTranscript = safe
+        toolAssistRecoveryFired = false
+
+        if (maybeRouteLocalIntentDirectly(safe)) {
+            return@Runnable
+        }
+
+        val engine = toolAssistEngine ?: return@Runnable
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val assist = engine.maybeAssist(safe) ?: return@launch
+                Log.d(TAG, "ToolAssist matched [${assist.toolName}]: ${assist.resultText.take(200)}")
+                if (shouldOwnToolAssistLocally(assist.toolName)) {
+                    runOnUiThread {
+                        presentToolAssistLocally(assist.toolName, assist.resultText)
+                    }
+                    return@launch
+                }
+                val sent = geminiLiveSession?.sendClientText(assist.contextPrompt) == true
+                Log.d(TAG, "ToolAssist injected clientContent sent=$sent")
+                runOnUiThread {
+                    viewModel.appendLiveAssistantStreamChunk(assist.resultText)
+                    viewModel.commitLiveAssistantStreamIfNeeded()
+                    showHudNotification(assist.resultText.take(120))
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "ToolAssist error", e)
+            }
+        }
+    }
     private val cameraIdleTimeoutRunnable = Runnable {
         if (!cameraCaptureActive) return@Runnable
         val recentVoiceActivity =
@@ -181,6 +235,12 @@ class MainActivity : AppCompatActivity() {
         }
         chatFragment.setHudModeEnabled(true)
     }
+    private val hudStatePushRunnable = object : Runnable {
+        override fun run() {
+            pushHudStateToChatFragment(force = false)
+            uiHandler.postDelayed(this, 2000L)
+        }
+    }
 
     // ── Speech & Audio ───────────────────────────────────────────────────
     private var speechController: SpeechInputController? = null
@@ -196,6 +256,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var awaitingServerTurnComplete = false
     private var latestLiveTranscript = ""
     private var latestLiveOutputTranscript = ""
+    @Volatile private var pendingLiveInputTranscript = ""
+    @Volatile private var lastHandledLiveInputTranscript = ""
     @Volatile private var lastLiveActivityHeartbeatMs = 0L
     @Volatile private var lastMultimodalFrameSentMs = 0L
     @Volatile private var lastUserSpeechActivityMs = 0L
@@ -203,6 +265,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastVoiceActivationMs = 0L
     /** Monotonically increasing counter to detect stale WebSocket callbacks from old sessions. */
     @Volatile private var geminiSessionEpoch = 0L
+    @Volatile private var suppressGeminiOutputUntilMs = 0L
     @Volatile private var nativeSttFallbackTriggered = false
     private lateinit var toolDispatcher: ToolDispatcher
     private var toolAssistEngine: com.rayneo.visionclaw.core.tools.ToolAssistEngine? = null
@@ -222,6 +285,14 @@ class MainActivity : AppCompatActivity() {
     private var coreEyeSurfaceReady = false
     private var pendingCameraStart = false
     @Volatile private var lastOscilloscopeUiUpdateMs = 0L
+    private var lastPushedCalendarSummary = ""
+    private var lastPushedTasksSummary = ""
+    private var lastPushedNewsSummary = ""
+    private var lastPushedAqiText: String? = null
+    private var lastPushedAqiValue: Int? = null
+    private var lastPushedRadioName: String? = null
+    private var lastPushedRadioPlaying = false
+    private var pendingFocusNewChatOnResume = false
 
     // ── Edge-zone tracking ───────────────────────────────────────────────
     private var swipeStartX = 0f
@@ -237,6 +308,8 @@ class MainActivity : AppCompatActivity() {
     private var locationPermissionGranted = false
     private var locationManager: LocationManager? = null
     private var locationTrackingActive = false
+    private lateinit var deviceLocationResolver: DeviceLocationResolver
+    @Volatile private var lastLocationSnapshotRefreshElapsedMs = 0L
     private val locationListener =
             LocationListener { location -> publishDeviceLocationContext(location) }
 
@@ -273,6 +346,7 @@ class MainActivity : AppCompatActivity() {
                 syncCameraToGeminiState(viewModel.voiceAssistantActive.value == true)
                 if (locationPermissionGranted) {
                     startLocationTracking()
+                    refreshLocationSnapshot(force = true)
                 } else {
                     stopLocationTracking()
                     viewModel.clearDeviceLocationContext()
@@ -290,10 +364,41 @@ class MainActivity : AppCompatActivity() {
     // Lifecycle
     // ══════════════════════════════════════════════════════════════════════
 
+    private fun configureDnsCaching() {
+        runCatching {
+            Security.setProperty("networkaddress.cache.ttl", "60")
+            Security.setProperty("networkaddress.cache.negative.ttl", "0")
+            System.setProperty("networkaddress.cache.ttl", "60")
+            System.setProperty("networkaddress.cache.negative.ttl", "0")
+            Log.d(TAG, "Configured DNS cache policy: ttl=60 negativeTtl=0")
+        }.onFailure {
+            Log.w(TAG, "Failed configuring DNS cache policy: ${it.message}")
+        }
+    }
+
+    private fun bindProcessToValidatedWifi() {
+        runCatching {
+            val connectivityManager = getSystemService(ConnectivityManager::class.java) ?: return
+            val activeNetwork = connectivityManager.activeNetwork
+            val capabilities = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
+            val unbound = connectivityManager.bindProcessToNetwork(null)
+            Log.d(
+                TAG,
+                "Cleared process network binding unbound=$unbound activeNetwork=$activeNetwork validated=${
+                    capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+                } wifi=${capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true}"
+            )
+        }.onFailure {
+            Log.w(TAG, "Failed clearing process network binding: ${it.message}")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Initialize Mercury SDK for binocular (both lenses) display — must be before super.
         runCatching { com.ffalcon.mercury.android.sdk.MercurySDK.init(application) }
         super.onCreate(savedInstanceState)
+        configureDnsCaching()
+        bindProcessToValidatedWifi()
 
         // ── Immersive full-screen for AR HUD ─────────────────────────
         configureImmersiveDisplay()
@@ -317,37 +422,69 @@ class MainActivity : AppCompatActivity() {
 
         // ── Initialize OAuth manager and API clients ─────────────────────
         val prefs = viewModel.preferences
-        oauthManager = com.rayneo.visionclaw.core.network.GoogleOAuthManager(prefs)
+        // Clear stale TapRadio "now playing" state from previous session on cold start
+        // The radio isn't actually playing when the app restarts
+        getSharedPreferences("visionclaw_prefs", MODE_PRIVATE).edit()
+            .putBoolean("tapradio_now_playing_active", false)
+            .remove("tapradio_now_playing_name")
+            .remove("tapradio_now_playing_genre")
+            .apply()
+
+        oauthManager = com.rayneo.visionclaw.core.network.GoogleOAuthManager(prefs, this)
+        deviceLocationResolver = DeviceLocationResolver(this)
 
         val calendarClient = com.rayneo.visionclaw.core.network.GoogleCalendarClient(
             apiKeyProvider = { prefs.calendarApiKey },
             accessTokenProvider = {
                 kotlinx.coroutines.runBlocking { oauthManager.getValidAccessToken() }
-            }
+            },
+            context = this
         )
         viewModel.setCalendarClient(calendarClient)
 
         val directionsClient = com.rayneo.visionclaw.core.network.GoogleDirectionsClient(
-            apiKeyProvider = { prefs.googleMapsApiKey }
+            apiKeyProvider = { prefs.googleMapsApiKey },
+            context = this
         )
 
         val tasksClient = com.rayneo.visionclaw.core.network.GoogleTasksClient(
             accessTokenProvider = {
                 kotlinx.coroutines.runBlocking { oauthManager.getValidAccessToken() }
-            }
+            },
+            context = this
         )
         viewModel.setTasksClient(tasksClient)
 
         val placesClient = com.rayneo.visionclaw.core.network.GooglePlacesClient(
-            apiKeyProvider = { prefs.googleMapsApiKey }
+            apiKeyProvider = { prefs.googleMapsApiKey },
+            context = this
         )
 
-        val deviceLocationLambda: () -> com.rayneo.visionclaw.core.model.DeviceLocationContext? =
-            { viewModel.getDeviceLocationContext() }
+        val airQualityClient = com.rayneo.visionclaw.core.network.GoogleAirQualityClient(
+            apiKeyProvider = { prefs.googleMapsApiKey },
+            context = this
+        )
+        viewModel.setAirQualityClient(airQualityClient)
+        val weatherClient = com.rayneo.visionclaw.core.network.OpenMeteoWeatherClient(
+            context = this
+        )
+
+        val deviceLocationLambda: () -> DeviceLocationContext? = {
+            viewModel.getDeviceLocationContext()
+                ?: deviceLocationResolver.peekCached(maxAgeMs = LOCATION_SNAPSHOT_MAX_AGE_MS)
+                ?: deviceLocationResolver
+                    .resolveBlocking(
+                        maxAgeMs = LOCATION_SNAPSHOT_MAX_AGE_MS,
+                        timeoutMs = LOCATION_SNAPSHOT_TIMEOUT_MS
+                    )
+                    ?.also { publishDeviceLocationContext(it) }
+        }
 
         toolDispatcher = ToolDispatcher(
             this, calendarClient, directionsClient, tasksClient,
             placesClient = placesClient,
+            airQualityClient = airQualityClient,
+            weatherClient = weatherClient,
             locationProvider = deviceLocationLambda
         )
 
@@ -365,7 +502,12 @@ class MainActivity : AppCompatActivity() {
         val serverPort = viewModel.appConfig.debugServerSettings.port
         companionServer = com.rayneo.visionclaw.core.config.CompanionServer(
             this, serverPort, oauthManager,
-            locationProvider = deviceLocationLambda
+            locationProvider = deviceLocationLambda,
+            calendarSummaryProvider = { viewModel.calendarSummary.value },
+            tasksSummaryProvider = { viewModel.tasksSummary.value },
+            newsSummaryProvider = { viewModel.newsSummary.value },
+            airQualityTextProvider = { viewModel.airQualitySummary.value?.text },
+            airQualityValueProvider = { viewModel.airQualitySummary.value?.aqi }
         )
         companionServer?.startServer()
         Log.d(TAG, "Companion config server available at http://<glasses-ip>:$serverPort")
@@ -463,6 +605,10 @@ class MainActivity : AppCompatActivity() {
         // ── Observe ViewModel events ─────────────────────────────────
         observeViewModel()
         viewModel.refreshHudUpcomingCalendar(force = true)
+        pushHudStateToChatFragment(force = true)
+        uiHandler.postDelayed({ pushHudStateToChatFragment(force = true) }, 1500L)
+        uiHandler.postDelayed({ pushHudStateToChatFragment(force = true) }, 5000L)
+        uiHandler.postDelayed({ pushHudStateToChatFragment(force = true) }, 9000L)
         applyInitialPageSelection()
         viewPager?.post { syncCameraToGeminiState(viewModel.voiceAssistantActive.value == true) }
 
@@ -474,6 +620,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        bindProcessToValidatedWifi()
         if (!initialPageSnapDone) {
             initialPageSnapDone = true
             applyInitialPageSelection()
@@ -483,11 +630,20 @@ class MainActivity : AppCompatActivity() {
         )
         syncCameraToGeminiState(viewModel.voiceAssistantActive.value == true)
         handlePanelChanged(viewPager?.currentItem ?: MainViewModel.PANEL_CHAT)
+        uiHandler.removeCallbacks(hudStatePushRunnable)
+        uiHandler.post(hudStatePushRunnable)
         if (locationPermissionGranted) {
             startLocationTracking()
+            refreshLocationSnapshot(force = false)
         }
         viewModel.refreshHudUpcomingCalendar(force = false)
         exitTextInputMode()
+        if (pendingFocusNewChatOnResume) {
+            chatFragment.view?.post {
+                chatFragment.focusNewChatCard(animate = false)
+                pendingFocusNewChatOnResume = false
+            }
+        }
     }
 
     override fun onPause() {
@@ -495,9 +651,11 @@ class MainActivity : AppCompatActivity() {
         uiHandler.removeCallbacks(stopGeminiCaptureRunnable)
         uiHandler.removeCallbacks(cameraIdleTimeoutRunnable)
         uiHandler.removeCallbacks(chatHudIdleRunnable)
+        uiHandler.removeCallbacks(hudStatePushRunnable)
         pendingCameraStart = false
         releaseGeminiAudioCapture(cancelOnly = true)
         geminiAudioPlayer?.stopAndFlush()
+        ttsController?.stop()
         hideCustomKeyboard(clearFocus = true)
         stopCameraCapture()
         stopLocationTracking()
@@ -585,6 +743,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             syncCameraToGeminiState(viewModel.voiceAssistantActive.value == true)
             startLocationTracking()
+            refreshLocationSnapshot(force = true)
         }
     }
 
@@ -622,6 +781,20 @@ class MainActivity : AppCompatActivity() {
                     .onFailure { Log.w(TAG, "Failed to request GPS updates: ${it.message}") }
         }
 
+        if ((hasFine || hasCoarse) && manager.isProviderEnabled(LocationManager.FUSED_PROVIDER)) {
+            runCatching {
+                        manager.requestLocationUpdates(
+                                LocationManager.FUSED_PROVIDER,
+                                LOCATION_MIN_TIME_MS,
+                                LOCATION_MIN_DISTANCE_METERS,
+                                locationListener,
+                                Looper.getMainLooper()
+                        )
+                    }
+                    .onSuccess { requested = true }
+                    .onFailure { Log.w(TAG, "Failed to request fused location updates: ${it.message}") }
+        }
+
         if (hasCoarse && manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
             runCatching {
                         manager.requestLocationUpdates(
@@ -653,8 +826,10 @@ class MainActivity : AppCompatActivity() {
         locationTrackingActive = requested
         if (requested) {
             Log.i(TAG, "Location tracking enabled")
+            refreshLocationSnapshot(force = false)
         } else {
             Log.w(TAG, "Location tracking unavailable; no providers registered")
+            refreshLocationSnapshot(force = true)
         }
     }
 
@@ -678,6 +853,9 @@ class MainActivity : AppCompatActivity() {
         if (hasFine) {
             providers += LocationManager.GPS_PROVIDER
         }
+        if (hasFine || hasCoarse) {
+            providers += LocationManager.FUSED_PROVIDER
+        }
         if (hasCoarse) {
             providers += LocationManager.NETWORK_PROVIDER
             providers += LocationManager.PASSIVE_PROVIDER
@@ -688,7 +866,11 @@ class MainActivity : AppCompatActivity() {
             val candidate = runCatching { manager.getLastKnownLocation(provider) }.getOrNull() ?: return@forEach
             best = selectBetterLocation(current = best, candidate = candidate)
         }
-        best?.let { publishDeviceLocationContext(it) }
+        best?.takeIf {
+            val ageMs = System.currentTimeMillis() - (it.time.takeIf { ts -> ts > 0L } ?: System.currentTimeMillis())
+            val accuracy = if (it.hasAccuracy()) it.accuracy else Float.MAX_VALUE
+            ageMs <= LOCATION_SNAPSHOT_MAX_AGE_MS && accuracy <= 500f
+        }?.let { publishDeviceLocationContext(it) }
     }
 
     private fun selectBetterLocation(current: Location?, candidate: Location): Location {
@@ -709,23 +891,119 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun publishDeviceLocationContext(location: Location) {
-        val context =
-                com.rayneo.visionclaw.core.model.DeviceLocationContext(
-                        latitude = location.latitude,
-                        longitude = location.longitude,
-                        accuracyMeters = if (location.hasAccuracy()) location.accuracy else null,
-                        altitudeMeters = if (location.hasAltitude()) location.altitude else null,
-                        speedMps = if (location.hasSpeed()) location.speed else null,
-                        bearingDeg = if (location.hasBearing()) location.bearing else null,
-                        provider = location.provider,
-                        timestampMs = location.time.takeIf { it > 0L } ?: System.currentTimeMillis()
-                )
+        publishDeviceLocationContext(
+            DeviceLocationContext(
+                latitude = location.latitude,
+                longitude = location.longitude,
+                accuracyMeters = if (location.hasAccuracy()) location.accuracy else null,
+                altitudeMeters = if (location.hasAltitude()) location.altitude else null,
+                speedMps = if (location.hasSpeed()) location.speed else null,
+                bearingDeg = if (location.hasBearing()) location.bearing else null,
+                provider = location.provider,
+                timestampMs = location.time.takeIf { it > 0L } ?: System.currentTimeMillis()
+            )
+        )
+    }
+
+    private fun publishDeviceLocationContext(context: DeviceLocationContext) {
+        val current = viewModel.getDeviceLocationContext()
+        if (!shouldAcceptLocationUpdate(current, context)) {
+            Log.d(
+                TAG,
+                "Ignoring lower-quality location update provider=${context.provider} lat=${context.latitude} lon=${context.longitude} acc=${context.accuracyMeters}"
+            )
+            return
+        }
         viewModel.updateDeviceLocationContext(context)
         Log.d(
                 TAG,
                 "Location update provider=${context.provider} lat=${context.latitude} lon=${context.longitude} acc=${context.accuracyMeters}"
         )
         viewModel.refreshHudUpcomingCalendar(force = false)
+        runOnUiThread {
+            pushHudStateToChatFragment(force = true)
+        }
+    }
+
+    private fun shouldAcceptLocationUpdate(
+        current: DeviceLocationContext?,
+        candidate: DeviceLocationContext
+    ): Boolean {
+        if (current == null) return true
+        val timeDelta = candidate.timestampMs - current.timestampMs
+        val candidateAccuracy = candidate.accuracyMeters ?: Float.MAX_VALUE
+        val currentAccuracy = current.accuracyMeters ?: Float.MAX_VALUE
+        val currentApproximate = current.provider == "ip_geolocation"
+        val candidateTriangulated =
+            candidate.provider == "wifi_geolocation" || candidate.provider == "network_geolocation"
+
+        return when {
+            currentApproximate && candidate.provider != "ip_geolocation" -> true
+            timeDelta > 120_000L -> true
+            timeDelta < -120_000L -> false
+            candidateAccuracy + 25f < currentAccuracy -> true
+            candidateTriangulated && currentAccuracy > 1_000f && candidateAccuracy <= 250f -> true
+            candidate.provider == "gps" && candidateAccuracy <= currentAccuracy + 25f -> true
+            timeDelta > 0L && candidateAccuracy <= currentAccuracy + 50f -> true
+            else -> false
+        }
+    }
+
+    private fun pushHudStateToChatFragment(force: Boolean) {
+        syncTapRadioHudStateFromPrefs()
+        val calendarSummary = viewModel.calendarSummary.value
+        val tasksSummary = viewModel.tasksSummary.value
+        val newsSummary = viewModel.newsSummary.value
+        val airQualityState = viewModel.airQualitySummary.value
+        val radioState = viewModel.radioSummary.value
+        val changed = force ||
+            calendarSummary != lastPushedCalendarSummary ||
+            tasksSummary != lastPushedTasksSummary ||
+            newsSummary != lastPushedNewsSummary ||
+            airQualityState?.text != lastPushedAqiText ||
+            airQualityState?.aqi != lastPushedAqiValue ||
+            radioState?.stationName != lastPushedRadioName ||
+            (radioState?.playing == true) != lastPushedRadioPlaying
+        if (!changed) return
+        lastPushedCalendarSummary = calendarSummary
+        lastPushedTasksSummary = tasksSummary
+        lastPushedNewsSummary = newsSummary
+        lastPushedAqiText = airQualityState?.text
+        lastPushedAqiValue = airQualityState?.aqi
+        lastPushedRadioName = radioState?.stationName
+        lastPushedRadioPlaying = radioState?.playing == true
+        chatFragment.syncHudSnapshot(
+            calendarSummary = calendarSummary,
+            tasksSummary = tasksSummary,
+            newsSummary = newsSummary,
+            airQualityState = airQualityState,
+            radioState = radioState
+        )
+    }
+
+    private fun syncTapRadioHudStateFromPrefs() {
+        val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+        val playing = prefs.getBoolean("tapradio_now_playing_active", false)
+        val stationName = prefs.getString("tapradio_now_playing_name", null)
+        val genre = prefs.getString("tapradio_now_playing_genre", null)
+        viewModel.updateRadioHudState(stationName = stationName, genre = genre, playing = playing)
+    }
+
+    private fun refreshLocationSnapshot(force: Boolean) {
+        if (!locationPermissionGranted) return
+        val now = SystemClock.elapsedRealtime()
+        if (!force && now - lastLocationSnapshotRefreshElapsedMs < LOCATION_SNAPSHOT_REFRESH_DEBOUNCE_MS) {
+            return
+        }
+        lastLocationSnapshotRefreshElapsedMs = now
+        lifecycleScope.launch(Dispatchers.IO) {
+            val snapshot =
+                deviceLocationResolver.resolve(
+                    maxAgeMs = LOCATION_SNAPSHOT_MAX_AGE_MS,
+                    timeoutMs = LOCATION_SNAPSHOT_TIMEOUT_MS
+                ) ?: return@launch
+            publishDeviceLocationContext(snapshot)
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -971,6 +1249,12 @@ class MainActivity : AppCompatActivity() {
     private fun handlePanelChanged(position: Int) {
         if (position != MainViewModel.PANEL_CHAT) return
         chatFragment.setHudModeEnabled(false)
+        if (pendingFocusNewChatOnResume) {
+            chatFragment.view?.post {
+                chatFragment.focusNewChatCard(animate = false)
+                pendingFocusNewChatOnResume = false
+            }
+        }
         scheduleChatHudIdleTimer()
     }
 
@@ -1023,18 +1307,41 @@ class MainActivity : AppCompatActivity() {
         launchTapBrowser()
     }
 
-    private fun launchTapBrowser(initialUrl: String? = null) {
+    private fun launchTapBrowser(
+        initialUrl: String? = null,
+        youtubeAutoplayQuery: String? = null,
+        youtubeAutoplayMode: String? = null
+    ) {
         // Inject saved cookies from companion app into WebView CookieManager
         // before launching TapBrowser (same APK = shared CookieManager).
         injectSavedBrowserCookies()
+        pendingFocusNewChatOnResume = true
+
+        if (!youtubeAutoplayQuery.isNullOrBlank()) {
+            runCatching {
+                val browserClass = Class.forName(TAP_BROWSER_ACTIVITY_CLASS)
+                val method = browserClass.getMethod("prepareForIncomingYouTubeAutoplay")
+                method.invoke(null)
+                Log.d("VisionClaw", "Prepared TapBrowser for incoming YouTube autoplay handoff")
+            }
+        }
 
         val intent =
                 Intent().setClassName(this, TAP_BROWSER_ACTIVITY_CLASS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                     putExtra(EXTRA_RETURN_TO_CHAT_ON_DOUBLE_TAP, true)
                     initialUrl
                             ?.trim()
                             ?.takeIf { it.isNotBlank() }
                             ?.let { putExtra(EXTRA_BROWSER_INITIAL_URL, it) }
+                    youtubeAutoplayQuery
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { putExtra(EXTRA_YOUTUBE_AUTOPLAY_QUERY, it) }
+                    youtubeAutoplayMode
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { putExtra(EXTRA_YOUTUBE_AUTOPLAY_MODE, it) }
                 }
 
         try {
@@ -1220,6 +1527,8 @@ class MainActivity : AppCompatActivity() {
      * before our proactive ToolAssist injection arrives.
      */
     private fun maybeRecoverFromGeminiFallback(modelText: String): Boolean {
+        // If local turn owner is active, don't attempt any recovery — suppress entirely
+        if (isGeminiOutputSuppressed()) return true
         val lower = modelText.lowercase()
         val isToolFailure = lower.contains("unable to access") ||
             lower.contains("tool") && (lower.contains("not available") || lower.contains("can't") || lower.contains("cannot")) ||
@@ -1238,12 +1547,19 @@ class MainActivity : AppCompatActivity() {
 
         val engine = toolAssistEngine ?: return false
         toolAssistRecoveryFired = true
+        val localMapTurn = looksLikeMapInfoIntent(transcript)
 
         Log.d(TAG, "ToolAssist RECOVERY triggered for: $transcript")
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val assist = engine.maybeAssist(transcript) ?: return@launch
                 Log.d(TAG, "ToolAssist recovery result [${assist.toolName}]: ${assist.resultText.take(200)}")
+                if (localMapTurn || shouldOwnToolAssistLocally(assist.toolName)) {
+                    runOnUiThread {
+                        presentToolAssistLocally(assist.toolName, assist.resultText)
+                    }
+                    return@launch
+                }
                 val sent = geminiLiveSession?.sendClientText(assist.contextPrompt) == true
                 Log.d(TAG, "ToolAssist recovery injected=$sent")
                 if (sent) {
@@ -1257,7 +1573,7 @@ class MainActivity : AppCompatActivity() {
                 Log.e(TAG, "ToolAssist recovery error", e)
             }
         }
-        return false // don't suppress the output — let Gemini finish, then it'll see the injected data
+        return localMapTurn
     }
 
     private fun refreshToolBridgeStatus() {
@@ -1266,6 +1582,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun dispatchLiveToolCall(callId: String, name: String, args: String) {
+        // Defense-in-depth: reject tool calls that arrive after local handoff claimed the turn
+        if (isGeminiOutputSuppressed()) {
+            Log.d(TAG, "dispatchLiveToolCall SUPPRESSED: $name (local turn owner active)")
+            return
+        }
         val functionName = name.trim()
         if (functionName.isBlank()) return
         if (!toolDispatcher.isSupported(functionName)) {
@@ -1277,21 +1598,125 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        if (functionName == "daily_briefing" && !looksLikeDailyBriefingIntent(lastToolAssistTranscript)) {
+            Log.w(
+                TAG,
+                "Rejected daily_briefing tool call for non-explicit transcript: ${lastToolAssistTranscript.take(160)}"
+            )
+            lifecycleScope.launch(Dispatchers.IO) {
+                val responseId = callId.trim().ifBlank { "tool-${System.currentTimeMillis()}" }
+                geminiLiveSession?.sendToolResponse(
+                    responseId,
+                    functionName,
+                    "Daily briefing is only available when the user explicitly asks for a daily briefing by name. Use calendar, routes, places, weather, or research tools for this request instead."
+                )
+            }
+            return
+        }
+
         lifecycleScope.launch(Dispatchers.IO) {
             val result = toolDispatcher.dispatch(functionName, args)
             val resultText = result.getOrElse { err ->
                 Log.e(TAG, "Tool dispatch error for $functionName", err)
                 "Tool $functionName is not yet configured."
             }
+            val autoOpenUrl = if (functionName == "open_taplink") {
+                AssistantIntentParser.extractTapLinkUrl(resultText)
+            } else {
+                null
+            }
             val responseId = callId.trim().ifBlank { "tool-${System.currentTimeMillis()}" }
             Log.d(
                 TAG,
                 "Tool result ready callId=$responseId function=$functionName text=${resultText.take(220)}"
             )
+
+            // If this tool call will open a URL (open_taplink), suppress Gemini
+            // audio output BEFORE sending the tool response.  This prevents
+            // Gemini from generating audio that overlaps with the local action.
+            // NOTE: Only set the suppression timestamp and flush audio here
+            // (both are thread-safe).  Do NOT call armLocalDirectResponseHandoff()
+            // from the IO thread — it calls shutdownMultimodalSession() which
+            // touches UI elements and corrupts session state.  The full session
+            // shutdown happens on the UI thread below via shutdownMultimodalSession().
+            if (!autoOpenUrl.isNullOrBlank()) {
+                Log.d(TAG, "open_taplink URL detected — suppressing Gemini output before tool response")
+                suppressGeminiOutputUntilMs = maxOf(
+                    suppressGeminiOutputUntilMs,
+                    SystemClock.uptimeMillis() + LOCAL_DIRECT_OUTPUT_SUPPRESS_MS
+                )
+                ttsController?.stop()
+                geminiAudioPlayer?.stopAndFlush()
+            }
+
             val sent = geminiLiveSession?.sendToolResponse(responseId, functionName, resultText) == true
             Log.d(TAG, "sendToolResponse sent=$sent callId=$responseId")
-            val hudText = hudSafeCalendarResult(resultText)
+            val hudText = if (!autoOpenUrl.isNullOrBlank()) {
+                "Opening ${AssistantIntentParser.displayLabelForUrl(autoOpenUrl)}"
+            } else {
+                hudSafeCalendarResult(resultText)
+            }
             runOnUiThread {
+                if (!autoOpenUrl.isNullOrBlank()) {
+                    shutdownMultimodalSession()
+                    // Detect YouTube/video intent from open_taplink URLs:
+                    //  1. Direct youtube.com / youtu.be links
+                    //  2. Any URL containing "youtube" in path or query
+                    //  3. Google Video search (tbm=vid) — Gemini often uses this
+                    //     even when the user asked for YouTube specifically
+                    val urlLower = autoOpenUrl.lowercase()
+                    val isYouTubeIntent = urlLower.contains("youtube.com") ||
+                        urlLower.contains("youtu.be") ||
+                        urlLower.contains("youtube") ||
+                        urlLower.contains("tbm=vid")  // Google Video tab search
+
+                    if (isYouTubeIntent) {
+                        // Cancel the settle timer to prevent double-launch
+                        uiHandler.removeCallbacks(settledLiveInputRunnable)
+                        lastHandledLiveInputTranscript = pendingLiveInputTranscript.trim()
+
+                        val uri = android.net.Uri.parse(autoOpenUrl)
+                        // Extract the real search topic from URL query params;
+                        // strip "youtube" if Gemini appended it to the search query.
+                        val rawQuery = (uri.getQueryParameter("search_query")
+                            ?: uri.getQueryParameter("q")
+                            ?: "")
+                            .replace(Regex("(?i)\\byoutube\\b"), "")
+                            .replace(Regex("\\s+"), " ")
+                            .trim()
+                        // Fallback: extract from the voice transcript
+                        val query = rawQuery.takeIf { it.isNotBlank() }
+                            ?: pendingLiveInputTranscript
+                                .replace(Regex("(?i)^\\s*(?:play|open|be)?\\s*(?:youtube)?\\s*(?:music|videos?|songs?)?\\s*(?:by|from|about|on)?\\s*"), "")
+                                .trimEnd('.', '!', '?')
+                                .trim()
+                                .takeIf { it.isNotBlank() }
+                            ?: lastHandledLiveInputTranscript
+                                .replace(Regex("(?i)^\\s*(?:play|open|be)?\\s*(?:youtube)?\\s*(?:music|videos?|songs?)?\\s*(?:by|from|about|on)?\\s*"), "")
+                                .trimEnd('.', '!', '?')
+                                .trim()
+                                .takeIf { it.isNotBlank() }
+                            ?: lastToolAssistTranscript
+                                .replace(Regex("(?i)^\\s*(?:play|open|be)?\\s*(?:youtube)?\\s*(?:music|videos?|songs?)?\\s*(?:by|from|about|on)?\\s*"), "")
+                                .trimEnd('.', '!', '?')
+                                .trim()
+                                .takeIf { it.isNotBlank() }
+                            ?: "trending"
+                        val transcript = (pendingLiveInputTranscript + " " + lastToolAssistTranscript).lowercase()
+                        val mode = if (transcript.contains("music") ||
+                            transcript.contains("song")) "music" else "video"
+                        val encoded = java.net.URLEncoder.encode(query, "UTF-8")
+                        val searchUrl = "https://www.youtube.com/results?search_query=$encoded&sp=CAI%253D&taplink_autoplay=$mode"
+                        Log.d(TAG, "YouTube open_taplink intercepted → TapBrowser query='$query' mode='$mode' originalUrl=$autoOpenUrl transcript='${pendingLiveInputTranscript.take(80)}'")
+                        launchTapBrowser(
+                            initialUrl = searchUrl,
+                            youtubeAutoplayQuery = query,
+                            youtubeAutoplayMode = mode
+                        )
+                    } else {
+                        viewModel.openUrl(autoOpenUrl)
+                    }
+                }
                 viewModel.appendLiveAssistantStreamChunk(hudText)
                 viewModel.commitLiveAssistantStreamIfNeeded()
                 showHudNotification(hudText)
@@ -1305,15 +1730,377 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * AITap: No local intent bypass needed — Gemini routes all queries
-     * through native tool calls. Kept as stub to avoid breaking callers.
-     */
     private fun maybeRouteLocalIntentDirectly(
         transcript: String,
         forcedSkill: String? = null,
         forcedIntent: String? = null
-    ): Boolean = false
+    ): Boolean {
+        parseYouTubePlaybackIntent(transcript)?.let { youtubeRequest ->
+            armLocalDirectResponseHandoff()
+            showHudNotification(youtubeRequest.hudLabel)
+            runOnUiThread {
+                viewModel.appendDirectAssistantResponse(youtubeRequest.responseText)
+                ttsController?.stop()
+                ttsController?.speak(youtubeRequest.hudLabel)
+                launchTapBrowser(
+                    initialUrl = youtubeRequest.searchUrl,
+                    youtubeAutoplayQuery = youtubeRequest.query,
+                    youtubeAutoplayMode = youtubeRequest.mode
+                )
+            }
+            return true
+        }
+
+        if (looksLikeDailyBriefingIntent(transcript)) {
+            armLocalDirectResponseHandoff()
+            showHudNotification("Generating daily briefing")
+            lifecycleScope.launch(Dispatchers.IO) {
+                val result = toolDispatcher.dispatch(
+                    "daily_briefing",
+                    JSONObject().put("focus", "today").toString()
+                )
+                val resultText = result.getOrElse { error ->
+                    Log.e(TAG, "Daily briefing dispatch failed", error)
+                    "Daily briefing unavailable right now."
+                }
+                val speech = dailyBriefSpeechSummary(resultText)
+                runOnUiThread {
+                    viewModel.appendDirectAssistantResponse(resultText)
+                    if (speech.isNotBlank()) {
+                        ttsController?.stop()
+                        ttsController?.speak(speech)
+                        showHudNotification(speech.take(120))
+                    } else {
+                        showHudNotification(resultText.take(120))
+                    }
+                }
+            }
+            return true
+        }
+
+        if (looksLikeNearbyPlacesIntent(transcript)) {
+            val engine = toolAssistEngine ?: return false
+            armLocalDirectResponseHandoff()
+            showHudNotification("Checking nearby places")
+            lifecycleScope.launch(Dispatchers.IO) {
+                val assist = runCatching { engine.maybeAssist(transcript) }.getOrNull()
+                if (assist == null || assist.toolName != "google_places") {
+                    runOnUiThread { showHudNotification("Nearby places unavailable.") }
+                    return@launch
+                }
+                val resultText = assist.resultText
+                val spokenSummary = placesSpeechSummary(resultText)
+                runOnUiThread {
+                    viewModel.appendDirectAssistantResponse(resultText)
+                    if (spokenSummary.isNotBlank()) {
+                        ttsController?.stop()
+                        ttsController?.speak(spokenSummary)
+                        showHudNotification(spokenSummary.take(120))
+                    } else {
+                        showHudNotification(resultText.take(120))
+                    }
+                }
+            }
+            return true
+        }
+
+        val intent = AssistantIntentParser.parse(transcript) ?: return false
+        armLocalDirectResponseHandoff()
+        when (intent) {
+            is AssistantIntent.OpenWeb -> {
+                showHudNotification("Opening ${intent.displayLabel}")
+            }
+            is AssistantIntent.Research -> {
+                showHudNotification("Researching ${intent.topic}")
+            }
+        }
+        viewModel.handleDirectAssistantIntent(intent)
+        return true
+    }
+
+    private fun armLocalDirectResponseHandoff() {
+        suppressGeminiOutputUntilMs =
+            maxOf(
+                suppressGeminiOutputUntilMs,
+                SystemClock.uptimeMillis() + LOCAL_DIRECT_OUTPUT_SUPPRESS_MS
+            )
+        uiHandler.removeCallbacks(settledLiveInputRunnable)
+        // Stop ALL audio output — both Gemini streaming audio AND local TTS
+        ttsController?.stop()
+        geminiAudioPlayer?.stopAndFlush()
+        if (geminiLiveSession != null || liveState != GeminiLiveState.IDLE || viewModel.voiceAssistantActive.value == true) {
+            shutdownMultimodalSession()
+        }
+    }
+
+    private fun isGeminiOutputSuppressed(): Boolean =
+        SystemClock.uptimeMillis() < suppressGeminiOutputUntilMs
+
+    private fun looksLikeDailyBriefingIntent(transcript: String): Boolean {
+        val normalized = transcript
+            .trim()
+            .lowercase(Locale.US)
+            .replace(Regex("[^a-z0-9\\s]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (normalized.isBlank()) return false
+        return normalized in setOf(
+            "daily briefing",
+            "daily brief",
+            "ultimate daily brief",
+            "morning briefing",
+            "brief me on today",
+            "give me my briefing",
+            "give me a daily briefing"
+        )
+    }
+
+    private fun parseYouTubePlaybackIntent(transcript: String): YouTubePlaybackRequest? {
+        val trimmed = transcript.trim().trimEnd('.', '!', '?')
+        if (trimmed.isBlank()) return null
+
+        // "play/open" is optional — Gemini Live often transcribes without it
+        // e.g. " YouTube Drake." instead of "play YouTube Drake"
+
+        val subscriptionsPatterns = listOf(
+            Regex("""(?i)^\s*(?:play|open|start)?\s*(?:my\s+)?(?:youtube\s+)?subscribed\s+channels\s*$"""),
+            Regex("""(?i)^\s*(?:play|open|start)?\s*(?:my\s+)?youtube\s+subscriptions?\s*$"""),
+            Regex("""(?i)^\s*(?:play|open|start)?\s*(?:my\s+)?subscriptions?\s*$""")
+        )
+        if (subscriptionsPatterns.any { it.matches(trimmed) }) {
+            return YouTubePlaybackRequest(
+                query = "subscriptions",
+                mode = "subscriptions",
+                searchUrl = buildYouTubeSubscriptionsUrl(),
+                hudLabel = "Playing your newest subscribed channel videos",
+                responseText = "Playing the newest videos from your subscribed channels with captions enabled."
+            )
+        }
+
+        // --- YouTube History patterns ---
+        val historyPatterns = listOf(
+            Regex("""(?i)^\s*(?:play|open|start)?\s*(?:my\s+)?youtube\s+history\s*$"""),
+            Regex("""(?i)^\s*(?:play|open|start)?\s*(?:my\s+)?(?:youtube\s+)?watch\s+history\s*$"""),
+            Regex("""(?i)^\s*(?:play|open|start)?\s*(?:my\s+)?(?:youtube\s+)?viewing\s+history\s*$"""),
+            Regex("""(?i)^\s*(?:play|open|start)?\s*(?:my\s+)?history\s*$""")
+        )
+        if (historyPatterns.any { it.matches(trimmed) }) {
+            return YouTubePlaybackRequest(
+                query = "history",
+                mode = "history",
+                searchUrl = buildYouTubeHistoryUrl(),
+                hudLabel = "Playing videos from your YouTube history",
+                responseText = "Playing videos from your YouTube watch history with captions enabled."
+            )
+        }
+
+        // --- Music-specific patterns (highest priority) ---
+        val musicPatterns = listOf(
+            Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+music\\s+(?:by|from|about)\\s+(.+?)\\s*$"),
+            Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+songs?\\s+(?:by|from|about)\\s+(.+?)\\s*$"),
+            Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+music\\s+(.+?)\\s*$"),
+            Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+songs?\\s+(.+?)\\s*$")
+        )
+
+        val musicTopic = musicPatterns.firstNotNullOfOrNull { it.find(trimmed)?.groupValues?.getOrNull(1) }
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        if (!musicTopic.isNullOrBlank()) {
+            val searchQuery = "$musicTopic music"
+            return YouTubePlaybackRequest(
+                query = musicTopic,
+                mode = "music",
+                searchUrl = buildYouTubeSearchUrl(searchQuery, "music"),
+                hudLabel = "Playing latest YouTube music for $musicTopic",
+                responseText = "Playing the newest YouTube music results for $musicTopic with captions enabled."
+            )
+        }
+
+        // --- Video-specific patterns ---
+        val videoPatterns = listOf(
+            Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+videos?\\s+(?:by|from|about|on)\\s+(.+?)\\s*$"),
+            Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+videos?\\s+(.+?)\\s*$")
+        )
+
+        val videoTopic = videoPatterns.firstNotNullOfOrNull { it.find(trimmed)?.groupValues?.getOrNull(1) }
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        if (!videoTopic.isNullOrBlank()) {
+            return YouTubePlaybackRequest(
+                query = videoTopic,
+                mode = "video",
+                searchUrl = buildYouTubeSearchUrl(videoTopic),
+                hudLabel = "Playing latest YouTube videos for $videoTopic",
+                responseText = "Playing the newest YouTube videos for $videoTopic with captions enabled."
+            )
+        }
+
+        // --- Catch-all: "[play] youtube <anything>" defaults to video mode ---
+        val catchAllPattern = Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+(.+?)\\s*$")
+        val catchAllTopic = catchAllPattern.find(trimmed)?.groupValues?.getOrNull(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        if (!catchAllTopic.isNullOrBlank()) {
+            return YouTubePlaybackRequest(
+                query = catchAllTopic,
+                mode = "video",
+                searchUrl = buildYouTubeSearchUrl(catchAllTopic),
+                hudLabel = "Playing latest YouTube videos for $catchAllTopic",
+                responseText = "Playing the newest YouTube videos for $catchAllTopic with captions enabled."
+            )
+        }
+
+        val genericPlayPattern =
+            Regex("(?i)^\\s*(?:play|put on|listen to|start)\\s+(.+?)\\s*$")
+        val genericTopic = genericPlayPattern.find(trimmed)?.groupValues?.getOrNull(1)
+            ?.trim()
+            ?.trimEnd('.', '!', '?')
+            ?.takeIf { topic ->
+                topic.isNotBlank() &&
+                    !topic.equals("music", ignoreCase = true) &&
+                    !topic.contains("radio", ignoreCase = true) &&
+                    !topic.contains("tapradio", ignoreCase = true) &&
+                    !topic.contains("station", ignoreCase = true) &&
+                    !topic.contains("scan", ignoreCase = true) &&
+                    !topic.contains("volume", ignoreCase = true)
+            }
+        if (!genericTopic.isNullOrBlank()) {
+            val looksVideoLike = listOf(
+                "video",
+                "videos",
+                "documentary",
+                "history of",
+                "interview",
+                "lecture",
+                "trailer",
+                "episode"
+            ).any { genericTopic.contains(it, ignoreCase = true) }
+            val mode = if (looksVideoLike) "video" else "music"
+            val searchTopic = if (mode == "music") "$genericTopic music" else genericTopic
+            return YouTubePlaybackRequest(
+                query = genericTopic,
+                mode = mode,
+                searchUrl = buildYouTubeSearchUrl(searchTopic, mode),
+                hudLabel = "Playing latest YouTube $mode for $genericTopic",
+                responseText = "Playing the newest YouTube $mode results for $genericTopic with captions enabled."
+            )
+        }
+
+        return null
+    }
+
+    private fun buildYouTubeSearchUrl(query: String, mode: String = "video"): String {
+        val encoded = java.net.URLEncoder.encode(query, "UTF-8")
+        // sp=CAI%253D = YouTube sort-by-upload-date (newest first)
+        return "https://www.youtube.com/results?search_query=$encoded&sp=CAI%253D&taplink_autoplay=$mode"
+    }
+
+    private fun buildYouTubeSubscriptionsUrl(): String {
+        return "https://www.youtube.com/feed/subscriptions?taplink_autoplay=subscriptions"
+    }
+
+    private fun buildYouTubeHistoryUrl(): String {
+        return "https://www.youtube.com/feed/history?taplink_autoplay=history"
+    }
+
+    private data class YouTubePlaybackRequest(
+        val query: String,
+        val mode: String,
+        val searchUrl: String,
+        val hudLabel: String,
+        val responseText: String
+    )
+
+    private fun looksLikeNearbyPlacesIntent(transcript: String): Boolean {
+        val lower = transcript.trim().lowercase(Locale.US)
+        if (lower.isBlank()) return false
+        val mentionsPlaceType = listOf(
+            "coffee", "coffee shop", "cafe", "restaurant", "food", "gas station",
+            "fuel", "pharmacy", "grocery", "supermarket", "bar", "bakery", "parking"
+        ).any { lower.contains(it) }
+        if (!mentionsPlaceType) return false
+        return listOf(
+            "nearest", "closest", "nearby", "near me", "open", "around here", "around me", "where can i get"
+        ).any { lower.contains(it) }
+    }
+
+    private fun placesSpeechSummary(resultText: String): String {
+        return resultText.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .filterNot {
+                it.startsWith("Maps:", ignoreCase = true) ||
+                    it.startsWith("Nearby alternatives", ignoreCase = true)
+            }
+            .take(4)
+            .joinToString(". ")
+    }
+
+    private fun routesSpeechSummary(resultText: String): String {
+        return resultText.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .filterNot { it.startsWith("Maps:", ignoreCase = true) }
+            .take(3)
+            .joinToString(". ")
+    }
+
+    private fun locationSpeechSummary(resultText: String): String {
+        return resultText.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .take(2)
+            .joinToString(". ")
+            .ifBlank { "Location ready." }
+    }
+
+    private fun shouldOwnToolAssistLocally(toolName: String): Boolean {
+        return toolName in setOf("google_places", "google_routes", "google_air_quality", "location")
+    }
+
+    private fun looksLikeMapInfoIntent(transcript: String): Boolean {
+        val lower = transcript.trim().lowercase(Locale.US)
+        if (lower.isBlank()) return false
+        if (looksLikeNearbyPlacesIntent(lower)) return true
+        return listOf(
+            "address", "directions", "route", "traffic", "eta", "how far", "how long",
+            "where is", "located", "near me", "nearby", "closest", "nearest", "map",
+            "parking", "air quality", "aqi", "walk time", "drive time", "transit"
+        ).any { lower.contains(it) }
+    }
+
+    private fun presentToolAssistLocally(toolName: String, resultText: String) {
+        armLocalDirectResponseHandoff()
+        val speech = when (toolName) {
+            "google_places" -> placesSpeechSummary(resultText)
+            "google_routes" -> routesSpeechSummary(resultText)
+            "location", "google_air_quality" -> locationSpeechSummary(resultText)
+            else -> resultText.lineSequence().map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
+        }
+        viewModel.appendDirectAssistantResponse(resultText)
+        if (speech.isNotBlank()) {
+            ttsController?.stop()
+            ttsController?.speak(speech)
+            showHudNotification(speech.take(120))
+        } else {
+            showHudNotification(resultText.take(120))
+        }
+    }
+
+    private fun dailyBriefSpeechSummary(resultText: String): String {
+        val summary = resultText.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .filterNot { it.endsWith(":") || it.startsWith("-") || it.startsWith("Ultimate daily brief") }
+            .take(3)
+            .joinToString(". ")
+            .trim()
+        return if (summary.isBlank()) {
+            "Daily briefing ready."
+        } else {
+            "Daily briefing ready. $summary"
+        }
+    }
 
     private fun hudSafeCalendarResult(raw: String): String {
         val cleaned = raw.replace('\r', '\n').trim()
@@ -1631,9 +2418,7 @@ class MainActivity : AppCompatActivity() {
         chatFragment.setStreamActiveIndicator(false)
         setHudConnectionStatus(ChatPanelFragment.ConnectionStatus.IDLE)
         stopCameraCapture()
-        runOnUiThread {
-            chatFragment.autoFocusLatestAssistantUrl()
-        }
+        runOnUiThread { chatFragment.focusNewChatCard(animate = true) }
         message?.trim()?.takeIf { it.isNotBlank() }?.let { showHudNotification(it) }
     }
 
@@ -1702,6 +2487,8 @@ class MainActivity : AppCompatActivity() {
         lastUserSpeechActivityMs = 0L
         latestLiveTranscript = ""
         latestLiveOutputTranscript = ""
+        pendingLiveInputTranscript = ""
+        lastHandledLiveInputTranscript = ""
         sawNonSilentGeminiAudio = false
         loggedGeminiAudioProbe = false
         updateListeningTranscript("Connecting to Gemini Live…")
@@ -1709,6 +2496,7 @@ class MainActivity : AppCompatActivity() {
         pushOscilloscopeLevel(0.06f, OSCILLOSCOPE_USER_COLOR, force = true)
         uiHandler.removeCallbacks(liveSetupTimeoutRunnable)
         uiHandler.removeCallbacks(stopGeminiCaptureRunnable)
+        uiHandler.removeCallbacks(settledLiveInputRunnable)
         uiHandler.postDelayed(liveSetupTimeoutRunnable, GEMINI_LIVE_CONNECT_TIMEOUT_MS)
 
         // Capture the epoch so callbacks from THIS session can detect staleness.
@@ -1750,42 +2538,47 @@ class MainActivity : AppCompatActivity() {
                                         if (!isCurrentSession()) return
                                         val safe = text.trim()
                                         if (safe.isBlank()) return
-                                        if (maybeRouteLocalIntentDirectly(safe)) return
                                         liveState = GeminiLiveState.LISTENING
                                         awaitingServerTurnComplete = true
                                         markUserSpeechActivity()
                                         latestLiveTranscript =
                                                 mergeLiveTranscript(latestLiveTranscript, safe)
+                                        pendingLiveInputTranscript = safe
+
+                                        // Immediately check YouTube patterns before Gemini can respond.
+                                        // These patterns require complete keywords ("subscriptions",
+                                        // "history") so partial transcripts won't false-match.
+                                        val youtubeReq = parseYouTubePlaybackIntent(safe)
+                                        if (youtubeReq != null) {
+                                            uiHandler.removeCallbacks(settledLiveInputRunnable)
+                                            lastHandledLiveInputTranscript = safe
+                                            runOnUiThread {
+                                                armLocalDirectResponseHandoff()
+                                                showHudNotification(youtubeReq.hudLabel)
+                                                viewModel.appendDirectAssistantResponse(youtubeReq.responseText)
+                                                ttsController?.stop()
+                                                ttsController?.speak(youtubeReq.hudLabel)
+                                                launchTapBrowser(
+                                                    initialUrl = youtubeReq.searchUrl,
+                                                    youtubeAutoplayQuery = youtubeReq.query,
+                                                    youtubeAutoplayMode = youtubeReq.mode
+                                                )
+                                            }
+                                            return
+                                        }
+
+                                        uiHandler.removeCallbacks(settledLiveInputRunnable)
+                                        uiHandler.postDelayed(
+                                                settledLiveInputRunnable,
+                                                LIVE_INPUT_SETTLE_MS
+                                        )
                                         runOnUiThread {
                                             updateListeningTranscript(safe)
-                                        }
-                                        // ── ToolAssist: proactively execute tools client-side ──
-                                        // The native-audio model rarely calls tools itself, so we
-                                        // detect tool-worthy queries and inject results directly.
-                                        lastToolAssistTranscript = safe
-                                        toolAssistRecoveryFired = false
-                                        val engine = toolAssistEngine ?: return
-                                        lifecycleScope.launch(Dispatchers.IO) {
-                                            try {
-                                                val assist = engine.maybeAssist(safe) ?: return@launch
-                                                Log.d(TAG, "ToolAssist matched [${assist.toolName}]: ${assist.resultText.take(200)}")
-                                                // Inject the tool result as a client text turn
-                                                val sent = geminiLiveSession?.sendClientText(assist.contextPrompt) == true
-                                                Log.d(TAG, "ToolAssist injected clientContent sent=$sent")
-                                                // Also show in HUD
-                                                runOnUiThread {
-                                                    viewModel.appendLiveAssistantStreamChunk(assist.resultText)
-                                                    viewModel.commitLiveAssistantStreamIfNeeded()
-                                                    showHudNotification(assist.resultText.take(120))
-                                                }
-                                            } catch (e: Exception) {
-                                                Log.e(TAG, "ToolAssist error", e)
-                                            }
                                         }
                                     }
 
                                     override fun onOutputTranscription(text: String) {
-                                        if (!isCurrentSession()) return
+                                        if (!isCurrentSession() || isGeminiOutputSuppressed()) return
                                         val safe = text.trim()
                                         if (safe.isBlank()) return
                                         if (maybeRecoverFromGeminiFallback(safe)) return
@@ -1807,7 +2600,7 @@ class MainActivity : AppCompatActivity() {
                                         }
                                     }
                                     override fun onModelText(text: String) {
-                                        if (!isCurrentSession()) return
+                                        if (!isCurrentSession() || isGeminiOutputSuppressed()) return
                                         if (maybeRecoverFromGeminiFallback(text)) return
 
                                         liveState = GeminiLiveState.THINKING
@@ -1817,7 +2610,7 @@ class MainActivity : AppCompatActivity() {
                                         // Chat persistence is driven only by outputTranscription.
                                     }
                                     override fun onModelAudio(mimeType: String, data: ByteArray) {
-                                        if (!isCurrentSession()) return
+                                        if (!isCurrentSession() || isGeminiOutputSuppressed()) return
                                         liveState = GeminiLiveState.THINKING
                                         awaitingServerTurnComplete = true
                                         touchGeminiLiveActivity()
@@ -1835,9 +2628,18 @@ class MainActivity : AppCompatActivity() {
                                     }
 
                                     override fun onToolCall(callId: String, name: String, args: String) {
-                                        if (!isCurrentSession()) return
+                                        if (!isCurrentSession() || isGeminiOutputSuppressed()) return
                                         awaitingServerTurnComplete = true
                                         touchGeminiLiveActivity()
+                                        // Cancel the ToolAssist settled-input timer so we don't
+                                        // inject a duplicate client-text response alongside the
+                                        // Gemini tool-call response.  Mark transcript as handled
+                                        // so the runnable is a no-op even if it fires anyway.
+                                        uiHandler.removeCallbacks(settledLiveInputRunnable)
+                                        val transcript = pendingLiveInputTranscript.trim()
+                                        if (transcript.isNotBlank()) {
+                                            lastHandledLiveInputTranscript = transcript
+                                        }
                                         dispatchLiveToolCall(callId = callId, name = name, args = args)
                                     }
 
@@ -1846,6 +2648,7 @@ class MainActivity : AppCompatActivity() {
                                         viewModel.commitLiveAssistantStreamIfNeeded()
                                         awaitingServerTurnComplete = false
                                         liveState = GeminiLiveState.FOLLOW_UP
+                                        uiHandler.removeCallbacks(settledLiveInputRunnable)
                                         val shouldStartCleanupTimer =
                                                 finishReason.isNullOrBlank() ||
                                                         finishReason.equals("STOP", ignoreCase = true)
@@ -1907,6 +2710,7 @@ class MainActivity : AppCompatActivity() {
                                             return
                                         }
                                         uiHandler.removeCallbacks(liveSetupTimeoutRunnable)
+                                        uiHandler.removeCallbacks(settledLiveInputRunnable)
                                         val closedByApp = liveSessionClosingByApp
                                         val wasLiveSessionReady = liveSessionReady
                                         liveSessionClosingByApp = false
@@ -2269,16 +3073,17 @@ class MainActivity : AppCompatActivity() {
             clearLiveSpeechPreview()
             clearListeningTranscript()
 
+            if (maybeRouteLocalIntentDirectly(text)) {
+                Log.d(TAG, "Voice input — local intent routed directly")
+                return@runOnUiThread
+            }
+
             val currentPanel = viewPager?.currentItem ?: MainViewModel.PANEL_CHAT
 
             // Chat panel: voice input always routes to Gemini directly —
             // the user expects a conversational response, not text sitting
             // in the EditText waiting for a manual Send tap.
             if (currentPanel == MainViewModel.PANEL_CHAT) {
-                if (maybeRouteLocalIntentDirectly(text)) {
-                    Log.d(TAG, "Chat panel — local intent routed through AITap tools")
-                    return@runOnUiThread
-                }
                 Log.d(TAG, "Chat panel — routing voice input to Gemini")
                 viewModel.routeWithToolCalls(text, latestFrame)
                 return@runOnUiThread
@@ -2397,6 +3202,39 @@ class MainActivity : AppCompatActivity() {
             showListeningOverlay(active)
             syncCameraToGeminiState(active)
         }
+
+        viewModel.youtubePlaybackEvent.observe(this) { event ->
+            if (event == null) return@observe
+            viewModel.clearYoutubePlaybackEvent()
+            showHudNotification("Playing latest YouTube ${event.mode} for ${event.query}")
+            launchTapBrowser(
+                initialUrl = event.searchUrl,
+                youtubeAutoplayQuery = event.query,
+                youtubeAutoplayMode = event.mode
+            )
+        }
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    combine(
+                        viewModel.calendarSummary,
+                        viewModel.tasksSummary,
+                        viewModel.newsSummary,
+                        viewModel.airQualitySummary
+                    ) { calendar, tasks, news, airQuality ->
+                        arrayOf(calendar, tasks, news, airQuality)
+                    }.collect { values ->
+                        chatFragment.syncHudSnapshot(
+                            calendarSummary = values[0] as String,
+                            tasksSummary = values[1] as String,
+                            newsSummary = values[2] as String,
+                            airQualityState = values[3] as? MainViewModel.AirQualityHudState
+                        )
+                    }
+                }
+            }
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -2446,6 +3284,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun clearListeningTranscript() {
+        pendingLiveInputTranscript = ""
+        lastHandledLiveInputTranscript = ""
+        uiHandler.removeCallbacks(settledLiveInputRunnable)
         listeningTranscript?.apply {
             text = ""
             visibility = View.GONE
@@ -2468,6 +3309,7 @@ class MainActivity : AppCompatActivity() {
                 listeningTranscript?.text = "Listening…"
                 listeningTranscript?.isSelected = true
             } else {
+                uiHandler.removeCallbacks(settledLiveInputRunnable)
                 animate()
                         .alpha(0f)
                         .setDuration(300)

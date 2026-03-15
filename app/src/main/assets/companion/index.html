@@ -90,6 +90,31 @@
   <label>Model Override <button class="help-btn" onclick="showHelp('model')">?</button></label>
   <input type="text" id="geminiModel" placeholder="Leave blank for default">
   <div class="hint">Default: gemini-2.5-flash-native-audio. Only change if you know what you're doing.</div>
+
+  <label>Research Provider <button class="help-btn" onclick="showHelp('research')">?</button></label>
+  <select id="researchProvider">
+    <option value="gemini">Gemini</option>
+    <option value="openai_codex">OpenAI Codex</option>
+    <option value="groq">Groq</option>
+  </select>
+  <div class="hint">Used only for explicit deep-dive requests like "research fusion power" or "analyze this topic". It does not replace your normal assistant.</div>
+
+  <label>Research API Key</label>
+  <div class="pw-wrap">
+    <input type="password" id="researchApiKey" placeholder="Provider-specific API key">
+    <button class="pw-toggle" onclick="togglePw('researchApiKey')">show</button>
+  </div>
+
+  <label>Research Model</label>
+  <input type="text" id="researchModel" placeholder="Examples: gemini-2.5-flash, gpt-5.2-codex, llama-3.3-70b-versatile">
+  <div class="hint">Leave blank to use the built-in default. Pick a fast model for quick reading or a stronger model for longer, denser analysis.</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+    <button type="button" style="background:#37474f;color:#fff;flex:none;padding:8px 12px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="applyResearchPreset('fast')">Fast</button>
+    <button type="button" style="background:#455a64;color:#fff;flex:none;padding:8px 12px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="applyResearchPreset('balanced')">Balanced</button>
+    <button type="button" style="background:#546e7a;color:#fff;flex:none;padding:8px 12px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="applyResearchPreset('deep')">Deep</button>
+    <button type="button" style="background:#263238;color:#fff;flex:none;padding:8px 12px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="clearResearchModel()">Use Default</button>
+  </div>
+  <div class="hint" id="researchPresetHint">Provider-aware presets fill this field with recommended models.</div>
 </div>
 
 <!-- Step 3: OAuth Consent Screen -->
@@ -99,7 +124,7 @@
     <div class="step-title">Google OAuth (Workspace Access)</div>
     <button class="help-btn" onclick="showHelp('oauth')">?</button>
   </div>
-  <p class="step-desc">Enables access to your Calendar, Keep, Contacts, and Tasks. Create a <b>Desktop application</b> OAuth client in your GCP project.</p>
+  <p class="step-desc">Enables access to your Calendar, Keep, Contacts, and Tasks. Create a <b>Web application</b> OAuth client in your GCP project.</p>
   <label>Google OAuth Client ID</label>
   <input type="text" id="googleOAuthClientId" placeholder="xxxx.apps.googleusercontent.com">
   <label>Google OAuth Client Secret</label>
@@ -114,7 +139,7 @@
     <span id="oauthStatus" style="font-size:12px;margin-left:10px;color:#999">Checking...</span>
   </div>
   <div id="codeEntrySection" style="display:none;margin-top:12px;padding:12px;background:#111;border-radius:8px;border:1px solid #333">
-    <p style="font-size:12px;color:#ff9800;margin-bottom:8px">After authorizing, Google will redirect to a page that says "can't connect" &mdash; that's normal! <b>Copy the entire URL</b> from that tab's address bar and paste it below:</p>
+    <p style="font-size:12px;color:#ff9800;margin-bottom:8px">AITap now expects Google to redirect back to the companion server callback. If that callback page does not finish automatically, <b>copy the entire URL</b> from that tab's address bar and paste it below as a fallback:</p>
     <input type="text" id="oauthCodeInput" placeholder="Paste the full URL from the address bar" style="margin-bottom:8px">
     <button style="background:#4caf50;color:#fff;flex:none;padding:8px 16px;font-size:13px" onclick="submitOAuthCode()">Submit Code</button>
     <span id="codeSubmitStatus" style="font-size:12px;margin-left:8px;color:#999"></span>
@@ -152,8 +177,9 @@
     <input type="password" id="googleMapsApiKey" placeholder="AIza...">
     <button class="pw-toggle" onclick="togglePw('googleMapsApiKey')">show</button>
   </div>
-  <div class="hint" style="margin-top:6px">Enable these 3 APIs in your GCP project:</div>
+  <div class="hint" style="margin-top:6px">Enable these 4 APIs in your GCP project:</div>
   <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
+    <a class="link" href="https://console.cloud.google.com/apis/library/maps-backend.googleapis.com" target="_blank" style="background:#222;padding:4px 10px;border-radius:4px;font-size:11px">Enable Maps JavaScript API &rarr;</a>
     <a class="link" href="https://console.cloud.google.com/apis/library/directions-backend.googleapis.com" target="_blank" style="background:#222;padding:4px 10px;border-radius:4px;font-size:11px">Enable Directions API &rarr;</a>
     <a class="link" href="https://console.cloud.google.com/apis/library/routes.googleapis.com" target="_blank" style="background:#222;padding:4px 10px;border-radius:4px;font-size:11px">Enable Routes API &rarr;</a>
     <a class="link" href="https://console.cloud.google.com/apis/library/places-backend.googleapis.com" target="_blank" style="background:#222;padding:4px 10px;border-radius:4px;font-size:11px">Enable Places API &rarr;</a>
@@ -210,11 +236,11 @@
     <div class="hint">Who is AITap and what can it perceive.</div>
 
     <label>Tool Routing Rules</label>
-    <textarea id="promptRoutingRules" rows="5" placeholder="TOOL ROUTING RULES: 1) For calendar questions, always call google_calendar. 2) For reminders/notes, call google_keep. 3) For directions, call google_routes. ..."></textarea>
+    <textarea id="promptRoutingRules" rows="5" placeholder="TOOL ROUTING RULES: 1) Calendar → google_calendar. 2) Directions/traffic/ETA → google_routes. 3) Nearby places/open-now queries → google_places. If the closest place is closed, promote a different nearby open option with ETA, weather, and Maps link. 4) Research/deep-dive queries → research_topic."></textarea>
     <div class="hint">Rules for which tools Gemini should call for different types of queries.</div>
 
     <label>Behavior &amp; Output</label>
-    <textarea id="promptBehavior" rows="5" placeholder="PROACTIVE BEHAVIOR: Offer to scan QR codes, read text aloud, guide assembly/cooking. HUD OUTPUT RULES: Keep responses to 1-6 lines. No stack traces or raw JSON."></textarea>
+    <textarea id="promptBehavior" rows="5" placeholder="PROACTIVE BEHAVIOR: Offer to scan QR codes, read text aloud, and use traffic/weather/location context when relevant. HUD OUTPUT RULES: Keep responses to 1-6 lines. Never repeat the user's transcript. No stack traces, raw JSON, or diagnostics."></textarea>
     <div class="hint">Proactive behavior, HUD formatting, and privacy rules.</div>
 
     <label>URL Rules</label>
@@ -309,6 +335,8 @@
     <button style="background:#555;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('directions')">Test Directions</button>
     <button style="background:#555;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('tasks')">Test Tasks</button>
     <button style="background:#555;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('places')">Test Places</button>
+    <button style="background:#2e7d32;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('air_quality')">Test Air Quality</button>
+    <button style="background:#6a1b9a;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('research')">Test Research</button>
     <button style="background:#1a73e8;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('location')">&#128205; Test Location</button>
     <button style="background:#e8710a;color:#fff;flex:none;padding:8px 14px;font-size:13px;border-radius:6px;border:none;cursor:pointer" onclick="verifyApi('traffic')">&#128663; Test Traffic</button>
   </div>
@@ -352,6 +380,9 @@
 const FIELDS = {
   geminiKey:           { key: 'gemini_api_key',         type: 'string' },
   geminiModel:         { key: 'gemini_model_override',  type: 'string' },
+  researchProvider:    { key: 'research_provider',      type: 'string' },
+  researchApiKey:      { key: 'research_api_key',       type: 'string' },
+  researchModel:       { key: 'research_model',         type: 'string' },
   calendarApiKey:      { key: 'calendar_api_key',       type: 'string' },
   calendarId:          { key: 'calendar_id',            type: 'string' },
   googleMapsApiKey:    { key: 'google_maps_api_key',    type: 'string' },
@@ -410,19 +441,65 @@ const HELP = {
 <li><code>gemini-2.5-pro</code> &mdash; Slower but more capable</li></ol>
 <p>Leave blank to use the default. The Live audio session always uses the native-audio variant regardless of this setting.</p>`
   },
+  research: {
+    title: 'Research Provider',
+    body: `<p>This powers explicit deep-dive requests like <code>research fusion power</code>, <code>analyze RayNeo X3 optics</code>, or <code>brief me on the history of electronic music</code>. AITap routes those requests to a separate model API instead of your main live assistant so you can keep the day-to-day assistant fast while using a different model for heavier reading.</p>
+<p><b>How to use it on the glasses:</b></p>
+<ol>
+<li>Say <code>research &lt;topic&gt;</code> for a longer structured brief.</li>
+<li>Say <code>analyze &lt;topic&gt;</code> when you want tradeoffs, implications, and caveats.</li>
+<li>Say <code>deep dive on &lt;topic&gt;</code> when you want the most detail.</li>
+</ol>
+<p><b>Good uses for the research function:</b></p>
+<ol>
+<li>History and background: <code>research the history of Depeche Mode</code></li>
+<li>Technical explanation: <code>analyze NAT64 on mobile hotspots</code></li>
+<li>Academic overview: <code>research pedagogy in ethnic studies</code></li>
+<li>Code and architecture: <code>research Android WebView background audio issues</code></li>
+</ol>
+<p><b>Providers:</b></p>
+<ol>
+<li><code>Gemini</code> &mdash; Good default for broad research, general writing, structured summaries, and multimodal-adjacent thinking. Uses Google's <code>generateContent</code> API.</li>
+<li><code>OpenAI Codex</code> &mdash; Best when the research topic is code-heavy: debugging, repo architecture, refactors, agents, tool use, or implementation strategy. Uses the OpenAI Responses API.</li>
+<li><code>Groq</code> &mdash; Best when you want fast text-only research and low latency. Uses Groq's OpenAI-compatible Responses API.</li>
+</ol>
+<p><b>Suggested models and when to use them:</b></p>
+<ol>
+<li><code>gemini-2.5-flash</code> &mdash; fast, balanced, good for most reading briefs.</li>
+<li><code>gemini-2.5-pro</code> &mdash; slower but better for denser reasoning and more careful synthesis, if available in your project.</li>
+<li><code>gpt-5.2-codex</code> &mdash; best for software engineering research, code analysis, and implementation planning.</li>
+<li><code>llama-3.3-70b-versatile</code> &mdash; strong general-purpose Groq option for quick research and readable summaries.</li>
+<li><code>llama-3.1-8b-instant</code> &mdash; very fast Groq option for short answers and lightweight summaries.</li>
+<li><code>openai/gpt-oss-120b</code> &mdash; another Groq-hosted option for heavier reasoning if your Groq organization enables it.</li>
+</ol>
+<p><b>Simple selection guide:</b></p>
+<ol>
+<li>Use <code>Gemini</code> if you want the safest general default.</li>
+<li>Use <code>OpenAI Codex</code> if your research often involves code, APIs, systems, or debugging.</li>
+<li>Use <code>Groq</code> if speed matters and you want a fast reading brief.</li>
+</ol>
+<p><b>Recommended setup pattern:</b></p>
+<ol>
+<li>Fast daily use: <code>Gemini 2.5 Flash</code> or <code>Groq Llama 3.3 70B</code></li>
+<li>Heavy engineering analysis: <code>GPT-5.2-Codex</code></li>
+<li>Keep the model field blank unless you have a reason to pin a specific one.</li>
+</ol>
+<p>Leave the model blank to use the app's built-in default for the selected provider. Available models may vary by account, project, or provider permissions.</p>`
+  },
   oauth: {
     title: 'Google OAuth Setup',
     body: `<p>OAuth lets AITap access your personal Google data (Calendar, Keep, Contacts).</p>
 <ol><li>Go to <a href="https://console.cloud.google.com/auth/overview" target="_blank" style="color:#00e5ff">GCP Auth Platform</a></li>
 <li>Configure the OAuth consent screen:<br>&bull; User type: External<br>&bull; App name: "TapInsight"<br>&bull; Add your email as test user</li>
 <li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:#00e5ff">Credentials</a> &rarr; Create &rarr; OAuth Client ID</li>
-<li>Type: <b>Desktop application</b></li>
+<li>Type: <b>Web application</b></li>
 <li>Copy both the Client ID and Client Secret</li></ol>
+<p><b>Authorized redirect URI:</b> add your companion server callback, for example <code>http://YOUR_GLASSES_IP:19110/oauth/callback</code>. If you are using ADB port forwarding, use <code>http://localhost:19110/oauth/callback</code>.</p>
 <p><b>How authorization works:</b></p>
 <ol><li>Enter Client ID + Secret above, click "Authorize with Google"</li>
 <li>Sign in and grant permission in the popup</li>
-<li>Google redirects to a page that won't load &mdash; this is normal!</li>
-<li>Copy the authorization code from the URL bar and paste it back here</li></ol>
+<li>Google redirects back to the companion server callback</li>
+<li>If that callback tab fails to complete, copy the full URL and paste it into the fallback box on this page</li></ol>
 <p><b>Enable these APIs</b> in <a href="https://console.cloud.google.com/apis/library" target="_blank" style="color:#00e5ff">API Library</a>:</p>
 <ol><li>Google Calendar API</li><li>Google Keep API</li><li>People API (Contacts)</li><li>Tasks API</li></ol>`
   },
@@ -439,11 +516,13 @@ const HELP = {
     title: 'Google Maps, Routes & Places',
     body: `<p>Enables live traffic, turn-by-turn directions, nearby place discovery, and commute time calculations on your AR glasses.</p>
 <p><b>API Key:</b> This is the same kind of <code>AIza...</code> key as your Gemini key. You can reuse the same key or create a dedicated one in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:#00e5ff">GCP Credentials</a>.</p>
-<p><b>You need to enable 3 APIs:</b></p>
+<p><b>You need to enable 5 APIs:</b></p>
 <ol>
+<li><a href="https://console.cloud.google.com/apis/library/maps-backend.googleapis.com" target="_blank" style="color:#00e5ff">Maps JavaScript API</a> &mdash; Renders the interactive map in the AR navigation HUD. Required for the map to display at all. Without this API enabled, the map will show "Something went wrong."</li>
 <li><a href="https://console.cloud.google.com/apis/library/directions-backend.googleapis.com" target="_blank" style="color:#00e5ff">Directions API</a> &mdash; Calculates routes between two locations. Provides step-by-step turn-by-turn directions, total distance, estimated travel time, and real-time traffic duration. Supports driving, walking, transit, and bicycling modes.</li>
 <li><a href="https://console.cloud.google.com/apis/library/routes.googleapis.com" target="_blank" style="color:#00e5ff">Routes API</a> &mdash; Google's next-gen routing engine. Computes optimized routes and travel times with advanced features like route matrices (comparing multiple destinations), toll estimation, and eco-friendly routing. Works alongside the Directions API for the best results.</li>
 <li><a href="https://console.cloud.google.com/apis/library/places-backend.googleapis.com" target="_blank" style="color:#00e5ff">Places API (New)</a> &mdash; Discovers nearby businesses, restaurants, gas stations, and points of interest. Powers queries like "Find coffee near me" or "What restaurants are nearby?" Returns names, addresses, ratings, hours, and photos.</li>
+<li><a href="https://console.cloud.google.com/apis/library/airquality.googleapis.com" target="_blank" style="color:#00e5ff">Air Quality API</a> &mdash; Returns current AQI and pollutant status for the glasses' current GPS location. Powers the AQI indicator next to the battery and voice queries about air quality.</li>
 </ol>
 <p><b>What it enables:</b></p>
 <ol><li>"How's traffic to work?" &rarr; Live commute time with traffic</li>
@@ -563,12 +642,62 @@ function showStatus(msg,cls){const e=document.getElementById('status');e.textCon
 
 function hasBridge(){return typeof AiTapBridge!=='undefined'}
 
+const RESEARCH_MODEL_PRESETS = {
+  gemini: {
+    fast: 'gemini-2.5-flash',
+    balanced: 'gemini-2.5-flash',
+    deep: 'gemini-2.5-pro'
+  },
+  openai_codex: {
+    fast: 'gpt-5.2-codex',
+    balanced: 'gpt-5.2-codex',
+    deep: 'gpt-5.2-codex'
+  },
+  groq: {
+    fast: 'llama-3.1-8b-instant',
+    balanced: 'llama-3.3-70b-versatile',
+    deep: 'llama-3.3-70b-versatile'
+  }
+};
+
+function getResearchProvider() {
+  return document.getElementById('researchProvider')?.value || 'gemini';
+}
+
+function refreshResearchPresetHint() {
+  const provider = getResearchProvider();
+  const hint = document.getElementById('researchPresetHint');
+  if (!hint) return;
+  const presets = RESEARCH_MODEL_PRESETS[provider] || RESEARCH_MODEL_PRESETS.gemini;
+  const providerLabels = {
+    gemini: 'Gemini',
+    openai_codex: 'OpenAI Codex',
+    groq: 'Groq'
+  };
+  hint.textContent = `${providerLabels[provider] || 'Research'} presets: Fast = ${presets.fast}, Balanced = ${presets.balanced}, Deep = ${presets.deep}.`;
+}
+
+function applyResearchPreset(level) {
+  const provider = getResearchProvider();
+  const presets = RESEARCH_MODEL_PRESETS[provider] || RESEARCH_MODEL_PRESETS.gemini;
+  const model = presets[level];
+  if (!model) return;
+  document.getElementById('researchModel').value = model;
+  refreshResearchPresetHint();
+}
+
+function clearResearchModel() {
+  document.getElementById('researchModel').value = '';
+  refreshResearchPresetHint();
+}
+
 function loadAll(){
   if(!hasBridge()){showStatus('Open this page from within AITap on your glasses.','err');return}
   for(const[id,cfg]of Object.entries(FIELDS)){
     const el=document.getElementById(id);
     try{el.value=AiTapBridge.getString(cfg.key)||''}catch(e){}
   }
+  refreshResearchPresetHint();
   renderHudOrderList();
   showStatus('Configuration loaded.','ok');
 }
@@ -587,7 +716,8 @@ function saveAll(){
 }
 
 // ── OAuth ───────────────────────────────────────────────────────
-const OAUTH_REDIRECT_URI = 'http://localhost';
+const OAUTH_REDIRECT_URI = window.location.origin.replace(/\/$/, '') + '/oauth/callback';
+let oauthPollTimer = null;
 
 function authorizeGoogle() {
   const clientId = document.getElementById('googleOAuthClientId').value.trim();
@@ -612,11 +742,26 @@ function authorizeGoogle() {
 
   window.open(authUrl, '_blank');
 
-  // Show the code entry section
+  // Show fallback code entry section and start polling for callback completion
   document.getElementById('codeEntrySection').style.display = 'block';
   const statusEl = document.getElementById('oauthStatus');
-  statusEl.textContent = 'Waiting for code...';
+  statusEl.textContent = 'Waiting for Google callback...';
   statusEl.style.color = '#ff9800';
+  startOAuthStatusPolling();
+}
+
+function startOAuthStatusPolling() {
+  if (oauthPollTimer) clearInterval(oauthPollTimer);
+  let attempts = 0;
+  oauthPollTimer = setInterval(async () => {
+    attempts += 1;
+    await checkOAuthStatus();
+    const statusEl = document.getElementById('oauthStatus');
+    if (statusEl.textContent === 'Authorized' || attempts >= 30) {
+      clearInterval(oauthPollTimer);
+      oauthPollTimer = null;
+    }
+  }, 2000);
 }
 
 async function submitOAuthCode() {
@@ -792,7 +937,12 @@ function updateCalendarSelections() {
 }
 
 // Auto-load on page ready
-document.addEventListener('DOMContentLoaded', () => { loadAll(); checkOAuthStatus(); });
+document.addEventListener('DOMContentLoaded', () => {
+  loadAll();
+  checkOAuthStatus();
+  document.getElementById('researchProvider')?.addEventListener('change', refreshResearchPresetHint);
+  refreshResearchPresetHint();
+});
 </script>
 </body>
 </html>

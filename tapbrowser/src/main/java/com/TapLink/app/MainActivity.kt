@@ -75,6 +75,8 @@ import com.ffalconxr.mercury.ipc.helpers.GPSIPCHelper
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.lang.ref.WeakReference
+import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.asin
@@ -117,6 +119,19 @@ class MainActivity :
         private const val EXTRA_BROWSER_INITIAL_URL = "tapclaw_initial_url"
         private const val EXTRA_RETURN_TO_CHAT_ON_DOUBLE_TAP =
                 "tapclaw_return_to_chat_double_tap"
+        private const val EXTRA_YOUTUBE_AUTOPLAY_QUERY = "tapclaw_youtube_autoplay_query"
+        private const val EXTRA_YOUTUBE_AUTOPLAY_MODE = "tapclaw_youtube_autoplay_mode"
+        private const val TAPCLAW_MAIN_ACTIVITY = "com.rayneo.visionclaw.MainActivity"
+        private var activeInstanceRef: WeakReference<MainActivity>? = null
+
+        @JvmStatic
+        fun prepareForIncomingYouTubeAutoplay() {
+            activeInstanceRef?.get()?.let { activity ->
+                activity.runOnUiThread {
+                    activity.prepareForIncomingYouTubeAutoplayInternal()
+                }
+            }
+        }
     }
 
     fun updateCursorSensitivity(progress: Int) {
@@ -267,6 +282,17 @@ class MainActivity :
     private var isUrlEditing = false
     private var returnToChatOnDoubleTap = false
     private var startupUrlOverride: String? = null
+    private var youtubeAutoplayQuery: String? = null
+    private var youtubeAutoplayMode: String? = null
+    /** Ordered list of video IDs scraped from YouTube search results */
+    private var youtubePlaylist: List<String> = emptyList()
+    /** Index into youtubePlaylist of the currently-playing video */
+    private var youtubePlaylistIndex: Int = 0
+    /** Last URL we injected the bootstrap script for (prevents double-injection) */
+    private var lastYouTubeInjectionUrl: String? = null
+    /** Set true during nuclear WebView clearing so onPageStarted's about:blank
+     *  recovery doesn't reload the old YouTube page. */
+    @Volatile private var nuclearCleanupInProgress = false
 
     // User Agent management
     private var defaultUserAgent: String? = null
@@ -480,6 +506,7 @@ class MainActivity :
         runCatching { com.ffalcon.mercury.android.sdk.MercurySDK.init(application) }
         parseTapClawLaunchIntent(intent)
         super.onCreate(savedInstanceState)
+        activeInstanceRef = WeakReference(this)
         // Set window background to black immediately
         window.setBackgroundDrawableResource(android.R.color.black)
 
@@ -1131,7 +1158,18 @@ class MainActivity :
 
                             private fun performDoubleTapBackNavigation() {
                                 if (returnToChatOnDoubleTap) {
-                                    finish()
+                                    try {
+                                        startActivity(
+                                            Intent().setClassName(this@MainActivity, TAPCLAW_MAIN_ACTIVITY)
+                                                .addFlags(
+                                                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                                                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                                                )
+                                        )
+                                    } catch (e: Exception) {
+                                        DebugLog.e("DoubleTapDebug", "Failed to return to TapClaw", e)
+                                        finish()
+                                    }
                                     return
                                 }
 
@@ -1309,10 +1347,25 @@ class MainActivity :
                 object : WebViewClient() {
                     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                         super.onPageStarted(view, url, favicon)
+                        DebugLog.d("YouTubeAuto", "onPageStarted[1]: url=$url")
                         // If cursor was visible, store its position
                         if (isCursorVisible) {
                             lastKnownCursorX = lastCursorX
                             lastKnownCursorY = lastCursorY
+                        }
+                        // Force desktop UA for YouTube when autoplay is active so we
+                        // get predictable desktop DOM with standard <a href="/watch?v=..."> links.
+                        if (!youtubeAutoplayQuery.isNullOrBlank() &&
+                            !youtubeAutoplayMode.isNullOrBlank() &&
+                            url != null &&
+                            (url.contains("youtube.com") || url.contains("youtu.be"))
+                        ) {
+                            val desktopUA = if (::dualWebViewGroup.isInitialized) {
+                                dualWebViewGroup.getDesktopUserAgent()
+                            } else null
+                            if (!desktopUA.isNullOrBlank() && view?.settings?.userAgentString != desktopUA) {
+                                view?.settings?.userAgentString = desktopUA
+                            }
                         }
                     }
 
@@ -1389,6 +1442,7 @@ class MainActivity :
                         )
 
                         // Auto-unmute YouTube videos that start muted due to autoplay policy
+                        DebugLog.d("YouTubeAuto", "onPageFinished: url=$url")
                         if (url != null && (url.contains("youtube.com") || url.contains("youtu.be"))) {
                             webView.evaluateJavascript(
                                     """
@@ -1426,6 +1480,7 @@ class MainActivity :
                             """,
                                     null
                             )
+                            injectYouTubePlaylistAutomation(webView, url)
                         }
                     }
 
@@ -1498,8 +1553,9 @@ class MainActivity :
         // Then try to restore the previous state
         setupWebView() // This will attempt to load the saved URL
 
-        // Only clear cache/history if restoration failed
-        if (webView.url == null || webView.url == "about:blank") {
+        val hasExplicitStartupUrl = !startupUrlOverride.isNullOrBlank()
+        // Only fall back to the dashboard when we are not servicing an explicit launch URL.
+        if ((webView.url == null || webView.url == "about:blank") && !hasExplicitStartupUrl) {
             webView.clearCache(true)
             webView.clearHistory()
             webView.loadUrl(Constants.DEFAULT_URL)
@@ -1509,8 +1565,51 @@ class MainActivity :
                 ?.takeIf { it.isNotBlank() }
                 ?.let { overrideUrl ->
                     val formatted = formatUrl(overrideUrl)
-                    webView.loadUrl(formatted)
-                    persistActiveUrl("tapclaw_intent", formatted, webView)
+                    val isYouTube = formatted.contains("youtube.com") || formatted.contains("youtu.be")
+                    // Force desktop UA for YouTube autoplay
+                    if (!youtubeAutoplayQuery.isNullOrBlank() &&
+                        !youtubeAutoplayMode.isNullOrBlank() && isYouTube
+                    ) {
+                        val desktopUA = if (::dualWebViewGroup.isInitialized) {
+                            dualWebViewGroup.getDesktopUserAgent()
+                        } else null
+                        if (!desktopUA.isNullOrBlank()) {
+                            webView.settings.userAgentString = desktopUA
+                        }
+                    }
+                    // If launching directly into YouTube, wipe the restored
+                    // browsing history so the WebView doesn't try to load
+                    // old pages (CNN, Fox News, etc.) from the back stack.
+                    if (isYouTube) {
+                        webView = dualWebViewGroup.resetToSingleWindow(loadDefaultUrl = false)
+                        webView.stopLoading()
+                        webView.clearHistory()
+                        webView.clearCache(true)
+                        try {
+                            getSharedPreferences(prefsName, MODE_PRIVATE).edit()
+                                .remove(Constants.KEY_WEBVIEW_STATE)
+                                .apply()
+                        } catch (_: Exception) {}
+                        DebugLog.d("YouTubeAuto", "loadInitialPage: cleared history/cache for YouTube cold start")
+                    }
+                    if (isAddressOrMapsUrl(formatted)) {
+                        // Aggressively kill ALL audio across ALL WebViews before loading map
+                        killAllWebViewAudio()
+                        webView.settings.mediaPlaybackRequiresUserGesture = true // block audio on map page
+                        nuclearCleanupInProgress = true
+                        webView.loadUrl("about:blank")
+                        val arNavUrl = buildArNavUrl(formatted)
+                        DebugLog.d("ARNav", "coldStart: intercepted → $arNavUrl")
+                        webView.postDelayed({
+                            nuclearCleanupInProgress = false
+                            webView.loadUrl(arNavUrl)
+                        }, 200)
+                        persistActiveUrl("tapclaw_intent_arnav", arNavUrl, webView)
+                    } else {
+                        webView.settings.mediaPlaybackRequiresUserGesture = false // restore for YouTube etc.
+                        webView.loadUrl(formatted)
+                        persistActiveUrl("tapclaw_intent", formatted, webView)
+                    }
                     startupUrlOverride = null
                 }
 
@@ -1539,14 +1638,131 @@ class MainActivity :
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        val incomingOverrideUrl =
+                intent.getStringExtra(EXTRA_BROWSER_INITIAL_URL)
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+        val incomingFormattedUrl = incomingOverrideUrl?.let { formatUrl(it) }
+        val incomingIsYouTube =
+                incomingFormattedUrl?.let {
+                    it.contains("youtube.com", ignoreCase = true) ||
+                            it.contains("youtu.be", ignoreCase = true)
+                } == true
+        if (incomingIsYouTube && ::dualWebViewGroup.isInitialized) {
+            dualWebViewGroup.pauseYouTubeMediaAcrossAllWindows()
+        }
+        // IMPORTANT: Snapshot the OLD autoplay state BEFORE parsing the new intent,
+        // so we can tell if Gemini is sending a fresh YouTube request or a non-YouTube URL.
+        val hadOldAutoplay = !youtubeAutoplayQuery.isNullOrBlank() && !youtubeAutoplayMode.isNullOrBlank()
         parseTapClawLaunchIntent(intent)
         val overrideUrl = startupUrlOverride
         if (::webView.isInitialized && !overrideUrl.isNullOrBlank()) {
             val formatted = formatUrl(overrideUrl)
-            webView.loadUrl(formatted)
-            persistActiveUrl("tapclaw_new_intent", formatted, webView)
+            val isYouTube = formatted.contains("youtube.com") || formatted.contains("youtu.be")
+            DebugLog.d("YouTubeAuto", "onNewIntent: url=$formatted isYouTube=$isYouTube " +
+                "query='${youtubeAutoplayQuery}' mode='${youtubeAutoplayMode}' " +
+                "hadOldAutoplay=$hadOldAutoplay playlistSize=${youtubePlaylist.size}")
+
+            // Force desktop UA for YouTube autoplay so we get standard desktop DOM
+            if (!youtubeAutoplayQuery.isNullOrBlank() &&
+                !youtubeAutoplayMode.isNullOrBlank() && isYouTube
+            ) {
+                val desktopUA = if (::dualWebViewGroup.isInitialized) {
+                    dualWebViewGroup.getDesktopUserAgent()
+                } else null
+                if (!desktopUA.isNullOrBlank()) {
+                    webView.settings.userAgentString = desktopUA
+                }
+            }
+
+            // ── Clean up before loading a new YouTube URL ──
+            // AVOID navigating to about:blank — it triggers onPageStarted/
+            // onPageFinished callbacks that save state, restore history URLs
+            // (CNN, Fox News, etc.), and fight with DualWebViewGroup's
+            // session persistence.  Instead: stop current load, kill media
+            // via JS, clear Kotlin-side state, then directly load the new URL.
+            // When loadUrl() is called the WebView engine internally tears
+            // down the old page (and its media pipeline) before building
+            // the new one, which is sufficient.
+            if (isYouTube) {
+                webView = dualWebViewGroup.resetToSingleWindow(loadDefaultUrl = false)
+                // 1. Stop everything
+                webView.stopLoading()
+
+                // 2. Wipe the WebView's back/forward history + disk cache so
+                //    no stale pages (CNN, Fox News, etc.) can be restored or
+                //    replayed by the navigation stack or session persistence.
+                webView.clearHistory()
+                webView.clearCache(true)
+
+                // 3. Kill media + all our injected timers in the old page
+                webView.evaluateJavascript(
+                    "(function(){" +
+                    "try{document.querySelectorAll('video,audio').forEach(function(el){" +
+                    "try{el.pause();el.removeAttribute('src');el.load();}catch(e){}});}catch(e){}" +
+                    "var id=window.setTimeout(function(){},0);while(id--)clearTimeout(id);" +
+                    "var iid=window.setInterval(function(){},0);while(iid--)clearInterval(iid);" +
+                    "})()", null
+                )
+
+                // 4. Clear ALL stale Kotlin-side state
+                lastYouTubeInjectionUrl = null
+                youtubePlaylist = emptyList()
+                youtubePlaylistIndex = 0
+
+                // 5. Also clear the persisted WebView state from SharedPreferences
+                //    so that if the app is killed+restarted, tryRestoreSession()
+                //    doesn't reload the old browsing history.
+                try {
+                    getSharedPreferences(prefsName, MODE_PRIVATE).edit()
+                        .remove(Constants.KEY_WEBVIEW_STATE)
+                        .apply()
+                } catch (_: Exception) {}
+
+                DebugLog.d("YouTubeAuto", "onNewIntent: cleared history + cache + playlist + persisted state")
+
+                // 6. Load the new YouTube URL on a clean slate
+                webView.settings.mediaPlaybackRequiresUserGesture = false // restore for YouTube
+                webView.loadUrl(formatted)
+                persistActiveUrl("tapclaw_new_intent", formatted, webView)
+            } else if (isAddressOrMapsUrl(formatted)) {
+                // ── AR Navigation HUD ──
+                if (hadOldAutoplay) {
+                    youtubeAutoplayQuery = null
+                    youtubeAutoplayMode = null
+                    youtubePlaylist = emptyList()
+                    youtubePlaylistIndex = 0
+                    lastYouTubeInjectionUrl = null
+                }
+                // Aggressively kill ALL audio across ALL WebViews before loading map
+                killAllWebViewAudio()
+                webView.settings.mediaPlaybackRequiresUserGesture = true // block audio on map page
+                nuclearCleanupInProgress = true
+                webView.loadUrl("about:blank")
+                val arNavUrl = buildArNavUrl(formatted)
+                DebugLog.d("ARNav", "onNewIntent: intercepted → $arNavUrl")
+                webView.postDelayed({
+                    nuclearCleanupInProgress = false
+                    webView.loadUrl(arNavUrl)
+                }, 200)
+                persistActiveUrl("tapclaw_new_intent_arnav", arNavUrl, webView)
+            } else {
+                // Non-YouTube URL — clear any leftover YouTube state
+                if (hadOldAutoplay) {
+                    youtubeAutoplayQuery = null
+                    youtubeAutoplayMode = null
+                    youtubePlaylist = emptyList()
+                    youtubePlaylistIndex = 0
+                    lastYouTubeInjectionUrl = null
+                    DebugLog.d("YouTubeAuto", "onNewIntent: non-YT URL, cleared autoplay state")
+                }
+                webView.settings.mediaPlaybackRequiresUserGesture = false // restore for non-map
+                webView.loadUrl(formatted)
+                persistActiveUrl("tapclaw_new_intent", formatted, webView)
+            }
             startupUrlOverride = null
         }
+        syncTapRadioPlaybackUi()
     }
 
     private fun parseTapClawLaunchIntent(intent: Intent?) {
@@ -1561,6 +1777,665 @@ class MainActivity :
                         ?.trim()
                         ?.takeIf { it.isNotBlank() }
                         ?: startupUrlOverride
+        youtubeAutoplayQuery =
+                intent.getStringExtra(EXTRA_YOUTUBE_AUTOPLAY_QUERY)
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                        ?: youtubeAutoplayQuery
+        youtubeAutoplayMode =
+                intent.getStringExtra(EXTRA_YOUTUBE_AUTOPLAY_MODE)
+                        ?.trim()
+                        ?.lowercase(Locale.US)
+                        ?.takeIf { it == "video" || it == "music" || it == "subscriptions" || it == "history" }
+                        ?: youtubeAutoplayMode
+    }
+
+    private fun injectYouTubePlaylistAutomation(view: WebView, url: String) {
+        DebugLog.d("YouTubeAuto", "injectYouTubePlaylistAutomation called — url=$url")
+        var query = youtubeAutoplayQuery?.trim().orEmpty()
+        var mode = youtubeAutoplayMode?.trim().orEmpty()
+        DebugLog.d("YouTubeAuto", "  extras: query='$query' mode='$mode'")
+
+        // Fallback: extract autoplay parameters from the URL itself
+        // (covers typed-chat and Gemini open_taplink paths).
+        if ((query.isBlank() || mode.isBlank()) && url.contains("taplink_autoplay=")) {
+            try {
+                val uri = android.net.Uri.parse(url)
+                val urlMode = uri.getQueryParameter("taplink_autoplay")
+                    ?.trim()?.lowercase(Locale.US)
+                    ?.takeIf { it == "video" || it == "music" || it == "subscriptions" || it == "history" }
+                val urlQuery = uri.getQueryParameter("search_query")?.trim()
+                if (!urlMode.isNullOrBlank()) {
+                    mode = urlMode
+                    query = when {
+                        !urlQuery.isNullOrBlank() -> urlQuery
+                        urlMode == "subscriptions" -> "subscriptions"
+                        urlMode == "history" -> "history"
+                        else -> query
+                    }
+                    youtubeAutoplayQuery = query
+                    youtubeAutoplayMode = mode
+                    DebugLog.d("YouTubeAuto", "  URL fallback: query='$query' mode='$mode'")
+                }
+            } catch (_: Exception) { /* ignore malformed URIs */ }
+        }
+
+        if (query.isBlank() || mode.isBlank()) {
+            DebugLog.d("YouTubeAuto", "  SKIPPING — query or mode is blank")
+            return
+        }
+        DebugLog.d("YouTubeAuto", "  INJECTING bootstrap JS for query='$query' mode='$mode'")
+        // Only reset injection flags if this is a genuinely new page (different URL).
+        // This prevents double-injection when onPageFinished fires multiple times
+        // (iframes, redirects), which would toggle fullscreen on and off.
+        val urlBase = url.substringBefore("#").substringBefore("&t=")
+        if (urlBase != lastYouTubeInjectionUrl) {
+            lastYouTubeInjectionUrl = urlBase
+            view.evaluateJavascript("window.__taplink_yt_injected=false;window.__taplink_watch_injected=false;", null)
+        }
+        view.evaluateJavascript(buildYouTubeAutomationBootstrapScript(query, mode), null)
+    }
+
+    /**
+     * Completely rewritten YouTube automation — simple & robust.
+     *
+     * SEARCH PAGE: finds the first clickable video link and navigates to it.
+     * WATCH  PAGE: enables captions, unmutes, injects a floating ↻ replay
+     *              button (bottom-left), and lets YouTube's built-in autoplay
+     *              handle the next video.
+     */
+    internal fun buildYouTubeAutomationBootstrapScript(query: String, mode: String): String {
+        return """
+            (function(){
+                console.log('[TapLink-YT] Bootstrap injected, url=' + location.href);
+                if (window.__taplink_yt_injected) { console.log('[TapLink-YT] Already injected, skipping'); return; }
+                window.__taplink_yt_injected = true;
+
+                var loc = location.href || '';
+                var autoplayMode = ${org.json.JSONObject.quote(mode)};
+                var wantsSubscriptions = autoplayMode === 'subscriptions';
+                var wantsHistory = autoplayMode === 'history';
+                var isSearch = loc.indexOf('youtube.com/results') >= 0;
+                var isSubscriptions = loc.indexOf('youtube.com/feed/subscriptions') >= 0;
+                var isHistory = loc.indexOf('youtube.com/feed/history') >= 0;
+                var isWatch  = loc.indexOf('youtube.com/watch') >= 0
+                            || loc.indexOf('youtu.be/') >= 0;
+                console.log('[TapLink-YT] isSearch=' + isSearch + ' isSubscriptions=' + isSubscriptions + ' isHistory=' + isHistory + ' isWatch=' + isWatch + ' wantsSubscriptions=' + wantsSubscriptions + ' wantsHistory=' + wantsHistory);
+
+                function extractVideoIdFromHref(href) {
+                    if (!href || href.indexOf('/shorts/') >= 0) return null;
+                    var m = href.match(/[?&]v=([A-Za-z0-9_-]{11})/);
+                    return m ? m[1] : null;
+                }
+
+                /* ── Extract unique 11-char video IDs from a JSON string ── */
+                function extractVideoIdsFromJson(jsonStr) {
+                    var ids = [], seen = {};
+                    var re = /"videoId"\s*:\s*"([A-Za-z0-9_-]{11})"/g;
+                    var m;
+                    while ((m = re.exec(jsonStr)) !== null) {
+                        if (!seen[m[1]]) { seen[m[1]] = true; ids.push(m[1]); }
+                    }
+                    return ids;
+                }
+
+                /* ── Get InnerTube API key from YouTube's global config ── */
+                function getInnertubeApiKey() {
+                    try { if (window.ytcfg && ytcfg.get) return ytcfg.get('INNERTUBE_API_KEY') || ''; } catch(e) {}
+                    try { if (window.ytcfg && ytcfg.data_) return ytcfg.data_.INNERTUBE_API_KEY || ''; } catch(e) {}
+                    // Fallback: scan page source for the key
+                    try {
+                        var html = document.documentElement.innerHTML;
+                        var km = html.match(/"INNERTUBE_API_KEY"\s*:\s*"([^"]+)"/);
+                        if (km) return km[1];
+                    } catch(e) {}
+                    return '';
+                }
+
+                function getClientVersion() {
+                    var clientVersion = '2.20260101.00.00';
+                    try {
+                        var cv = (ytcfg.get && ytcfg.get('INNERTUBE_CLIENT_VERSION')) ||
+                                 (ytcfg.data_ && ytcfg.data_.INNERTUBE_CLIENT_VERSION);
+                        if (cv) clientVersion = cv;
+                    } catch(e) {}
+                    return clientVersion;
+                }
+
+                function getVisitorData() {
+                    try { if (ytcfg.get) return ytcfg.get('VISITOR_DATA') || ''; } catch(e) {}
+                    try { if (ytcfg.data_) return ytcfg.data_.VISITOR_DATA || ''; } catch(e) {}
+                    return '';
+                }
+
+                /* ── Generate SAPISIDHASH authorization for authenticated InnerTube requests ── */
+                function getSapisidFromCookies() {
+                    var m = document.cookie.match(/(?:^|;\s*)SAPISID=([^;]+)/);
+                    if (m) return m[1];
+                    var m3 = document.cookie.match(/(?:^|;\s*)__Secure-3PAPISID=([^;]+)/);
+                    if (m3) return m3[1];
+                    return '';
+                }
+
+                function sha1Hex(str) {
+                    // Simple synchronous SHA-1 for SAPISIDHASH (SubtleCrypto is async, so use fallback)
+                    // Encode the string to bytes
+                    var encoder = new TextEncoder();
+                    var data = encoder.encode(str);
+                    // Use SubtleCrypto as a promise
+                    return crypto.subtle.digest('SHA-1', data).then(function(buf) {
+                        var arr = new Uint8Array(buf);
+                        var hex = '';
+                        for (var i = 0; i < arr.length; i++) {
+                            hex += ('0' + arr[i].toString(16)).slice(-2);
+                        }
+                        return hex;
+                    });
+                }
+
+                function generateSapiSidHash() {
+                    var sapisid = getSapisidFromCookies();
+                    if (!sapisid) return Promise.resolve('');
+                    var ts = Math.floor(Date.now() / 1000);
+                    var origin = 'https://www.youtube.com';
+                    return sha1Hex(ts + ' ' + sapisid + ' ' + origin).then(function(hash) {
+                        return 'SAPISIDHASH ' + ts + '_' + hash;
+                    });
+                }
+
+                /* ── Build authenticated headers for InnerTube API ── */
+                function getAuthHeaders() {
+                    return generateSapiSidHash().then(function(authHash) {
+                        var headers = { 'Content-Type': 'application/json' };
+                        if (authHash) {
+                            headers['Authorization'] = authHash;
+                            console.log('[TapLink-YT] SAPISIDHASH auth header generated');
+                        } else {
+                            console.log('[TapLink-YT] No SAPISID cookie — request will be unauthenticated');
+                        }
+                        try { var si = ytcfg.get('SESSION_INDEX'); if (si !== undefined && si !== null) headers['X-Goog-AuthUser'] = String(si); } catch(e) {}
+                        try { var pageCl = ytcfg.get('PAGE_CL'); if (pageCl) headers['X-Goog-PageId'] = String(pageCl); } catch(e) {}
+                        try { var idTok = ytcfg.get('ID_TOKEN'); if (idTok) headers['X-Youtube-Identity-Token'] = idTok; } catch(e) {}
+                        headers['X-Youtube-Client-Name'] = '1';
+                        headers['X-Youtube-Client-Version'] = getClientVersion();
+                        headers['Origin'] = 'https://www.youtube.com';
+                        headers['Referer'] = 'https://www.youtube.com/';
+                        return headers;
+                    }).catch(function(e) {
+                        console.warn('[TapLink-YT] Auth header generation failed:', e);
+                        return { 'Content-Type': 'application/json' };
+                    });
+                }
+
+                /* ── Build InnerTube request body with full client context ── */
+                function buildBrowseBody(browseId) {
+                    var body = {
+                        browseId: browseId,
+                        context: {
+                            client: {
+                                clientName: 'WEB',
+                                clientVersion: getClientVersion(),
+                                hl: 'en',
+                                gl: 'US'
+                            }
+                        }
+                    };
+                    var vd = getVisitorData();
+                    if (vd) body.context.client.visitorData = vd;
+                    return body;
+                }
+
+                /* ── Fetch subscription video IDs via YouTube InnerTube browse API ── */
+                function fetchSubscriptionIds() {
+                    var apiKey = getInnertubeApiKey();
+                    console.log('[TapLink-YT] InnerTube API key: ' + (apiKey ? apiKey.substring(0,8) + '...' : 'MISSING'));
+                    if (!apiKey) return Promise.resolve([]);
+
+                    return getAuthHeaders().then(function(headers) {
+                        return fetch('https://www.youtube.com/youtubei/v1/browse?key=' + apiKey + '&prettyPrint=false', {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: headers,
+                            body: JSON.stringify(buildBrowseBody('FEsubscriptions'))
+                        });
+                    })
+                    .then(function(r) {
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        return r.text();
+                    })
+                    .then(function(text) {
+                        var ids = extractVideoIdsFromJson(text);
+                        console.log('[TapLink-YT] InnerTube subscriptions returned ' + ids.length + ' video IDs');
+                        return ids;
+                    })
+                    .catch(function(e) {
+                        console.error('[TapLink-YT] InnerTube subscriptions failed:', e);
+                        return [];
+                    });
+                }
+
+                /* ── Fetch history video IDs via YouTube InnerTube browse API ── */
+                function fetchHistoryIds() {
+                    var apiKey = getInnertubeApiKey();
+                    console.log('[TapLink-YT] InnerTube API key (history): ' + (apiKey ? apiKey.substring(0,8) + '...' : 'MISSING'));
+                    if (!apiKey) return Promise.resolve([]);
+
+                    return getAuthHeaders().then(function(headers) {
+                        return fetch('https://www.youtube.com/youtubei/v1/browse?key=' + apiKey + '&prettyPrint=false', {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: headers,
+                            body: JSON.stringify(buildBrowseBody('FEhistory'))
+                        });
+                    })
+                    .then(function(r) {
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        return r.text();
+                    })
+                    .then(function(text) {
+                        var ids = extractVideoIdsFromJson(text);
+                        console.log('[TapLink-YT] InnerTube history returned ' + ids.length + ' video IDs');
+                        return ids;
+                    })
+                    .catch(function(e) {
+                        console.error('[TapLink-YT] InnerTube history failed:', e);
+                        return [];
+                    });
+                }
+
+                /* ── Collect search IDs from page data (for search results pages) ── */
+                function collectSearchIds() {
+                    var ids = [], seen = {};
+                    function addId(id) { if (id && id.length === 11 && !seen[id]) { seen[id]=true; ids.push(id); } }
+                    // 1. ytInitialData
+                    try {
+                        if (window.ytInitialData) {
+                            extractVideoIdsFromJson(JSON.stringify(window.ytInitialData)).forEach(addId);
+                        }
+                    } catch(e) {}
+                    // 2. Script tags
+                    if (ids.length < 5) {
+                        try {
+                            var scripts = document.querySelectorAll('script');
+                            for (var k = 0; k < scripts.length; k++) {
+                                var txt = scripts[k].textContent || '';
+                                if (txt.indexOf('"videoId"') < 0) continue;
+                                extractVideoIdsFromJson(txt).forEach(addId);
+                            }
+                        } catch(e) {}
+                    }
+                    // 3. DOM links
+                    var allLinks = document.querySelectorAll('a[href*="/watch?v="]');
+                    for (var j = 0; j < allLinks.length; j++) {
+                        var vid = extractVideoIdFromHref(allLinks[j].getAttribute('href') || '');
+                        if (vid) addId(vid);
+                    }
+                    return ids;
+                }
+
+                function finishAndPlay(ids, sourceLabel) {
+                    ids = ids.slice(0, 30);
+                    console.log('[TapLink-YT] Final playlist (' + sourceLabel + '): ' + ids.length + ' videos');
+                    console.log('[TapLink-YT] IDs: ' + ids.slice(0, 10).join(', '));
+                    try {
+                        var bridge = window.GroqBridge;
+                        if (bridge && bridge.setYouTubePlaylist) {
+                            bridge.setYouTubePlaylist(JSON.stringify(ids));
+                        }
+                    } catch(e) { console.log('[TapLink-YT] Bridge error: ' + e); }
+                    location.href = 'https://www.youtube.com/watch?v=' + ids[0] + '&autoplay=1&cc_load_policy=1';
+                }
+
+                /* ── SUBSCRIPTIONS: InnerTube API (no scrolling, no DOM scraping) ── */
+                if (wantsSubscriptions && !isWatch) {
+                    console.log('[TapLink-YT] Fetching subscriptions via InnerTube API...');
+                    fetchSubscriptionIds().then(function(ids) {
+                        if (ids.length >= 1) {
+                            finishAndPlay(ids, 'InnerTube subscriptions');
+                            return;
+                        }
+                        // Fallback: try ytInitialData if we're on the subscriptions page
+                        console.log('[TapLink-YT] InnerTube returned 0 — trying ytInitialData fallback');
+                        var fallbackIds = collectSearchIds();
+                        if (fallbackIds.length >= 1) {
+                            finishAndPlay(fallbackIds, 'ytInitialData fallback');
+                            return;
+                        }
+                        console.log('[TapLink-YT] No subscription videos found via any method');
+                    });
+                    return;
+                }
+
+                /* ── HISTORY: InnerTube API (no scrolling, no DOM scraping) ── */
+                if (wantsHistory && !isWatch) {
+                    console.log('[TapLink-YT] Fetching history via InnerTube API...');
+                    fetchHistoryIds().then(function(ids) {
+                        if (ids.length >= 1) {
+                            finishAndPlay(ids, 'InnerTube history');
+                            return;
+                        }
+                        // Fallback: try ytInitialData if we're on the history page
+                        console.log('[TapLink-YT] InnerTube history returned 0 — trying ytInitialData fallback');
+                        var fallbackIds = collectSearchIds();
+                        if (fallbackIds.length >= 1) {
+                            finishAndPlay(fallbackIds, 'ytInitialData history fallback');
+                            return;
+                        }
+                        console.log('[TapLink-YT] No history videos found via any method');
+                    });
+                    return;
+                }
+
+                /* ── SEARCH PAGE: collect IDs from page data ── */
+                if (isSearch) {
+                    var scrollCount = 0;
+                    var maxScrolls = 8;
+
+                    function scrollAndCollect() {
+                        var ids = collectSearchIds();
+                        console.log('[TapLink-YT] Scroll ' + scrollCount + '/' + maxScrolls + ': found ' + ids.length + ' videos');
+
+                        if (ids.length >= 20 || scrollCount >= maxScrolls) {
+                            if (ids.length === 0) {
+                                if (scrollCount < maxScrolls + 3) {
+                                    scrollCount++;
+                                    window.scrollBy(0, window.innerHeight * 2);
+                                    setTimeout(scrollAndCollect, 2000);
+                                    return;
+                                }
+                                console.log('[TapLink-YT] GAVE UP — no videos found');
+                                return;
+                            }
+                            finishAndPlay(ids, 'search results');
+                            return;
+                        }
+
+                        scrollCount++;
+                        window.scrollBy(0, window.innerHeight * 2);
+                        setTimeout(scrollAndCollect, 1500);
+                    }
+
+                    setTimeout(scrollAndCollect, 2000);
+                    return;
+                }
+
+                /* ── WATCH PAGE: wait for playing → fullscreen → captions → hijack next ── */
+                if (isWatch) {
+                    console.log('[TapLink-YT] Watch page detected');
+
+                    var fsDone = false;
+                    var ccDone = false;
+                    var nextHijacked = false;
+                    var boundVideoEl = null;
+
+                    /* ── CSS FULLSCREEN ──
+                       Since WebView blocks ALL programmatic fullscreen (user gesture
+                       required), we use CSS injection to make the video fill the
+                       viewport and have Kotlin enter immersive mode. No tap/key
+                       simulation needed. Works reliably. */
+
+                    function enterCssFullscreen() {
+                        if (fsDone) return;
+                        // Don't auto-enter CSS fullscreen if user manually chose a different view mode
+                        if (typeof window.__tl_view_mode !== 'undefined' && window.__tl_view_mode !== 0) {
+                            console.log('[TapLink-YT] Skipping auto CSS fs — user chose view mode ' + window.__tl_view_mode);
+                            fsDone = true;
+                            return;
+                        }
+                        fsDone = true;
+                        console.log('[TapLink-YT] Entering CSS fullscreen mode');
+                        try { window.GroqBridge.enterCssFullscreen(); } catch(e) {
+                            console.log('[TapLink-YT] enterCssFullscreen bridge failed: ' + e);
+                        }
+                    }
+
+                    /* Wait for video playback, then enter CSS fullscreen after 2s */
+                    var videoCheckCount = 0;
+                    function waitForVideoPlaying() {
+                        var v = document.querySelector('video');
+                        if (v) {
+                            console.log('[TapLink-YT] Video found: paused=' + v.paused + ' readyState=' + v.readyState + ' currentTime=' + v.currentTime.toFixed(1));
+                            if (!v.paused && v.readyState >= 3 && v.currentTime > 0.5) {
+                                console.log('[TapLink-YT] Video playing (t=' + v.currentTime.toFixed(1) + ') → CSS fullscreen in 2s');
+                                setTimeout(enterCssFullscreen, 2000);
+                                return;
+                            }
+                            var started = false;
+                            function onTimeUpdate() {
+                                if (started) return;
+                                if (v.currentTime > 0.5 && !v.paused) {
+                                    started = true;
+                                    v.removeEventListener('timeupdate', onTimeUpdate);
+                                    console.log('[TapLink-YT] Video timeupdate confirms playback (t=' + v.currentTime.toFixed(1) + ') → CSS fullscreen in 2s');
+                                    setTimeout(enterCssFullscreen, 2000);
+                                }
+                            }
+                            v.addEventListener('timeupdate', onTimeUpdate);
+                            if (v.paused) {
+                                v.play().catch(function(e) {
+                                    v.muted = true;
+                                    v.play().catch(function(){});
+                                });
+                            }
+                            if (v.muted) v.muted = false;
+                            setTimeout(function() {
+                                if (!started && !fsDone) {
+                                    started = true;
+                                    v.removeEventListener('timeupdate', onTimeUpdate);
+                                    console.log('[TapLink-YT] SAFETY: 15s elapsed, forcing CSS fullscreen');
+                                    enterCssFullscreen();
+                                }
+                            }, 15000);
+                            return;
+                        }
+                        videoCheckCount++;
+                        if (videoCheckCount < 40) {
+                            if (videoCheckCount % 10 === 0) console.log('[TapLink-YT] Waiting for video element... attempt ' + videoCheckCount);
+                            setTimeout(waitForVideoPlaying, 300);
+                        }
+                    }
+                    waitForVideoPlaying();
+
+                    /* ── NAV BUTTONS: inject immediately (buttons go on document.body) ── */
+                    try { window.GroqBridge.injectNavButtons(); } catch(e) {
+                        console.log('[TapLink-YT] injectNavButtons bridge failed: ' + e);
+                    }
+
+                    /* ── CC ── */
+                    function enableCC() {
+                        if (ccDone) return;
+                        var ccBtn = document.querySelector('.ytp-subtitles-button');
+                        if (!ccBtn) return;
+                        ccDone = true;
+                        if (ccBtn.getAttribute('aria-pressed') !== 'true') {
+                            ccBtn.click();
+                            console.log('[TapLink-YT] CC enabled');
+                        }
+                    }
+
+                    /* ── ENSURE PLAY (only until playback first starts) ──
+                       Uses window-level flag so re-injections don't reset it. */
+                    function ensurePlay() {
+                        if (window.__taplink_playback_started) return;
+                        var v = document.querySelector('video');
+                        if (!v) return;
+                        if (v.muted) v.muted = false;
+                        if (!v.paused && v.currentTime > 0.5) {
+                            window.__taplink_playback_started = true;
+                            console.log('[TapLink-YT] Playback confirmed, ensurePlay disabled');
+                            return;
+                        }
+                        if (v.paused) v.play().catch(function(){});
+                    }
+
+                    /* ── HIJACK NEXT BUTTON to use our playlist ── */
+                    function hijackNextButton() {
+                        if (nextHijacked) return;
+                        var nb = document.querySelector('.ytp-next-button');
+                        if (!nb) return;
+                        nextHijacked = true;
+                        var clone = nb.cloneNode(true);
+                        nb.parentNode.replaceChild(clone, nb);
+                        clone.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.stopImmediatePropagation();
+                            console.log('[TapLink-YT] Next button → TapLink playlist');
+                            try { window.GroqBridge.playNextInPlaylist(); }
+                            catch(err) { console.log('[TapLink-YT] Bridge error: ' + err); }
+                        }, true);
+                        console.log('[TapLink-YT] Next button hijacked');
+                    }
+
+                    /* ── AUTO-ADVANCE when video ends ── */
+                    function bindEnded() {
+                        var v = document.querySelector('video');
+                        if (!v || v === boundVideoEl) return;
+                        boundVideoEl = v;
+                        v.addEventListener('ended', function() {
+                            console.log('[TapLink-YT] Video ended — playing next');
+                            try { window.GroqBridge.playNextInPlaylist(); }
+                            catch(e) { console.log('[TapLink-YT] Bridge error: ' + e); }
+                        });
+                        console.log('[TapLink-YT] ended listener bound');
+                    }
+
+                    /* Periodic tick for CC, play, hijack, ended.
+                       Fullscreen is handled separately by the 'playing' event. */
+                    var watchAttempts = 0;
+                    function tick() {
+                        enableCC();
+                        ensurePlay();
+                        hijackNextButton();
+                        bindEnded();
+                        watchAttempts++;
+                        if (watchAttempts < 25) setTimeout(tick, 1000);
+                    }
+                    setTimeout(tick, 1000);
+                }
+            })();
+        """.trimIndent()
+    }
+
+    /**
+     * Lightweight watch-page script for when a YouTube watch URL is opened
+     * directly (e.g. via taplink_playlist=1). Enables captions, unmutes,
+     * and adds the floating replay button.
+     */
+    private fun buildYouTubeWatchAutomationScript(): String {
+        return """
+            (function(){
+                if (window.__taplink_watch_injected) return;
+                window.__taplink_watch_injected = true;
+                console.log('[TapLink-YT] Watch automation script injected');
+
+                var fsDone = false;
+                var ccDone = false;
+                var nextHijacked = false;
+                var boundVideoEl = null;
+
+                /* ── FULLSCREEN: wait 8s for YouTube to settle, then try webkitEnterFullscreen or native tap ── */
+                document.addEventListener('fullscreenchange', function() {
+                    if (document.fullscreenElement) { fsDone = true; }
+                });
+                document.addEventListener('webkitfullscreenchange', function() {
+                    if (document.webkitFullscreenElement) { fsDone = true; }
+                });
+                /* CSS FULLSCREEN — same approach as bootstrap */
+                function enterCssFs() {
+                    if (fsDone) return;
+                    if (typeof window.__tl_view_mode !== 'undefined' && window.__tl_view_mode !== 0) {
+                        console.log('[TapLink-YT] watch: skipping auto CSS fs — user chose view ' + window.__tl_view_mode);
+                        fsDone = true;
+                        return;
+                    }
+                    fsDone = true;
+                    console.log('[TapLink-YT] watch: entering CSS fullscreen');
+                    try { window.GroqBridge.enterCssFullscreen(); } catch(e) {}
+                }
+                var vc = 0;
+                function waitForPlaying() {
+                    var v = document.querySelector('video');
+                    if (v) {
+                        if (!v.paused && v.readyState >= 3 && v.currentTime > 0.5) {
+                            console.log('[TapLink-YT] watch: video playing (t=' + v.currentTime.toFixed(1) + ') → CSS fs in 2s');
+                            setTimeout(enterCssFs, 2000);
+                            return;
+                        }
+                        var started = false;
+                        function onTime() {
+                            if (started) return;
+                            if (v.currentTime > 0.5 && !v.paused) {
+                                started = true;
+                                v.removeEventListener('timeupdate', onTime);
+                                console.log('[TapLink-YT] watch: timeupdate (t=' + v.currentTime.toFixed(1) + ') → CSS fs in 2s');
+                                setTimeout(enterCssFs, 2000);
+                            }
+                        }
+                        v.addEventListener('timeupdate', onTime);
+                        if (v.paused) v.play().catch(function(){});
+                        if (v.muted) v.muted = false;
+                        setTimeout(function() {
+                            if (!started && !fsDone) { started = true; v.removeEventListener('timeupdate', onTime); enterCssFs(); }
+                        }, 15000);
+                        return;
+                    }
+                    vc++;
+                    if (vc < 40) setTimeout(waitForPlaying, 300);
+                }
+                waitForPlaying();
+
+                /* ── NAV BUTTONS: inject immediately (buttons go on document.body) ── */
+                try { window.GroqBridge.injectNavButtons(); } catch(e) {}
+
+                function enableCC() {
+                    if (ccDone) return;
+                    var btn = document.querySelector('.ytp-subtitles-button');
+                    if (!btn) return;
+                    ccDone = true;
+                    if (btn.getAttribute('aria-pressed') !== 'true') btn.click();
+                }
+                function ensurePlay() {
+                    if (window.__taplink_playback_started) return;
+                    var v = document.querySelector('video');
+                    if (!v) return;
+                    if (v.muted) v.muted = false;
+                    if (!v.paused && v.currentTime > 0.5) {
+                        window.__taplink_playback_started = true;
+                        return;
+                    }
+                    if (v.paused) v.play().catch(function(){});
+                }
+                function hijackNextButton() {
+                    if (nextHijacked) return;
+                    var nb = document.querySelector('.ytp-next-button');
+                    if (!nb) return;
+                    nextHijacked = true;
+                    var clone = nb.cloneNode(true);
+                    nb.parentNode.replaceChild(clone, nb);
+                    clone.addEventListener('click', function(e) {
+                        e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+                        try { window.GroqBridge.playNextInPlaylist(); } catch(err) {}
+                    }, true);
+                }
+                function bindEnded() {
+                    var v = document.querySelector('video');
+                    if (!v || v === boundVideoEl) return;
+                    boundVideoEl = v;
+                    v.addEventListener('ended', function() {
+                        try { window.GroqBridge.playNextInPlaylist(); } catch(e) {}
+                    });
+                }
+
+                var attempts = 0;
+                function tick() {
+                    enableCC(); ensurePlay(); hijackNextButton(); bindEnded();
+                    attempts++;
+                    if (attempts < 25) setTimeout(tick, 1000);
+                }
+                setTimeout(tick, 1000);
+            })();
+        """.trimIndent()
     }
 
     // Add method to handle hyperlink button press
@@ -1595,6 +2470,10 @@ class MainActivity :
             sensorManager.unregisterListener(sensorEventListener)
         }
 
+        if (::dualWebViewGroup.isInitialized) {
+            dualWebViewGroup.pauseYouTubeMediaAcrossAllWindows(resetTracking = false)
+        }
+
         // Save window state on pause (app background/exit)
         dualWebViewGroup.saveAllWindowsState()
     }
@@ -1613,6 +2492,7 @@ class MainActivity :
 
         // Restart mirroring to right eye
         dualWebViewGroup.startRefreshing()
+        syncTapRadioPlaybackUi()
 
         // Check for notification listener permission
 
@@ -1626,6 +2506,22 @@ class MainActivity :
                 )
             }
         }
+    }
+
+    private fun syncTapRadioPlaybackUi() {
+        if (!::dualWebViewGroup.isInitialized) return
+        uiHandler.postDelayed({
+            dualWebViewGroup.getAllWebViews().forEach { candidate ->
+                val url = candidate.url.orEmpty()
+                if (!url.contains("radio.html", ignoreCase = true)) return@forEach
+                candidate.post {
+                    candidate.evaluateJavascript(
+                        "(function(){if(window.tapRadioSyncPlaybackUi){window.tapRadioSyncPlaybackUi();}})();",
+                        null
+                    )
+                }
+            }
+        }, 250L)
     }
 
     fun getLastLocation(): Pair<Double, Double>? {
@@ -2039,6 +2935,205 @@ class MainActivity :
             url.contains(".") -> "https://$url"
             else -> "https://www.google.com/search?q=${Uri.encode(url)}"
         }
+    }
+
+    // ── AR Navigation interception ────────────────────────────────────────
+
+    private fun isAddressOrMapsUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.contains("maps.google.com") ||
+               lower.contains("google.com/maps") ||
+               lower.contains("maps.app.goo.gl") ||
+               lower.contains("goo.gl/maps") ||
+               lower.contains("waze.com/ul") ||
+               lower.startsWith("geo:") ||
+               lower.contains("/maps/dir/") ||
+               lower.contains("/maps/place/") ||
+               lower.contains("/maps/search")
+    }
+
+    /**
+     * Aggressively stop all audio/video playback across ALL WebView instances.
+     * Pauses and mutes all media elements, clears their src, and stops loading.
+     */
+    private fun killAllWebViewAudio() {
+        try {
+            val killJs = """
+                (function(){
+                    document.querySelectorAll('video,audio,iframe').forEach(function(v){
+                        try{
+                            if(v.tagName==='IFRAME'){v.src='about:blank';return;}
+                            v.pause();v.muted=true;v.src='';v.load();
+                        }catch(e){}
+                    });
+                    try{
+                        var ctx=window.AudioContext||window.webkitAudioContext;
+                        if(window._audioCtx){window._audioCtx.close();}
+                    }catch(e){}
+                })();
+            """.trimIndent()
+
+            if (::dualWebViewGroup.isInitialized) {
+                dualWebViewGroup.getAllWebViews().forEach { wv ->
+                    wv.stopLoading()
+                    wv.evaluateJavascript(killJs, null)
+                    // Android-level pause stops all timers, JS execution, plugins/media
+                    wv.onPause()
+                }
+                // Resume the primary webView shortly since it needs to load ar_nav
+                dualWebViewGroup.getAllWebViews().firstOrNull()?.postDelayed({
+                    dualWebViewGroup.getAllWebViews().forEach { it.onResume() }
+                }, 100)
+            }
+            // Also request audio focus to interrupt any system-level playback
+            try {
+                val am = audioManager ?: (getSystemService(AUDIO_SERVICE) as? AudioManager)
+                am?.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                am?.abandonAudioFocus(null)
+            } catch (_: Exception) {}
+
+            DebugLog.d("ARNav", "killAllWebViewAudio: killed audio on all WebViews")
+        } catch (e: Exception) {
+            DebugLog.e("ARNav", "killAllWebViewAudio error", e)
+        }
+    }
+
+    private fun buildArNavUrl(originalUrl: String): String {
+        val dest = extractDestinationFromUrl(originalUrl)
+        val searchQuery = extractTaplinkSearchQueryFromUrl(originalUrl)
+        val googleKey = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+            .getString("google_maps_api_key", "") ?: ""
+        val explicitOrigin = extractOriginCoordsFromUrl(originalUrl)
+        val lat = explicitOrigin?.first ?: (lastGpsLat ?: 0.0)
+        val lng = explicitOrigin?.second ?: (lastGpsLon ?: 0.0)
+        val originLocked = if (explicitOrigin != null) 1 else 0
+        DebugLog.d("ARNav", "buildArNavUrl: originalUrl='${originalUrl.take(200)}'")
+        DebugLog.d("ARNav", "  dest='$dest' search='${searchQuery ?: ""}' lat=$lat lng=$lng originLocked=$originLocked gkey=${if (googleKey.isNotBlank()) googleKey.take(8) + "..." else "MISSING"}")
+        // ar_nav.html renders a full 3D photorealistic route overview
+        return "file:///android_asset/ar_nav.html" +
+               "?dest=${Uri.encode(dest)}" +
+               "&search=${Uri.encode(searchQuery ?: "")}" +
+               "&gkey=${Uri.encode(googleKey)}" +
+               "&lat=$lat" +
+               "&lng=$lng" +
+               "&origin_locked=$originLocked"
+    }
+
+    private fun extractOriginCoordsFromUrl(url: String): Pair<Double, Double>? {
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+        for (param in listOf("origin", "saddr")) {
+            val raw = uri.getQueryParameter(param)?.trim().orEmpty()
+            if (raw.isBlank()) continue
+            parseLatLng(raw)?.let { return it }
+        }
+        return null
+    }
+
+    private fun extractTaplinkSearchQueryFromUrl(url: String): String? {
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+        return uri.getQueryParameter("taplink_query")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun parseLatLng(raw: String): Pair<Double, Double>? {
+        val match = Regex("""^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$""")
+            .find(Uri.decode(raw)) ?: return null
+        val lat = match.groupValues[1].toDoubleOrNull() ?: return null
+        val lng = match.groupValues[2].toDoubleOrNull() ?: return null
+        if (lat !in -90.0..90.0 || lng !in -180.0..180.0) return null
+        return lat to lng
+    }
+
+    private fun extractDestinationFromUrl(url: String): String {
+        var raw: String? = null
+        var extractMethod = "none"
+        try {
+            val uri = Uri.parse(url)
+            if (uri.scheme == "geo") {
+                val q = uri.getQueryParameter("q")
+                if (!q.isNullOrBlank()) { raw = q; extractMethod = "geo:q" }
+                else {
+                    val ssp = uri.schemeSpecificPart?.substringBefore('?')
+                    if (!ssp.isNullOrBlank()) { raw = ssp; extractMethod = "geo:ssp" }
+                }
+            }
+            if (raw == null) {
+                for (param in listOf("q", "query", "daddr", "destination")) {
+                    val v = uri.getQueryParameter(param)
+                    if (!v.isNullOrBlank()) { raw = v; extractMethod = "param:$param"; break }
+                }
+            }
+            if (raw == null) {
+                val path = uri.path ?: ""
+                val placeMatch = Regex("/maps/place/([^/@]+)").find(path)
+                if (placeMatch != null) {
+                    raw = Uri.decode(placeMatch.groupValues[1]).replace("+", " ")
+                    extractMethod = "path:place"
+                }
+            }
+            if (raw == null) {
+                val path = uri.path ?: ""
+                val dirMatch = Regex("/maps/dir/[^/]+/([^/@]+)").find(path)
+                if (dirMatch != null) {
+                    raw = Uri.decode(dirMatch.groupValues[1]).replace("+", " ")
+                    extractMethod = "path:dir"
+                }
+            }
+        } catch (e: Exception) {
+            DebugLog.e("ARNav", "extractDestinationFromUrl parse error", e)
+        }
+        DebugLog.d("ARNav", "extractDestinationFromUrl: method=$extractMethod raw='${(raw ?: url).take(120)}'")
+        return cleanAddressText(raw ?: url)
+    }
+
+    /** Strip conversational chat text so the geocoder gets a clean destination query. */
+    private fun cleanAddressText(text: String): String {
+        var c = text.trim()
+            .replace(Regex("""\s+"""), " ")
+            .removePrefix("→")
+            .trim()
+
+        val addressRegex = Regex(
+            """\b\d{1,5}\s+[A-Za-z0-9.'#\- ]+\s(?:St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|Way|Pl|Place|Ct|Court|Pkwy|Parkway|Ter|Terrace)\b(?:,\s*[A-Za-z .'-]+){0,3}""",
+            RegexOption.IGNORE_CASE
+        )
+        addressRegex.find(c)?.value?.trim()?.trimEnd('.', ',', ';', ':')?.let {
+            DebugLog.d("ARNav", "cleanAddressText[address]: '$text' → '$it'")
+            return it
+        }
+
+        val patterns = listOf(
+            Regex("""\baddress:\s*(.+)""", RegexOption.IGNORE_CASE),
+            Regex("""(?:is\s+)?(?:located|location)\s+at\s+(.+)""", RegexOption.IGNORE_CASE),
+            Regex("""\bis\s+at\s+(.+)""", RegexOption.IGNORE_CASE)
+        )
+        for (pattern in patterns) {
+            val match = pattern.find(c)
+            if (match != null) {
+                c = match.groupValues[1].trim()
+                break
+            }
+        }
+
+        val imp = Regex("""^(?:find|visit|go\s+to|head\s+to|navigate\s+to|directions?\s+to)\s+(.+)""", RegexOption.IGNORE_CASE).find(c)
+        if (imp != null) c = imp.groupValues[1].trim()
+
+        c = c
+            .replace(Regex("""\b(?:currently\s+)?(?:open\s*now|openow|closed|closednow)\b.*$""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\b(?:clear|cloudy|overcast|rain|showers|fog|drizzle|snow|storm)\b.*$""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\bAQI\s*\d+.*$""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\b\d{1,3}°\s*[FC]\b.*$""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\b(?:walk|drive|transit|eta|parking|weather|temperature)\b.*$""", RegexOption.IGNORE_CASE), "")
+
+        listOf(" — ", " - ", " | ", ". ").forEach { separator ->
+            val idx = c.indexOf(separator)
+            if (idx > 5) c = c.substring(0, idx)
+        }
+
+        c = c.trim().trimEnd('.', ',', ';', ' ')
+        DebugLog.d("ARNav", "cleanAddressText: '$text' → '$c'")
+        return c
     }
 
     private fun isStreamingSite(url: String?): Boolean {
@@ -2590,6 +3685,32 @@ class MainActivity :
         view?.evaluateJavascript("""
         (function() {
             var KEY = 'dashboardLinksV1';
+            function ensureTapRadio(parsed) {
+                var changed = false;
+                parsed.apps = parsed.apps || {};
+                parsed.groups = Array.isArray(parsed.groups) ? parsed.groups : [];
+                if (!parsed.apps.tapradio) {
+                    parsed.apps.tapradio = { name: 'TapRadio', url: 'file:///android_asset/radio.html' };
+                    changed = true;
+                }
+                var music = parsed.groups.find(function(group) {
+                    return String((group && group.title) || '').trim().toLowerCase() === 'music / streaming';
+                });
+                if (!music) {
+                    music = { title: 'Music / Streaming', cls: 'sec-music', keys: ['tapradio'] };
+                    parsed.groups.push(music);
+                    changed = true;
+                }
+                if (!Array.isArray(music.keys)) {
+                    music.keys = [];
+                    changed = true;
+                }
+                if (!music.keys.includes('tapradio')) {
+                    music.keys.unshift('tapradio');
+                    changed = true;
+                }
+                return changed;
+            }
             // Pull companion-edited data from SharedPreferences
             var saved = '';
             try { saved = window.AndroidInterface.getDashboardData(); } catch(e) {}
@@ -2597,7 +3718,12 @@ class MainActivity :
                 try {
                     var parsed = JSON.parse(saved);
                     if (parsed.apps && parsed.groups) {
-                        localStorage.setItem(KEY, saved);
+                        var changed = ensureTapRadio(parsed);
+                        var serialized = JSON.stringify(parsed);
+                        localStorage.setItem(KEY, serialized);
+                        if (changed && window.AndroidInterface) {
+                            window.AndroidInterface.saveDashboardData(serialized);
+                        }
                         // Update the in-memory state and re-render
                         if (typeof state !== 'undefined') {
                             state.apps = parsed.apps;
@@ -3183,8 +4309,21 @@ class MainActivity :
                     """
     (function() {
         var element = document.elementFromPoint($adjustedX, $adjustedY);
+
+        // TapLink nav buttons: force-click if cursor lands on them.
+        // This guarantees the button action fires regardless of touch chain.
+        if (element) {
+            var btn = (element.id === '__tl_view' || element.id === '__tl_next') ? element
+                    : element.closest ? element.closest('#__tl_nav button') : null;
+            if (btn) {
+                btn.click();
+                console.log('[TapLink-YT] Force-clicked nav button: ' + btn.id);
+                return 'tl_btn_' + btn.id;
+            }
+        }
+
         var targetUrl = null;
-        
+
         function findTargetUrl(el) {
             if (!el) return null;
             if (el.href) return el.href;
@@ -3195,7 +4334,7 @@ class MainActivity :
             if (linkParent && linkParent.href) return linkParent.href;
             return null;
         }
-        
+
         targetUrl = findTargetUrl(element);
         if (targetUrl && targetUrl.includes('news.google.com')) {
             // Instead of returning the URL, create and trigger a real navigation
@@ -4158,6 +5297,7 @@ class MainActivity :
 
                         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                             super.onPageStarted(view, url, favicon)
+                            DebugLog.d("YouTubeAuto", "onPageStarted[2]: url=$url")
                             DebugLog.d("WebViewDebug", "Page started loading: $url")
 
                             if (closeChatOnNextPageStart) {
@@ -4183,8 +5323,13 @@ class MainActivity :
                                     )
                                 }
                             } else {
-                                // Restore correct UA for other sites based on browsing mode
-                                if (dualWebViewGroup.isDesktopMode()) {
+                                // Force desktop UA for YouTube when autoplay is active
+                                val isYouTubeAutoplay = !youtubeAutoplayQuery.isNullOrBlank() &&
+                                    !youtubeAutoplayMode.isNullOrBlank() &&
+                                    url != null &&
+                                    (url.contains("youtube.com") || url.contains("youtu.be"))
+
+                                if (isYouTubeAutoplay || dualWebViewGroup.isDesktopMode()) {
                                     val desktopUA = dualWebViewGroup.getDesktopUserAgent()
                                     if (view?.settings?.userAgentString != desktopUA) {
                                         view?.settings?.userAgentString = desktopUA
@@ -4218,9 +5363,16 @@ class MainActivity :
                             } else if (url?.startsWith("about:blank") == true &&
                                             lastValidUrl != null
                             ) {
-                                // Cancel about:blank load immediately
-                                view?.stopLoading()
-                                view?.loadUrl(lastValidUrl!!)
+                                // Skip about:blank recovery if we're intentionally
+                                // navigating to about:blank for nuclear media cleanup
+                                if (nuclearCleanupInProgress) {
+                                    DebugLog.d("YouTubeAuto", "onPageStarted: about:blank during nuclear cleanup — NOT recovering to $lastValidUrl")
+                                    lastValidUrl = null
+                                } else {
+                                    // Cancel about:blank load immediately
+                                    view?.stopLoading()
+                                    view?.loadUrl(lastValidUrl!!)
+                                }
                             }
                         }
 
@@ -4240,12 +5392,20 @@ class MainActivity :
                                 view?.visibility = View.VISIBLE
                                 injectJavaScriptForInputFocus()
 
+                                // Reset horizontal scroll to prevent right-offset rendering
+                                view?.let { wv ->
+                                    if (wv.scrollX > 0) {
+                                        wv.postDelayed({ wv.scrollTo(0, wv.scrollY) }, 100)
+                                    }
+                                }
+
                                 // ── Dashboard ↔ SharedPreferences sync ──
                                 // When the dashboard HTML loads, pull any data
                                 // saved by the companion app into localStorage,
                                 // and hook persistState to also write back.
                                 if (url.contains("AR_Dashboard")) {
                                     injectDashboardSync(view)
+                                    dualWebViewGroup.recenterViewportForDashboard(view)
                                 }
 
                                 // Re-apply saved font settings to new page
@@ -4254,6 +5414,12 @@ class MainActivity :
                                 // Inject last known location if available
                                 if (lastGpsLat != null && lastGpsLon != null) {
                                     dualWebViewGroup.injectLocation(lastGpsLat!!, lastGpsLon!!)
+                                }
+
+                                // ── YouTube autoplay automation ──
+                                val isYouTubePage = url.contains("youtube.com") || url.contains("youtu.be")
+                                if (isYouTubePage) {
+                                    view?.let { injectYouTubePlaylistAutomation(it, url) }
                                 }
 
                                 // Restore media listeners and scrollbar logic from DualWebViewGroup
@@ -4768,8 +5934,9 @@ class MainActivity :
         @Suppress("DEPRECATION")
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
 
-        // Only try restoration if this is the initial window
-        if (webView == dualWebViewGroup.getWebView()) {
+        // Only restore session for a plain reopen. If TapClaw explicitly launched
+        // a URL, that explicit request must win over any persisted browser state.
+        if (webView == dualWebViewGroup.getWebView() && startupUrlOverride.isNullOrBlank()) {
             tryRestoreSession()
         }
 
@@ -4818,6 +5985,7 @@ class MainActivity :
 
     private fun tryRestoreSession() {
         // Before loading the initial page, try to restore the previous session
+        DebugLog.d("YouTubeAuto", "tryRestoreSession: startupUrl=$startupUrlOverride query=$youtubeAutoplayQuery")
         DebugLog.d("WebViewDebug", "Attempting to restore previous session")
 
         try {
@@ -4907,6 +6075,375 @@ class MainActivity :
                 }
             }
         }
+
+        /** Called by search-page JS with a JSON array of video IDs scraped
+         *  from the search results (chronological order). */
+        @JavascriptInterface
+        fun setYouTubePlaylist(jsonIds: String) {
+            try {
+                val arr = org.json.JSONArray(jsonIds)
+                val ids = mutableListOf<String>()
+                for (i in 0 until arr.length()) {
+                    val id = arr.optString(i, "").trim()
+                    if (id.length == 11) ids.add(id)
+                }
+                activity.runOnUiThread {
+                    activity.youtubePlaylist = ids
+                    activity.youtubePlaylistIndex = 0
+                    DebugLog.d("YouTubeAuto", "Playlist set: ${ids.size} videos — ${ids.take(5)}")
+                }
+            } catch (e: Exception) {
+                DebugLog.d("YouTubeAuto", "Failed to parse playlist JSON: $e")
+            }
+        }
+
+        /** Called by watch-page JS to enter a CSS-based "fullscreen" mode.
+         *  Since Android WebView blocks all programmatic fullscreen requests
+         *  (requires real user gesture), we instead:
+         *  1. Inject CSS to hide everything except the video player and
+         *     make it fill the entire viewport
+         *  2. Enter Android immersive mode (hide system bars)
+         *  This gives the same visual result as real fullscreen. */
+        @JavascriptInterface
+        fun enterCssFullscreen() {
+            activity.runOnUiThread {
+                try {
+                    DebugLog.d("YouTubeAuto", "enterCssFullscreen called")
+
+                    // CSS-only fullscreen: hide non-video elements, make video fill viewport.
+                    // Buttons are injected separately by injectNavButtons().
+                    val js = "(function(){" +
+                        "try{" +
+                        "if(document.getElementById('__taplink_fs_style'))return 'already';" +
+                        "var s=document.createElement('style');" +
+                        "s.id='__taplink_fs_style';" +
+                        "s.textContent=" +
+                        "'body>*:not(#player):not(#movie_player):not(.html5-video-player):not(ytd-player):not(#player-container-outer):not(#player-container-inner):not(#player-container):not(ytd-watch-flexy):not(#content):not(#page-manager):not(ytd-app):not(#columns):not(#primary):not(#primary-inner):not(#__tl_nav){display:none!important}'" +
+                        "+'\\n#movie_player,.html5-video-player,video{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;z-index:999999!important;background:#000!important;object-fit:contain!important}'" +
+                        "+'\\nhtml,body{overflow:hidden!important;margin:0!important;padding:0!important;background:#000!important}'" +
+                        "+'\\n#masthead-container,#guide,ytd-masthead,#secondary,#below,#comments,#related,#meta,#info,#owner{display:none!important}'" +
+                        "+'\\nytd-watch-flexy{max-width:100vw!important}'" +
+                        "+'\\nytd-watch-flexy[theater] #player-theater-container,#player-theater-container,#player-container-outer,#player-container-inner,#player-container,ytd-player,#ytd-player{width:100vw!important;height:100vh!important;max-height:100vh!important;position:fixed!important;top:0!important;left:0!important;z-index:999998!important}'" +
+                        ";" +
+                        "document.head.appendChild(s);" +
+                        "console.log('[TapLink-YT] CSS fullscreen applied');" +
+                        "return 'ok';" +
+                        "}catch(err){console.log('[TapLink-YT] enterCssFs JS error: '+err);return 'error:'+err;}" +
+                        "})()"
+                    webView.evaluateJavascript(js) { result ->
+                        DebugLog.d("YouTubeAuto", "CSS fullscreen result: $result")
+                    }
+
+                    // Enter Android immersive mode
+                    activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    @Suppress("DEPRECATION")
+                    activity.window.decorView.systemUiVisibility =
+                        (View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
+                    DebugLog.d("YouTubeAuto", "Entered CSS fullscreen + immersive mode")
+                } catch (e: Exception) {
+                    DebugLog.d("YouTubeAuto", "enterCssFullscreen failed: $e")
+                }
+            }
+        }
+
+        /** Injects persistent View Mode + Next buttons on any YouTube watch page.
+         *  View Mode cycles: Full → Theater → Mini → Full...
+         *  Full = our CSS fullscreen overlay (video fills viewport).
+         *  Theater/Mini = YouTube's native modes (CSS overlay removed).
+         *  Buttons go on document.body to survive YouTube DOM rebuilds.
+         *  window.__tl_view_mode is preserved across re-injections. */
+        @JavascriptInterface
+        fun injectNavButtons() {
+            activity.runOnUiThread {
+                try {
+                    DebugLog.d("YouTubeAuto", "injectNavButtons called")
+
+                    val js = "(function(){" +
+                        "try{" +
+                        "if(document.getElementById('__tl_nav'))return 'already';" +
+                        // Style
+                        "if(!document.getElementById('__tl_nav_style')){" +
+                        "var s=document.createElement('style');" +
+                        "s.id='__tl_nav_style';" +
+                        "s.textContent=" +
+                        "'#__tl_nav{position:fixed;top:6px;right:12px;z-index:2000000;display:flex;gap:8px;pointer-events:auto!important}'" +
+                        "+'\\n#__tl_nav button{background:rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.3);color:#fff;font-size:16px;padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;pointer-events:auto!important}'" +
+                        "+'\\n#__tl_nav button:active{background:rgba(255,255,255,0.3)}'" +
+                        "+'\\n#__tl_nav .tl-mode{font-size:13px;padding:8px 10px}';" +
+                        "document.head.appendChild(s);" +
+                        "}" +
+                        // Nav container on document.body
+                        "var nav=document.createElement('div');" +
+                        "nav.id='__tl_nav';" +
+                        //
+                        // === View Mode button ===
+                        // 0=Full(CSS), 1=Theater(YT native), 2=Mini(YT native)
+                        //
+                        "var bView=document.createElement('button');" +
+                        "bView.id='__tl_view';" +
+                        "bView.className='tl-mode';" +
+                        // Preserve mode across re-injections; only detect if undefined
+                        "if(typeof window.__tl_view_mode==='undefined'||window.__tl_view_mode===null){" +
+                        "window.__tl_view_mode=0;" +
+                        "if(document.getElementById('__taplink_fs_style'))window.__tl_view_mode=0;" +
+                        "else{var fx=document.querySelector('ytd-watch-flexy');" +
+                        "if(fx&&fx.hasAttribute('theater'))window.__tl_view_mode=1;" +
+                        "}" +
+                        "}" +
+                        "var labels=['Full','Theater','Mini'];" +
+                        "bView.textContent=labels[window.__tl_view_mode||0];" +
+                        //
+                        // === Click handler: self-contained transition ===
+                        // Each click reads the ACTUAL page state to stay in sync.
+                        //
+                        "bView.addEventListener('click',function(e){" +
+                        "e.stopPropagation();e.preventDefault();" +
+                        // Debounce
+                        "var now=Date.now();" +
+                        "if(window.__tl_last_view_click&&now-window.__tl_last_view_click<800)return;" +
+                        "window.__tl_last_view_click=now;" +
+                        //
+                        "var cur=window.__tl_view_mode||0;" +
+                        "var next=(cur+1)%3;" +
+                        "console.log('[TapLink-YT] View: '+labels[cur]+' -> '+labels[next]);" +
+                        //
+                        // --- Do the transition in one shot ---
+                        //
+                        "if(cur===0&&next===1){" +
+                        // Full → Theater: remove CSS fs, exit immersive, enter theater
+                        "var fs=document.getElementById('__taplink_fs_style');if(fs)fs.remove();" +
+                        "try{window.GroqBridge.exitImmersiveMode();}catch(x){}" +
+                        // Ensure theater is clean then click after delay
+                        "setTimeout(function(){" +
+                        "var fx=document.querySelector('ytd-watch-flexy');" +
+                        "if(fx&&fx.hasAttribute('theater'))return;" + // already in theater
+                        "var sb=document.querySelector('.ytp-size-button');" +
+                        "if(sb)sb.click();" +
+                        "},500);" +
+                        "}" +
+                        //
+                        "else if(cur===1&&next===2){" +
+                        // Theater → Mini: exit theater, then enter miniplayer
+                        "var fx2=document.querySelector('ytd-watch-flexy');" +
+                        "if(fx2&&fx2.hasAttribute('theater')){" +
+                        "var sb2=document.querySelector('.ytp-size-button');if(sb2)sb2.click();" +
+                        "}" +
+                        "setTimeout(function(){" +
+                        "var mb=document.querySelector('.ytp-miniplayer-button');" +
+                        "if(mb)mb.click();" +
+                        "},500);" +
+                        "}" +
+                        //
+                        "else if(cur===2&&next===0){" +
+                        // Mini → Full: exit miniplayer, then apply CSS fs
+                        "var exp=document.querySelector('.ytp-miniplayer-expand-watch-page-button');" +
+                        "if(exp){exp.click();}else{" +
+                        "document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,bubbles:true}));}" +
+                        "setTimeout(function(){" +
+                        "try{window.GroqBridge.enterCssFullscreen();}catch(x){}" +
+                        "},500);" +
+                        "}" +
+                        //
+                        // Update state and label
+                        "window.__tl_view_mode=next;" +
+                        "bView.textContent=labels[next];" +
+                        "console.log('[TapLink-YT] View mode set to: '+labels[next]);" +
+                        "});" +
+                        //
+                        // === Next button ===
+                        //
+                        "var bNext=document.createElement('button');" +
+                        "bNext.id='__tl_next';" +
+                        "bNext.textContent='Next';" +
+                        "bNext.addEventListener('click',function(e){" +
+                        "e.stopPropagation();e.preventDefault();" +
+                        "var now=Date.now();" +
+                        "if(window.__tl_last_next_click&&now-window.__tl_last_next_click<800)return;" +
+                        "window.__tl_last_next_click=now;" +
+                        "try{window.GroqBridge.playNextInPlaylist();}catch(x){}" +
+                        "console.log('[TapLink-YT] Nav: Next clicked');" +
+                        "});" +
+                        //
+                        // === Append to body + watchdog ===
+                        //
+                        "nav.appendChild(bView);nav.appendChild(bNext);" +
+                        "document.body.appendChild(nav);" +
+                        // Watchdog: re-inject if YouTube removes buttons
+                        "if(window.__tl_nav_watchdog)clearInterval(window.__tl_nav_watchdog);" +
+                        "window.__tl_nav_watchdog=setInterval(function(){" +
+                        "if(!document.getElementById('__tl_nav')){" +
+                        "clearInterval(window.__tl_nav_watchdog);" +
+                        "console.log('[TapLink-YT] Nav buttons lost, re-injecting');" +
+                        "try{window.GroqBridge.injectNavButtons();}catch(x){}" +
+                        "}" +
+                        "},2000);" +
+                        "console.log('[TapLink-YT] Nav buttons injected on body (View:'+labels[window.__tl_view_mode||0]+' + Next)');" +
+                        "return 'ok';" +
+                        "}catch(err){console.log('[TapLink-YT] injectNav error: '+err);return 'error:'+err;}" +
+                        "})()"
+                    webView.evaluateJavascript(js) { result ->
+                        DebugLog.d("YouTubeAuto", "injectNavButtons result: $result")
+                    }
+                } catch (e: Exception) {
+                    DebugLog.d("YouTubeAuto", "injectNavButtons failed: $e")
+                }
+            }
+        }
+
+        /** Exits Android immersive mode (called when leaving CSS fullscreen view). */
+        @JavascriptInterface
+        fun exitImmersiveMode() {
+            activity.runOnUiThread {
+                try {
+                    @Suppress("DEPRECATION")
+                    activity.window.decorView.systemUiVisibility =
+                        (View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+                    DebugLog.d("YouTubeAuto", "Exited immersive mode")
+                } catch (e: Exception) {
+                    DebugLog.d("YouTubeAuto", "exitImmersiveMode failed: $e")
+                }
+            }
+        }
+
+        /** Called by watch-page JS when the current video ends or user clicks
+         *  the hijacked "next" button. Loads the next video in the TapLink
+         *  playlist using YouTube's internal player API so we STAY in fullscreen
+         *  mode — no size changes between videos. Falls back to page navigation
+         *  only if the player API isn't available. */
+        @JavascriptInterface
+        fun playNextInPlaylist() {
+            activity.runOnUiThread {
+                val pl = activity.youtubePlaylist
+                val nextIdx = activity.youtubePlaylistIndex + 1
+                if (nextIdx < pl.size) {
+                    activity.youtubePlaylistIndex = nextIdx
+                    val nextId = pl[nextIdx]
+                    DebugLog.d("YouTubeAuto", "Playing next [$nextIdx/${pl.size}]: $nextId")
+
+                    // Try YouTube's internal player API first (stays in fullscreen).
+                    // The API is available on desktop-mode YouTube pages.
+                    val jsLoadVideo = """
+                        (function(){
+                            try {
+                                var p = document.getElementById('movie_player');
+                                if (p && typeof p.loadVideoById === 'function') {
+                                    p.loadVideoById('$nextId');
+                                    console.log('[TapLink-YT] Loaded next via player API: $nextId');
+                                    return 'api';
+                                }
+                            } catch(e) {}
+                            return 'nav';
+                        })();
+                    """.trimIndent()
+
+                    webView.evaluateJavascript(jsLoadVideo) { result ->
+                        val method = result?.replace("\"", "") ?: "nav"
+                        if (method == "api") {
+                            // Player API worked — we're still in fullscreen.
+                            // Re-bind the ended listener for the new video and
+                            // re-hijack the next button (YouTube may rebuild controls).
+                            DebugLog.d("YouTubeAuto", "  → player API success, staying fullscreen")
+                            val rebindJs = """
+                                (function(){
+                                    window.__taplink_yt_injected = false;
+                                    window.__taplink_watch_injected = false;
+                                    window.__taplink_playback_started = false;
+                                    var old = document.getElementById('__tl_nav');
+                                    if (old) old.remove();
+                                })();
+                            """.trimIndent()
+                            webView.evaluateJavascript(rebindJs, null)
+                            // Re-inject the watch-page automation after a short
+                            // delay to let the new video load its UI.
+                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                webView.evaluateJavascript(
+                                    activity.buildYouTubeAutomationBootstrapScript(
+                                        activity.youtubeAutoplayQuery ?: "",
+                                        activity.youtubeAutoplayMode ?: ""
+                                    ), null
+                                )
+                            }, 2000)
+                        } else {
+                            // Player API not available — fall back to full navigation.
+                            DebugLog.d("YouTubeAuto", "  → falling back to loadUrl")
+                            activity.hideFullScreenCustomView()
+                            activity.lastYouTubeInjectionUrl = null
+                            webView.loadUrl("https://www.youtube.com/watch?v=$nextId&autoplay=1&cc_load_policy=1")
+                        }
+                    }
+                } else {
+                    DebugLog.d("YouTubeAuto", "Playlist finished (${pl.size} videos)")
+                }
+            }
+        }
+
+        /** Go back one video in the playlist. If already at the first video,
+         *  just restart from the beginning. */
+        @JavascriptInterface
+        fun playPrevInPlaylist() {
+            activity.runOnUiThread {
+                val pl = activity.youtubePlaylist
+                val prevIdx = activity.youtubePlaylistIndex - 1
+                if (prevIdx >= 0 && prevIdx < pl.size) {
+                    activity.youtubePlaylistIndex = prevIdx
+                    val prevId = pl[prevIdx]
+                    DebugLog.d("YouTubeAuto", "Playing prev [$prevIdx/${pl.size}]: $prevId")
+
+                    val jsLoadVideo = """
+                        (function(){
+                            try {
+                                var p = document.getElementById('movie_player');
+                                if (p && typeof p.loadVideoById === 'function') {
+                                    p.loadVideoById('$prevId');
+                                    console.log('[TapLink-YT] Loaded prev via player API: $prevId');
+                                    return 'api';
+                                }
+                            } catch(e) {}
+                            return 'nav';
+                        })();
+                    """.trimIndent()
+
+                    webView.evaluateJavascript(jsLoadVideo) { result ->
+                        val method = result?.replace("\"", "") ?: "nav"
+                        if (method == "api") {
+                            DebugLog.d("YouTubeAuto", "  → player API success (prev), staying fullscreen")
+                            val rebindJs = """
+                                (function(){
+                                    window.__taplink_yt_injected = false;
+                                    window.__taplink_watch_injected = false;
+                                    window.__taplink_playback_started = false;
+                                    var old = document.getElementById('__tl_nav');
+                                    if (old) old.remove();
+                                })();
+                            """.trimIndent()
+                            webView.evaluateJavascript(rebindJs, null)
+                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                webView.evaluateJavascript(
+                                    activity.buildYouTubeAutomationBootstrapScript(
+                                        activity.youtubeAutoplayQuery ?: "",
+                                        activity.youtubeAutoplayMode ?: ""
+                                    ), null
+                                )
+                            }, 2000)
+                        } else {
+                            DebugLog.d("YouTubeAuto", "  → falling back to loadUrl (prev)")
+                            activity.hideFullScreenCustomView()
+                            activity.lastYouTubeInjectionUrl = null
+                            webView.loadUrl("https://www.youtube.com/watch?v=$prevId&autoplay=1&cc_load_policy=1")
+                        }
+                    }
+                } else {
+                    DebugLog.d("YouTubeAuto", "Already at first video, restarting")
+                    val v = "javascript:void(document.querySelector('video').currentTime=0)"
+                    webView.loadUrl(v)
+                }
+            }
+        }
     }
 
     private fun createCameraIntent(): Intent? {
@@ -4991,7 +6528,7 @@ class MainActivity :
     }
 
     @Suppress("DEPRECATION")
-    private fun hideFullScreenCustomView() {
+    internal fun hideFullScreenCustomView() {
         if (fullScreenCustomView == null) {
             return
         }
@@ -6414,6 +7951,9 @@ class MainActivity :
     }
 
     override fun onDestroy() {
+        if (activeInstanceRef?.get() === this) {
+            activeInstanceRef = null
+        }
         super.onDestroy()
         speechRecognizer?.destroy()
         speechRecognizer = null
@@ -6424,6 +7964,52 @@ class MainActivity :
         cameraHandler = null
         sensorManager.unregisterListener(sensorEventListener)
         stopGpsUpdates()
+    }
+
+    private fun prepareForIncomingYouTubeAutoplayInternal() {
+        if (!::dualWebViewGroup.isInitialized || !::webView.isInitialized) return
+
+        DebugLog.d("YouTubeAuto", "prepareForIncomingYouTubeAutoplayInternal: suspending existing YouTube playback before handoff")
+        dualWebViewGroup.pauseYouTubeMediaAcrossAllWindows()
+
+        val currentUrl = webView.url.orEmpty()
+        val isCurrentYouTube =
+                currentUrl.contains("youtube.com", ignoreCase = true) ||
+                        currentUrl.contains("youtu.be", ignoreCase = true)
+        if (!isCurrentYouTube) return
+
+        try {
+            webView.stopLoading()
+        } catch (_: Exception) {}
+
+        webView.evaluateJavascript(
+                """
+                (function() {
+                    try {
+                        document.querySelectorAll('video, audio').forEach(function(el) {
+                            try {
+                                el.pause();
+                                el.autoplay = false;
+                                el.muted = true;
+                                el.currentTime = 0;
+                                el.removeAttribute('src');
+                                el.load();
+                            } catch (inner) {}
+                        });
+                    } catch (outer) {}
+                    try {
+                        var tid = window.setTimeout(function(){}, 0);
+                        while (tid--) clearTimeout(tid);
+                        var iid = window.setInterval(function(){}, 0);
+                        while (iid--) clearInterval(iid);
+                    } catch (timers) {}
+                    window.__taplink_yt_injected = false;
+                    window.__taplink_watch_injected = false;
+                    window.__taplink_playback_started = false;
+                })();
+                """.trimIndent(),
+                null
+        )
     }
 
     override fun onStop() {
@@ -6599,6 +8185,47 @@ class MainActivity :
                 DebugLog.d("AndroidInterface", "Radio stations saved to SharedPreferences (${json.length} chars)")
             } catch (e: Exception) {
                 DebugLog.e("AndroidInterface", "Error saving radio stations", e)
+            }
+        }
+
+        /**
+         * Persists the actual TapRadio playback state so the chat HUD can
+         * reflect what is truly playing when the user returns from TapBrowser.
+         */
+        @JavascriptInterface
+        fun saveRadioPlaybackState(stationName: String?, genre: String?, playing: Boolean) {
+            try {
+                val prefs = activity.getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+                prefs.edit().apply {
+                    putBoolean("tapradio_now_playing_active", playing)
+                    putLong("tapradio_now_playing_updated_at", System.currentTimeMillis())
+                    if (playing && !stationName.isNullOrBlank()) {
+                        putString("tapradio_now_playing_name", stationName.trim())
+                        putString("tapradio_now_playing_genre", genre?.trim())
+                    } else {
+                        remove("tapradio_now_playing_name")
+                        remove("tapradio_now_playing_genre")
+                    }
+                    apply()
+                }
+            } catch (e: Exception) {
+                DebugLog.e("AndroidInterface", "Error saving radio playback state", e)
+            }
+        }
+
+        @JavascriptInterface
+        fun getRadioPlaybackState(): String {
+            return try {
+                val prefs = activity.getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+                org.json.JSONObject().apply {
+                    put("playing", prefs.getBoolean("tapradio_now_playing_active", false))
+                    put("stationName", prefs.getString("tapradio_now_playing_name", "") ?: "")
+                    put("genre", prefs.getString("tapradio_now_playing_genre", "") ?: "")
+                    put("updatedAt", prefs.getLong("tapradio_now_playing_updated_at", 0L))
+                }.toString()
+            } catch (e: Exception) {
+                DebugLog.e("AndroidInterface", "Error reading radio playback state", e)
+                "{\"playing\":false}"
             }
         }
     }

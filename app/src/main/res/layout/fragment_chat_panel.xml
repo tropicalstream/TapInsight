@@ -61,8 +61,29 @@
                     android:textColor="@color/text_primary"
                     android:textSize="14sp"
                     android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/hudAqiText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:text="AQI --"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
             </LinearLayout>
         </LinearLayout>
+
+        <TextView
+            android:id="@+id/hudRadioText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textColor="#FF4DD0E1"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
 
         <!-- Connection status (green dot + G) below battery row -->
         <LinearLayout

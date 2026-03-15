@@ -3,6 +3,7 @@ package com.TapLinkX3.app
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -66,6 +67,19 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
     private val PREFS_NAME = "TapLinkPrefs"
     private val KEY_WINDOWS_STATE = "saved_windows_state"
+    private val KEY_BROWSER_SHOW_SYSTEM_INFO = "browser_show_system_info"
+    private val sharedConfigPrefs =
+            context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
+    private val sharedConfigListener =
+            SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == KEY_BROWSER_SHOW_SYSTEM_INFO) {
+                    post {
+                        updateSystemInfoBarVisibility()
+                        requestLayout()
+                        invalidate()
+                    }
+                }
+            }
 
     private data class BrowserWindow(
             val id: String = java.util.UUID.randomUUID().toString(),
@@ -146,6 +160,23 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private val mediaScrollFreezeMs = 1500L
     private val mediaStateByWindowId = mutableMapOf<String, Boolean>()
     private val mediaLastPlayedAtByWindowId = mutableMapOf<String, Long>()
+    private val youtubeMediaTeardownScript =
+            """
+            (function() {
+                try {
+                    document.querySelectorAll('video, audio').forEach(function(el) {
+                        try {
+                            el.pause();
+                            el.autoplay = false;
+                            el.muted = true;
+                            el.currentTime = 0;
+                            el.removeAttribute('src');
+                            el.load();
+                        } catch (inner) {}
+                    });
+                } catch (outer) {}
+            })();
+            """.trimIndent()
 
     // Idle detection for power saving
     private var lastUserInteractionTime = 0L
@@ -411,6 +442,28 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
+    fun pauseYouTubeMediaAcrossAllWindows(resetTracking: Boolean = true) {
+        windows.forEach { win ->
+            val url = win.webView.url.orEmpty()
+            if (!url.contains("youtube.com", ignoreCase = true) &&
+                            !url.contains("youtu.be", ignoreCase = true)
+            ) {
+                return@forEach
+            }
+
+            try {
+                win.webView.stopLoading()
+            } catch (_: Exception) {}
+
+            win.webView.post { win.webView.evaluateJavascript(youtubeMediaTeardownScript, null) }
+            mediaStateByWindowId[win.id] = false
+        }
+
+        if (resetTracking) {
+            updateMediaState(mediaStateByWindowId.values.any { it })
+        }
+    }
+
     private val fullScreenOverlayContainer =
             FrameLayout(context).apply {
                 clipChildren = true
@@ -510,6 +563,41 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // Update scroll bar thumb positions
         updateScrollBarThumbs(xProgress, yProgress)
         applyScrollbarTransform()
+    }
+
+    fun recenterViewportForDashboard(targetWebView: WebView? = webView) {
+        context.getSharedPreferences("TapLinkPrefs", Context.MODE_PRIVATE)
+                .edit()
+                .putInt("uiTransXProgress", 50)
+                .putInt("uiTransYProgress", 50)
+                .apply()
+        updateUiTranslation()
+
+        targetWebView?.post {
+            try {
+                targetWebView.scrollTo(0, 0)
+            } catch (_: Exception) {}
+            try {
+                targetWebView.evaluateJavascript(
+                        """
+                        (function() {
+                            try {
+                                window.scrollTo(0, 0);
+                                if (document.documentElement) {
+                                    document.documentElement.scrollLeft = 0;
+                                    document.documentElement.scrollTop = 0;
+                                }
+                                if (document.body) {
+                                    document.body.scrollLeft = 0;
+                                    document.body.scrollTop = 0;
+                                }
+                            } catch (e) {}
+                        })();
+                        """.trimIndent(),
+                        null
+                )
+            } catch (_: Exception) {}
+        }
     }
 
     private fun isWebViewScrollEnabled(): Boolean {
@@ -774,9 +862,34 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     p.leftMargin = baseLeftMargin
                     p.rightMargin = 0
                     p.bottomMargin = baseBottomMargin
+                    p.gravity = Gravity.TOP or Gravity.START
                     webViewsContainer.layoutParams = p
                     webViewsContainer.requestLayout()
                     webViewsContainer.invalidate()
+                    // Reset horizontal scroll to prevent right-offset
+                    if (webView.scrollX > 0) webView.scrollTo(0, webView.scrollY)
+                }
+            }
+            return
+        }
+
+        // Hide scrollbars entirely on AR nav map pages (full-viewport 3D map)
+        val currentUrl = webView.url ?: ""
+        if (currentUrl.contains("ar_nav.html")) {
+            horizontalScrollBar.visibility = View.GONE
+            verticalScrollBar.visibility = View.GONE
+            (webViewsContainer.layoutParams as? FrameLayout.LayoutParams)?.let { p ->
+                val targetWidth = if (isScrollModeActive) containerWidth else containerWidth - baseLeftMargin
+                val targetHeight = (480 - baseBottomMargin - keyboardHeight).coerceAtLeast(0)
+                if (p.width != targetWidth || p.height != targetHeight || p.rightMargin != 0) {
+                    p.width = targetWidth
+                    p.height = targetHeight
+                    p.leftMargin = baseLeftMargin
+                    p.rightMargin = 0
+                    p.bottomMargin = baseBottomMargin
+                    p.gravity = Gravity.TOP or Gravity.START
+                    webViewsContainer.layoutParams = p
+                    webViewsContainer.requestLayout()
                 }
             }
             return
@@ -865,16 +978,18 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 p.leftMargin = targetLeftMargin
                 p.rightMargin = targetRightMargin
                 p.bottomMargin = targetBottomMargin
+                p.gravity = Gravity.TOP or Gravity.START
 
-                // DebugLog.d("ScrollDebug", "Applying Layout: Mode=${if(isScrollModeActive)"Scroll"
-                // else
-                // "Normal"}, [${p.width} x ${p.height}], Margins: L=${p.leftMargin},
-                // R=${p.rightMargin}, B=${p.bottomMargin}")
                 webViewsContainer.layoutParams = p
                 // Force layout update on WebView itself to ensure it resizes
                 webView.requestLayout()
                 webViewsContainer.requestLayout()
                 webViewsContainer.invalidate()
+
+                // Reset horizontal scroll to prevent right-offset after layout change
+                if (!showHorz && webView.scrollX > 0) {
+                    webView.scrollTo(0, webView.scrollY)
+                }
             }
         }
 
@@ -1625,6 +1740,56 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         return newWebView
     }
 
+    fun resetToSingleWindow(loadDefaultUrl: Boolean = false): WebView {
+        windows.toList().forEach { win ->
+            try {
+                win.webView.stopLoading()
+            } catch (_: Exception) {}
+            try {
+                webViewsContainer.removeView(win.webView)
+            } catch (_: Exception) {}
+            try {
+                win.webView.destroy()
+            } catch (_: Exception) {}
+            win.thumbnail?.recycle()
+        }
+
+        windows.clear()
+        mediaStateByWindowId.clear()
+        mediaLastPlayedAtByWindowId.clear()
+        activeWindowId = null
+        isMediaPlaying = false
+        hideMediaControls()
+        webViewsContainer.removeAllViews()
+
+        val freshWebView = InternalWebView(context)
+        configureWebView(freshWebView)
+        applyBrowsingModeToWebView(freshWebView, isDesktopMode)
+        if (loadDefaultUrl) {
+            freshWebView.loadUrl(Constants.DEFAULT_URL)
+        }
+
+        val freshWindow = BrowserWindow(webView = freshWebView, title = "New Tab")
+        freshWebView.visibility = View.VISIBLE
+        webViewsContainer.addView(
+                freshWebView,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        )
+        windowCallback?.onWindowCreated(freshWebView)
+
+        windows.add(freshWindow)
+        activeWindowId = freshWindow.id
+        webView = freshWebView
+        updateScrollBarsVisibility()
+        windowCallback?.onWindowSwitched(freshWebView)
+        freshWebView.post { injectPageObservers(freshWebView) }
+        startRefreshing()
+        hideWindowsOverview()
+        saveAllWindowsState()
+        return freshWebView
+    }
+
     fun switchToWindow(id: String) {
         val targetWindow = windows.find { it.id == id } ?: return
 
@@ -2317,6 +2482,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             .apply {
                                 leftMargin = toggleBarWidthPx // Position after toggle bar
                                 bottomMargin = navBarHeightPx // Account for nav bar
+                                gravity = Gravity.TOP or Gravity.START
                             }
             )
             addView(leftToggleBar)
@@ -2366,6 +2532,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         MeasureSpec.makeMeasureSpec(640, MeasureSpec.AT_MOST),
                         MeasureSpec.makeMeasureSpec(24, MeasureSpec.EXACTLY)
                 )
+                updateSystemInfoBarVisibility()
                 leftSystemInfoView.requestLayout()
                 leftSystemInfoView.invalidate()
             }
@@ -3809,11 +3976,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             }
         }
 
-        // Hide system info bar in scroll mode, show otherwise
-        if (isInScrollMode) {
-            leftSystemInfoView.visibility = View.GONE
-        } else {
-            leftSystemInfoView.visibility = View.VISIBLE
+        // Hide system info bar when disabled or while nav/scroll overlays are hidden.
+        updateSystemInfoBarVisibility()
+        if (leftSystemInfoView.visibility == View.VISIBLE) {
             // Calculate system info bar position
             val infoBarHeight = 24
             val infoBarY = eyeHeight - navBarHeight - infoBarHeight // Position above nav bar
@@ -3980,6 +4145,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     fun cleanupResources() {
+        sharedConfigPrefs.unregisterOnSharedPreferenceChangeListener(sharedConfigListener)
         stopRefreshing()
         synchronized(bitmapLock) {
             bitmap?.let { currentBitmap ->
@@ -4035,7 +4201,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     fun showInfoBars() {
-        leftSystemInfoView.visibility = View.VISIBLE
+        updateSystemInfoBarVisibility()
     }
 
     fun hideInfoBars() {
@@ -4043,6 +4209,18 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     private fun Int.dp(): Int = (this * resources.displayMetrics.density).roundToInt()
+
+    private fun isBrowserSystemInfoEnabled(): Boolean =
+            sharedConfigPrefs.getBoolean(KEY_BROWSER_SHOW_SYSTEM_INFO, true)
+
+    private fun updateSystemInfoBarVisibility() {
+        leftSystemInfoView.visibility =
+                if (!isBrowserSystemInfoEnabled() || isInScrollMode || isNavBarsHidden) {
+                    View.GONE
+                } else {
+                    View.VISIBLE
+                }
+    }
 
     // Add keyboard mirror handling
     fun setKeyboard(originalKeyboard: CustomKeyboardView) {
@@ -5744,23 +5922,27 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     private fun handleZoomButtonClick(direction: String) {
-        val zoomFactor = if (direction == "in") 1.1f else 0.9f
-        currentWebZoom *= zoomFactor
-
-        // Save preference
-        context.getSharedPreferences("TapLinkPrefs", Context.MODE_PRIVATE)
-                .edit()
-                .putFloat("webZoomLevel", currentWebZoom)
-                .apply()
-
+        // For ar_nav.html: delegate to the 3D map's own zoom handler
         webView.evaluateJavascript(
                 """
         (function() {
-            document.body.style.zoom = "$currentWebZoom";
+            if (window.__arNavZoom) { window.__arNavZoom('$direction'); return; }
+            document.body.style.zoom = "${if (direction == "in") currentWebZoom * 1.1f else currentWebZoom * 0.9f}";
         })();
     """,
                 null
         )
+
+        // Only update CSS zoom tracking for non-AR pages
+        val url = webView.url ?: ""
+        if (!url.contains("ar_nav.html")) {
+            val zoomFactor = if (direction == "in") 1.1f else 0.9f
+            currentWebZoom *= zoomFactor
+            context.getSharedPreferences("TapLinkPrefs", Context.MODE_PRIVATE)
+                    .edit()
+                    .putFloat("webZoomLevel", currentWebZoom)
+                    .apply()
+        }
 
         postDelayed(
                 {
@@ -6973,11 +7155,14 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        sharedConfigPrefs.registerOnSharedPreferenceChangeListener(sharedConfigListener)
+        updateSystemInfoBarVisibility()
         startRefreshing()
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        sharedConfigPrefs.unregisterOnSharedPreferenceChangeListener(sharedConfigListener)
         stopRefreshing()
     }
 
@@ -7007,7 +7192,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
             leftToggleBar.isClickable = false
             leftNavigationBar.isClickable = false
-            leftSystemInfoView.visibility = View.GONE
+            updateSystemInfoBarVisibility()
 
             // Then animate menus away
             leftToggleBar
@@ -7036,7 +7221,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 // Re-enable touch interception and show system info bar
                 leftToggleBar.isClickable = true
                 leftNavigationBar.isClickable = true
-                leftSystemInfoView.visibility = View.VISIBLE
+                updateSystemInfoBarVisibility()
 
                 // Then show menus with animation
                 leftToggleBar.visibility = View.VISIBLE
@@ -7080,7 +7265,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             // Immediately disable touch interception before animating
             leftToggleBar.isClickable = false
             leftNavigationBar.isClickable = false
-            leftSystemInfoView.visibility = View.GONE
+            updateSystemInfoBarVisibility()
 
             // Then animate menus away
             leftToggleBar
@@ -7109,7 +7294,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 // Re-enable touch interception and show system info bar
                 leftToggleBar.isClickable = true
                 leftNavigationBar.isClickable = true
-                leftSystemInfoView.visibility = View.VISIBLE
+                updateSystemInfoBarVisibility()
 
                 // Then show menus with animation
                 leftToggleBar.visibility = View.VISIBLE
@@ -8036,7 +8221,28 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     },
                     timestamp: new Date().getTime()
                 };
-                
+
+                // Initialize watcher registry if not present
+                if (!window.__geoWatchers) window.__geoWatchers = {};
+                if (!window.__geoNextWatchId) window.__geoNextWatchId = 1;
+
+                // Notify all registered watchPosition callbacks with updated position
+                var watchers = window.__geoWatchers;
+                for (var id in watchers) {
+                    if (watchers.hasOwnProperty(id) && typeof watchers[id] === 'function') {
+                        try { watchers[id](window.__injectedPosition); } catch(e) {
+                            console.warn('[TapLink] watcher ' + id + ' error:', e);
+                        }
+                    }
+                }
+
+                // Only set up the mock geolocation API once
+                if (window.__geoMockInstalled) {
+                    console.log("[TapLink] Location updated: " + $latitude + ", " + $longitude + " (watchers: " + Object.keys(watchers).length + ")");
+                    return;
+                }
+                window.__geoMockInstalled = true;
+
                 // 1. Mock Permissions API to always return 'granted'
                 if (navigator.permissions) {
                     var originalQuery = navigator.permissions.query.bind(navigator.permissions);
@@ -8047,26 +8253,34 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         return originalQuery(parameters);
                     };
                 }
-                
+
                 // 2. Override Geolocation API using defineProperty for robustness
                 var mockGeolocation = {
                     getCurrentPosition: function(success, error, options) {
                         setTimeout(function() {
-                            success(window.__injectedPosition);
+                            if (window.__injectedPosition) {
+                                success(window.__injectedPosition);
+                            } else if (error) {
+                                error({code: 2, message: 'Position unavailable'});
+                            }
                         }, 10);
                     },
                     watchPosition: function(success, error, options) {
-                        var watchId = Math.floor(Math.random() * 10000);
+                        var watchId = window.__geoNextWatchId++;
+                        window.__geoWatchers[watchId] = success;
+                        // Fire immediately with current position
                         setTimeout(function() {
-                            success(window.__injectedPosition);
+                            if (window.__injectedPosition) {
+                                success(window.__injectedPosition);
+                            }
                         }, 10);
                         return watchId;
                     },
                     clearWatch: function(id) {
-                        // Do nothing
+                        delete window.__geoWatchers[id];
                     }
                 };
-                
+
                 try {
                     Object.defineProperty(navigator, 'geolocation', {
                         value: mockGeolocation,
@@ -8079,8 +8293,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     navigator.geolocation.watchPosition = mockGeolocation.watchPosition;
                     navigator.geolocation.clearWatch = mockGeolocation.clearWatch;
                 }
-                
-                console.log("[TapLink] Location injected: " + $latitude + ", " + $longitude);
+
+                console.log("[TapLink] Location mock installed + injected: " + $latitude + ", " + $longitude);
             })();
         """.trimIndent()
 

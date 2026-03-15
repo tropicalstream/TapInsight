@@ -3,11 +3,14 @@ package com.rayneo.visionclaw.core.config
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import com.rayneo.visionclaw.BuildConfig
+import com.rayneo.visionclaw.core.network.GoogleAirQualityClient
 import com.rayneo.visionclaw.core.network.GoogleCalendarClient
 import com.rayneo.visionclaw.core.network.GoogleDirectionsClient
 import com.rayneo.visionclaw.core.network.GoogleOAuthManager
 import com.rayneo.visionclaw.core.network.GooglePlacesClient
 import com.rayneo.visionclaw.core.network.GoogleTasksClient
+import com.rayneo.visionclaw.core.network.ResearchRouter
 import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -37,7 +40,12 @@ class CompanionServer(
     port: Int = 19110,
     var oauthManager: GoogleOAuthManager? = null,
     /** Provides the latest device GPS location for the Location test button. */
-    var locationProvider: (() -> com.rayneo.visionclaw.core.model.DeviceLocationContext?)? = null
+    var locationProvider: (() -> com.rayneo.visionclaw.core.model.DeviceLocationContext?)? = null,
+    var calendarSummaryProvider: (() -> String)? = null,
+    var tasksSummaryProvider: (() -> String)? = null,
+    var newsSummaryProvider: (() -> String)? = null,
+    var airQualityTextProvider: (() -> String?)? = null,
+    var airQualityValueProvider: (() -> Int?)? = null
 ) : NanoHTTPD(port) {
 
     companion object {
@@ -183,6 +191,9 @@ document.addEventListener('DOMContentLoaded', loadAll);
         // Setup page keys
         "gemini_api_key",
         "gemini_model_override",
+        "research_provider",
+        "research_api_key",
+        "research_model",
         "calendar_api_key",
         "calendar_id",
         "google_maps_api_key",
@@ -198,6 +209,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "web_desktop_mode",
         "web_force_dark_mode",
         "web_pointer_sensitivity",
+        "browser_show_system_info",
         "browser_cookies",
         // HUD display keys
         "hud_show_calendar",
@@ -250,6 +262,9 @@ document.addEventListener('DOMContentLoaded', loadAll);
                 uri == "/api/verify/places" && method == Method.GET -> verifyPlaces()
                 uri == "/api/verify/location" && method == Method.GET -> verifyLocation()
                 uri == "/api/verify/traffic" && method == Method.GET -> verifyTraffic()
+                uri == "/api/verify/air_quality" && method == Method.GET -> verifyAirQuality()
+                uri == "/api/verify/research" && method == Method.GET -> verifyResearch()
+                uri == "/api/hud_state" && method == Method.GET -> serveHudState()
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not found")
             }
         } catch (e: Exception) {
@@ -263,12 +278,20 @@ document.addEventListener('DOMContentLoaded', loadAll);
             .bufferedReader(Charsets.UTF_8)
             .use { it.readText() }
 
-        // Replace the JS bridge check to use REST API instead of Android JavascriptInterface
-        val patchedHtml = html.replace(
+        val setupMarker =
             "// Auto-load on page ready\n" +
-                "document.addEventListener('DOMContentLoaded', () => { loadAll(); checkOAuthStatus(); });",
-            bridgeJs
-        )
+                "document.addEventListener('DOMContentLoaded', () => { loadAll(); checkOAuthStatus(); });"
+        val browserMarker =
+            "// Auto-load on page ready\n" +
+                "document.addEventListener('DOMContentLoaded', loadAll);"
+
+        // Replace the page-local bridge with the REST bridge used by the laptop/phone companion UI.
+        val patchedHtml = when {
+            html.contains(setupMarker) -> html.replace(setupMarker, bridgeJs)
+            html.contains(browserMarker) -> html.replace(browserMarker, bridgeJs)
+            html.contains("</body>") -> html.replace("</body>", "<script>\n$bridgeJs\n</script>\n</body>")
+            else -> html + "\n<script>\n$bridgeJs\n</script>\n"
+        }
         return newFixedLengthResponse(Response.Status.OK, "text/html", patchedHtml)
     }
 
@@ -303,7 +326,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
             when (key) {
                 "tts_volume", "web_pointer_sensitivity" ->
                     editor.putFloat(key, json.optDouble(key, if (key == "tts_volume") 0.8 else 1.0).toFloat())
-                "tts_muted", "web_desktop_mode", "web_force_dark_mode",
+                "tts_muted", "web_desktop_mode", "web_force_dark_mode", "browser_show_system_info",
                 "hud_show_calendar", "hud_show_traffic", "hud_show_notifications",
                 "hud_show_event_time", "hud_show_tasks", "hud_show_news" ->
                     editor.putBoolean(key, json.optBoolean(key, true))
@@ -439,7 +462,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
 
     /**
      * Handle manual OAuth code submission: POST /api/oauth/exchange
-     * Body: {"code": "...", "redirect_uri": "http://localhost"}
+     * Body: {"code": "...", "redirect_uri": "http://<glasses-ip>:19110/oauth/callback"}
      */
     private fun handleOAuthExchange(session: IHTTPSession): Response {
         return try {
@@ -465,7 +488,9 @@ document.addEventListener('DOMContentLoaded', loadAll);
             }
 
             val code = json.optString("code", "").trim()
-            val redirectUri = json.optString("redirect_uri", "http://localhost").trim()
+            val host = session.headers["host"] ?: "localhost:19110"
+            val defaultRedirectUri = "http://$host/oauth/callback"
+            val redirectUri = json.optString("redirect_uri", defaultRedirectUri).trim()
 
             if (code.isBlank()) {
                 Log.e(TAG, "OAuth exchange: no code in body")
@@ -521,6 +546,20 @@ document.addEventListener('DOMContentLoaded', loadAll);
         return newFixedLengthResponse(Response.Status.OK, "application/json", json.toString())
     }
 
+    private fun serveHudState(): Response {
+        return jsonResponse(JSONObject().apply {
+            put("hud_show_calendar", prefs.getBoolean("hud_show_calendar", true))
+            put("hud_show_tasks", prefs.getBoolean("hud_show_tasks", true))
+            put("hud_show_news", prefs.getBoolean("hud_show_news", true))
+            put("calendar_summary", calendarSummaryProvider?.invoke().orEmpty())
+            put("tasks_summary", tasksSummaryProvider?.invoke().orEmpty())
+            put("news_summary", newsSummaryProvider?.invoke().orEmpty())
+            put("aqi_text", airQualityTextProvider?.invoke() ?: JSONObject.NULL)
+            put("aqi_value", airQualityValueProvider?.invoke() ?: JSONObject.NULL)
+            put("location_provider", locationProvider?.invoke()?.provider ?: JSONObject.NULL)
+        })
+    }
+
     // ── Calendar List ────────────────────────────────────────────────────
 
     /** Fetch all calendars visible to the OAuth-authenticated user. */
@@ -544,7 +583,8 @@ document.addEventListener('DOMContentLoaded', loadAll);
             val calendarApiKey = prefs.getString("calendar_api_key", "") ?: ""
             val client = GoogleCalendarClient(
                 apiKeyProvider = { calendarApiKey.takeIf { it.isNotBlank() } },
-                accessTokenProvider = { runBlocking { mgr.getValidAccessToken() } }
+                accessTokenProvider = { runBlocking { mgr.getValidAccessToken() } },
+                context = context
             )
             val result = runBlocking { client.fetchCalendarList() }
 
@@ -595,6 +635,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         val calendarApiKey = prefs.getString("calendar_api_key", "") ?: ""
         val calendarId = (prefs.getString("calendar_id", "") ?: "").ifBlank { "primary" }
         val hasOAuth = prefs.getString("google_oauth_refresh_token", "")?.isNotBlank() == true
+        Log.d(TAG, "verifyCalendar start hasOAuth=$hasOAuth hasApiKey=${calendarApiKey.isNotBlank()} calendarId=$calendarId")
 
         if (calendarApiKey.isBlank() && !hasOAuth) {
             return jsonResponse(JSONObject().apply {
@@ -613,12 +654,14 @@ document.addEventListener('DOMContentLoaded', loadAll);
                 apiKeyProvider = { calendarApiKey.takeIf { it.isNotBlank() } },
                 accessTokenProvider = {
                     if (mgr != null && hasOAuth) runBlocking { mgr.getValidAccessToken() } else null
-                }
+                },
+                context = context
             )
             val result = runBlocking { client.fetchUpcomingEvents(calendarId, maxResults = 5) }
 
             when (result) {
                 is GoogleCalendarClient.CalendarResult.Success -> {
+                    Log.d(TAG, "verifyCalendar success events=${result.events.size}")
                     val eventSummary = if (result.events.isEmpty()) {
                         "No events in next 24h"
                     } else {
@@ -635,6 +678,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
                     })
                 }
                 is GoogleCalendarClient.CalendarResult.ApiKeyMissing -> jsonResponse(JSONObject().apply {
+                    Log.w(TAG, "verifyCalendar api key missing/invalid")
                     put("service", "calendar")
                     put("status", "failed")
                     put("message", "API key is missing or invalid. Enable Calendar API in GCP and check your key.")
@@ -643,6 +687,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
                     put("calendar_id", calendarId)
                 })
                 is GoogleCalendarClient.CalendarResult.Error -> jsonResponse(JSONObject().apply {
+                    Log.e(TAG, "verifyCalendar error message=${result.message} code=${result.code}")
                     put("service", "calendar")
                     put("status", "failed")
                     put("message", result.message)
@@ -678,7 +723,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         }
 
         return try {
-            val client = GoogleDirectionsClient(apiKeyProvider = { mapsApiKey })
+            val client = GoogleDirectionsClient(apiKeyProvider = { mapsApiKey }, context = context)
             val result = runBlocking {
                 client.getDirections("Times Square, NYC", "Central Park, NYC", "driving")
             }
@@ -736,7 +781,8 @@ document.addEventListener('DOMContentLoaded', loadAll);
             })
 
             val client = GoogleTasksClient(
-                accessTokenProvider = { runBlocking { mgr.getValidAccessToken() } }
+                accessTokenProvider = { runBlocking { mgr.getValidAccessToken() } },
+                context = context
             )
             val result = runBlocking { client.fetchTasks(maxResults = 3) }
 
@@ -795,7 +841,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         }
 
         return try {
-            val client = GooglePlacesClient(apiKeyProvider = { mapsApiKey })
+            val client = GooglePlacesClient(apiKeyProvider = { mapsApiKey }, context = context)
             // Test with a search for restaurants near a known location (Houston, TX)
             val result = runBlocking {
                 client.searchNearby(
@@ -861,7 +907,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
             return jsonResponse(JSONObject().apply {
                 put("service", "location")
                 put("status", "failed")
-                put("message", "GPS location not available. Make sure Location Services are enabled " +
+                put("message", "Device location not available. Make sure Location Services are enabled " +
                     "on the glasses (Settings → Location → On) and the app has location permission.")
                 put("has_gps", false)
             })
@@ -869,15 +915,21 @@ document.addEventListener('DOMContentLoaded', loadAll);
 
         val ageSeconds = (System.currentTimeMillis() - loc.timestampMs) / 1000
         val fresh = if (ageSeconds < 300) "current" else "${ageSeconds / 60}min old"
+        val sourceLabel =
+            when (loc.provider) {
+                "ip_geolocation" -> "Approximate network location"
+                else -> "Location active"
+            }
         return jsonResponse(JSONObject().apply {
             put("service", "location")
             put("status", "success")
-            put("message", "GPS active! Lat: ${"%.6f".format(loc.latitude)}, " +
+            put("message", "$sourceLabel: Lat: ${"%.6f".format(loc.latitude)}, " +
                 "Lng: ${"%.6f".format(loc.longitude)} " +
                 "(accuracy: ${loc.accuracyMeters?.toInt() ?: "?"}m, $fresh)" +
                 (loc.altitudeMeters?.let { alt: Double -> ", alt: ${alt.toInt()}m" } ?: "") +
                 (loc.speedMps?.let { spd: Float -> if (spd > 0.5f) ", speed: ${"%.1f".format(spd * 2.237)}mph" else "" } ?: ""))
-            put("has_gps", true)
+            put("has_gps", loc.provider != "ip_geolocation")
+            put("provider", loc.provider ?: JSONObject.NULL)
             put("latitude", loc.latitude)
             put("longitude", loc.longitude)
             put("accuracy_meters", loc.accuracyMeters ?: -1)
@@ -915,7 +967,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
             val origin = "${loc.latitude},${loc.longitude}"
             // Use a well-known nearby city as the destination test
             val destination = "Houston, TX"
-            val client = GoogleDirectionsClient(apiKeyProvider = { mapsApiKey })
+            val client = GoogleDirectionsClient(apiKeyProvider = { mapsApiKey }, context = context)
             val result = runBlocking {
                 client.getDirections(origin = origin, destination = destination)
             }
@@ -961,6 +1013,138 @@ document.addEventListener('DOMContentLoaded', loadAll);
                 put("message", "Exception: ${e.message}")
                 put("has_api_key", mapsApiKey.isNotBlank())
                 put("has_gps", true)
+            })
+        }
+    }
+
+    /** Test Google Air Quality API with live GPS location. */
+    private fun verifyAirQuality(): Response {
+        val mapsApiKey = prefs.getString("google_maps_api_key", "") ?: ""
+        val loc = locationProvider?.invoke()
+
+        if (mapsApiKey.isBlank()) {
+            return jsonResponse(JSONObject().apply {
+                put("service", "air_quality")
+                put("status", "not_configured")
+                put("message", "Google Maps API key not configured. Air Quality uses the same key.")
+                put("has_api_key", false)
+                put("has_gps", loc != null)
+            })
+        }
+
+        if (loc == null) {
+            return jsonResponse(JSONObject().apply {
+                put("service", "air_quality")
+                put("status", "failed")
+                put("message", "GPS not available — cannot test air quality from the glasses.")
+                put("has_api_key", true)
+                put("has_gps", false)
+            })
+        }
+
+        return try {
+            val client = GoogleAirQualityClient(apiKeyProvider = { mapsApiKey }, context = context)
+            when (
+                val result = runBlocking {
+                    client.fetchCurrentConditions(loc.latitude, loc.longitude)
+                }
+            ) {
+                is GoogleAirQualityClient.AirQualityResult.Success -> {
+                    jsonResponse(JSONObject().apply {
+                        put("service", "air_quality")
+                        put("status", "success")
+                        put(
+                            "message",
+                            "Connected! ${result.index.label}" +
+                                (result.index.dominantPollutant?.let { " — dominant pollutant: $it" } ?: "")
+                        )
+                        put("has_api_key", true)
+                        put("has_gps", true)
+                        put("aqi", result.index.aqi ?: JSONObject.NULL)
+                    })
+                }
+                is GoogleAirQualityClient.AirQualityResult.ApiKeyMissing -> {
+                    jsonResponse(JSONObject().apply {
+                        put("service", "air_quality")
+                        put("status", "failed")
+                        put("message", "Air Quality API key missing or invalid.")
+                        put("has_api_key", false)
+                        put("has_gps", true)
+                    })
+                }
+                is GoogleAirQualityClient.AirQualityResult.Error -> {
+                    jsonResponse(JSONObject().apply {
+                        put("service", "air_quality")
+                        put("status", "failed")
+                        put("message", result.message)
+                        put("has_api_key", true)
+                        put("has_gps", true)
+                    })
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Air quality verify error", e)
+            jsonResponse(JSONObject().apply {
+                put("service", "air_quality")
+                put("status", "failed")
+                put("message", "Exception: ${e.message}")
+                put("has_api_key", mapsApiKey.isNotBlank())
+                put("has_gps", loc != null)
+            })
+        }
+    }
+
+    /** Test the configured research provider with a short sample prompt. */
+    private fun verifyResearch(): Response {
+        val provider = (prefs.getString("research_provider", "") ?: "").trim().ifBlank { "gemini" }
+        val router = ResearchRouter(
+            providerProvider = { provider },
+            apiKeyProvider = { prefs.getString("research_api_key", "")?.trim() },
+            modelProvider = { prefs.getString("research_model", "")?.trim() },
+            geminiFallbackApiKeyProvider = {
+                (prefs.getString("gemini_api_key", "") ?: "").trim().ifBlank {
+                    BuildConfig.GEMINI_API_KEY.takeIf { it.isNotBlank() }
+                }
+            },
+            context = context
+        )
+
+        return try {
+            when (val result = runBlocking { router.research("current capabilities of TapInsight") }) {
+                is ResearchRouter.ResearchResult.Success -> {
+                    jsonResponse(JSONObject().apply {
+                        put("service", "research")
+                        put("status", "success")
+                        put("message", "Connected! ${result.provider} / ${result.model}")
+                        put("provider", result.provider)
+                        put("model", result.model)
+                        put("preview", result.text.take(240))
+                    })
+                }
+                is ResearchRouter.ResearchResult.ApiKeyMissing -> {
+                    jsonResponse(JSONObject().apply {
+                        put("service", "research")
+                        put("status", "not_configured")
+                        put("message", "Research provider API key missing. Configure it in the companion app.")
+                        put("provider", provider)
+                    })
+                }
+                is ResearchRouter.ResearchResult.Error -> {
+                    jsonResponse(JSONObject().apply {
+                        put("service", "research")
+                        put("status", "failed")
+                        put("message", result.message)
+                        put("provider", provider)
+                    })
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Research verify error", e)
+            jsonResponse(JSONObject().apply {
+                put("service", "research")
+                put("status", "failed")
+                put("message", "Exception: ${e.message}")
+                put("provider", provider)
             })
         }
     }

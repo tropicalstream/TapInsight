@@ -13,6 +13,18 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_GEMINI_API_KEY, "") ?: ""
         set(value) = prefs.edit().putString(KEY_GEMINI_API_KEY, value).apply()
 
+    var researchProvider: String
+        get() = prefs.getString(KEY_RESEARCH_PROVIDER, "gemini") ?: "gemini"
+        set(value) = prefs.edit().putString(KEY_RESEARCH_PROVIDER, value).apply()
+
+    var researchApiKey: String
+        get() = prefs.getString(KEY_RESEARCH_API_KEY, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_RESEARCH_API_KEY, value).apply()
+
+    var researchModel: String
+        get() = prefs.getString(KEY_RESEARCH_MODEL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_RESEARCH_MODEL, value).apply()
+
     var calendarApiKey: String
         get() = prefs.getString(KEY_CALENDAR_API_KEY, "") ?: ""
         set(value) = prefs.edit().putString(KEY_CALENDAR_API_KEY, value).apply()
@@ -48,6 +60,10 @@ class AppPreferences(context: Context) {
     var webForceDarkMode: Boolean
         get() = prefs.getBoolean(KEY_WEB_FORCE_DARK_MODE, true)
         set(value) = prefs.edit().putBoolean(KEY_WEB_FORCE_DARK_MODE, value).apply()
+
+    var browserShowSystemInfo: Boolean
+        get() = prefs.getBoolean(KEY_BROWSER_SHOW_SYSTEM_INFO, true)
+        set(value) = prefs.edit().putBoolean(KEY_BROWSER_SHOW_SYSTEM_INFO, value).apply()
 
     /** Custom system prompt override. If blank, the built-in prompt is used. */
     var customSystemPrompt: String
@@ -280,6 +296,9 @@ class AppPreferences(context: Context) {
 
     companion object {
         private const val KEY_GEMINI_API_KEY = "gemini_api_key"
+        private const val KEY_RESEARCH_PROVIDER = "research_provider"
+        private const val KEY_RESEARCH_API_KEY = "research_api_key"
+        private const val KEY_RESEARCH_MODEL = "research_model"
         private const val KEY_CALENDAR_API_KEY = "calendar_api_key"
         private const val KEY_CALENDAR_ID = "calendar_id"
         private const val KEY_OPENCLAW_ENDPOINT = "openclaw_endpoint"
@@ -291,6 +310,7 @@ class AppPreferences(context: Context) {
         private const val KEY_WEB_DESKTOP_MODE = "web_desktop_mode"
         private const val KEY_WEB_POINTER_SENSITIVITY = "web_pointer_sensitivity"
         private const val KEY_WEB_FORCE_DARK_MODE = "web_force_dark_mode"
+        private const val KEY_BROWSER_SHOW_SYSTEM_INFO = "browser_show_system_info"
         private const val KEY_CUSTOM_SYSTEM_PROMPT = "custom_system_prompt"
         private const val KEY_PERSONALITY = "personality"
         private const val KEY_SPOTIFY_CLIENT_ID = "spotify_client_id"
@@ -319,7 +339,7 @@ class AppPreferences(context: Context) {
         private const val KEY_PROMPT_ROUTING_RULES = "prompt_routing_rules"
         private const val KEY_PROMPT_BEHAVIOR = "prompt_behavior"
         private const val KEY_PROMPT_URL_RULES = "prompt_url_rules"
-        private const val DEFAULT_OPENCLAW_ENDPOINT = "http://192.168.1.217:5000/tool"
+        private const val DEFAULT_OPENCLAW_ENDPOINT = ""
     }
 }
 
