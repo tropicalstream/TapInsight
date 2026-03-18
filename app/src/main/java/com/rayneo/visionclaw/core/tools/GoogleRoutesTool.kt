@@ -2,16 +2,22 @@ package com.rayneo.visionclaw.core.tools
 
 import android.content.Context
 import android.util.Log
+import com.rayneo.visionclaw.core.model.DeviceLocationContext
 import com.rayneo.visionclaw.core.network.GoogleDirectionsClient
 
 class GoogleRoutesTool(
     private val context: Context,
-    private val directionsClient: GoogleDirectionsClient
+    private val directionsClient: GoogleDirectionsClient,
+    private val locationProvider: () -> DeviceLocationContext?
 ) : AiTapTool {
     override val name = "google_routes"
 
     override suspend fun execute(args: Map<String, String>): Result<String> {
-        val origin = args["origin"]?.takeIf { it.isNotBlank() } ?: "current location"
+        val requestedOrigin = args["origin"]?.trim().orEmpty()
+        val origin = resolveOrigin(requestedOrigin)
+            ?: return Result.failure(
+                IllegalStateException("Current location is unavailable. Enable location on the glasses and try again.")
+            )
         val destination = args["destination"]?.takeIf { it.isNotBlank() }
             ?: return Result.failure(Exception("Destination is required for directions."))
         val mode = args["mode"]?.lowercase()
@@ -42,5 +48,17 @@ class GoogleRoutesTool(
             is GoogleDirectionsClient.DirectionsResult.Error ->
                 Result.failure(Exception(result.message))
         }
+    }
+
+    private fun resolveOrigin(origin: String): String? {
+        if (origin.isBlank() ||
+            origin.equals("current", ignoreCase = true) ||
+            origin.equals("current location", ignoreCase = true) ||
+            origin.equals("my location", ignoreCase = true)
+        ) {
+            val location = locationProvider() ?: return null
+            return "${location.latitude},${location.longitude}"
+        }
+        return origin
     }
 }

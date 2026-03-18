@@ -77,21 +77,33 @@ There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (ve
 2. Sideload it onto your RayNeo X3 Pro via ADB: `adb install TapInsight.apk`
 3. Launch TapInsight on the glasses
 4. **Open [`companion.html`](companion.html)** in any browser on your phone or laptop — it's a one-page setup wizard that connects to the glasses over WiFi
-5. Enter your glasses' IP address (default: `192.168.1.217`) and click **Connect**
+5. Enter your glasses' IP address (default: `YOUR_GLASSES_IP`) and click **Connect**
 6. In the Setup tab, enter your Gemini API key
 7. Start talking — tap the glasses touchpad to activate the AI
 
-The companion app runs entirely over WiFi at `http://192.168.1.217:19110` (adjust the IP to match your glasses — check Settings → WiFi on the glasses to find it). From there you can configure everything: API keys, AI model, OAuth, TapRadio stations, and more.
+The companion app runs entirely over WiFi at `http://YOUR_GLASSES_IP:19110` (adjust the IP to match your glasses — check Settings → WiFi on the glasses to find it). From there you can configure everything: API keys, AI model, OAuth, TapRadio stations, and more.
 
-### Connecting Without WiFi (ADB Port Forwarding)
+### Connecting via USB (Recommended)
 
-If you're on a mobile hotspot or don't have a shared WiFi network between your computer and the glasses, you can use **ADB port forwarding over USB** to access the companion app:
+USB is the fastest and most reliable way to access the companion app. Connect the glasses via USB and run:
 
 ```bash
 adb forward tcp:19110 tcp:19110
 ```
 
-Then open **http://localhost:19110** in any browser on your computer. This tunnels the connection through the USB cable — no WiFi required. Keep the USB cable connected while configuring.
+Then open **http://localhost:19110** in any browser. The `companion.html` page defaults to USB mode and auto-detects when the forwarding is active.
+
+**The port forward resets** when the glasses disconnect, reboot, or ADB restarts. To fix this permanently, use the included helper script:
+
+```bash
+./setup_usb.sh --watch
+```
+
+This runs in the background and automatically re-establishes the port forward whenever the glasses reconnect. You can also run `./setup_usb.sh` (without `--watch`) for a one-shot forward.
+
+### Connecting via WiFi
+
+If you prefer wireless, your computer and glasses must be on the same WiFi network. Find the glasses' IP in Settings → WiFi, then open `http://YOUR_GLASSES_IP:19110` in your browser. The `companion.html` page has a WiFi tab for this.
 
 ### Optional Configuration
 
