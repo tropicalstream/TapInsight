@@ -3,14 +3,17 @@ package com.TapLinkX3.app
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.PorterDuff
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
+import android.media.audiofx.Visualizer
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -66,6 +69,19 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
     private val PREFS_NAME = "TapLinkPrefs"
     private val KEY_WINDOWS_STATE = "saved_windows_state"
+    private val KEY_BROWSER_SHOW_SYSTEM_INFO = "browser_show_system_info"
+    private val sharedConfigPrefs =
+            context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
+    private val sharedConfigListener =
+            SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == KEY_BROWSER_SHOW_SYSTEM_INFO) {
+                    post {
+                        updateSystemInfoBarVisibility()
+                        requestLayout()
+                        invalidate()
+                    }
+                }
+            }
 
     private data class BrowserWindow(
             val id: String = java.util.UUID.randomUUID().toString(),
@@ -146,6 +162,23 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private val mediaScrollFreezeMs = 1500L
     private val mediaStateByWindowId = mutableMapOf<String, Boolean>()
     private val mediaLastPlayedAtByWindowId = mutableMapOf<String, Long>()
+    private val youtubeMediaTeardownScript =
+            """
+            (function() {
+                try {
+                    document.querySelectorAll('video, audio').forEach(function(el) {
+                        try {
+                            el.pause();
+                            el.autoplay = false;
+                            el.muted = true;
+                            el.currentTime = 0;
+                            el.removeAttribute('src');
+                            el.load();
+                        } catch (inner) {}
+                    });
+                } catch (outer) {}
+            })();
+            """.trimIndent()
 
     // Idle detection for power saving
     private var lastUserInteractionTime = 0L
@@ -411,6 +444,28 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
+    fun pauseYouTubeMediaAcrossAllWindows(resetTracking: Boolean = true) {
+        windows.forEach { win ->
+            val url = win.webView.url.orEmpty()
+            if (!url.contains("youtube.com", ignoreCase = true) &&
+                            !url.contains("youtu.be", ignoreCase = true)
+            ) {
+                return@forEach
+            }
+
+            try {
+                win.webView.stopLoading()
+            } catch (_: Exception) {}
+
+            win.webView.post { win.webView.evaluateJavascript(youtubeMediaTeardownScript, null) }
+            mediaStateByWindowId[win.id] = false
+        }
+
+        if (resetTracking) {
+            updateMediaState(mediaStateByWindowId.values.any { it })
+        }
+    }
+
     private val fullScreenOverlayContainer =
             FrameLayout(context).apply {
                 clipChildren = true
@@ -510,6 +565,41 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // Update scroll bar thumb positions
         updateScrollBarThumbs(xProgress, yProgress)
         applyScrollbarTransform()
+    }
+
+    fun recenterViewportForDashboard(targetWebView: WebView? = webView) {
+        context.getSharedPreferences("TapLinkPrefs", Context.MODE_PRIVATE)
+                .edit()
+                .putInt("uiTransXProgress", 50)
+                .putInt("uiTransYProgress", 50)
+                .apply()
+        updateUiTranslation()
+
+        targetWebView?.post {
+            try {
+                targetWebView.scrollTo(0, 0)
+            } catch (_: Exception) {}
+            try {
+                targetWebView.evaluateJavascript(
+                        """
+                        (function() {
+                            try {
+                                window.scrollTo(0, 0);
+                                if (document.documentElement) {
+                                    document.documentElement.scrollLeft = 0;
+                                    document.documentElement.scrollTop = 0;
+                                }
+                                if (document.body) {
+                                    document.body.scrollLeft = 0;
+                                    document.body.scrollTop = 0;
+                                }
+                            } catch (e) {}
+                        })();
+                        """.trimIndent(),
+                        null
+                )
+            } catch (_: Exception) {}
+        }
     }
 
     private fun isWebViewScrollEnabled(): Boolean {
@@ -774,9 +864,34 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     p.leftMargin = baseLeftMargin
                     p.rightMargin = 0
                     p.bottomMargin = baseBottomMargin
+                    p.gravity = Gravity.TOP or Gravity.START
                     webViewsContainer.layoutParams = p
                     webViewsContainer.requestLayout()
                     webViewsContainer.invalidate()
+                    // Reset horizontal scroll to prevent right-offset
+                    if (webView.scrollX > 0) webView.scrollTo(0, webView.scrollY)
+                }
+            }
+            return
+        }
+
+        // Hide scrollbars entirely on AR nav map pages (full-viewport 3D map)
+        val currentUrl = webView.url ?: ""
+        if (currentUrl.contains("ar_nav.html")) {
+            horizontalScrollBar.visibility = View.GONE
+            verticalScrollBar.visibility = View.GONE
+            (webViewsContainer.layoutParams as? FrameLayout.LayoutParams)?.let { p ->
+                val targetWidth = if (isScrollModeActive) containerWidth else containerWidth - baseLeftMargin
+                val targetHeight = (480 - baseBottomMargin - keyboardHeight).coerceAtLeast(0)
+                if (p.width != targetWidth || p.height != targetHeight || p.rightMargin != 0) {
+                    p.width = targetWidth
+                    p.height = targetHeight
+                    p.leftMargin = baseLeftMargin
+                    p.rightMargin = 0
+                    p.bottomMargin = baseBottomMargin
+                    p.gravity = Gravity.TOP or Gravity.START
+                    webViewsContainer.layoutParams = p
+                    webViewsContainer.requestLayout()
                 }
             }
             return
@@ -865,16 +980,18 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 p.leftMargin = targetLeftMargin
                 p.rightMargin = targetRightMargin
                 p.bottomMargin = targetBottomMargin
+                p.gravity = Gravity.TOP or Gravity.START
 
-                // DebugLog.d("ScrollDebug", "Applying Layout: Mode=${if(isScrollModeActive)"Scroll"
-                // else
-                // "Normal"}, [${p.width} x ${p.height}], Margins: L=${p.leftMargin},
-                // R=${p.rightMargin}, B=${p.bottomMargin}")
                 webViewsContainer.layoutParams = p
                 // Force layout update on WebView itself to ensure it resizes
                 webView.requestLayout()
                 webViewsContainer.requestLayout()
                 webViewsContainer.invalidate()
+
+                // Reset horizontal scroll to prevent right-offset after layout change
+                if (!showHorz && webView.scrollX > 0) {
+                    webView.scrollTo(0, webView.scrollY)
+                }
             }
         }
 
@@ -1195,8 +1312,22 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 // Consume all touch events to prevent propagation to navbar/webview behind
                 // and route taps into mask overlay controls.
                 setOnTouchListener { _, event ->
-                    if (event.actionMasked == MotionEvent.ACTION_UP) {
-                        dispatchMaskOverlayTouch(event.rawX, event.rawY)
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            maskOverlayTouchDownX = event.rawX
+                            maskOverlayTouchDownY = event.rawY
+                            maskOverlayTouchDownTime = SystemClock.uptimeMillis()
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            val dx = event.rawX - maskOverlayTouchDownX
+                            val dy = event.rawY - maskOverlayTouchDownY
+                            val distSq = dx * dx + dy * dy
+                            val duration = SystemClock.uptimeMillis() - maskOverlayTouchDownTime
+                            val isTap = distSq <= (maskOverlayTapSlopPx * maskOverlayTapSlopPx) && duration <= maskOverlayTapMaxDurationMs
+                            if (isTap) {
+                                dispatchMaskOverlayTouch(event.rawX, event.rawY)
+                            }
+                        }
                     }
                     true
                 }
@@ -1211,6 +1342,26 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private lateinit var btnMaskNext: FontIconView // 10s forward
     private lateinit var btnMaskNextTrack: FontIconView // Skip to next song
     private lateinit var btnMaskUnmask: ImageButton
+    private lateinit var maskNowPlayingText: TextView
+    private val maskNowPlayingPeriodicRefresh: Runnable = object : Runnable {
+        override fun run() {
+            if (!isScreenMasked) return
+            refreshMaskedNowPlayingFromJs()
+            refreshMaskedNowPlaying()
+            postDelayed(this, 5000L)
+        }
+    }
+    private lateinit var btnVisualizerToggle: FontIconView
+    private lateinit var maskVisualizerView: AudioVisualizerView
+    private var isVisualizerVisible = false
+    private var audioVisualizer: Visualizer? = null
+    private val fftMagnitudes = FloatArray(32)  // shared with AudioVisualizerView
+    private var lastVisualizerTapTime = 0L      // debounce taps
+    private var maskOverlayTouchDownX = 0f
+    private var maskOverlayTouchDownY = 0f
+    private var maskOverlayTouchDownTime = 0L
+    private val maskOverlayTapSlopPx = 24f
+    private val maskOverlayTapMaxDurationMs = 350L
 
     // Fullscreen Mode UI elements
     private lateinit var fullScreenControlsContainer: FrameLayout
@@ -1623,6 +1774,56 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         switchToWindow(newWindow.id)
         saveAllWindowsState()
         return newWebView
+    }
+
+    fun resetToSingleWindow(loadDefaultUrl: Boolean = false): WebView {
+        windows.toList().forEach { win ->
+            try {
+                win.webView.stopLoading()
+            } catch (_: Exception) {}
+            try {
+                webViewsContainer.removeView(win.webView)
+            } catch (_: Exception) {}
+            try {
+                win.webView.destroy()
+            } catch (_: Exception) {}
+            win.thumbnail?.recycle()
+        }
+
+        windows.clear()
+        mediaStateByWindowId.clear()
+        mediaLastPlayedAtByWindowId.clear()
+        activeWindowId = null
+        isMediaPlaying = false
+        hideMediaControls()
+        webViewsContainer.removeAllViews()
+
+        val freshWebView = InternalWebView(context)
+        configureWebView(freshWebView)
+        applyBrowsingModeToWebView(freshWebView, isDesktopMode)
+        if (loadDefaultUrl) {
+            freshWebView.loadUrl(Constants.DEFAULT_URL)
+        }
+
+        val freshWindow = BrowserWindow(webView = freshWebView, title = "New Tab")
+        freshWebView.visibility = View.VISIBLE
+        webViewsContainer.addView(
+                freshWebView,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        )
+        windowCallback?.onWindowCreated(freshWebView)
+
+        windows.add(freshWindow)
+        activeWindowId = freshWindow.id
+        webView = freshWebView
+        updateScrollBarsVisibility()
+        windowCallback?.onWindowSwitched(freshWebView)
+        freshWebView.post { injectPageObservers(freshWebView) }
+        startRefreshing()
+        hideWindowsOverview()
+        saveAllWindowsState()
+        return freshWebView
     }
 
     fun switchToWindow(id: String) {
@@ -2317,6 +2518,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             .apply {
                                 leftMargin = toggleBarWidthPx // Position after toggle bar
                                 bottomMargin = navBarHeightPx // Account for nav bar
+                                gravity = Gravity.TOP or Gravity.START
                             }
             )
             addView(leftToggleBar)
@@ -2366,6 +2568,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         MeasureSpec.makeMeasureSpec(640, MeasureSpec.AT_MOST),
                         MeasureSpec.makeMeasureSpec(24, MeasureSpec.EXACTLY)
                 )
+                updateSystemInfoBarVisibility()
                 leftSystemInfoView.requestLayout()
                 leftSystemInfoView.invalidate()
             }
@@ -2905,12 +3108,22 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // Hide both cursor views
         leftToggleBar.findViewById<FontIconView>(R.id.btnMask)?.setText(R.string.fa_eye_slash)
         keepScreenOn = true
+        refreshMaskedNowPlaying()
+        refreshMaskedNowPlayingFromJs()
+        // Start periodic now-playing refresh (every 5s)
+        removeCallbacks(maskNowPlayingPeriodicRefresh)
+        postDelayed(maskNowPlayingPeriodicRefresh, 5000L)
         updateRefreshRate()
     }
 
     fun unmaskScreen() {
         isScreenMasked = false
+        removeCallbacks(maskNowPlayingPeriodicRefresh)
         maskOverlay.visibility = View.GONE
+        if (::maskNowPlayingText.isInitialized) {
+            maskNowPlayingText.visibility = View.GONE
+        }
+        if (isVisualizerVisible) hideVisualizer()
         // Let MainActivity handle cursor visibility restoration - cursors will be shown
         // if they were visible before masking through updateCursorPosition call
         leftToggleBar.findViewById<FontIconView>(R.id.btnMask)?.setText(R.string.fa_eye)
@@ -2947,6 +3160,44 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             // DebugLog.d("MediaControls", "Unmask button pressed")
             unmaskScreen()
             return
+        }
+
+        // Check visualizer toggle button
+        if (::btnVisualizerToggle.isInitialized && btnVisualizerToggle.visibility == View.VISIBLE) {
+            val vizBtnLoc = IntArray(2)
+            btnVisualizerToggle.getLocationOnScreen(vizBtnLoc)
+            val vizW = btnVisualizerToggle.width * scale
+            val vizH = btnVisualizerToggle.height * scale
+            // Expand hit area for small button
+            val pad = 12f * scale
+            if (screenX >= vizBtnLoc[0] - pad &&
+                screenX <= vizBtnLoc[0] + vizW + pad &&
+                screenY >= vizBtnLoc[1] - pad &&
+                screenY <= vizBtnLoc[1] + vizH + pad
+            ) {
+                btnVisualizerToggle.performClick()
+                return
+            }
+        }
+
+        // Tap on the visualizer itself → cycle themes (debounced 400ms)
+        if (::maskVisualizerView.isInitialized && maskVisualizerView.visibility == View.VISIBLE) {
+            val vizLoc = IntArray(2)
+            maskVisualizerView.getLocationOnScreen(vizLoc)
+            val vizW = maskVisualizerView.width * scale
+            val vizH = maskVisualizerView.height * scale
+            if (screenX >= vizLoc[0] &&
+                screenX <= vizLoc[0] + vizW &&
+                screenY >= vizLoc[1] &&
+                screenY <= vizLoc[1] + vizH
+            ) {
+                val now = SystemClock.uptimeMillis()
+                if (now - lastVisualizerTapTime < 400) return  // debounce
+                lastVisualizerTapTime = now
+                maskVisualizerView.cycleThemeOrWrap()
+                updateVisualizerButtonColor()
+                return
+            }
         }
 
         // Check media control buttons
@@ -3809,11 +4060,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             }
         }
 
-        // Hide system info bar in scroll mode, show otherwise
-        if (isInScrollMode) {
-            leftSystemInfoView.visibility = View.GONE
-        } else {
-            leftSystemInfoView.visibility = View.VISIBLE
+        // Hide system info bar when disabled or while nav/scroll overlays are hidden.
+        updateSystemInfoBarVisibility()
+        if (leftSystemInfoView.visibility == View.VISIBLE) {
             // Calculate system info bar position
             val infoBarHeight = 24
             val infoBarY = eyeHeight - navBarHeight - infoBarHeight // Position above nav bar
@@ -3980,6 +4229,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     fun cleanupResources() {
+        sharedConfigPrefs.unregisterOnSharedPreferenceChangeListener(sharedConfigListener)
         stopRefreshing()
         synchronized(bitmapLock) {
             bitmap?.let { currentBitmap ->
@@ -4035,7 +4285,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     fun showInfoBars() {
-        leftSystemInfoView.visibility = View.VISIBLE
+        updateSystemInfoBarVisibility()
     }
 
     fun hideInfoBars() {
@@ -4043,6 +4293,18 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     private fun Int.dp(): Int = (this * resources.displayMetrics.density).roundToInt()
+
+    private fun isBrowserSystemInfoEnabled(): Boolean =
+            sharedConfigPrefs.getBoolean(KEY_BROWSER_SHOW_SYSTEM_INFO, true)
+
+    private fun updateSystemInfoBarVisibility() {
+        leftSystemInfoView.visibility =
+                if (!isBrowserSystemInfoEnabled() || isInScrollMode || isNavBarsHidden) {
+                    View.GONE
+                } else {
+                    View.VISIBLE
+                }
+    }
 
     // Add keyboard mirror handling
     fun setKeyboard(originalKeyboard: CustomKeyboardView) {
@@ -5744,23 +6006,27 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     private fun handleZoomButtonClick(direction: String) {
-        val zoomFactor = if (direction == "in") 1.1f else 0.9f
-        currentWebZoom *= zoomFactor
-
-        // Save preference
-        context.getSharedPreferences("TapLinkPrefs", Context.MODE_PRIVATE)
-                .edit()
-                .putFloat("webZoomLevel", currentWebZoom)
-                .apply()
-
+        // For ar_nav.html: delegate to the 3D map's own zoom handler
         webView.evaluateJavascript(
                 """
         (function() {
-            document.body.style.zoom = "$currentWebZoom";
+            if (window.__arNavZoom) { window.__arNavZoom('$direction'); return; }
+            document.body.style.zoom = "${if (direction == "in") currentWebZoom * 1.1f else currentWebZoom * 0.9f}";
         })();
     """,
                 null
         )
+
+        // Only update CSS zoom tracking for non-AR pages
+        val url = webView.url ?: ""
+        if (!url.contains("ar_nav.html")) {
+            val zoomFactor = if (direction == "in") 1.1f else 0.9f
+            currentWebZoom *= zoomFactor
+            context.getSharedPreferences("TapLinkPrefs", Context.MODE_PRIVATE)
+                    .edit()
+                    .putFloat("webZoomLevel", currentWebZoom)
+                    .apply()
+        }
 
         postDelayed(
                 {
@@ -6973,11 +7239,14 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        sharedConfigPrefs.registerOnSharedPreferenceChangeListener(sharedConfigListener)
+        updateSystemInfoBarVisibility()
         startRefreshing()
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        sharedConfigPrefs.unregisterOnSharedPreferenceChangeListener(sharedConfigListener)
         stopRefreshing()
     }
 
@@ -7007,7 +7276,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
             leftToggleBar.isClickable = false
             leftNavigationBar.isClickable = false
-            leftSystemInfoView.visibility = View.GONE
+            updateSystemInfoBarVisibility()
 
             // Then animate menus away
             leftToggleBar
@@ -7036,7 +7305,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 // Re-enable touch interception and show system info bar
                 leftToggleBar.isClickable = true
                 leftNavigationBar.isClickable = true
-                leftSystemInfoView.visibility = View.VISIBLE
+                updateSystemInfoBarVisibility()
 
                 // Then show menus with animation
                 leftToggleBar.visibility = View.VISIBLE
@@ -7080,7 +7349,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             // Immediately disable touch interception before animating
             leftToggleBar.isClickable = false
             leftNavigationBar.isClickable = false
-            leftSystemInfoView.visibility = View.GONE
+            updateSystemInfoBarVisibility()
 
             // Then animate menus away
             leftToggleBar
@@ -7109,7 +7378,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 // Re-enable touch interception and show system info bar
                 leftToggleBar.isClickable = true
                 leftNavigationBar.isClickable = true
-                leftSystemInfoView.visibility = View.VISIBLE
+                updateSystemInfoBarVisibility()
 
                 // Then show menus with animation
                 leftToggleBar.visibility = View.VISIBLE
@@ -7609,6 +7878,29 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
     private fun setupMaskOverlayUI() {
 
+        maskNowPlayingText =
+                TextView(context).apply {
+                    setTextColor(Color.argb(128, 255, 255, 255))
+                    textSize = 12f
+                    gravity = Gravity.CENTER
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                    visibility = View.GONE
+                    alpha = 0.5f
+                }
+        val nowPlayingParams =
+                FrameLayout.LayoutParams(
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                FrameLayout.LayoutParams.WRAP_CONTENT
+                        )
+                        .apply {
+                            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                            leftMargin = 56
+                            rightMargin = 56
+                            bottomMargin = 54
+                        }
+        maskOverlay.addView(maskNowPlayingText, nowPlayingParams)
+
         // Unmask button (Bottom Right)
         btnMaskUnmask =
                 ImageButton(context).apply {
@@ -7616,6 +7908,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     setBackgroundColor(Color.TRANSPARENT)
                     scaleType = ImageView.ScaleType.FIT_CENTER
                     setPadding(8, 8, 8, 8)
+                    alpha = 0.5f
                     setOnClickListener { unmaskScreen() }
                 }
         val unmaskParams =
@@ -7632,6 +7925,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER
                     setBackgroundColor(Color.TRANSPARENT)
+                    alpha = 0.5f
                     visibility = View.GONE // Hidden by default until media detected
                 }
         val controlsParams =
@@ -7650,7 +7944,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                     """
                 (function() {
                     // Try common previous track selectors
-                    var prevBtn = document.querySelector('.ytp-prev-button') || 
+                    var prevBtn = document.querySelector('.ytp-prev-button') ||
                                   document.querySelector('[aria-label*="previous" i]') ||
                                   document.querySelector('[title*="previous" i]') ||
                                   document.querySelector('button[data-testid="control-button-skip-back"]');
@@ -7662,6 +7956,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             """.trimIndent(),
                                     null
                             )
+                    scheduleTrackChangeRefresh()
                 }
         btnMaskPrev =
                 createMediaButton(R.string.fa_backward) {
@@ -7713,7 +8008,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                     """
                 (function() {
                     // Try common next track selectors
-                    var nextBtn = document.querySelector('.ytp-next-button') || 
+                    var nextBtn = document.querySelector('.ytp-next-button') ||
                                   document.querySelector('[aria-label*="next" i]') ||
                                   document.querySelector('[title*="next" i]') ||
                                   document.querySelector('button[data-testid="control-button-skip-forward"]');
@@ -7725,6 +8020,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             """.trimIndent(),
                                     null
                             )
+                    // YouTube SPA navigations take several seconds to update the title.
+                    // Schedule aggressive delayed refreshes to catch the new video name.
+                    scheduleTrackChangeRefresh()
                 }
 
         btnMaskPause.visibility = View.GONE // Initially show Play
@@ -7735,6 +8033,1063 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         maskMediaControlsContainer.addView(btnMaskPause)
         maskMediaControlsContainer.addView(btnMaskNext)
         maskMediaControlsContainer.addView(btnMaskNextTrack)
+
+        // ── Audio Visualizer ──
+        maskVisualizerView = AudioVisualizerView(context).apply {
+            visibility = View.GONE
+            alpha = 0.6f
+        }
+        val vizParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, 180
+        ).apply {
+            gravity = Gravity.CENTER
+            leftMargin = 40
+            rightMargin = 40
+        }
+        maskOverlay.addView(maskVisualizerView, vizParams)
+
+        // Toggle button — placed to the right of the now-playing text
+        btnVisualizerToggle = FontIconView(context).apply {
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setShadowLayer(8f, 0f, 0f, Color.parseColor("#FF00FF"))
+            // Click: toggle on → cycle themes → off after last theme → on again (debounced)
+            setOnClickListener {
+                val now = SystemClock.uptimeMillis()
+                if (now - lastVisualizerTapTime < 400) return@setOnClickListener
+                lastVisualizerTapTime = now
+                if (!isVisualizerVisible) {
+                    showVisualizer()
+                } else {
+                    maskVisualizerView.cycleThemeOrWrap()
+                    updateVisualizerButtonColor()
+                }
+            }
+        }
+        updateVisualizerButtonColor()
+        val vizToggleParams = FrameLayout.LayoutParams(44, 44).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+            rightMargin = 52
+            bottomMargin = 46
+        }
+        maskOverlay.addView(btnVisualizerToggle, vizToggleParams)
+    }
+
+    private fun showVisualizer() {
+        isVisualizerVisible = true
+        maskVisualizerView.visibility = View.VISIBLE
+        maskVisualizerView.bringToFront()
+        maskVisualizerView.startAnimating()
+        startAudioCapture()
+        // Bring controls and text back to front
+        maskMediaControlsContainer.bringToFront()
+        maskNowPlayingText.bringToFront()
+        btnVisualizerToggle.bringToFront()
+        btnVisualizerToggle.alpha = 1.0f
+        updateVisualizerButtonColor()
+    }
+
+    private fun hideVisualizer() {
+        isVisualizerVisible = false
+        stopAudioCapture()
+        maskVisualizerView.stopAnimating()
+        maskVisualizerView.visibility = View.GONE
+        btnVisualizerToggle.alpha = 0.5f
+        updateVisualizerButtonColor()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startAudioCapture() {
+        stopAudioCapture()
+        try {
+            // Session 0 = mix of all audio output
+            val viz = Visualizer(0)
+            viz.captureSize = Visualizer.getCaptureSizeRange()[1]  // max for best resolution
+            viz.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
+                override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, samplingRate: Int) {}
+                override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, samplingRate: Int) {
+                    if (fft == null) return
+                    val buckets = fftMagnitudes.size
+                    val fftSize = fft.size / 2  // real/imag pairs
+                    val step = maxOf(1, fftSize / buckets)
+                    for (i in 0 until buckets) {
+                        val idx = i * step
+                        if (idx * 2 + 1 < fft.size) {
+                            val re = fft[idx * 2].toFloat()
+                            val im = fft[idx * 2 + 1].toFloat()
+                            // Boost: divide by 48 instead of 128, then apply sqrt curve
+                            // to spread the dynamic range so quieter frequencies register
+                            val raw = kotlin.math.sqrt(re * re + im * im) / 48f
+                            val boosted = kotlin.math.sqrt(raw.coerceIn(0f, 1f))
+                            fftMagnitudes[i] = boosted.coerceIn(0f, 1f)
+                        }
+                    }
+                }
+            }, Visualizer.getMaxCaptureRate(), false, true)  // waveform=false, fft=true
+            viz.enabled = true
+            audioVisualizer = viz
+            Log.d("AudioViz", "Visualizer capture started, size=${viz.captureSize}")
+        } catch (e: Exception) {
+            Log.e("AudioViz", "Failed to start Visualizer: ${e.message}")
+            // Fall back to random data mode — fftMagnitudes will stay at 0
+        }
+    }
+
+    private fun stopAudioCapture() {
+        try {
+            audioVisualizer?.enabled = false
+            audioVisualizer?.release()
+        } catch (_: Exception) {}
+        audioVisualizer = null
+        // Zero out so bars drop to silence
+        fftMagnitudes.fill(0f)
+    }
+
+    /** Colorful icon that reflects the current visualizer theme */
+    private fun updateVisualizerButtonColor() {
+        if (!::btnVisualizerToggle.isInitialized) return
+        val themeColor = if (!isVisualizerVisible) {
+            Color.argb(160, 180, 120, 255) // Dim purple when off
+        } else {
+            when (maskVisualizerView.currentTheme) {
+                maskVisualizerView.THEME_RETRO_WIRE_3D -> Color.parseColor("#00FF88")
+                maskVisualizerView.THEME_WAVE        -> Color.parseColor("#00FFFF")
+                maskVisualizerView.THEME_PULSE_RING  -> Color.parseColor("#FF006E")
+                maskVisualizerView.THEME_SPECTRUM    -> Color.parseColor("#FFAA00")
+                maskVisualizerView.THEME_MEDITATIVE  -> Color.parseColor("#7B68EE")
+                maskVisualizerView.THEME_BREATHE     -> Color.parseColor("#2E8B8B")
+                maskVisualizerView.THEME_RETRO_8BIT  -> Color.parseColor("#33FF00")
+                maskVisualizerView.THEME_HOLO_3D     -> Color.parseColor("#00DDFF")
+                else -> Color.WHITE
+            }
+        }
+        btnVisualizerToggle.setTextColor(themeColor)
+        btnVisualizerToggle.setShadowLayer(10f, 0f, 0f, themeColor)
+        // Use the wave icon since fa_wave_square may not render in FA Solid
+        btnVisualizerToggle.setText(R.string.fa_bars_staggered)
+    }
+
+    /**
+     * Animated audio visualizer view drawn on Canvas.
+     * Themes cycle on long-press of the toggle button.
+     */
+    inner class AudioVisualizerView(context: Context) : View(context) {
+
+        // Theme constants (enum class not allowed inside inner class)
+        val THEME_RETRO_WIRE_3D = 0  // was NEON_BARS, now 3D wireframe
+        val THEME_WAVE = 1
+        val THEME_PULSE_RING = 2
+        val THEME_SPECTRUM = 3
+        val THEME_MEDITATIVE = 4
+        val THEME_BREATHE = 5
+        val THEME_RETRO_8BIT = 6
+        val THEME_HOLO_3D = 7
+        private val THEME_COUNT = 8
+
+        // Breathing timer state
+        private var breathCycleMs = 0L          // elapsed ms in current cycle
+        private var breathInhaleMs = 4000L      // 4s inhale
+        private var breathHoldMs = 1000L        // 1s hold
+        private var breathExhaleMs = 6000L      // 6s exhale
+        private var breathPauseMs = 1000L       // 1s pause
+        private val breathTotalMs get() = breathInhaleMs + breathHoldMs + breathExhaleMs + breathPauseMs
+        private var lastBreathFrameTime = 0L
+
+        var currentTheme = THEME_RETRO_WIRE_3D
+            private set
+        private val barCount = 32
+        private val barHeights = FloatArray(barCount)
+        private val targetHeights = FloatArray(barCount)
+        private val velocities = FloatArray(barCount)
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var animating = false
+        private val random = java.util.Random()
+        private var frameCount = 0L
+        private val wavePath = android.graphics.Path()
+
+        // Theme color palettes
+        private val neonColors = intArrayOf(
+            Color.parseColor("#FF00FF"), Color.parseColor("#00FFFF"),
+            Color.parseColor("#FF006E"), Color.parseColor("#00FF88"),
+            Color.parseColor("#8B5CF6"), Color.parseColor("#06B6D4")
+        )
+        private val spectrumColors = intArrayOf(
+            Color.parseColor("#FF0000"), Color.parseColor("#FF7700"),
+            Color.parseColor("#FFFF00"), Color.parseColor("#00FF00"),
+            Color.parseColor("#0077FF"), Color.parseColor("#8800FF")
+        )
+
+        fun cycleTheme() {
+            currentTheme = (currentTheme + 1) % THEME_COUNT
+            invalidate()
+        }
+
+        private fun applyTheme(theme: Int) {
+            currentTheme = ((theme % THEME_COUNT) + THEME_COUNT) % THEME_COUNT
+            frameCount = 0L
+            breathCycleMs = 0L
+            lastBreathFrameTime = 0L
+            wavePath.reset()
+            paint.reset()
+            paint.isAntiAlias = true
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            invalidate()
+        }
+
+        /** Advance theme sequentially and wrap back to the first theme without hiding. */
+        fun cycleThemeOrWrap(): Boolean {
+            applyTheme(currentTheme + 1)
+            updateVisualizerButtonColor()
+            return false
+        }
+
+        fun startAnimating() {
+            animating = true
+            applyTheme(currentTheme)
+            postInvalidateOnAnimation()
+        }
+
+        fun stopAnimating() {
+            animating = false
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (!animating) return
+
+            canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+            paint.reset()
+            paint.isAntiAlias = true
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            paint.shader = null
+            paint.textAlign = Paint.Align.LEFT
+            paint.typeface = android.graphics.Typeface.DEFAULT
+            wavePath.reset()
+
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (w <= 0 || h <= 0) return
+
+            // Pull real FFT magnitudes from the audio capture
+            frameCount++
+            for (i in 0 until barCount) {
+                targetHeights[i] = fftMagnitudes[i]
+            }
+            // Smooth interpolation — fast attack, slower decay for punchy response
+            for (i in 0 until barCount) {
+                val target = targetHeights[i]
+                if (target > barHeights[i]) {
+                    // Fast attack: snap up quickly to new peaks
+                    barHeights[i] = barHeights[i] * 0.3f + target * 0.7f
+                } else {
+                    // Slower decay: smooth falloff for visual appeal
+                    barHeights[i] = barHeights[i] * 0.75f + target * 0.25f
+                }
+                barHeights[i] = barHeights[i].coerceIn(0.0f, 1f)
+            }
+
+            when (currentTheme) {
+                THEME_RETRO_WIRE_3D -> drawRetroWire3D(canvas, w, h)
+                THEME_WAVE -> drawWave(canvas, w, h)
+                THEME_PULSE_RING -> drawPulseRing(canvas, w, h)
+                THEME_SPECTRUM -> drawSpectrum(canvas, w, h)
+                THEME_MEDITATIVE -> drawMeditative(canvas, w, h)
+                THEME_BREATHE -> drawBreathe(canvas, w, h)
+                THEME_RETRO_8BIT -> drawRetro8Bit(canvas, w, h)
+                THEME_HOLO_3D -> drawHolographic3D(canvas, w, h)
+            }
+
+            if (animating) postInvalidateOnAnimation()
+        }
+
+        /**
+         * Retro Wireframe 3D — Tron-inspired frequency visualizer with
+         * perspective-projected 3D bars on a receding grid, vector scan
+         * lines, and rotating wireframe geometry.  Pure retro nerd fuel.
+         */
+        private fun drawRetroWire3D(canvas: Canvas, w: Float, h: Float) {
+            val cx = w / 2f
+            val cy = h * 0.45f  // vanishing point slightly above center
+            val t = frameCount * 0.025f
+            val avgLevel = barHeights.average().toFloat()
+            val bassEnergy = barHeights.take(6).average().toFloat()
+
+            // ── Perspective grid receding to vanishing point ──
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 0.8f
+            paint.color = Color.parseColor("#00FF88")
+            paint.alpha = 25
+            // Horizontal grid lines receding into distance
+            val hLines = 14
+            for (i in 1..hLines) {
+                val depth = i.toFloat() / hLines  // 0=near vanishing, 1=near bottom
+                val y = cy + (h - cy) * depth
+                val spread = depth * w * 0.7f
+                canvas.drawLine(cx - spread, y, cx + spread, y, paint)
+            }
+            // Vertical lines converging to vanishing point
+            val vLines = 10
+            for (i in -vLines / 2..vLines / 2) {
+                val bottomX = cx + i * w * 0.14f
+                canvas.drawLine(cx, cy, bottomX, h, paint)
+            }
+
+            // ── 3D frequency bars in perspective ──
+            val numBars = 20
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.5f
+            for (i in 0 until numBars) {
+                val binIdx = (i * barCount / numBars).coerceIn(0, barCount - 1)
+                val energy = barHeights[binIdx]
+                // Place bars in a row receding into the distance
+                val rowFraction = (i + 0.5f) / numBars  // 0=left, 1=right
+                val depth = 0.3f + 0.6f * kotlin.math.abs(rowFraction - 0.5f) * 2f  // edges closer, center deeper
+                val yBase = cy + (h - cy) * (0.35f + depth * 0.55f)
+                val spread = depth * w * 0.65f
+                val xPos = cx - spread + (2f * spread * rowFraction)
+
+                // Perspective scale: deeper bars are smaller
+                val scale = 0.4f + (1f - depth) * 0.6f
+                val barW = w * 0.022f * scale
+                val barH = energy * h * 0.35f * scale
+
+                // Wireframe color cycling
+                val hue = (i * 18f + frameCount * 2f) % 360f
+                val col = android.graphics.Color.HSVToColor(floatArrayOf(hue, 1f, 1f))
+                paint.color = col
+                paint.alpha = (100 + 155 * scale).toInt()
+
+                // Draw 3D wireframe bar (front face + top face + side)
+                val l = xPos - barW / 2f
+                val r = xPos + barW / 2f
+                val top = yBase - barH
+                val bot = yBase
+                // 3D offset for depth effect
+                val dx = barW * 0.5f
+                val dy = -barW * 0.35f
+
+                // Front face
+                canvas.drawRect(l, top, r, bot, paint)
+                // Top face (parallelogram)
+                wavePath.reset()
+                wavePath.moveTo(l, top)
+                wavePath.lineTo(l + dx, top + dy)
+                wavePath.lineTo(r + dx, top + dy)
+                wavePath.lineTo(r, top)
+                wavePath.close()
+                canvas.drawPath(wavePath, paint)
+                // Side face
+                canvas.drawLine(r, top, r + dx, top + dy, paint)
+                canvas.drawLine(r, bot, r + dx, bot + dy, paint)
+                canvas.drawLine(r + dx, top + dy, r + dx, bot + dy, paint)
+
+                // Glow fill for front face (subtle)
+                paint.style = Paint.Style.FILL
+                paint.alpha = (energy * 40 * scale).toInt().coerceIn(5, 40)
+                canvas.drawRect(l, top, r, bot, paint)
+                paint.style = Paint.Style.STROKE
+            }
+
+            // ── Rotating wireframe polyhedron — big, bright, bass-reactive ──
+            val icoR = minOf(w, h) * 0.22f * (0.7f + bassEnergy * 0.6f)
+            val icoVerts = 20
+            // Two rotation axes for more dynamic 3D spin
+            val rotX = t * 0.7f
+            val rotY = t * 1.1f
+            val cosRx = kotlin.math.cos(rotX.toDouble()).toFloat()
+            val sinRx = kotlin.math.sin(rotX.toDouble()).toFloat()
+            val cosRy = kotlin.math.cos(rotY.toDouble()).toFloat()
+            val sinRy = kotlin.math.sin(rotY.toDouble()).toFloat()
+
+            data class V3(val x: Float, val y: Float, val z: Float)
+            val verts3d = Array(icoVerts) { idx ->
+                // Fibonacci sphere distribution for even vertex spread
+                val phi = kotlin.math.acos(-1.0 + (2.0 * idx + 1.0) / icoVerts).toFloat()
+                val theta = Math.PI.toFloat() * (1f + 2.236f) * idx
+                var vx = icoR * kotlin.math.sin(phi.toDouble()).toFloat() * kotlin.math.cos(theta.toDouble()).toFloat()
+                var vy = icoR * kotlin.math.sin(phi.toDouble()).toFloat() * kotlin.math.sin(theta.toDouble()).toFloat()
+                var vz = icoR * kotlin.math.cos(phi.toDouble()).toFloat()
+                // Audio-reactive vertex displacement per-band
+                val band = (idx * barCount / icoVerts).coerceIn(0, barCount - 1)
+                val pulse = 1f + barHeights[band] * 0.5f
+                vx *= pulse; vy *= pulse; vz *= pulse
+                // Rotate around X then Y
+                val y1 = vy * cosRx - vz * sinRx
+                val z1 = vy * sinRx + vz * cosRx
+                val x2 = vx * cosRy + z1 * sinRy
+                val z2 = -vx * sinRy + z1 * cosRy
+                V3(x2, y1, z2)
+            }
+            // Project 3D to 2D with perspective
+            val projDist = minOf(w, h) * 0.8f
+            val projected = verts3d.map { v ->
+                val scale = projDist / (projDist + v.z)
+                Pair(cx + v.x * scale, cy + v.y * scale * 0.65f)
+            }
+            // Connect nearby vertices with depth-based alpha and color
+            paint.style = Paint.Style.STROKE
+            for (i in 0 until icoVerts) {
+                for (j in i + 1 until icoVerts) {
+                    val dx3 = verts3d[i].x - verts3d[j].x
+                    val dy3 = verts3d[i].y - verts3d[j].y
+                    val dz3 = verts3d[i].z - verts3d[j].z
+                    val dist3d = kotlin.math.sqrt(dx3 * dx3 + dy3 * dy3 + dz3 * dz3)
+                    if (dist3d < icoR * 1.3f) {
+                        val avgZ = (verts3d[i].z + verts3d[j].z) / 2f
+                        val depthAlpha = ((1f + avgZ / icoR) * 0.5f).coerceIn(0.2f, 1f)
+                        val hue = ((i + j) * 12f + frameCount * 2f) % 360f
+                        paint.color = android.graphics.Color.HSVToColor(floatArrayOf(hue, 0.9f, 1f))
+                        paint.alpha = (depthAlpha * (120 + bassEnergy * 135)).toInt().coerceIn(40, 255)
+                        paint.strokeWidth = 1.2f + depthAlpha * 1.5f
+                        paint.setShadowLayer(minOf(4f + bassEnergy * 8f, 20f), 0f, 0f, paint.color)
+                        canvas.drawLine(projected[i].first, projected[i].second,
+                            projected[j].first, projected[j].second, paint)
+                    }
+                }
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            // Draw vertex dots
+            paint.style = Paint.Style.FILL
+            for (i in 0 until icoVerts) {
+                val depthAlpha = ((1f + verts3d[i].z / icoR) * 0.5f).coerceIn(0.3f, 1f)
+                paint.color = Color.parseColor("#00FFFF")
+                paint.alpha = (depthAlpha * 200).toInt()
+                canvas.drawCircle(projected[i].first, projected[i].second, 2f + depthAlpha * 2f, paint)
+            }
+
+            // ── Vector scan lines (CRT effect) ──
+            paint.color = Color.parseColor("#00FF88")
+            paint.alpha = 8
+            paint.strokeWidth = 0.5f
+            val scanStep = 4f
+            var scanY = 0f
+            while (scanY < h) {
+                canvas.drawLine(0f, scanY, w, scanY, paint)
+                scanY += scanStep
+            }
+
+            // ── HUD data overlay ──
+            paint.style = Paint.Style.FILL
+            paint.typeface = android.graphics.Typeface.MONOSPACE
+            paint.textSize = h * 0.032f
+            paint.strokeWidth = 0f
+            paint.textAlign = Paint.Align.LEFT
+            paint.color = Color.parseColor("#00FF88")
+            paint.alpha = 100
+            paint.setShadowLayer(4f, 0f, 0f, Color.parseColor("#00FF88"))
+            canvas.drawText("WIRE3D // FREQ ANALYZER", 8f, h * 0.04f, paint)
+            val peakBin = barHeights.indices.maxByOrNull { barHeights[it] } ?: 0
+            val peakHz = (peakBin * 687.5f).toInt()  // 22050Hz / 32 bins
+            canvas.drawText("PK:%dHz  E:%.1f%%".format(peakHz, avgLevel * 100), 8f, h * 0.08f, paint)
+            paint.textAlign = Paint.Align.RIGHT
+            paint.color = Color.parseColor("#00FFFF")
+            canvas.drawText("VERTS:%d  BARS:%d".format(icoVerts, numBars), w - 8f, h * 0.04f, paint)
+            paint.color = Color.parseColor("#FF00FF")
+            canvas.drawText("BASS:%.0f%%  GRID:3D".format(bassEnergy * 100), w - 8f, h * 0.08f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            paint.typeface = android.graphics.Typeface.DEFAULT
+        }
+
+        private fun drawWave(canvas: Canvas, w: Float, h: Float) {
+            wavePath.reset()
+            val midY = h * 0.5f
+            wavePath.moveTo(0f, midY)
+            val step = w / (barCount - 1)
+            for (i in 0 until barCount) {
+                val x = i * step
+                val amplitude = (barHeights[i] - 0.5f) * h * 0.8f
+                if (i == 0) {
+                    wavePath.moveTo(x, midY + amplitude)
+                } else {
+                    val prevX = (i - 1) * step
+                    val prevAmp = (barHeights[i - 1] - 0.5f) * h * 0.8f
+                    val cx = (prevX + x) / 2
+                    wavePath.cubicTo(cx, midY + prevAmp, cx, midY + amplitude, x, midY + amplitude)
+                }
+            }
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 3f
+            paint.color = Color.parseColor("#00FFFF")
+            paint.alpha = 180
+            canvas.drawPath(wavePath, paint)
+            // Second wave offset
+            paint.color = Color.parseColor("#FF00FF")
+            paint.alpha = 120
+            canvas.save()
+            canvas.translate(0f, 8f)
+            canvas.drawPath(wavePath, paint)
+            canvas.restore()
+        }
+
+        private fun drawPulseRing(canvas: Canvas, w: Float, h: Float) {
+            val cx = w / 2f
+            val cy = h / 2f
+            val maxR = minOf(w, h) * 0.45f
+            paint.style = Paint.Style.STROKE
+            for (i in 0 until barCount) {
+                val angle = (i.toFloat() / barCount) * 360f
+                val r1 = maxR * 0.3f
+                val r2 = r1 + barHeights[i] * maxR * 0.7f
+                val rad = Math.toRadians(angle.toDouble())
+                val x1 = cx + r1 * kotlin.math.cos(rad).toFloat()
+                val y1 = cy + r1 * kotlin.math.sin(rad).toFloat()
+                val x2 = cx + r2 * kotlin.math.cos(rad).toFloat()
+                val y2 = cy + r2 * kotlin.math.sin(rad).toFloat()
+                paint.strokeWidth = 3f
+                val colorIdx = i % neonColors.size
+                paint.color = neonColors[colorIdx]
+                paint.alpha = (barHeights[i] * 200).toInt().coerceIn(60, 200)
+                canvas.drawLine(x1, y1, x2, y2, paint)
+            }
+            // Center circle
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 2f
+            paint.color = Color.WHITE
+            paint.alpha = 60
+            canvas.drawCircle(cx, cy, maxR * 0.28f, paint)
+        }
+
+        private fun drawSpectrum(canvas: Canvas, w: Float, h: Float) {
+            val gap = 1f
+            val barWidth = (w - gap * (barCount - 1)) / barCount
+            paint.style = Paint.Style.FILL
+            for (i in 0 until barCount) {
+                val barH = barHeights[i] * h * 0.9f
+                val x = i * (barWidth + gap)
+                // Gradient across spectrum
+                val fraction = i.toFloat() / barCount
+                val colorIdx = (fraction * (spectrumColors.size - 1)).toInt()
+                    .coerceIn(0, spectrumColors.size - 2)
+                val mix = (fraction * (spectrumColors.size - 1)) - colorIdx
+                paint.color = blendColors(spectrumColors[colorIdx], spectrumColors[colorIdx + 1], mix)
+                paint.alpha = (barHeights[i] * 230).toInt().coerceIn(80, 230)
+                // Mirror: bars grow from center
+                val halfBar = barH / 2f
+                val cy = h / 2f
+                canvas.drawRoundRect(x, cy - halfBar, x + barWidth, cy + halfBar, 2f, 2f, paint)
+            }
+        }
+
+        /**
+         * Meditative theme: slow-breathing concentric rings that expand and
+         * contract gently, overlaid with drifting luminous particles.
+         * Calm indigo / lavender / soft gold palette.
+         */
+        private fun drawMeditative(canvas: Canvas, w: Float, h: Float) {
+            val cx = w / 2f
+            val cy = h / 2f
+            val maxR = minOf(w, h) * 0.48f
+            val breathPhase = (frameCount % 180) / 180f  // slow ~3s cycle at 60fps
+            val breath = (kotlin.math.sin(breathPhase * Math.PI * 2).toFloat() + 1f) / 2f  // 0..1
+
+            // Concentric breathing rings
+            paint.style = Paint.Style.STROKE
+            val ringCount = 5
+            for (r in 0 until ringCount) {
+                val baseR = maxR * (0.2f + r * 0.16f)
+                // Each ring breathes slightly out of phase
+                val phase = (frameCount % 180 + r * 30) / 180f
+                val ringBreath = (kotlin.math.sin(phase * Math.PI * 2).toFloat() + 1f) / 2f
+                val radius = baseR + ringBreath * maxR * 0.08f
+                paint.strokeWidth = 1.5f + ringBreath * 1.5f
+                val alpha = (60 + ringBreath * 80).toInt()
+                // Shift between indigo and lavender
+                val color = blendColors(
+                    Color.parseColor("#4B0082"),
+                    Color.parseColor("#9370DB"),
+                    ringBreath
+                )
+                paint.color = color
+                paint.alpha = alpha
+                canvas.drawCircle(cx, cy, radius, paint)
+            }
+
+            // Drifting particles using barHeights as pseudo-random positions
+            paint.style = Paint.Style.FILL
+            val particleColors = intArrayOf(
+                Color.parseColor("#7B68EE"),  // medium slate blue
+                Color.parseColor("#DDA0DD"),  // plum
+                Color.parseColor("#FFD700"),  // gold
+                Color.parseColor("#E6E6FA"),  // lavender
+                Color.parseColor("#87CEEB")   // sky blue
+            )
+            for (i in 0 until minOf(barCount, 16)) {
+                val angle = (i * 22.5f + frameCount * 0.3f) % 360f
+                val dist = maxR * (0.15f + barHeights[i] * 0.65f) + breath * maxR * 0.05f
+                val rad = Math.toRadians(angle.toDouble())
+                val px = cx + dist * kotlin.math.cos(rad).toFloat()
+                val py = cy + dist * kotlin.math.sin(rad).toFloat()
+                val size = 2f + barHeights[i] * 4f
+                paint.color = particleColors[i % particleColors.size]
+                paint.alpha = (80 + barHeights[i] * 140).toInt().coerceIn(40, 200)
+                canvas.drawCircle(px, py, size, paint)
+                // Soft glow
+                paint.alpha = (paint.alpha * 0.3f).toInt()
+                canvas.drawCircle(px, py, size * 2.5f, paint)
+            }
+
+            // Center glow orb
+            paint.style = Paint.Style.FILL
+            val orbR = 8f + breath * 6f
+            paint.color = Color.parseColor("#DDA0DD")
+            paint.alpha = (100 + breath * 80).toInt()
+            canvas.drawCircle(cx, cy, orbR * 2.5f, paint)
+            paint.color = Color.parseColor("#E6E6FA")
+            paint.alpha = (160 + breath * 60).toInt()
+            canvas.drawCircle(cx, cy, orbR, paint)
+        }
+
+        private fun drawRetro8Bit(canvas: Canvas, w: Float, h: Float) {
+            // ── Retro Oscilloscope Machine with colorful vector lines ──
+            val cx = w / 2f
+            val cy = h / 2f
+            val margin = 6f
+            val scopeW = w - margin * 2
+            val scopeH = h - margin * 2
+            val avgLevel = barHeights.average().toFloat().coerceIn(0f, 1f)
+
+            // Boost factor — amplify waveforms so they fill the scope even at moderate volume
+            val boost = 2.5f
+
+            // Compute per-band energy for HUD
+            val bassEnergy = ((barHeights[0] + barHeights[1] + barHeights[2] + barHeights[3]) / 4f)
+                .coerceIn(0f, 1f)
+            val midEnergy = ((barHeights[8] + barHeights[9] + barHeights[10] + barHeights[11]) / 4f)
+                .coerceIn(0f, 1f)
+            val trebleEnergy = ((barHeights[24] + barHeights[25] + barHeights[26] + barHeights[27]) / 4f)
+                .coerceIn(0f, 1f)
+            val peakLevel = barHeights.maxOrNull()?.coerceIn(0f, 1f) ?: 0f
+
+            // ── CRT screen background ──
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#050A05")
+            canvas.drawRoundRect(margin, margin, w - margin, h - margin, 6f, 6f, paint)
+
+            // Faint phosphor grid lines (oscilloscope graticule)
+            paint.style = Paint.Style.STROKE
+            paint.color = Color.parseColor("#0B3B0B")
+            paint.strokeWidth = 0.5f
+            paint.alpha = 50
+            val gridCols = 10
+            val gridRows = 6
+            for (i in 0..gridCols) {
+                val x = margin + (scopeW * i / gridCols)
+                canvas.drawLine(x, margin, x, h - margin, paint)
+            }
+            for (i in 0..gridRows) {
+                val y = margin + (scopeH * i / gridRows)
+                canvas.drawLine(margin, y, w - margin, y, paint)
+            }
+            // Center crosshair brighter
+            paint.color = Color.parseColor("#1A5A1A")
+            paint.alpha = 80
+            paint.strokeWidth = 0.8f
+            canvas.drawLine(margin, cy, w - margin, cy, paint)
+            canvas.drawLine(cx, margin, cx, h - margin, paint)
+
+            // CRT scanlines
+            paint.color = Color.parseColor("#000000")
+            paint.alpha = 30
+            paint.strokeWidth = 0.5f
+            var scanY = margin
+            while (scanY < h - margin) {
+                canvas.drawLine(margin, scanY, w - margin, scanY, paint)
+                scanY += 3f
+            }
+
+            // ── CH1: Main waveform — phosphor green, boosted amplitude ──
+            val tracePath = android.graphics.Path()
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 2.5f
+            paint.color = Color.parseColor("#33FF00")
+            paint.alpha = (180 + avgLevel * 75).toInt().coerceAtMost(255)
+            val timeShift = frameCount * 2f
+            for (i in 0 until barCount) {
+                val x = margin + (scopeW * i / (barCount - 1).toFloat())
+                val boosted = (barHeights[i] * boost).coerceAtMost(1f)
+                val amplitude = boosted * scopeH * 0.45f
+                val yOff = kotlin.math.sin((i + timeShift) * 0.3).toFloat() * amplitude
+                val y = (cy + yOff).coerceIn(margin, h - margin)
+                if (i == 0) tracePath.moveTo(x, y) else tracePath.lineTo(x, y)
+            }
+            paint.setShadowLayer(6f, 0f, 0f, Color.parseColor("#33FF00"))
+            canvas.drawPath(tracePath, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── CH2: Cyan Lissajous curve, boosted ──
+            val lissPath = android.graphics.Path()
+            paint.color = Color.parseColor("#00FFFF")
+            paint.strokeWidth = 1.8f
+            paint.alpha = (140 + avgLevel * 80).toInt().coerceAtMost(230)
+            for (i in 0 until barCount) {
+                val x = margin + (scopeW * i / (barCount - 1).toFloat())
+                val boosted = (barHeights[(barCount - 1 - i)] * boost).coerceAtMost(1f)
+                val amplitude = boosted * scopeH * 0.38f
+                val yOff = kotlin.math.cos((i + timeShift) * 0.5).toFloat() * amplitude
+                val y = (cy - yOff).coerceIn(margin, h - margin)
+                if (i == 0) lissPath.moveTo(x, y) else lissPath.lineTo(x, y)
+            }
+            paint.setShadowLayer(5f, 0f, 0f, Color.parseColor("#00FFFF"))
+            canvas.drawPath(lissPath, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── CH3: Magenta frequency-mixed trace, boosted ──
+            val mirrorPath = android.graphics.Path()
+            paint.color = Color.parseColor("#FF00FF")
+            paint.strokeWidth = 1.2f
+            paint.alpha = (100 + avgLevel * 120).toInt().coerceAtMost(220)
+            for (i in 0 until barCount) {
+                val x = margin + (scopeW * i / (barCount - 1).toFloat())
+                val mid = (barHeights[i] + barHeights[(i + barCount / 2) % barCount]) / 2f
+                val boosted = (mid * boost).coerceAtMost(1f)
+                val amplitude = boosted * scopeH * 0.32f
+                val yOff = kotlin.math.sin((i + timeShift) * 0.7 + 1.5).toFloat() * amplitude
+                val y = (cy + yOff).coerceIn(margin, h - margin)
+                if (i == 0) mirrorPath.moveTo(x, y) else mirrorPath.lineTo(x, y)
+            }
+            paint.setShadowLayer(3f, 0f, 0f, Color.parseColor("#FF00FF"))
+            canvas.drawPath(mirrorPath, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── Vector accent beams from bass energy ──
+            if (bassEnergy > 0.05f) {
+                paint.strokeWidth = 1.0f + bassEnergy * 2f
+                val vectorColors = intArrayOf(
+                    Color.parseColor("#FF6600"),
+                    Color.parseColor("#FFDD00"),
+                    Color.parseColor("#00FF88"),
+                    Color.parseColor("#FF0066")
+                )
+                for (b in 0 until 4) {
+                    val angle = (frameCount * 1.2f + b * 90f) % 360f
+                    val rad = Math.toRadians(angle.toDouble())
+                    val reach = scopeH * 0.35f * bassEnergy * boost.coerceAtMost(1.5f)
+                    val x1 = cx + kotlin.math.cos(rad).toFloat() * reach * 0.2f
+                    val y1 = cy + kotlin.math.sin(rad).toFloat() * reach * 0.2f
+                    val x2 = cx + kotlin.math.cos(rad).toFloat() * reach
+                    val y2 = cy + kotlin.math.sin(rad).toFloat() * reach
+                    paint.color = vectorColors[b]
+                    paint.alpha = (60 + bassEnergy * 160).toInt().coerceAtMost(210)
+                    paint.setShadowLayer(4f, 0f, 0f, paint.color)
+                    canvas.drawLine(x1, y1, x2, y2, paint)
+                }
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+            }
+
+            // ── Scope bezel / frame ──
+            paint.style = Paint.Style.STROKE
+            paint.color = Color.parseColor("#2A2A2A")
+            paint.strokeWidth = 2f
+            paint.alpha = 180
+            canvas.drawRoundRect(margin, margin, w - margin, h - margin, 6f, 6f, paint)
+            paint.color = Color.parseColor("#3A3A3A")
+            paint.strokeWidth = 0.8f
+            paint.alpha = 100
+            canvas.drawRoundRect(margin + 2, margin + 2, w - margin - 2, h - margin - 2, 5f, 5f, paint)
+
+            // ── HUD readouts — geeky oscilloscope telemetry ──
+            paint.style = Paint.Style.FILL
+            paint.typeface = android.graphics.Typeface.MONOSPACE
+            val fontSize = 7.5f * (w / 400f).coerceIn(0.7f, 1.2f)
+            paint.textSize = fontSize
+            val lineH = fontSize * 1.35f
+
+            // Top-left: CH1 info
+            paint.textAlign = Paint.Align.LEFT
+            paint.color = Color.parseColor("#33FF00")
+            paint.alpha = 130
+            val ch1Db = (-60 + avgLevel * boost * 60).toInt().coerceIn(-60, 0)
+            val ch1Vpp = (avgLevel * boost * 5f)
+            canvas.drawText("CH1 %+ddB  %.1fVpp".format(ch1Db, ch1Vpp), margin + 4, margin + lineH, paint)
+
+            // CH2 info
+            paint.color = Color.parseColor("#00FFFF")
+            val ch2Freq = (midEnergy * 8000 + 200).toInt()
+            val ch2Phase = ((frameCount * 3) % 360)
+            canvas.drawText("CH2 %dHz  \u0394%d\u00B0".format(ch2Freq, ch2Phase), margin + 4, margin + lineH * 2, paint)
+
+            // CH3 info
+            paint.color = Color.parseColor("#FF00FF")
+            val ch3Rms = (avgLevel * boost * 0.707f)
+            canvas.drawText("CH3 RMS:%.2fV".format(ch3Rms), margin + 4, margin + lineH * 3, paint)
+
+            // Top-right: signal stats
+            paint.textAlign = Paint.Align.RIGHT
+            paint.color = Color.parseColor("#FFAA00")
+            paint.alpha = 110
+            val peakDb = (-60 + peakLevel * boost * 60).toInt().coerceIn(-60, 0)
+            canvas.drawText("PK %+ddB".format(peakDb), w - margin - 4, margin + lineH, paint)
+
+            paint.color = Color.parseColor("#FF6600")
+            canvas.drawText("BASS:%.0f%%".format(bassEnergy * 100), w - margin - 4, margin + lineH * 2, paint)
+
+            paint.color = Color.parseColor("#00FF88")
+            canvas.drawText("TRB:%.0f%%".format(trebleEnergy * 100), w - margin - 4, margin + lineH * 3, paint)
+
+            // Bottom-left: sweep info
+            paint.textAlign = Paint.Align.LEFT
+            paint.color = Color.parseColor("#33FF00")
+            paint.alpha = 80
+            val sweepMs = (10 + (1f - avgLevel) * 90).toInt()
+            canvas.drawText("SWEEP ${sweepMs}ms/div  AUTO", margin + 4, h - margin - 3, paint)
+
+            // Bottom-right: sample rate
+            paint.textAlign = Paint.Align.RIGHT
+            paint.color = Color.parseColor("#888888")
+            paint.alpha = 80
+            canvas.drawText("44.1kHz 16bit", w - margin - 4, h - margin - 3, paint)
+
+            paint.typeface = android.graphics.Typeface.DEFAULT
+        }
+
+        private fun drawBreathe(canvas: Canvas, w: Float, h: Float) {
+            val cx = w / 2f
+            val cy = h / 2f
+            val maxR = minOf(w, h) * 0.45f
+
+            // Advance breathing timer
+            val now = System.currentTimeMillis()
+            if (lastBreathFrameTime > 0) {
+                breathCycleMs = (breathCycleMs + (now - lastBreathFrameTime)) % breathTotalMs
+            }
+            lastBreathFrameTime = now
+
+            // Determine phase and progress (0..1) within that phase
+            val elapsed = breathCycleMs
+            val (phase, progress) = when {
+                elapsed < breathInhaleMs -> "INHALE" to (elapsed.toFloat() / breathInhaleMs)
+                elapsed < breathInhaleMs + breathHoldMs -> "HOLD" to ((elapsed - breathInhaleMs).toFloat() / breathHoldMs)
+                elapsed < breathInhaleMs + breathHoldMs + breathExhaleMs -> "EXHALE" to ((elapsed - breathInhaleMs - breathHoldMs).toFloat() / breathExhaleMs)
+                else -> "REST" to ((elapsed - breathInhaleMs - breathHoldMs - breathExhaleMs).toFloat() / breathPauseMs)
+            }
+
+            // Circle size based on breath phase — expands on inhale, shrinks on exhale
+            val breathSize = when (phase) {
+                "INHALE" -> 0.3f + progress * 0.7f       // grows 0.3 → 1.0
+                "HOLD"   -> 1.0f                          // full
+                "EXHALE" -> 1.0f - progress * 0.7f        // shrinks 1.0 → 0.3
+                else     -> 0.3f                           // resting small
+            }
+
+            // Use average audio level from barHeights to tint the color
+            val avgLevel = barHeights.average().toFloat().coerceIn(0f, 1f)
+
+            // Color palette: quiet → deep teal, loud → warm amber/coral
+            val quietColor = Color.parseColor("#2E8B8B")   // teal
+            val midColor = Color.parseColor("#5B9EA6")      // lighter teal
+            val warmColor = Color.parseColor("#E8A87C")     // peach
+            val hotColor = Color.parseColor("#D4726A")       // coral
+            val baseColor = when {
+                avgLevel < 0.33f -> blendColors(quietColor, midColor, avgLevel / 0.33f)
+                avgLevel < 0.66f -> blendColors(midColor, warmColor, (avgLevel - 0.33f) / 0.33f)
+                else -> blendColors(warmColor, hotColor, (avgLevel - 0.66f) / 0.34f)
+            }
+
+            // Outer soft glow
+            val radius = maxR * breathSize
+            paint.style = Paint.Style.FILL
+            paint.color = baseColor
+            paint.alpha = (30 + avgLevel * 40).toInt()
+            canvas.drawCircle(cx, cy, radius * 1.4f, paint)
+
+            // Main breathing circle
+            paint.alpha = (80 + avgLevel * 80).toInt()
+            canvas.drawCircle(cx, cy, radius, paint)
+
+            // Inner bright core
+            val coreColor = blendColors(baseColor, Color.WHITE, 0.4f)
+            paint.color = coreColor
+            paint.alpha = (120 + avgLevel * 100).toInt().coerceAtMost(230)
+            canvas.drawCircle(cx, cy, radius * 0.5f, paint)
+
+            // Breathing guide text
+            val label = when (phase) {
+                "INHALE" -> "breathe in"
+                "HOLD"   -> "hold"
+                "EXHALE" -> "breathe out"
+                else     -> "rest"
+            }
+            paint.color = Color.WHITE
+            paint.alpha = 200
+            paint.textSize = 14f * (w / 400f).coerceIn(0.8f, 1.5f)
+            paint.textAlign = Paint.Align.CENTER
+            paint.style = Paint.Style.FILL
+            paint.setShadowLayer(4f, 0f, 0f, baseColor)
+            canvas.drawText(label, cx, cy + radius + paint.textSize * 1.6f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // Subtle ring pulse that follows the breath
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.5f + avgLevel * 2f
+            paint.color = baseColor
+            paint.alpha = (40 + breathSize * 60).toInt()
+            canvas.drawCircle(cx, cy, radius * 1.15f, paint)
+        }
+
+        /**
+         * Holographic 3D visualizer — layered depth planes with parallax,
+         * floating frequency pillars, rotating wireframe ring, and
+         * glowing particle field.  Designed to look 3D on the RayNeo X3
+         * Pro's binocular SBS display through depth cues like perspective
+         * scaling, layered transparency, and motion parallax.
+         */
+        private fun drawHolographic3D(canvas: Canvas, w: Float, h: Float) {
+            val cx = w / 2f
+            val cy = h / 2f
+            val t = frameCount * 0.02f
+            val avgLevel = barHeights.average().toFloat()
+            val bassEnergy = barHeights.take(6).average().toFloat()
+            val midEnergy = barHeights.drop(6).take(12).average().toFloat()
+            val trebleEnergy = barHeights.drop(18).average().toFloat()
+            val maxR = minOf(w, h) * 0.42f
+
+            // ── Background: deep space gradient with subtle grid ──
+            paint.style = Paint.Style.FILL
+            paint.shader = null
+            // Faint perspective grid floor
+            paint.color = Color.parseColor("#00DDFF")
+            paint.alpha = 12
+            paint.strokeWidth = 0.5f
+            paint.style = Paint.Style.STROKE
+            val gridLines = 8
+            for (i in 1..gridLines) {
+                val yOff = cy + (h * 0.5f * i / gridLines)
+                val perspective = i.toFloat() / gridLines  // 0=near, 1=far
+                val squeeze = 1f - perspective * 0.7f
+                val leftX = cx - w * 0.6f * squeeze
+                val rightX = cx + w * 0.6f * squeeze
+                canvas.drawLine(leftX, yOff, rightX, yOff, paint)
+            }
+            // Vertical grid lines converging to vanishing point
+            for (i in -3..3) {
+                val topX = cx + i * w * 0.06f
+                val botX = cx + i * w * 0.3f
+                canvas.drawLine(topX, cy, botX, h, paint)
+            }
+
+            // ── Layer 1 (BACK): Rotating wireframe ring ──
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.5f
+            val ringRadius = maxR * (0.75f + bassEnergy * 0.3f)
+            val ringSegments = 36
+            val ringTilt = 0.35f  // tilt factor for 3D ellipse
+            for (seg in 0 until ringSegments) {
+                val angle1 = (seg.toFloat() / ringSegments) * Math.PI.toFloat() * 2f + t * 0.5f
+                val angle2 = ((seg + 1f) / ringSegments) * Math.PI.toFloat() * 2f + t * 0.5f
+                val x1 = cx + kotlin.math.cos(angle1.toDouble()).toFloat() * ringRadius
+                val y1 = cy + kotlin.math.sin(angle1.toDouble()).toFloat() * ringRadius * ringTilt
+                val x2 = cx + kotlin.math.cos(angle2.toDouble()).toFloat() * ringRadius
+                val y2 = cy + kotlin.math.sin(angle2.toDouble()).toFloat() * ringRadius * ringTilt
+                // Color based on segment position — holographic rainbow
+                val hue = (seg.toFloat() / ringSegments * 360f + frameCount * 2f) % 360f
+                paint.color = android.graphics.Color.HSVToColor(120, floatArrayOf(hue, 0.8f, 1f))
+                canvas.drawLine(x1, y1, x2, y2, paint)
+            }
+
+            // ── Layer 2 (MID): Frequency pillars in perspective ──
+            val pillarCount = 16
+            paint.style = Paint.Style.FILL
+            for (i in 0 until pillarCount) {
+                val binIdx = (i * barCount / pillarCount).coerceIn(0, barCount - 1)
+                val energy = barHeights[binIdx]
+                // Arrange in a semicircle for 3D depth
+                val angle = Math.PI.toFloat() * (0.15f + 0.7f * i / (pillarCount - 1))
+                val depthFactor = kotlin.math.sin(angle.toDouble()).toFloat()  // 0=edge, 1=center
+                val xPos = cx + kotlin.math.cos(angle.toDouble()).toFloat() * maxR * 0.85f
+                val yBase = cy + depthFactor * maxR * 0.25f  // lower for "deeper" pillars
+
+                // Perspective: deeper pillars are smaller and dimmer
+                val scale = 0.5f + depthFactor * 0.5f
+                val pillarW = w * 0.025f * scale
+                val pillarH = energy * h * 0.45f * scale
+
+                // Holographic gradient color
+                val hue = (i * 22f + frameCount * 1.5f) % 360f
+                val col = android.graphics.Color.HSVToColor(floatArrayOf(hue, 0.7f, 1f))
+                paint.color = col
+                paint.alpha = (80 + 175 * depthFactor).toInt()
+                paint.setShadowLayer(minOf(8f * energy * scale, 30f), 0f, 0f, col)
+
+                // Draw pillar (upward from base)
+                val rect = android.graphics.RectF(
+                    xPos - pillarW / 2f,
+                    yBase - pillarH,
+                    xPos + pillarW / 2f,
+                    yBase
+                )
+                canvas.drawRoundRect(rect, pillarW * 0.3f, pillarW * 0.3f, paint)
+
+                // Mirror reflection below (faded)
+                paint.alpha = (20 + 40 * depthFactor).toInt()
+                val mirrorRect = android.graphics.RectF(
+                    xPos - pillarW / 2f,
+                    yBase,
+                    xPos + pillarW / 2f,
+                    yBase + pillarH * 0.3f
+                )
+                canvas.drawRoundRect(mirrorRect, pillarW * 0.3f, pillarW * 0.3f, paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── Layer 3 (FRONT): Floating holographic particles ──
+            paint.style = Paint.Style.FILL
+            val particleCount = 16
+            for (p in 0 until particleCount) {
+                val seed = p * 137.508f  // golden angle spread
+                val orbAngle = t * (0.3f + (p % 5) * 0.15f) + seed
+                val orbRadius = maxR * (0.2f + (p % 7) * 0.12f)
+                val depth = (p % 3).toFloat() / 2f  // 0=back, 1=front
+                val px = cx + kotlin.math.cos(orbAngle.toDouble()).toFloat() * orbRadius * (1f + depth * 0.3f)
+                val py = cy + kotlin.math.sin(orbAngle.toDouble()).toFloat() * orbRadius * 0.6f * (1f - depth * 0.2f)
+                val pSize = (1.5f + depth * 3f) * (0.5f + avgLevel)
+
+                val hue = (seed + frameCount * 3f) % 360f
+                paint.color = android.graphics.Color.HSVToColor(floatArrayOf(hue, 0.6f, 1f))
+                paint.alpha = (60 + 140 * depth).toInt()
+                paint.setShadowLayer(minOf(pSize * 2f, 20f), 0f, 0f, paint.color)
+                canvas.drawCircle(px, py, pSize, paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── Center: Glowing energy orb reacting to bass ──
+            val orbSize = maxR * 0.12f + bassEnergy * maxR * 0.15f
+            paint.style = Paint.Style.FILL
+            // Outer glow
+            paint.color = Color.parseColor("#00DDFF")
+            paint.alpha = (40 + bassEnergy * 80).toInt()
+            paint.setShadowLayer(minOf(orbSize * 2f, 40f), 0f, 0f, Color.parseColor("#00DDFF"))
+            canvas.drawCircle(cx, cy, orbSize * 1.8f, paint)
+            // Inner orb
+            paint.alpha = (180 + bassEnergy * 75).toInt()
+            paint.setShadowLayer(minOf(orbSize * 1.5f, 30f), 0f, 0f, Color.parseColor("#FFFFFF"))
+            canvas.drawCircle(cx, cy, orbSize, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── HUD overlay: holographic data readouts ──
+            paint.style = Paint.Style.FILL
+            paint.typeface = android.graphics.Typeface.MONOSPACE
+            paint.textSize = h * 0.035f
+            paint.color = Color.parseColor("#00DDFF")
+            paint.alpha = 90
+            paint.textAlign = Paint.Align.LEFT
+            canvas.drawText("HOLO-VIS v3.0", 8f, h * 0.04f, paint)
+            canvas.drawText("BASS:%.0f%%  MID:%.0f%%  TRB:%.0f%%".format(bassEnergy * 100, midEnergy * 100, trebleEnergy * 100), 8f, h * 0.08f, paint)
+            paint.textAlign = Paint.Align.RIGHT
+            paint.color = Color.parseColor("#FF00FF")
+            paint.alpha = 70
+            canvas.drawText("3D DEPTH:%d".format((avgLevel * 100).toInt()), w - 8f, h * 0.04f, paint)
+            canvas.drawText("FPS:60  LAYERS:3", w - 8f, h * 0.08f, paint)
+            paint.typeface = android.graphics.Typeface.DEFAULT
+        }
+
+        private fun blendColors(c1: Int, c2: Int, ratio: Float): Int {
+            val inv = 1f - ratio
+            val r = (Color.red(c1) * inv + Color.red(c2) * ratio).toInt()
+            val g = (Color.green(c1) * inv + Color.green(c2) * ratio).toInt()
+            val b = (Color.blue(c1) * inv + Color.blue(c2) * ratio).toInt()
+            return Color.rgb(r, g, b)
+        }
     }
 
     private fun setupFullScreenControlsUI() {
@@ -7887,6 +9242,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             setText(iconRes)
             setBackgroundResource(R.drawable.nav_button_background)
             setTextColor(Color.WHITE)
+            alpha = 0.5f
             textSize = 18f
             gravity = Gravity.CENTER
             setPadding(8, 8, 8, 8)
@@ -7897,7 +9253,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     }
             isClickable = true
             isFocusable = true
-            setOnClickListener { onClick() }
+            setOnClickListener {
+                onClick()
+                scheduleMaskedNowPlayingRefresh()
+            }
         }
     }
 
@@ -7932,6 +9291,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 // DebugLog.d("MediaControls", "Controls container visibility:
                 // ${maskMediaControlsContainer.visibility}")
             }
+
+            refreshMaskedNowPlaying()
 
             // Update full screen controls as well
             if (::btnFsPlayPause.isInitialized && !suppressFullscreenMediaControls) {
@@ -8003,6 +9364,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
         val anyPlaying = mediaStateByWindowId.values.any { it }
         updateMediaState(anyPlaying)
+        refreshMaskedNowPlaying()
     }
 
     private fun getMediaControlWebView(): WebView {
@@ -8017,6 +9379,113 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 }
 
         return windows.firstOrNull { it.id == targetId }?.webView ?: webView
+    }
+
+    fun refreshMaskedNowPlaying() {
+        if (!::maskNowPlayingText.isInitialized) return
+        post {
+            val label = resolveMaskedNowPlayingLabel()
+            if (!isScreenMasked || label.isNullOrBlank()) {
+                maskNowPlayingText.visibility = View.GONE
+            } else {
+                maskNowPlayingText.text = label
+                maskNowPlayingText.visibility = View.VISIBLE
+                maskNowPlayingText.bringToFront()
+            }
+        }
+    }
+
+    private fun scheduleMaskedNowPlayingRefresh() {
+        val delays = longArrayOf(120L, 500L, 1200L)
+        refreshMaskedNowPlaying()
+        delays.forEach { delayMs ->
+            postDelayed({ refreshMaskedNowPlaying() }, delayMs)
+        }
+    }
+
+    /**
+     * After a track skip (next/prev), YouTube SPA navigations take several
+     * seconds to update document.title.  We probe at multiple intervals and
+     * also pull the title directly from the DOM which updates faster.
+     */
+    private fun scheduleTrackChangeRefresh() {
+        val delays = longArrayOf(300L, 800L, 1500L, 2500L, 4000L, 6000L)
+        delays.forEach { delayMs ->
+            postDelayed({
+                refreshMaskedNowPlayingFromJs()
+                refreshMaskedNowPlaying()
+            }, delayMs)
+        }
+    }
+
+    /**
+     * Use JS to extract the video title directly from the DOM.  On YouTube
+     * the element `yt-formatted-string.ytd-watch-metadata` or the
+     * `<title>` tag updates before `WebView.getTitle()` reflects it.
+     */
+    private fun refreshMaskedNowPlayingFromJs() {
+        if (!isScreenMasked || !::maskNowPlayingText.isInitialized) return
+        val webView = try { getMediaControlWebView() } catch (_: Exception) { return }
+        val url = webView.url.orEmpty()
+        if (!url.contains("youtube.com", true) && !url.contains("youtu.be", true)) return
+        webView.evaluateJavascript(
+            """
+            (function() {
+                var el = document.querySelector('yt-formatted-string.style-scope.ytd-watch-metadata') ||
+                         document.querySelector('#info-contents yt-formatted-string') ||
+                         document.querySelector('h1.title yt-formatted-string') ||
+                         document.querySelector('title');
+                if (!el) return '';
+                var t = (el.textContent || el.innerText || '').trim();
+                t = t.replace(/ - YouTube${'$'}/, '').replace(/ - YouTube Music${'$'}/, '').trim();
+                if (!t || /^youtube$/i.test(t) || /^youtube music$/i.test(t)) return '';
+                return t;
+            })();
+            """.trimIndent()
+        ) { result ->
+            val title = result?.trim('"', ' ') ?: return@evaluateJavascript
+            if (title.isNotBlank() && title != "null") {
+                post {
+                    if (isScreenMasked) {
+                        maskNowPlayingText.text = title
+                        maskNowPlayingText.visibility = View.VISIBLE
+                        maskNowPlayingText.bringToFront()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun resolveMaskedNowPlayingLabel(): String? {
+        val prefs = context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
+        val radioPlaying = prefs.getBoolean("tapradio_now_playing_active", false)
+        val stationName = prefs.getString("tapradio_now_playing_name", "")?.trim().orEmpty()
+        if (radioPlaying && stationName.isNotBlank()) {
+            return stationName
+        }
+
+        // During track transitions isMediaPlaying can briefly be false;
+        // also check recency of last playback so we don't blank the label.
+        val recentlyPlaying = isMediaPlaying ||
+            (SystemClock.uptimeMillis() - lastMediaPlayingAt < 8000)
+        if (!recentlyPlaying) return null
+        val mediaWebView = try { getMediaControlWebView() } catch (_: Exception) { return null }
+        val currentUrl = mediaWebView.url.orEmpty()
+        if (currentUrl.contains("youtube.com", ignoreCase = true) ||
+            currentUrl.contains("youtu.be", ignoreCase = true)
+        ) {
+            val rawTitle = mediaWebView.title?.trim().orEmpty()
+            val cleaned = rawTitle
+                .removeSuffix(" - YouTube")
+                .removeSuffix(" - YouTube Music")
+                .trim()
+            return cleaned.takeIf {
+                it.isNotBlank() &&
+                    !it.equals("YouTube", ignoreCase = true) &&
+                    !it.equals("YouTube Music", ignoreCase = true)
+            }
+        }
+        return null
     }
 
     fun injectLocation(latitude: Double, longitude: Double) {
@@ -8036,7 +9505,28 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     },
                     timestamp: new Date().getTime()
                 };
-                
+
+                // Initialize watcher registry if not present
+                if (!window.__geoWatchers) window.__geoWatchers = {};
+                if (!window.__geoNextWatchId) window.__geoNextWatchId = 1;
+
+                // Notify all registered watchPosition callbacks with updated position
+                var watchers = window.__geoWatchers;
+                for (var id in watchers) {
+                    if (watchers.hasOwnProperty(id) && typeof watchers[id] === 'function') {
+                        try { watchers[id](window.__injectedPosition); } catch(e) {
+                            console.warn('[TapLink] watcher ' + id + ' error:', e);
+                        }
+                    }
+                }
+
+                // Only set up the mock geolocation API once
+                if (window.__geoMockInstalled) {
+                    console.log("[TapLink] Location updated: " + $latitude + ", " + $longitude + " (watchers: " + Object.keys(watchers).length + ")");
+                    return;
+                }
+                window.__geoMockInstalled = true;
+
                 // 1. Mock Permissions API to always return 'granted'
                 if (navigator.permissions) {
                     var originalQuery = navigator.permissions.query.bind(navigator.permissions);
@@ -8047,26 +9537,34 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         return originalQuery(parameters);
                     };
                 }
-                
+
                 // 2. Override Geolocation API using defineProperty for robustness
                 var mockGeolocation = {
                     getCurrentPosition: function(success, error, options) {
                         setTimeout(function() {
-                            success(window.__injectedPosition);
+                            if (window.__injectedPosition) {
+                                success(window.__injectedPosition);
+                            } else if (error) {
+                                error({code: 2, message: 'Position unavailable'});
+                            }
                         }, 10);
                     },
                     watchPosition: function(success, error, options) {
-                        var watchId = Math.floor(Math.random() * 10000);
+                        var watchId = window.__geoNextWatchId++;
+                        window.__geoWatchers[watchId] = success;
+                        // Fire immediately with current position
                         setTimeout(function() {
-                            success(window.__injectedPosition);
+                            if (window.__injectedPosition) {
+                                success(window.__injectedPosition);
+                            }
                         }, 10);
                         return watchId;
                     },
                     clearWatch: function(id) {
-                        // Do nothing
+                        delete window.__geoWatchers[id];
                     }
                 };
-                
+
                 try {
                     Object.defineProperty(navigator, 'geolocation', {
                         value: mockGeolocation,
@@ -8079,8 +9577,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     navigator.geolocation.watchPosition = mockGeolocation.watchPosition;
                     navigator.geolocation.clearWatch = mockGeolocation.clearWatch;
                 }
-                
-                console.log("[TapLink] Location injected: " + $latitude + ", " + $longitude);
+
+                console.log("[TapLink] Location mock installed + injected: " + $latitude + ", " + $longitude);
             })();
         """.trimIndent()
 
