@@ -147,6 +147,7 @@ let stations = [];
 let currentIdx = -1;
 let editIdx = -1;
 let activeGenre = 'All';
+let externalPlaybackState = { playing: false, stationName: '', genre: '', updatedAt: 0 };
 
 const DEFAULT_STATIONS = [
   { name: 'SomaFM Groove Salad', url: 'https://ice1.somafm.com/groovesalad-256-mp3', genre: 'Chill', desc: 'Ambient/downtempo for your day', fav: true },
@@ -172,9 +173,11 @@ const DEFAULT_STATIONS = [
 // ── Init ──────────────────────────────────────────────────────────
 async function init() {
   await loadStations();
+  syncPlaybackUiFromExternalState();
   renderGenres();
   renderStations();
   audio.volume = 0.7;
+  updateUI();
 }
 
 async function loadStations() {
@@ -276,7 +279,7 @@ function renderStations() {
   list.innerHTML = filtered.map(s => {
     const realIdx = stations.indexOf(s);
     const isActive = realIdx === currentIdx;
-    const playing = isActive && !audio.paused;
+    const playing = isActive && isStationPlaying(s);
     const favCls = s.fav ? ' on' : '';
     return `<div class="station${isActive ? ' active' : ''}" onclick="playStation(${realIdx})" ondblclick="showEditModal(${realIdx})">
       <div class="dot${playing ? ' pulse' : ''}"></div>
@@ -339,23 +342,78 @@ function setVolume(v) {
   document.getElementById('volPct').textContent = v + '%';
 }
 
+function syncPlaybackUiFromExternalState() {
+  try {
+    if (typeof AndroidInterface === 'undefined' || !AndroidInterface.getRadioPlaybackState) return;
+    const raw = AndroidInterface.getRadioPlaybackState();
+    if (!raw) return;
+    const state = JSON.parse(raw);
+    externalPlaybackState = {
+      playing: !!state.playing,
+      stationName: state.stationName || '',
+      genre: state.genre || '',
+      updatedAt: state.updatedAt || 0
+    };
+    if (externalPlaybackState.playing && externalPlaybackState.stationName) {
+      const matchedIdx = stations.findIndex(s => s.name === externalPlaybackState.stationName);
+      if (matchedIdx >= 0) currentIdx = matchedIdx;
+    } else if (audio.paused) {
+      currentIdx = currentIdx >= 0 ? currentIdx : -1;
+    }
+  } catch (e) {
+    console.warn('getRadioPlaybackState failed:', e);
+  }
+}
+
+function isExternallyPlayingStation(station) {
+  return !!(
+    station &&
+    externalPlaybackState &&
+    externalPlaybackState.playing &&
+    externalPlaybackState.stationName === station.name
+  );
+}
+
+function isStationPlaying(station) {
+  if (!station) return false;
+  return !audio.paused || isExternallyPlayingStation(station);
+}
+
+function reportPlaybackState() {
+  try {
+    if (typeof AndroidInterface === 'undefined' || !AndroidInterface.saveRadioPlaybackState) return;
+    const station = currentIdx >= 0 ? stations[currentIdx] : null;
+    const playing = !!(station && isStationPlaying(station));
+    AndroidInterface.saveRadioPlaybackState(
+      playing ? (station.name || '') : '',
+      playing ? (station.genre || '') : '',
+      playing
+    );
+  } catch (e) {
+    console.warn('saveRadioPlaybackState failed:', e);
+  }
+}
+
 function updateUI() {
-  const playing = currentIdx >= 0 && !audio.paused;
+  const station = currentIdx >= 0 ? stations[currentIdx] : null;
+  const playing = currentIdx >= 0 && isStationPlaying(station);
   const btn = document.getElementById('btnPlay');
   btn.innerHTML = playing ? '&#9646;&#9646;' : '&#9654;';
   btn.classList.toggle('playing', playing);
   const now = document.getElementById('nowPlaying');
   if (currentIdx >= 0) {
-    const s = stations[currentIdx];
+    const s = station;
     now.textContent = playing ? '\u25B6 ' + s.name : '\u23F8 ' + s.name;
   } else { now.textContent = 'Select a station'; }
   renderStations();
+  reportPlaybackState();
 }
 
 audio.addEventListener('playing', updateUI);
 audio.addEventListener('pause', updateUI);
-audio.addEventListener('ended', () => nextStation());
+audio.addEventListener('ended', () => { reportPlaybackState(); nextStation(); });
 audio.addEventListener('error', () => {
+  reportPlaybackState();
   document.getElementById('nowPlaying').textContent = '\u26A0 Stream error \u2014 trying next...';
   setTimeout(() => nextStation(), 2000);
 });
@@ -434,6 +492,19 @@ window.tapRadioGetStations = () => JSON.stringify(stations);
 window.tapRadioSetStations = (json) => {
   try { stations = JSON.parse(json); save(); renderGenres(); renderStations(); }
   catch(e) { console.error('tapRadioSetStations error:', e); }
+};
+
+window.addEventListener('focus', () => { syncPlaybackUiFromExternalState(); updateUI(); });
+window.addEventListener('pageshow', () => { syncPlaybackUiFromExternalState(); updateUI(); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    syncPlaybackUiFromExternalState();
+    updateUI();
+  }
+});
+window.tapRadioSyncPlaybackUi = () => {
+  syncPlaybackUiFromExternalState();
+  updateUI();
 };
 
 init();
