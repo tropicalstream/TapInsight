@@ -1,6 +1,8 @@
 # TapInsight — AI-Powered AR Companion for RayNeo X3 Pro
 
-> **ALPHA SOFTWARE — Use at your own risk.** This project is under active development. Features may be incomplete, unstable, or change without notice. No warranty is provided.
+> **Current release: v0.2.3-beta**
+>
+> **BETA SOFTWARE — Experimental and under active development.** Features may be incomplete, unstable, or change without notice.
 
 TapInsight transforms your RayNeo X3 Pro AR glasses into an AI-powered smart assistant with voice and vision capabilities, hands-free navigation, internet radio, and a full web browser — all controlled by simple gestures.
 
@@ -58,7 +60,9 @@ There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (ve
 
 ## Download
 
-**[`TapInsight.apk`](TapInsight.apk)** — Pre-built debug APK, ready to sideload onto your RayNeo X3 Pro via ADB. No Android Studio required.
+**Download the latest APK from the GitHub Releases page.**
+
+Current release asset: `tapinsight-v0.2.3-beta.apk`
 
 ---
 
@@ -73,25 +77,45 @@ There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (ve
 
 ### Quick Setup
 
-1. **Download [`TapInsight.apk`](TapInsight.apk)** from this repo
-2. Sideload it onto your RayNeo X3 Pro via ADB: `adb install TapInsight.apk`
+1. **Download `tapinsight-v0.2.3-beta.apk`** from the latest GitHub release
+2. Sideload it onto your RayNeo X3 Pro via ADB: `adb install tapinsight-v0.2.3-beta.apk`
 3. Launch TapInsight on the glasses
 4. **Open [`companion.html`](companion.html)** in any browser on your phone or laptop — it's a one-page setup wizard that connects to the glasses over WiFi
-5. Enter your glasses' IP address (default: `192.168.1.217`) and click **Connect**
+5. Enter your glasses' IP address and click **Connect**
 6. In the Setup tab, enter your Gemini API key
 7. Start talking — tap the glasses touchpad to activate the AI
 
-The companion app runs entirely over WiFi at `http://192.168.1.217:19110` (adjust the IP to match your glasses — check Settings → WiFi on the glasses to find it). From there you can configure everything: API keys, AI model, OAuth, TapRadio stations, and more.
+The companion app runs entirely over WiFi at `http://<glasses-ip>:19110` (adjust the IP to match your glasses — check Settings → WiFi on the glasses to find it). From there you can configure everything: API keys, AI model, OAuth, TapRadio stations, and more.
 
-### Connecting Without WiFi (ADB Port Forwarding)
+### Connecting via USB (Recommended)
 
-If you're on a mobile hotspot or don't have a shared WiFi network between your computer and the glasses, you can use **ADB port forwarding over USB** to access the companion app:
+USB is the fastest and most reliable way to access the companion app. Connect the glasses via USB and run:
 
 ```bash
 adb forward tcp:19110 tcp:19110
 ```
 
-Then open **http://localhost:19110** in any browser on your computer. This tunnels the connection through the USB cable — no WiFi required. Keep the USB cable connected while configuring.
+Then open **http://localhost:19110** in any browser. The `companion.html` page defaults to USB mode and auto-detects when the forwarding is active.
+
+**The port forward resets** when the glasses disconnect, reboot, or ADB restarts. To fix this permanently, use the included helper script:
+
+```bash
+./setup_usb.sh --watch
+```
+
+This runs in the background and automatically re-establishes the port forward whenever the glasses reconnect. You can also run `./setup_usb.sh` (without `--watch`) for a one-shot forward.
+
+### Connecting via WiFi
+
+If you prefer wireless, your computer and glasses must be on the same WiFi network. Find the glasses' IP in Settings → WiFi, then open `http://<glasses-ip>:19110` in your browser. The `companion.html` page has a WiFi tab for this.
+
+### Safety & Data Notes
+
+- **Maps and location services are experimental.** Validate routes and destinations yourself before acting on them.
+- **Follow your local laws** and stay aware of your surroundings while using AR navigation or media features.
+- **Do not rely on TapInsight location services for emergencies** or any situation where inaccurate location data could cause harm.
+- **If you lose your glasses, you lose the local data stored on them** unless you have exported or backed it up elsewhere.
+- API keys, OAuth tokens, saved lessons, and on-device history are stored locally on the glasses.
 
 ### Optional Configuration
 
