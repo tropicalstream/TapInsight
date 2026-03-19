@@ -1,5 +1,10 @@
 # TapInsight — AI-Powered AR Companion for RayNeo X3 Pro
 
+<p align="center">
+  <img src="assets/github/tapinsight-github-logo.png" alt="TapInsight logo" width="280">
+</p>
+
+
 > **ALPHA SOFTWARE — Use at your own risk.** This project is under active development. Features may be incomplete, unstable, or change without notice. No warranty is provided.
 
 TapInsight transforms your RayNeo X3 Pro AR glasses into an AI-powered smart assistant with voice and vision capabilities, hands-free navigation, internet radio, and a full web browser — all controlled by simple gestures.
