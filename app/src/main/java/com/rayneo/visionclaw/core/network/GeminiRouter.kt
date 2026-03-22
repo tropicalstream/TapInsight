@@ -69,10 +69,14 @@ class GeminiRouter(
                 "- Contacts: Look up contacts via google_contacts tool\n" +
                 "- Navigation: Check traffic, commute times, ETAs, and get directions via google_routes tool\n" +
                 "- Places: Find nearby businesses, restaurants, cafes, gas stations with ratings and open/closed status via google_places tool\n" +
+                "- Air quality: Check current AQI and pollutant conditions via google_air_quality tool\n" +
+                "- Daily briefing: Build a multi-source daily brief with calendar, GPS proximity, public events, traffic, parking, weather, and AQI via daily_briefing tool\n" +
+                "- Ask Maps: Explore places with AI summaries, 3D photorealistic navigation, nearby landmarks, and landmark-aware directions via ask_maps tool\n" +
                 "- Music: Control Spotify via spotify_player tool and Sonos via sonos_control tool\n" +
                 "- Communication: Send messages via send_message and place calls via place_call tool\n" +
                 "- Camera: Save photos via camera_action tool\n" +
                 "- Web: Open URLs in TapBrowser via open_taplink tool\n" +
+                "- Research: Produce long-form research briefs via research_topic tool\n" +
                 "- Memory: Recall recent conversations from context cache via get_context tool"
 
         internal const val DEFAULT_ROUTING_RULES =
@@ -88,8 +92,20 @@ class GeminiRouter(
                 "6) For contacts/phone numbers, call google_contacts.\n" +
                 "7) For sending texts or making calls, call send_message or place_call.\n" +
                 "8) For finding nearby restaurants, cafes, gas stations, pharmacies, or checking what's open nearby, " +
-                "ALWAYS call google_places. Use type like 'restaurant', 'cafe', 'gas_station', etc.\n" +
-                "9) If a tool fails, reply with one short sentence and a retry suggestion. Never show logs."
+                "ALWAYS call google_places. Use type like 'restaurant', 'cafe', 'gas_station', etc. " +
+                "If the closest place is closed, explicitly promote a DIFFERENT nearby open option instead. " +
+                "Never describe the same closed place as the open fallback. Include walking ETA, driving ETA, " +
+                "weather, and a Maps link when available.\n" +
+                "9) ONLY call daily_briefing when the user explicitly asks for a 'daily briefing', 'daily brief', or 'ultimate daily brief'. " +
+                "Never use daily_briefing for generic calendar, events-near-me, what's open, nearby places, traffic, weather, or route questions.\n" +
+                "10) For air quality, AQI, smoke, pollution, or whether the air is safe right now, ALWAYS call google_air_quality.\n" +
+                "11) For requests to research, analyze, brief, or do a deep dive on a topic, ALWAYS call research_topic. " +
+                "Do not open the browser unless the user explicitly asks to open a site.\n" +
+                "12) For 'tell me about [place]', 'explore [place]', 'what is [landmark]', 'navigate 3D to', 'show me in 3D', " +
+                "'what landmarks are nearby', or 'nearby landmarks', ALWAYS call ask_maps. " +
+                "Use action='explore' for place info, action='navigate_3d' for 3D navigation, " +
+                "action='landmark_directions' for landmark-aware directions, action='nearby_landmarks' for landmark discovery.\n" +
+                "13) If a tool fails, reply with one short sentence and a retry suggestion. Never show logs."
 
         internal const val DEFAULT_BEHAVIOR =
             "PROACTIVE BEHAVIOR:\n" +
@@ -100,7 +116,8 @@ class GeminiRouter(
                 "Keep responses to 1-6 lines.\n" +
                 "Never output stack traces, logs, HTTP status codes, raw JSON, or diagnostics.\n" +
                 "Never repeat the user's transcript.\n" +
-                "For calendar answers, format each event as: TIME — TITLE (LOCATION/ONLINE).\n\n" +
+                "For calendar answers, format each event as: TIME — TITLE (LOCATION/ONLINE).\n" +
+                "For nearby places, prefer the nearest OPEN option, then include ETA, weather, and a Maps link if present.\n\n" +
                 "Privacy: DO NOT transcribe or display user speech back in the chat. " +
                 "Only display your own responses and valid research links."
 
@@ -121,7 +138,11 @@ class GeminiRouter(
     private val wsClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .readTimeout(0, TimeUnit.MILLISECONDS)
-            .pingInterval(15, TimeUnit.SECONDS)
+            // Gemini Live already speaks over an active streaming channel and OkHttp will
+            // still answer any server-initiated ping frames automatically. Client-initiated
+            // pings here were causing otherwise healthy long responses to die with
+            // "no pong response" failures mid-turn.
+            .pingInterval(0, TimeUnit.MILLISECONDS)
             .build()
     }
 
@@ -446,7 +467,6 @@ class GeminiRouter(
                     return false
                 }
                 setupSent = true
-                notifySetupReady()
                 return true
             }
 
@@ -1127,12 +1147,12 @@ class GeminiRouter(
             // google_routes
             tools.put(JSONObject()
                 .put("name", "google_routes")
-                .put("description", "Get directions, traffic conditions, commute time, ETAs, and route planning between locations. Call this for ANY question about traffic, how long a drive takes, or getting somewhere.")
+                .put("description", "Get directions, traffic conditions, commute time, ETAs, and route planning between locations. Call this for ANY question about traffic, how long a drive takes, or getting somewhere. IMPORTANT: If the user specifies a starting address (e.g. 'from 123 Main St to 456 Oak Ave'), pass it as 'origin'. If not specified, use 'current' to use GPS.")
                 .put("parameters", JSONObject()
                     .put("type", "OBJECT")
                     .put("properties", JSONObject()
                         .put("origin", JSONObject().put("type", "STRING")
-                            .put("description", "Starting location (address or 'current')."))
+                            .put("description", "Starting location. Pass the user's spoken starting address if they provide one (e.g. 'from 123 Main St'). Use 'current' for current GPS location. Defaults to 'current' if not provided."))
                         .put("destination", JSONObject().put("type", "STRING")
                             .put("description", "Destination address or place name."))
                         .put("mode", JSONObject().put("type", "STRING")
@@ -1215,6 +1235,35 @@ class GeminiRouter(
                             .put("description", "The URL to open.")))
                     .put("required", JSONArray().put("url"))))
 
+            tools.put(JSONObject()
+                .put("name", "research_topic")
+                .put("description", "Use the configured research API to generate a detailed research brief on a topic. Call this for 'research', 'deep dive', or 'analyze' requests instead of opening the browser.")
+                .put("parameters", JSONObject()
+                    .put("type", "OBJECT")
+                    .put("properties", JSONObject()
+                        .put("topic", JSONObject().put("type", "STRING")
+                            .put("description", "The topic to research in depth.")))
+                    .put("required", JSONArray().put("topic"))))
+
+            tools.put(JSONObject()
+                .put("name", "learn_topic")
+                .put("description", "Use the LearnLM tutoring route to teach a concept or practical skill, continue a lesson, or explain how to do something step by step. Call this for 'teach me', 'help me learn', 'help me understand', 'how do I', 'how can I', 'how to', or 'walk me through' requests.")
+                .put("parameters", JSONObject()
+                    .put("type", "OBJECT")
+                    .put("properties", JSONObject()
+                        .put("query", JSONObject().put("type", "STRING")
+                            .put("description", "The learning request or skill the user wants to learn.")))
+                    .put("required", JSONArray().put("query"))))
+
+            tools.put(JSONObject()
+                .put("name", "daily_briefing")
+                .put("description", "Generate the user's full daily brief for today using calendar, GPS proximity, Bay Area public events, traffic, parking, weather, and AQI. Only call this when the user explicitly asks for a daily briefing by name, not for ordinary calendar or nearby-event questions.")
+                .put("parameters", JSONObject()
+                    .put("type", "OBJECT")
+                    .put("properties", JSONObject()
+                        .put("focus", JSONObject().put("type", "STRING")
+                            .put("description", "Optional focus hint such as 'today' or 'morning'.")))))
+
             // get_context
             tools.put(JSONObject()
                 .put("name", "get_context")
@@ -1265,7 +1314,7 @@ class GeminiRouter(
             // google_places
             tools.put(JSONObject()
                 .put("name", "google_places")
-                .put("description", "Find nearby businesses, restaurants, cafes, gas stations, pharmacies, and more. Returns places with ratings, open/closed status, and addresses. Call this whenever the user asks about nearby places, what's open, where to eat, get coffee, find gas, etc.")
+                .put("description", "Find nearby businesses, restaurants, cafes, gas stations, pharmacies, and more. Returns places with ratings, open/closed status, addresses, and ETA context. When the closest result is closed, prefer the nearest open option.")
                 .put("parameters", JSONObject()
                     .put("type", "OBJECT")
                     .put("properties", JSONObject()
@@ -1276,6 +1325,39 @@ class GeminiRouter(
                         .put("radius", JSONObject().put("type", "STRING")
                             .put("description", "Search radius in meters (default 1500, max 5000).")))
                     .put("required", JSONArray().put("type"))))
+
+            // ask_maps — unified map intelligence
+            tools.put(JSONObject()
+                .put("name", "ask_maps")
+                .put("description", "Explore places with AI-generated summaries, get 3D navigation with photorealistic views, " +
+                    "find nearby landmarks, and get landmark-aware directions. Use this for questions like 'tell me about [place]', " +
+                    "'navigate 3D to [destination]', 'what landmarks are nearby', or 'explore [location]'. " +
+                    "Returns AI-generated place insights, ratings, hours, and 3D AR navigation links.")
+                .put("parameters", JSONObject()
+                    .put("type", "OBJECT")
+                    .put("properties", JSONObject()
+                        .put("action", JSONObject().put("type", "STRING")
+                            .put("description", "Action: 'explore' for AI-generated place summaries and details, " +
+                                "'navigate_3d' to launch photorealistic 3D AR navigation, " +
+                                "'landmark_directions' for turn-by-turn with landmark context, " +
+                                "'nearby_landmarks' to discover notable places nearby."))
+                        .put("query", JSONObject().put("type", "STRING")
+                            .put("description", "Place name, address, or search query (e.g. 'Golden Gate Bridge', 'best sushi in SF')."))
+                        .put("destination", JSONObject().put("type", "STRING")
+                            .put("description", "Destination address for navigation actions."))
+                        .put("place_id", JSONObject().put("type", "STRING")
+                            .put("description", "Optional Google Place ID for direct lookup.")))
+                    .put("required", JSONArray().put("action"))))
+
+            // google_air_quality
+            tools.put(JSONObject()
+                .put("name", "google_air_quality")
+                .put("description", "Get the current air quality index (AQI) and dominant pollutant for the user's current location.")
+                .put("parameters", JSONObject()
+                    .put("type", "OBJECT")
+                    .put("properties", JSONObject()
+                        .put("detail", JSONObject().put("type", "STRING")
+                            .put("description", "Optional detail level, such as 'brief' or 'full'.")))))
 
             return tools
         }

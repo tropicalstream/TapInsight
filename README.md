@@ -1,10 +1,5 @@
 # TapInsight — AI-Powered AR Companion for RayNeo X3 Pro
 
-<p align="center">
-  <img src="assets/github/tapinsight-github-logo.png" alt="TapInsight logo" width="280">
-</p>
-
-
 > **ALPHA SOFTWARE — Use at your own risk.** This project is under active development. Features may be incomplete, unstable, or change without notice. No warranty is provided.
 
 TapInsight transforms your RayNeo X3 Pro AR glasses into an AI-powered smart assistant with voice and vision capabilities, hands-free navigation, internet radio, and a full web browser — all controlled by simple gestures.
@@ -82,21 +77,66 @@ There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (ve
 2. Sideload it onto your RayNeo X3 Pro via ADB: `adb install TapInsight.apk`
 3. Launch TapInsight on the glasses
 4. **Open [`companion.html`](companion.html)** in any browser on your phone or laptop — it's a one-page setup wizard that connects to the glasses over WiFi
-5. Enter your glasses' IP address (default: `192.168.1.217`) and click **Connect**
+5. Enter your glasses' IP address (default: `<glasses-ip>`) and click **Connect**
 6. In the Setup tab, enter your Gemini API key
 7. Start talking — tap the glasses touchpad to activate the AI
 
-The companion app runs entirely over WiFi at `http://192.168.1.217:19110` (adjust the IP to match your glasses — check Settings → WiFi on the glasses to find it). From there you can configure everything: API keys, AI model, OAuth, TapRadio stations, and more.
+The companion app runs entirely over WiFi at `http://openclaw.ai:19110` (adjust the IP to match your glasses — check Settings → WiFi on the glasses to find it). From there you can configure everything: API keys, AI model, OAuth, TapRadio stations, and more.
 
-### Connecting Without WiFi (ADB Port Forwarding)
+### Connecting via USB (Recommended)
 
-If you're on a mobile hotspot or don't have a shared WiFi network between your computer and the glasses, you can use **ADB port forwarding over USB** to access the companion app:
+USB is the fastest and most reliable way to access the companion app. Connect the glasses via USB and run:
 
 ```bash
 adb forward tcp:19110 tcp:19110
 ```
 
-Then open **http://localhost:19110** in any browser on your computer. This tunnels the connection through the USB cable — no WiFi required. Keep the USB cable connected while configuring.
+Then open **http://localhost:19110** in any browser. The `companion.html` page defaults to USB mode and auto-detects when the forwarding is active.
+
+**The port forward resets** when the glasses disconnect, reboot, or ADB restarts. To fix this permanently, use the included helper script:
+
+```bash
+./setup_usb.sh --watch
+```
+
+This runs in the background and automatically re-establishes the port forward whenever the glasses reconnect. You can also run `./setup_usb.sh` (without `--watch`) for a one-shot forward.
+
+### Connecting via WiFi
+
+If you prefer wireless, your computer and glasses must be on the same WiFi network. Find the glasses' IP in Settings → WiFi, then open `http://<glasses-ip>:19110` in your browser. The `companion.html` page has a WiFi tab for this.
+
+### Using The Phone GPS Bridge
+
+The phone GPS bridge only works when the phone browser can reach the glasses companion server. In practice, that means the phone and the glasses must be on the **same network** and able to talk to each other directly.
+
+Basic steps:
+
+1. Put the phone and glasses on the same network.
+2. Find the glasses IP in the companion app `Connection Info` block or in the glasses Wi-Fi settings.
+3. On the phone, open `https://<glasses-ip>:19110`.
+4. Accept the local certificate warning once if the browser asks.
+5. In the companion app, turn **Phone GPS Bridge** on.
+6. Tap **Use This Phone's GPS**.
+7. Allow location permission in the phone browser.
+
+Common ways to use it:
+
+- **Home / office Wi-Fi**
+  - Connect both the phone and the glasses to the same Wi-Fi network.
+- **iPhone Personal Hotspot**
+  - Turn on Personal Hotspot on the iPhone and connect the glasses to it.
+  - Open `https://<glasses-ip>:19110` on that iPhone.
+- **Android hotspot**
+  - Turn on the Android hotspot and connect the glasses to it.
+  - Open `https://<glasses-ip>:19110` on that Android phone.
+- **Other same-network arrangements**
+  - Travel router, mobile hotspot device, or any shared LAN where both devices can reach each other.
+
+Important notes:
+
+- If the phone and glasses are **not** on the same network, the bridge will not work.
+- If your router or hotspot uses **client isolation**, the bridge will not work until that is disabled or you switch networks.
+- Prefer the `https://` companion URL for phone GPS bridge use, especially on iPhone.
 
 ### Optional Configuration
 
