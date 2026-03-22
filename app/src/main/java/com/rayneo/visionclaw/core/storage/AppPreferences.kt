@@ -3,6 +3,7 @@ package com.rayneo.visionclaw.core.storage
 import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.rayneo.visionclaw.core.model.DeviceLocationContext
 
 class AppPreferences(context: Context) {
 
@@ -12,6 +13,22 @@ class AppPreferences(context: Context) {
     var geminiApiKey: String
         get() = prefs.getString(KEY_GEMINI_API_KEY, "") ?: ""
         set(value) = prefs.edit().putString(KEY_GEMINI_API_KEY, value).apply()
+
+    var researchProvider: String
+        get() = prefs.getString(KEY_RESEARCH_PROVIDER, "gemini") ?: "gemini"
+        set(value) = prefs.edit().putString(KEY_RESEARCH_PROVIDER, value).apply()
+
+    var researchApiKey: String
+        get() = prefs.getString(KEY_RESEARCH_API_KEY, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_RESEARCH_API_KEY, value).apply()
+
+    var researchModel: String
+        get() = prefs.getString(KEY_RESEARCH_MODEL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_RESEARCH_MODEL, value).apply()
+
+    var learnLmModel: String
+        get() = prefs.getString(KEY_LEARNLM_MODEL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_LEARNLM_MODEL, value).apply()
 
     var calendarApiKey: String
         get() = prefs.getString(KEY_CALENDAR_API_KEY, "") ?: ""
@@ -48,6 +65,10 @@ class AppPreferences(context: Context) {
     var webForceDarkMode: Boolean
         get() = prefs.getBoolean(KEY_WEB_FORCE_DARK_MODE, true)
         set(value) = prefs.edit().putBoolean(KEY_WEB_FORCE_DARK_MODE, value).apply()
+
+    var browserShowSystemInfo: Boolean
+        get() = prefs.getBoolean(KEY_BROWSER_SHOW_SYSTEM_INFO, true)
+        set(value) = prefs.edit().putBoolean(KEY_BROWSER_SHOW_SYSTEM_INFO, value).apply()
 
     /** Custom system prompt override. If blank, the built-in prompt is used. */
     var customSystemPrompt: String
@@ -224,6 +245,25 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_GEMINI_MODEL_OVERRIDE, "") ?: ""
         set(value) = prefs.edit().putString(KEY_GEMINI_MODEL_OVERRIDE, value).apply()
 
+    /** Enable optional phone-to-glasses GPS bridge from the companion app. */
+    var phoneLocationBridgeEnabled: Boolean
+        get() = prefs.getBoolean(KEY_PHONE_LOCATION_BRIDGE_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_PHONE_LOCATION_BRIDGE_ENABLED, value).apply()
+
+    /** Latest phone-provided location fix pushed from the companion app. */
+    fun getPhoneLocationBridgeContext(): DeviceLocationContext? {
+        val raw = prefs.getString(KEY_PHONE_LOCATION_BRIDGE_CONTEXT, "") ?: ""
+        if (raw.isBlank()) return null
+        return runCatching { gson.fromJson(raw, DeviceLocationContext::class.java) }.getOrNull()
+    }
+
+    fun setPhoneLocationBridgeContext(context: DeviceLocationContext?) {
+        val editor = prefs.edit()
+        if (context == null) editor.remove(KEY_PHONE_LOCATION_BRIDGE_CONTEXT)
+        else editor.putString(KEY_PHONE_LOCATION_BRIDGE_CONTEXT, gson.toJson(context))
+        editor.apply()
+    }
+
     fun getBookmarks(): List<Bookmark> {
         val raw = prefs.getString(KEY_BOOKMARKS, "[]") ?: "[]"
         return runCatching {
@@ -280,6 +320,10 @@ class AppPreferences(context: Context) {
 
     companion object {
         private const val KEY_GEMINI_API_KEY = "gemini_api_key"
+        private const val KEY_RESEARCH_PROVIDER = "research_provider"
+        private const val KEY_RESEARCH_API_KEY = "research_api_key"
+        private const val KEY_RESEARCH_MODEL = "research_model"
+        private const val KEY_LEARNLM_MODEL = "learnlm_model"
         private const val KEY_CALENDAR_API_KEY = "calendar_api_key"
         private const val KEY_CALENDAR_ID = "calendar_id"
         private const val KEY_OPENCLAW_ENDPOINT = "openclaw_endpoint"
@@ -291,6 +335,7 @@ class AppPreferences(context: Context) {
         private const val KEY_WEB_DESKTOP_MODE = "web_desktop_mode"
         private const val KEY_WEB_POINTER_SENSITIVITY = "web_pointer_sensitivity"
         private const val KEY_WEB_FORCE_DARK_MODE = "web_force_dark_mode"
+        private const val KEY_BROWSER_SHOW_SYSTEM_INFO = "browser_show_system_info"
         private const val KEY_CUSTOM_SYSTEM_PROMPT = "custom_system_prompt"
         private const val KEY_PERSONALITY = "personality"
         private const val KEY_SPOTIFY_CLIENT_ID = "spotify_client_id"
@@ -302,6 +347,8 @@ class AppPreferences(context: Context) {
         private const val KEY_GOOGLE_OAUTH_TOKEN_EXPIRY_MS = "google_oauth_token_expiry_ms"
         private const val KEY_GOOGLE_MAPS_API_KEY = "google_maps_api_key"
         private const val KEY_GEMINI_MODEL_OVERRIDE = "gemini_model_override"
+        private const val KEY_PHONE_LOCATION_BRIDGE_ENABLED = "phone_location_bridge_enabled"
+        private const val KEY_PHONE_LOCATION_BRIDGE_CONTEXT = "phone_location_bridge_context"
         private const val KEY_HUD_SHOW_CALENDAR = "hud_show_calendar"
         private const val KEY_HUD_SHOW_TRAFFIC = "hud_show_traffic"
         private const val KEY_HUD_SHOW_NOTIFICATIONS = "hud_show_notifications"
@@ -319,7 +366,7 @@ class AppPreferences(context: Context) {
         private const val KEY_PROMPT_ROUTING_RULES = "prompt_routing_rules"
         private const val KEY_PROMPT_BEHAVIOR = "prompt_behavior"
         private const val KEY_PROMPT_URL_RULES = "prompt_url_rules"
-        private const val DEFAULT_OPENCLAW_ENDPOINT = "http://192.168.1.217:5000/tool"
+        private const val DEFAULT_OPENCLAW_ENDPOINT = ""
     }
 }
 

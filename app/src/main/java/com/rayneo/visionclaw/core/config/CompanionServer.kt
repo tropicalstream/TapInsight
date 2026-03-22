@@ -3,20 +3,43 @@ package com.rayneo.visionclaw.core.config
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import com.rayneo.visionclaw.BuildConfig
+import com.rayneo.visionclaw.core.network.GoogleAirQualityClient
 import com.rayneo.visionclaw.core.network.GoogleCalendarClient
 import com.rayneo.visionclaw.core.network.GoogleDirectionsClient
 import com.rayneo.visionclaw.core.network.GoogleOAuthManager
 import com.rayneo.visionclaw.core.network.GooglePlacesClient
 import com.rayneo.visionclaw.core.network.GoogleTasksClient
+import com.rayneo.visionclaw.core.network.ResearchRouter
+import com.rayneo.visionclaw.core.model.DeviceLocationContext
+import com.rayneo.visionclaw.core.storage.AppPreferences
 import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.math.BigInteger
+import java.security.KeyPairGenerator
+import java.security.KeyStore
+import java.security.Signature
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+import java.util.UUID
+import javax.net.ssl.KeyManagerFactory
+import javax.net.ssl.SSLContext
 
 /**
- * Lightweight HTTP server that serves the AITap companion configuration pages.
+ * Lightweight HTTPS server that serves the AITap companion configuration pages.
+ * Uses a self-signed TLS certificate generated via Android KeyStore to enable
+ * secure context in browsers (required for Geolocation API / Phone GPS Bridge).
  *
  * Open from any phone/computer on the same WiFi:
- *   http://<glasses-ip>:19110
+ *   https://<glasses-ip>:19110
+ * (Accept the self-signed certificate warning on first visit.)
  *
  * Pages:
  *   GET  /                → Setup page (API keys, model, personality)
@@ -37,36 +60,49 @@ class CompanionServer(
     port: Int = 19110,
     var oauthManager: GoogleOAuthManager? = null,
     /** Provides the latest device GPS location for the Location test button. */
-    var locationProvider: (() -> com.rayneo.visionclaw.core.model.DeviceLocationContext?)? = null
+    var locationProvider: (() -> com.rayneo.visionclaw.core.model.DeviceLocationContext?)? = null,
+    var calendarSummaryProvider: (() -> String)? = null,
+    var tasksSummaryProvider: (() -> String)? = null,
+    var newsSummaryProvider: (() -> String)? = null,
+    var airQualityTextProvider: (() -> String?)? = null,
+    var airQualityValueProvider: (() -> Int?)? = null,
+    var phoneLocationConsumer: ((DeviceLocationContext?) -> Unit)? = null
 ) : NanoHTTPD(port) {
 
     companion object {
         private const val TAG = "CompanionServer"
         private const val PREFS_NAME = "visionclaw_prefs"
         private const val DASHBOARD_PREFS_KEY = "dashboard_data"
+        private const val SESSION_TOKEN_KEY = "companion_session_token"
 
         /** JS bridge for the Setup page (index.html). */
         private const val SETUP_BRIDGE_JS = """
 // REST API bridge (replaces Android JavascriptInterface for phone/computer access)
 const AiTapBridge = {
   _cache: {},
+  _token: '__SESSION_TOKEN__',
+  _headers() { return {'Content-Type': 'application/json', 'X-Session-Token': this._token}; },
   async _loadAll() {
     try {
-      const r = await fetch('/api/config');
+      const r = await fetch('/api/config', {headers: {'X-Session-Token': this._token}});
       if (r.ok) this._cache = await r.json();
     } catch(e) { console.error('Load failed:', e); }
   },
-  getString(key) { return (this._cache[key] || '').toString(); },
-  putString(key, v) { this._cache[key] = v; },
-  putFloat(key, v) { this._cache[key] = v; },
-  putBoolean(key, v) { this._cache[key] = v; },
+  _dirty: {},
+  getString(key) { return this._cache[key] == null ? '' : String(this._cache[key]); },
+  putString(key, v) { this._cache[key] = v; this._dirty[key] = true; },
+  putFloat(key, v) { this._cache[key] = v; this._dirty[key] = true; },
+  putBoolean(key, v) { this._cache[key] = v; this._dirty[key] = true; },
   async applyConfig() {
     try {
+      const payload = {};
+      for (const k of Object.keys(this._dirty)) { payload[k] = this._cache[k]; }
       const r = await fetch('/api/config', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(this._cache)
+        headers: this._headers(),
+        body: JSON.stringify(payload)
       });
+      if (r.ok) this._dirty = {};
       return r.ok;
     } catch(e) { console.error('Save failed:', e); return false; }
   }
@@ -81,6 +117,12 @@ async function loadAll() {
     el.value = AiTapBridge.getString(cfg.key);
   }
   if (typeof renderHudOrderList === 'function') renderHudOrderList();
+  if (typeof refreshPhoneLocationBridgeStatus === 'function') refreshPhoneLocationBridgeStatus();
+  if (typeof syncPhoneLocationBridgeWatcher === 'function') syncPhoneLocationBridgeWatcher();
+  if (typeof checkPhoneGpsPlatformSupport === 'function') checkPhoneGpsPlatformSupport();
+  if (typeof refreshResearchPresetHint === 'function') refreshResearchPresetHint();
+  var rp = document.getElementById('researchProvider');
+  if (rp && typeof refreshResearchPresetHint === 'function') rp.addEventListener('change', refreshResearchPresetHint);
   showStatus('Configuration loaded.', 'ok');
 }
 
@@ -105,23 +147,29 @@ document.addEventListener('DOMContentLoaded', () => { loadAll(); if (typeof chec
 // REST API bridge for browser settings page
 const AiTapBridge = {
   _cache: {},
+  _token: '__SESSION_TOKEN__',
+  _headers() { return {'Content-Type': 'application/json', 'X-Session-Token': this._token}; },
   async _loadAll() {
     try {
-      const r = await fetch('/api/config');
+      const r = await fetch('/api/config', {headers: {'X-Session-Token': this._token}});
       if (r.ok) this._cache = await r.json();
     } catch(e) { console.error('Load failed:', e); }
   },
-  getString(key) { return (this._cache[key] || '').toString(); },
-  putString(key, v) { this._cache[key] = v; },
-  putFloat(key, v) { this._cache[key] = v; },
-  putBoolean(key, v) { this._cache[key] = v; },
+  _dirty: {},
+  getString(key) { return this._cache[key] == null ? '' : String(this._cache[key]); },
+  putString(key, v) { this._cache[key] = v; this._dirty[key] = true; },
+  putFloat(key, v) { this._cache[key] = v; this._dirty[key] = true; },
+  putBoolean(key, v) { this._cache[key] = v; this._dirty[key] = true; },
   async applyConfig() {
     try {
+      const payload = {};
+      for (const k of Object.keys(this._dirty)) { payload[k] = this._cache[k]; }
       const r = await fetch('/api/config', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(this._cache)
+        headers: this._headers(),
+        body: JSON.stringify(payload)
       });
+      if (r.ok) this._dirty = {};
       return r.ok;
     } catch(e) { console.error('Save failed:', e); return false; }
   }
@@ -177,15 +225,272 @@ document.addEventListener('DOMContentLoaded', loadAll);
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val appPreferences = AppPreferences(context)
+
+    /** Whether HTTPS was successfully configured. When true, the server serves
+     *  HTTPS on port 19110 and the Geolocation API works (secure context). */
+    var httpsEnabled: Boolean = false
+        private set
+
+    init {
+        setupHttps()
+    }
+
+    /**
+     * Generates a self-signed TLS certificate and configures NanoHTTPD to serve HTTPS.
+     * Must be called before start().
+     *
+     * Uses a standard PKCS12 keystore (NOT Android KeyStore) so the private key is
+     * accessible to NanoHTTPD's SSLServerSocketFactory for TLS handshakes.
+     * The keystore is persisted in the app's private files dir so the certificate
+     * stays stable across restarts (users only accept the cert warning once).
+     *
+     * On success: port 19110 serves HTTPS, `window.isSecureContext === true` in browsers,
+     *   enabling the Geolocation API for the Phone GPS Bridge.
+     * On failure: server falls back to plain HTTP (GPS bridge won't work but everything else does).
+     */
+    private fun setupHttps() {
+        try {
+            val ksFile = File(context.filesDir, "companion_tls.p12")
+            val password = "tapinsight-tls".toCharArray()
+
+            // Migration: delete old keystore if cert uses RSA (too slow for TLS on
+            // the X3 Pro — causes audio stutters) or has validity > 398 days.
+            if (ksFile.exists()) {
+                try {
+                    val tmpKs = KeyStore.getInstance("PKCS12")
+                    ksFile.inputStream().use { tmpKs.load(it, password) }
+                    val cert = tmpKs.getCertificate("companion") as? X509Certificate
+                    if (cert != null) {
+                        val validityDays = (cert.notAfter.time - cert.notBefore.time) / (24 * 3600 * 1000L)
+                        val isRsa = cert.publicKey.algorithm == "RSA"
+                        if (validityDays > 398 || isRsa) {
+                            ksFile.delete()
+                            Log.i(TAG, "Deleted old TLS keystore (RSA=$isRsa, validity=${validityDays}d)")
+                        }
+                    }
+                } catch (e: Exception) {
+                    ksFile.delete()
+                    Log.w(TAG, "Deleted unreadable TLS keystore, will regenerate", e)
+                }
+            }
+
+            val ks: KeyStore
+            if (ksFile.exists()) {
+                // Load existing keystore (validity already verified above)
+                ks = KeyStore.getInstance("PKCS12")
+                ksFile.inputStream().use { ks.load(it, password) }
+                Log.d(TAG, "Loaded existing TLS keystore from ${ksFile.name}")
+            } else {
+                // Generate new EC key pair (P-256) — ECDSA TLS handshakes are 10-20x
+                // faster than RSA 2048, critical for avoiding audio stutters when the
+                // phone companion page sends frequent GPS HTTPS updates.
+                val kpg = KeyPairGenerator.getInstance("EC")
+                kpg.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+                val keyPair = kpg.generateKeyPair()
+
+                // Build self-signed X.509 certificate via DER encoding
+                val cert = buildSelfSignedCertificate(keyPair)
+
+                // Store in PKCS12 keystore
+                ks = KeyStore.getInstance("PKCS12")
+                ks.load(null, password)
+                ks.setKeyEntry("companion", keyPair.private, password, arrayOf(cert))
+
+                // Persist to disk so cert is stable across restarts
+                ksFile.outputStream().use { ks.store(it, password) }
+                Log.i(TAG, "Generated new self-signed TLS certificate for companion HTTPS")
+            }
+
+            val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+            kmf.init(ks, password)
+
+            val sslContext = SSLContext.getInstance("TLS")
+            sslContext.init(kmf.keyManagers, null, null)
+
+            makeSecure(sslContext.serverSocketFactory, null)
+            httpsEnabled = true
+            Log.i(TAG, "HTTPS enabled on companion server (port 19110)")
+        } catch (e: Exception) {
+            Log.e(TAG, "HTTPS setup failed — falling back to HTTP. GPS bridge will not work.", e)
+            httpsEnabled = false
+        }
+    }
+
+    // ── Self-signed certificate generation via raw DER encoding ──────────
+
+    /**
+     * Builds a minimal self-signed X.509v3 certificate using only standard Java APIs
+     * (no BouncyCastle, no Android KeyStore). The certificate is valid for 397 days
+     * (under the 398-day browser maximum) with CN=TapInsight Companion, signed with SHA256withECDSA.
+     * Uses ECDSA P-256 instead of RSA for ~10-20x faster TLS handshakes.
+     */
+    private fun buildSelfSignedCertificate(keyPair: java.security.KeyPair): X509Certificate {
+        // SHA256withECDSA OID: 1.2.840.10045.4.3.2
+        val sha256WithEcdsaOid = byteArrayOf(
+            0x2A, 0x86.toByte(), 0x48, 0xCE.toByte(), 0x3D, 0x04, 0x03, 0x02
+        )
+        // ECDSA AlgorithmIdentifier has no parameters (unlike RSA which has NULL)
+        val signAlgId = derSequence(derOid(sha256WithEcdsaOid))
+
+        // Subject/Issuer: CN=TapInsight Companion
+        val cnOid = byteArrayOf(0x55, 0x04, 0x03) // OID 2.5.4.3
+        val cnAttr = derSequence(derOid(cnOid), derUtf8String("TapInsight Companion"))
+        val rdnSet = derSet(cnAttr)
+        val name = derSequence(rdnSet)
+
+        // Validity: now → +397 days (browsers reject certs valid > 398 days)
+        val now = Date()
+        val expiry = Date(System.currentTimeMillis() + 397L * 24 * 3600 * 1000)
+        val validity = derSequence(derUtcTime(now), derUtcTime(expiry))
+
+        // Version: v3 (integer value 2)
+        val version = derExplicit(0, derInteger(BigInteger.valueOf(2)))
+
+        // Serial number: current timestamp
+        val serial = derInteger(BigInteger.valueOf(System.currentTimeMillis()))
+
+        // SubjectPublicKeyInfo: already DER-encoded by Java
+        val spki = keyPair.public.encoded
+
+        // Assemble TBSCertificate
+        val tbsCert = derSequence(version, serial, signAlgId, name, validity, name, spki)
+
+        // Sign the TBS certificate
+        val signer = Signature.getInstance("SHA256withECDSA")
+        signer.initSign(keyPair.private)
+        signer.update(tbsCert)
+        val signatureBytes = signer.sign()
+
+        // Assemble full Certificate
+        val certDer = derSequence(tbsCert, signAlgId, derBitString(signatureBytes))
+
+        // Parse DER → X509Certificate
+        val cf = CertificateFactory.getInstance("X.509")
+        return cf.generateCertificate(ByteArrayInputStream(certDer)) as X509Certificate
+    }
+
+    // ── DER encoding primitives ──────────────────────────────────────────
+
+    private fun derLength(len: Int): ByteArray = when {
+        len < 0x80 -> byteArrayOf(len.toByte())
+        len < 0x100 -> byteArrayOf(0x81.toByte(), len.toByte())
+        else -> byteArrayOf(0x82.toByte(), (len shr 8).toByte(), len.toByte())
+    }
+
+    private fun derTag(tag: Int, content: ByteArray): ByteArray =
+        byteArrayOf(tag.toByte()) + derLength(content.size) + content
+
+    private fun derSequence(vararg elements: ByteArray): ByteArray {
+        val body = elements.fold(ByteArray(0)) { acc, e -> acc + e }
+        return derTag(0x30, body)
+    }
+
+    private fun derSet(vararg elements: ByteArray): ByteArray {
+        val body = elements.fold(ByteArray(0)) { acc, e -> acc + e }
+        return derTag(0x31, body)
+    }
+
+    private fun derInteger(value: BigInteger): ByteArray =
+        derTag(0x02, value.toByteArray())
+
+    private fun derBitString(bytes: ByteArray): ByteArray =
+        derTag(0x03, byteArrayOf(0x00) + bytes) // 0 unused bits
+
+    private fun derOid(oid: ByteArray): ByteArray =
+        derTag(0x06, oid)
+
+    private fun derNull(): ByteArray = byteArrayOf(0x05, 0x00)
+
+    private fun derUtf8String(s: String): ByteArray =
+        derTag(0x0C, s.toByteArray(Charsets.UTF_8))
+
+    private fun derExplicit(tag: Int, content: ByteArray): ByteArray =
+        byteArrayOf((0xA0 or tag).toByte()) + derLength(content.size) + content
+
+    private fun derUtcTime(date: Date): ByteArray {
+        val sdf = SimpleDateFormat("yyMMddHHmmss'Z'", Locale.US)
+        sdf.timeZone = TimeZone.getTimeZone("UTC")
+        return derTag(0x17, sdf.format(date).toByteArray(Charsets.US_ASCII))
+    }
+
+    /** Session token for authenticating companion page API requests. */
+    val sessionToken: String
+        get() {
+            val existing = prefs.getString(SESSION_TOKEN_KEY, null)
+            if (!existing.isNullOrBlank()) return existing
+            val token = UUID.randomUUID().toString().replace("-", "").take(16)
+            prefs.edit().putString(SESSION_TOKEN_KEY, token).commit()
+            return token
+        }
+
+    /** Validates the session token on API requests. HTML pages are served without auth
+     *  (they embed the token as a cookie/header for subsequent API calls). */
+    private fun isAuthorizedApiRequest(session: IHTTPSession): Boolean {
+        // Check Authorization header first: "Bearer <token>"
+        val authHeader = session.headers?.get("authorization") ?: ""
+        if (authHeader.equals("Bearer $sessionToken", ignoreCase = true)) return true
+        // Check X-Session-Token header
+        val tokenHeader = session.headers?.get("x-session-token") ?: ""
+        if (tokenHeader == sessionToken) return true
+        // Check query parameter for simple GET requests
+        val queryToken = session.parms?.get("token") ?: ""
+        if (queryToken == sessionToken) return true
+        return false
+    }
+
+    /** Add CORS and security headers to a response. */
+    private fun addSecurityHeaders(response: Response): Response {
+        response.addHeader("Access-Control-Allow-Origin", "*")
+        response.addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        response.addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Session-Token")
+        response.addHeader("X-Content-Type-Options", "nosniff")
+        response.addHeader("Cache-Control", "no-store")
+        return response
+    }
+
+    /** Known boolean config keys and their defaults (prevents returning "" for unset booleans). */
+    private val booleanKeyDefaults = mapOf(
+        "tts_muted" to false,
+        "web_desktop_mode" to false,
+        "web_force_dark_mode" to true,
+        "browser_show_system_info" to true,
+        "hud_show_calendar" to true,
+        "hud_show_traffic" to true,
+        "hud_show_notifications" to true,
+        "hud_show_event_time" to true,
+        "hud_show_tasks" to true,
+        "hud_show_news" to true,
+        "phone_location_bridge_enabled" to false
+    )
+
+    /** Known integer config keys and their defaults. */
+    private val intKeyDefaults = mapOf(
+        "hud_refresh_interval_seconds" to 60,
+        "tasks_item_count" to 5,
+        "news_item_count" to 3,
+        "news_refresh_interval_seconds" to 600
+    )
+
+    /** Known float config keys and their defaults. */
+    private val floatKeyDefaults = mapOf(
+        "tts_volume" to 0.8f,
+        "web_pointer_sensitivity" to 1.0f
+    )
 
     /** Config keys the companion pages can read/write. */
     private val allowedKeys = setOf(
         // Setup page keys
         "gemini_api_key",
         "gemini_model_override",
+        "research_provider",
+        "research_api_key",
+        "research_model",
+        "learnlm_model",
         "calendar_api_key",
         "calendar_id",
         "google_maps_api_key",
+        "phone_location_bridge_enabled",
         "google_oauth_client_id",
         "google_oauth_client_secret",
         "spotify_client_id",
@@ -198,6 +503,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "web_desktop_mode",
         "web_force_dark_mode",
         "web_pointer_sensitivity",
+        "browser_show_system_info",
         "browser_cookies",
         // HUD display keys
         "hud_show_calendar",
@@ -228,8 +534,29 @@ document.addEventListener('DOMContentLoaded', loadAll);
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri ?: "/"
         val method = session.method
+
+        // Handle CORS preflight
+        if (method == Method.OPTIONS) {
+            return addSecurityHeaders(
+                newFixedLengthResponse(Response.Status.OK, "text/plain", "")
+            )
+        }
+
+        // API endpoints require authentication (HTML pages do not — they embed the token)
+        val isApiRequest = uri.startsWith("/api/")
+        if (isApiRequest && !isAuthorizedApiRequest(session)) {
+            Log.w(TAG, "Unauthorized API request to $uri from ${session.remoteIpAddress}")
+            return addSecurityHeaders(
+                newFixedLengthResponse(
+                    Response.Status.UNAUTHORIZED,
+                    "application/json",
+                    """{"error":"Unauthorized. Include header 'X-Session-Token: <token>' or query param '?token=<token>'."}"""
+                )
+            )
+        }
+
         return try {
-            when {
+            val response = when {
                 uri == "/" || uri == "/index.html" -> serveAssetPage("companion/index.html", SETUP_BRIDGE_JS)
                 uri == "/browser" || uri == "/browser.html" -> serveAssetPage("companion/browser.html", BROWSER_BRIDGE_JS)
                 uri == "/dashboard" || uri == "/dashboard.html" -> serveRawAsset("companion/dashboard.html")
@@ -240,6 +567,8 @@ document.addEventListener('DOMContentLoaded', loadAll);
                 uri == "/api/config" && method == Method.POST -> saveConfig(session)
                 uri == "/api/dashboard" && method == Method.GET -> serveDashboard()
                 uri == "/api/dashboard" && method == Method.POST -> saveDashboard(session)
+                uri == "/api/phone-location/status" && method == Method.GET -> servePhoneLocationBridgeStatus()
+                uri == "/api/phone-location" && method == Method.POST -> savePhoneLocationBridge(session)
                 uri == "/oauth/callback" && method == Method.GET -> handleOAuthCallback(session)
                 uri == "/api/oauth/exchange" && method == Method.POST -> handleOAuthExchange(session)
                 uri == "/api/oauth/status" && method == Method.GET -> serveOAuthStatus()
@@ -250,11 +579,18 @@ document.addEventListener('DOMContentLoaded', loadAll);
                 uri == "/api/verify/places" && method == Method.GET -> verifyPlaces()
                 uri == "/api/verify/location" && method == Method.GET -> verifyLocation()
                 uri == "/api/verify/traffic" && method == Method.GET -> verifyTraffic()
+                uri == "/api/verify/air_quality" && method == Method.GET -> verifyAirQuality()
+                uri == "/api/verify/research" && method == Method.GET -> verifyResearch()
+                uri == "/api/hud_state" && method == Method.GET -> serveHudState()
+                uri == "/api/server-info" && method == Method.GET -> serveServerInfo(session)
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not found")
             }
+            addSecurityHeaders(response)
         } catch (e: Exception) {
             Log.e(TAG, "Server error: ${e.message}", e)
-            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Error: ${e.message}")
+            addSecurityHeaders(
+                newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Error: ${e.message}")
+            )
         }
     }
 
@@ -263,12 +599,23 @@ document.addEventListener('DOMContentLoaded', loadAll);
             .bufferedReader(Charsets.UTF_8)
             .use { it.readText() }
 
-        // Replace the JS bridge check to use REST API instead of Android JavascriptInterface
-        val patchedHtml = html.replace(
+        // Inject session token into bridge JS
+        val tokenizedBridgeJs = bridgeJs.replace("__SESSION_TOKEN__", sessionToken)
+
+        val setupMarker =
             "// Auto-load on page ready\n" +
-                "document.addEventListener('DOMContentLoaded', () => { loadAll(); checkOAuthStatus(); });",
-            bridgeJs
-        )
+                "document.addEventListener('DOMContentLoaded', () => { loadAll(); checkOAuthStatus(); });"
+        val browserMarker =
+            "// Auto-load on page ready\n" +
+                "document.addEventListener('DOMContentLoaded', loadAll);"
+
+        // Replace the page-local bridge with the REST bridge used by the laptop/phone companion UI.
+        val patchedHtml = when {
+            html.contains(setupMarker) -> html.replace(setupMarker, tokenizedBridgeJs)
+            html.contains(browserMarker) -> html.replace(browserMarker, tokenizedBridgeJs)
+            html.contains("</body>") -> html.replace("</body>", "<script>\n$tokenizedBridgeJs\n</script>\n</body>")
+            else -> html + "\n<script>\n$tokenizedBridgeJs\n</script>\n"
+        }
         return newFixedLengthResponse(Response.Status.OK, "text/html", patchedHtml)
     }
 
@@ -280,7 +627,16 @@ document.addEventListener('DOMContentLoaded', loadAll);
                 is Float -> json.put(key, value.toDouble())
                 is Boolean -> json.put(key, value)
                 is Int -> json.put(key, value)
-                else -> json.put(key, prefs.getString(key, "") ?: "")
+                is Long -> json.put(key, value)
+                else -> {
+                    // Type-aware defaults for unset keys
+                    when {
+                        booleanKeyDefaults.containsKey(key) -> json.put(key, booleanKeyDefaults[key]!!)
+                        intKeyDefaults.containsKey(key) -> json.put(key, intKeyDefaults[key]!!)
+                        floatKeyDefaults.containsKey(key) -> json.put(key, floatKeyDefaults[key]!!.toDouble())
+                        else -> json.put(key, prefs.getString(key, "") ?: "")
+                    }
+                }
             }
         }
         return newFixedLengthResponse(Response.Status.OK, "application/json", json.toString())
@@ -292,7 +648,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         val postData = body["postData"] ?: ""
         if (postData.isBlank()) {
             return newFixedLengthResponse(
-                Response.Status.BAD_REQUEST, "application/json", """{"error":"Empty body"}"""
+                Response.Status.BAD_REQUEST, "application/json", """{\"error\":\"Empty body\"}"""
             )
         }
 
@@ -303,9 +659,9 @@ document.addEventListener('DOMContentLoaded', loadAll);
             when (key) {
                 "tts_volume", "web_pointer_sensitivity" ->
                     editor.putFloat(key, json.optDouble(key, if (key == "tts_volume") 0.8 else 1.0).toFloat())
-                "tts_muted", "web_desktop_mode", "web_force_dark_mode",
+                "tts_muted", "web_desktop_mode", "web_force_dark_mode", "browser_show_system_info",
                 "hud_show_calendar", "hud_show_traffic", "hud_show_notifications",
-                "hud_show_event_time", "hud_show_tasks", "hud_show_news" ->
+                "hud_show_event_time", "hud_show_tasks", "hud_show_news", "phone_location_bridge_enabled" ->
                     editor.putBoolean(key, json.optBoolean(key, true))
                 "hud_refresh_interval_seconds" ->
                     editor.putInt(key, json.optInt(key, 60).coerceIn(5, 300))
@@ -323,11 +679,38 @@ document.addEventListener('DOMContentLoaded', loadAll);
         return newFixedLengthResponse(Response.Status.OK, "application/json", """{"status":"saved"}""")
     }
 
-    /** Serve an asset page as-is (no JS bridge patching needed). */
+    /** Serve an asset page with minimal auth token injection (for dashboard, radio, etc.).
+     *  These pages handle their own bridge logic but need the session token for API calls. */
     private fun serveRawAsset(assetPath: String): Response {
-        val html = context.assets.open(assetPath)
+        var html = context.assets.open(assetPath)
             .bufferedReader(Charsets.UTF_8)
             .use { it.readText() }
+        // Inject a minimal script that patches fetch to include the session token
+        val tokenScript = """<script>
+(function(){
+  var _token = '${sessionToken}';
+  var _origFetch = window.fetch;
+  window.fetch = function(url, opts) {
+    opts = opts || {};
+    if (typeof url === 'string' && url.indexOf('/api/') !== -1) {
+      opts.headers = opts.headers || {};
+      if (opts.headers instanceof Headers) {
+        opts.headers.set('X-Session-Token', _token);
+      } else {
+        opts.headers['X-Session-Token'] = _token;
+      }
+    }
+    return _origFetch.call(this, url, opts);
+  };
+})();
+</script>"""
+        html = if (html.contains("<head>")) {
+            html.replace("<head>", "<head>\n$tokenScript")
+        } else if (html.contains("<body>")) {
+            html.replace("<body>", "$tokenScript\n<body>")
+        } else {
+            tokenScript + "\n" + html
+        }
         return newFixedLengthResponse(Response.Status.OK, "text/html", html)
     }
 
@@ -344,7 +727,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         val postData = body["postData"] ?: ""
         if (postData.isBlank()) {
             return newFixedLengthResponse(
-                Response.Status.BAD_REQUEST, "application/json", """{"error":"Empty body"}"""
+                Response.Status.BAD_REQUEST, "application/json", """{\"error\":\"Empty body\"}"""
             )
         }
         // Validate it's valid JSON
@@ -352,7 +735,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
             JSONObject(postData)
         } catch (e: Exception) {
             return newFixedLengthResponse(
-                Response.Status.BAD_REQUEST, "application/json", """{"error":"Invalid JSON"}"""
+                Response.Status.BAD_REQUEST, "application/json", """{\"error\":\"Invalid JSON\"}"""
             )
         }
         prefs.edit().putString(DASHBOARD_PREFS_KEY, postData).apply()
@@ -377,12 +760,146 @@ document.addEventListener('DOMContentLoaded', loadAll);
         val postData = body["postData"] ?: ""
         if (postData.isBlank()) {
             return newFixedLengthResponse(
-                Response.Status.BAD_REQUEST, "application/json", """{"error":"Empty body"}"""
+                Response.Status.BAD_REQUEST, "application/json", """{\"error\":\"Empty body\"}"""
             )
         }
         prefs.edit().putString(RADIO_PREFS_KEY, postData).apply()
         Log.d(TAG, "TapRadio stations saved (${postData.length} chars)")
         return newFixedLengthResponse(Response.Status.OK, "application/json", """{"status":"saved"}""")
+    }
+
+    private fun servePhoneLocationBridgeStatus(): Response {
+        val loc = appPreferences.getPhoneLocationBridgeContext()
+        val ageSeconds = loc?.let { ((System.currentTimeMillis() - it.timestampMs).coerceAtLeast(0L) / 1000L) }
+        return jsonResponse(JSONObject().apply {
+            put("enabled", appPreferences.phoneLocationBridgeEnabled)
+            put("has_location", loc != null)
+            put("provider", loc?.provider ?: JSONObject.NULL)
+            put("latitude", loc?.latitude ?: JSONObject.NULL)
+            put("longitude", loc?.longitude ?: JSONObject.NULL)
+            put("accuracy_meters", loc?.accuracyMeters ?: JSONObject.NULL)
+            put("timestamp_ms", loc?.timestampMs ?: JSONObject.NULL)
+            put("age_seconds", ageSeconds ?: JSONObject.NULL)
+        })
+    }
+
+    private fun savePhoneLocationBridge(session: IHTTPSession): Response {
+        val body = HashMap<String, String>()
+        session.parseBody(body)
+        val postData = body["postData"] ?: ""
+        if (postData.isBlank()) {
+            return newFixedLengthResponse(
+                Response.Status.BAD_REQUEST,
+                "application/json",
+                "{\"error\":\"Empty body\"}"
+            )
+        }
+        val json = try {
+            JSONObject(postData)
+        } catch (e: Exception) {
+            return newFixedLengthResponse(
+                Response.Status.BAD_REQUEST,
+                "application/json",
+                "{\"error\":\"Invalid JSON\"}"
+            )
+        }
+
+        if (json.optBoolean("clear", false)) {
+            appPreferences.setPhoneLocationBridgeContext(null)
+            phoneLocationConsumer?.invoke(null)
+            return jsonResponse(JSONObject().apply {
+                put("status", "cleared")
+                put("enabled", appPreferences.phoneLocationBridgeEnabled)
+            })
+        }
+
+        if (!appPreferences.phoneLocationBridgeEnabled) {
+            return jsonResponse(JSONObject().apply {
+                put("status", "disabled")
+                put("message", "Phone GPS bridge is off in companion settings.")
+            })
+        }
+
+        if (!json.has("latitude") || !json.has("longitude")) {
+            return newFixedLengthResponse(
+                Response.Status.BAD_REQUEST,
+                "application/json",
+                "{\"error\":\"latitude and longitude are required\"}"
+            )
+        }
+
+        val latitude = json.optDouble("latitude", Double.NaN)
+        val longitude = json.optDouble("longitude", Double.NaN)
+        if (!latitude.isFinite() || !longitude.isFinite() ||
+            latitude !in -90.0..90.0 || longitude !in -180.0..180.0
+        ) {
+            return newFixedLengthResponse(
+                Response.Status.BAD_REQUEST,
+                "application/json",
+                "{\"error\":\"invalid latitude or longitude\"}"
+            )
+        }
+
+        val accuracyMeters =
+            if (json.has("accuracy_meters") && !json.isNull("accuracy_meters")) {
+                json.optDouble("accuracy_meters", Double.NaN)
+                    .takeIf { it.isFinite() && it >= 0.0 && it <= 100_000.0 }
+                    ?.toFloat()
+            } else {
+                null
+            }
+        val altitudeMeters =
+            if (json.has("altitude_meters") && !json.isNull("altitude_meters")) {
+                json.optDouble("altitude_meters", Double.NaN)
+                    .takeIf { it.isFinite() && it in -20_000.0..100_000.0 }
+            } else {
+                null
+            }
+        val speedMps =
+            if (json.has("speed_mps") && !json.isNull("speed_mps")) {
+                json.optDouble("speed_mps", Double.NaN)
+                    .takeIf { it.isFinite() && it >= 0.0 && it <= 500.0 }
+                    ?.toFloat()
+            } else {
+                null
+            }
+        val bearingDeg =
+            if (json.has("bearing_deg") && !json.isNull("bearing_deg")) {
+                json.optDouble("bearing_deg", Double.NaN)
+                    .takeIf { it.isFinite() }
+                    ?.let { (((it % 360.0) + 360.0) % 360.0).toFloat() }
+            } else {
+                null
+            }
+        val rawTimestampMs = json.optLong("timestamp_ms", System.currentTimeMillis())
+        val nowMs = System.currentTimeMillis()
+        val timestampMs =
+            rawTimestampMs.takeIf { it in (nowMs - 24L * 60L * 60L * 1000L)..(nowMs + 5L * 60L * 1000L) }
+                ?: nowMs
+
+        val context = DeviceLocationContext(
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = accuracyMeters,
+            altitudeMeters = altitudeMeters,
+            speedMps = speedMps,
+            bearingDeg = bearingDeg,
+            provider = "companion_phone",
+            timestampMs = timestampMs
+        )
+        appPreferences.setPhoneLocationBridgeContext(context)
+        Log.d(
+            TAG,
+            "Stored phone bridge fix lat=${context.latitude} lon=${context.longitude} acc=${context.accuracyMeters} ts=${context.timestampMs}"
+        )
+        return jsonResponse(JSONObject().apply {
+            put("status", "ok")
+            put("enabled", true)
+            put("stored_only", true)
+            put("provider", context.provider)
+            put("accuracy_meters", context.accuracyMeters ?: JSONObject.NULL)
+            put("timestamp_ms", context.timestampMs)
+        })
     }
 
     // ── OAuth ─────────────────────────────────────────────────────────
@@ -422,24 +939,25 @@ document.addEventListener('DOMContentLoaded', loadAll);
 
         // Reconstruct the redirect URI from the incoming request
         val host = session.headers["host"] ?: "localhost:19110"
-        val redirectUri = "http://$host/oauth/callback"
+        val scheme = if (httpsEnabled) "https" else "http"
+        val redirectUri = "$scheme://$host/oauth/callback"
 
         // Exchange code for tokens (blocking in NanoHTTPD thread)
-        val success = runBlocking { mgr.exchangeCodeForTokens(code, redirectUri) }
+        val result = runBlocking { mgr.exchangeCodeForTokensDetailed(code, redirectUri) }
 
         return newFixedLengthResponse(
             Response.Status.OK, "text/html",
             oauthResultPage(
-                success,
-                if (success) "Google account authorized! You can close this tab."
-                else "Token exchange failed. Check your Client ID and Secret, then try again."
+                result.success,
+                if (result.success) "Google account authorized! You can close this tab."
+                else "Token exchange failed: ${result.errorDetail}<br><br><small>Redirect URI used: $redirectUri</small>"
             )
         )
     }
 
     /**
      * Handle manual OAuth code submission: POST /api/oauth/exchange
-     * Body: {"code": "...", "redirect_uri": "http://localhost"}
+     * Body: {"code": "...", "redirect_uri": "http://<glasses-ip>:19110/oauth/callback"}
      */
     private fun handleOAuthExchange(session: IHTTPSession): Response {
         return try {
@@ -451,7 +969,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
             if (postData.isBlank()) {
                 Log.e(TAG, "OAuth exchange: empty body")
                 return newFixedLengthResponse(
-                    Response.Status.BAD_REQUEST, "application/json", """{"error":"Empty body"}"""
+                    Response.Status.BAD_REQUEST, "application/json", """{\"error\":\"Empty body\"}"""
                 )
             }
 
@@ -460,12 +978,15 @@ document.addEventListener('DOMContentLoaded', loadAll);
             val json = try { JSONObject(postData) } catch (e: Exception) {
                 Log.e(TAG, "OAuth exchange: invalid JSON", e)
                 return newFixedLengthResponse(
-                    Response.Status.BAD_REQUEST, "application/json", """{"error":"Invalid JSON"}"""
+                    Response.Status.BAD_REQUEST, "application/json", """{\"error\":\"Invalid JSON\"}"""
                 )
             }
 
             val code = json.optString("code", "").trim()
-            val redirectUri = json.optString("redirect_uri", "http://localhost").trim()
+            val host = session.headers["host"] ?: "localhost:19110"
+            val scheme = if (httpsEnabled) "https" else "http"
+            val defaultRedirectUri = "$scheme://$host/oauth/callback"
+            val redirectUri = json.optString("redirect_uri", defaultRedirectUri).trim()
 
             if (code.isBlank()) {
                 Log.e(TAG, "OAuth exchange: no code in body")
@@ -521,6 +1042,33 @@ document.addEventListener('DOMContentLoaded', loadAll);
         return newFixedLengthResponse(Response.Status.OK, "application/json", json.toString())
     }
 
+    private fun serveHudState(): Response {
+        return jsonResponse(JSONObject().apply {
+            put("hud_show_calendar", prefs.getBoolean("hud_show_calendar", true))
+            put("hud_show_tasks", prefs.getBoolean("hud_show_tasks", true))
+            put("hud_show_news", prefs.getBoolean("hud_show_news", true))
+            put("calendar_summary", calendarSummaryProvider?.invoke().orEmpty())
+            put("tasks_summary", tasksSummaryProvider?.invoke().orEmpty())
+            put("news_summary", newsSummaryProvider?.invoke().orEmpty())
+            put("aqi_text", airQualityTextProvider?.invoke() ?: JSONObject.NULL)
+            put("aqi_value", airQualityValueProvider?.invoke() ?: JSONObject.NULL)
+            put("location_provider", locationProvider?.invoke()?.provider ?: JSONObject.NULL)
+        })
+    }
+
+    /** Returns server connection info (protocol, HTTPS status, URL hint). */
+    private fun serveServerInfo(session: IHTTPSession): Response {
+        val host = session.headers["host"] ?: "localhost:19110"
+        val scheme = if (httpsEnabled) "https" else "http"
+        return jsonResponse(JSONObject().apply {
+            put("https_enabled", httpsEnabled)
+            put("scheme", scheme)
+            put("url", "$scheme://$host")
+            put("secure_context", httpsEnabled)
+            put("gps_bridge_supported", httpsEnabled)
+        })
+    }
+
     // ── Calendar List ────────────────────────────────────────────────────
 
     /** Fetch all calendars visible to the OAuth-authenticated user. */
@@ -544,7 +1092,8 @@ document.addEventListener('DOMContentLoaded', loadAll);
             val calendarApiKey = prefs.getString("calendar_api_key", "") ?: ""
             val client = GoogleCalendarClient(
                 apiKeyProvider = { calendarApiKey.takeIf { it.isNotBlank() } },
-                accessTokenProvider = { runBlocking { mgr.getValidAccessToken() } }
+                accessTokenProvider = { runBlocking { mgr.getValidAccessToken() } },
+                context = context
             )
             val result = runBlocking { client.fetchCalendarList() }
 
@@ -595,6 +1144,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         val calendarApiKey = prefs.getString("calendar_api_key", "") ?: ""
         val calendarId = (prefs.getString("calendar_id", "") ?: "").ifBlank { "primary" }
         val hasOAuth = prefs.getString("google_oauth_refresh_token", "")?.isNotBlank() == true
+        Log.d(TAG, "verifyCalendar start hasOAuth=$hasOAuth hasApiKey=${calendarApiKey.isNotBlank()} calendarId=$calendarId")
 
         if (calendarApiKey.isBlank() && !hasOAuth) {
             return jsonResponse(JSONObject().apply {
@@ -613,12 +1163,14 @@ document.addEventListener('DOMContentLoaded', loadAll);
                 apiKeyProvider = { calendarApiKey.takeIf { it.isNotBlank() } },
                 accessTokenProvider = {
                     if (mgr != null && hasOAuth) runBlocking { mgr.getValidAccessToken() } else null
-                }
+                },
+                context = context
             )
             val result = runBlocking { client.fetchUpcomingEvents(calendarId, maxResults = 5) }
 
             when (result) {
                 is GoogleCalendarClient.CalendarResult.Success -> {
+                    Log.d(TAG, "verifyCalendar success events=${result.events.size}")
                     val eventSummary = if (result.events.isEmpty()) {
                         "No events in next 24h"
                     } else {
@@ -635,6 +1187,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
                     })
                 }
                 is GoogleCalendarClient.CalendarResult.ApiKeyMissing -> jsonResponse(JSONObject().apply {
+                    Log.w(TAG, "verifyCalendar api key missing/invalid")
                     put("service", "calendar")
                     put("status", "failed")
                     put("message", "API key is missing or invalid. Enable Calendar API in GCP and check your key.")
@@ -643,6 +1196,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
                     put("calendar_id", calendarId)
                 })
                 is GoogleCalendarClient.CalendarResult.Error -> jsonResponse(JSONObject().apply {
+                    Log.e(TAG, "verifyCalendar error message=${result.message} code=${result.code}")
                     put("service", "calendar")
                     put("status", "failed")
                     put("message", result.message)
@@ -678,7 +1232,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         }
 
         return try {
-            val client = GoogleDirectionsClient(apiKeyProvider = { mapsApiKey })
+            val client = GoogleDirectionsClient(apiKeyProvider = { mapsApiKey }, context = context)
             val result = runBlocking {
                 client.getDirections("Times Square, NYC", "Central Park, NYC", "driving")
             }
@@ -736,7 +1290,8 @@ document.addEventListener('DOMContentLoaded', loadAll);
             })
 
             val client = GoogleTasksClient(
-                accessTokenProvider = { runBlocking { mgr.getValidAccessToken() } }
+                accessTokenProvider = { runBlocking { mgr.getValidAccessToken() } },
+                context = context
             )
             val result = runBlocking { client.fetchTasks(maxResults = 3) }
 
@@ -795,7 +1350,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         }
 
         return try {
-            val client = GooglePlacesClient(apiKeyProvider = { mapsApiKey })
+            val client = GooglePlacesClient(apiKeyProvider = { mapsApiKey }, context = context)
             // Test with a search for restaurants near a known location (Houston, TX)
             val result = runBlocking {
                 client.searchNearby(
@@ -861,7 +1416,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
             return jsonResponse(JSONObject().apply {
                 put("service", "location")
                 put("status", "failed")
-                put("message", "GPS location not available. Make sure Location Services are enabled " +
+                put("message", "Device location not available. Make sure Location Services are enabled " +
                     "on the glasses (Settings → Location → On) and the app has location permission.")
                 put("has_gps", false)
             })
@@ -869,15 +1424,21 @@ document.addEventListener('DOMContentLoaded', loadAll);
 
         val ageSeconds = (System.currentTimeMillis() - loc.timestampMs) / 1000
         val fresh = if (ageSeconds < 300) "current" else "${ageSeconds / 60}min old"
+        val sourceLabel =
+            when (loc.provider) {
+                "ip_geolocation" -> "Approximate network location"
+                else -> "Location active"
+            }
         return jsonResponse(JSONObject().apply {
             put("service", "location")
             put("status", "success")
-            put("message", "GPS active! Lat: ${"%.6f".format(loc.latitude)}, " +
+            put("message", "$sourceLabel: Lat: ${"%.6f".format(loc.latitude)}, " +
                 "Lng: ${"%.6f".format(loc.longitude)} " +
                 "(accuracy: ${loc.accuracyMeters?.toInt() ?: "?"}m, $fresh)" +
                 (loc.altitudeMeters?.let { alt: Double -> ", alt: ${alt.toInt()}m" } ?: "") +
                 (loc.speedMps?.let { spd: Float -> if (spd > 0.5f) ", speed: ${"%.1f".format(spd * 2.237)}mph" else "" } ?: ""))
-            put("has_gps", true)
+            put("has_gps", loc.provider != "ip_geolocation")
+            put("provider", loc.provider ?: JSONObject.NULL)
             put("latitude", loc.latitude)
             put("longitude", loc.longitude)
             put("accuracy_meters", loc.accuracyMeters ?: -1)
@@ -915,7 +1476,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
             val origin = "${loc.latitude},${loc.longitude}"
             // Use a well-known nearby city as the destination test
             val destination = "Houston, TX"
-            val client = GoogleDirectionsClient(apiKeyProvider = { mapsApiKey })
+            val client = GoogleDirectionsClient(apiKeyProvider = { mapsApiKey }, context = context)
             val result = runBlocking {
                 client.getDirections(origin = origin, destination = destination)
             }
@@ -961,6 +1522,138 @@ document.addEventListener('DOMContentLoaded', loadAll);
                 put("message", "Exception: ${e.message}")
                 put("has_api_key", mapsApiKey.isNotBlank())
                 put("has_gps", true)
+            })
+        }
+    }
+
+    /** Test Google Air Quality API with live GPS location. */
+    private fun verifyAirQuality(): Response {
+        val mapsApiKey = prefs.getString("google_maps_api_key", "") ?: ""
+        val loc = locationProvider?.invoke()
+
+        if (mapsApiKey.isBlank()) {
+            return jsonResponse(JSONObject().apply {
+                put("service", "air_quality")
+                put("status", "not_configured")
+                put("message", "Google Maps API key not configured. Air Quality uses the same key.")
+                put("has_api_key", false)
+                put("has_gps", loc != null)
+            })
+        }
+
+        if (loc == null) {
+            return jsonResponse(JSONObject().apply {
+                put("service", "air_quality")
+                put("status", "failed")
+                put("message", "GPS not available — cannot test air quality from the glasses.")
+                put("has_api_key", true)
+                put("has_gps", false)
+            })
+        }
+
+        return try {
+            val client = GoogleAirQualityClient(apiKeyProvider = { mapsApiKey }, context = context)
+            when (
+                val result = runBlocking {
+                    client.fetchCurrentConditions(loc.latitude, loc.longitude)
+                }
+            ) {
+                is GoogleAirQualityClient.AirQualityResult.Success -> {
+                    jsonResponse(JSONObject().apply {
+                        put("service", "air_quality")
+                        put("status", "success")
+                        put(
+                            "message",
+                            "Connected! ${result.index.label}" +
+                                (result.index.dominantPollutant?.let { " — dominant pollutant: $it" } ?: "")
+                        )
+                        put("has_api_key", true)
+                        put("has_gps", true)
+                        put("aqi", result.index.aqi ?: JSONObject.NULL)
+                    })
+                }
+                is GoogleAirQualityClient.AirQualityResult.ApiKeyMissing -> {
+                    jsonResponse(JSONObject().apply {
+                        put("service", "air_quality")
+                        put("status", "failed")
+                        put("message", "Air Quality API key missing or invalid.")
+                        put("has_api_key", false)
+                        put("has_gps", true)
+                    })
+                }
+                is GoogleAirQualityClient.AirQualityResult.Error -> {
+                    jsonResponse(JSONObject().apply {
+                        put("service", "air_quality")
+                        put("status", "failed")
+                        put("message", result.message)
+                        put("has_api_key", true)
+                        put("has_gps", true)
+                    })
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Air quality verify error", e)
+            jsonResponse(JSONObject().apply {
+                put("service", "air_quality")
+                put("status", "failed")
+                put("message", "Exception: ${e.message}")
+                put("has_api_key", mapsApiKey.isNotBlank())
+                put("has_gps", loc != null)
+            })
+        }
+    }
+
+    /** Test the configured research provider with a short sample prompt. */
+    private fun verifyResearch(): Response {
+        val provider = (prefs.getString("research_provider", "") ?: "").trim().ifBlank { "gemini" }
+        val router = ResearchRouter(
+            providerProvider = { provider },
+            apiKeyProvider = { prefs.getString("research_api_key", "")?.trim() },
+            modelProvider = { prefs.getString("research_model", "")?.trim() },
+            geminiFallbackApiKeyProvider = {
+                (prefs.getString("gemini_api_key", "") ?: "").trim().ifBlank {
+                    BuildConfig.GEMINI_API_KEY.takeIf { it.isNotBlank() }
+                }
+            },
+            context = context
+        )
+
+        return try {
+            when (val result = runBlocking { router.research("current capabilities of TapInsight") }) {
+                is ResearchRouter.ResearchResult.Success -> {
+                    jsonResponse(JSONObject().apply {
+                        put("service", "research")
+                        put("status", "success")
+                        put("message", "Connected! ${result.provider} / ${result.model}")
+                        put("provider", result.provider)
+                        put("model", result.model)
+                        put("preview", result.text.take(240))
+                    })
+                }
+                is ResearchRouter.ResearchResult.ApiKeyMissing -> {
+                    jsonResponse(JSONObject().apply {
+                        put("service", "research")
+                        put("status", "not_configured")
+                        put("message", "Research provider API key missing. Configure it in the companion app.")
+                        put("provider", provider)
+                    })
+                }
+                is ResearchRouter.ResearchResult.Error -> {
+                    jsonResponse(JSONObject().apply {
+                        put("service", "research")
+                        put("status", "failed")
+                        put("message", result.message)
+                        put("provider", provider)
+                    })
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Research verify error", e)
+            jsonResponse(JSONObject().apply {
+                put("service", "research")
+                put("status", "failed")
+                put("message", "Exception: ${e.message}")
+                put("provider", provider)
             })
         }
     }
