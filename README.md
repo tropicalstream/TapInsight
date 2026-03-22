@@ -107,6 +107,49 @@ This runs in the background and automatically re-establishes the port forward wh
 
 If you prefer wireless, your computer and glasses must be on the same WiFi network. Find the glasses' IP in Settings → WiFi, then open `http://<glasses-ip>:19110` in your browser. The `companion.html` page has a WiFi tab for this.
 
+### Using The Phone GPS Bridge
+
+The phone GPS bridge only works when the phone browser can reach the glasses companion server. In practice, that means the phone and the glasses must be on the **same network** and able to talk to each other directly.
+
+Basic steps:
+
+1. Put the phone and glasses on the same network.
+2. Find the glasses IP in the glasses Wi-Fi settings.
+3. On the phone, open `https://<glasses-ip>:19110`.
+4. Accept the local certificate warning once if the browser asks.
+5. In the companion app, turn **Phone GPS Bridge** on.
+6. Tap **Use This Phone's GPS**.
+7. Allow location permission in the phone browser.
+
+Common ways to use it:
+
+- **Home / office Wi-Fi**
+  - Connect both the phone and the glasses to the same Wi-Fi network.
+  - Open `https://<glasses-ip>:19110` on the phone.
+
+- **iPhone Personal Hotspot**
+  - Turn on Personal Hotspot on the iPhone.
+  - Connect the glasses to the iPhone hotspot.
+  - Keep the companion page open on that same iPhone and open `https://<glasses-ip>:19110`.
+  - Use Safari or another iPhone browser and allow location access when prompted.
+
+- **Android phone hotspot**
+  - Turn on the Android hotspot.
+  - Connect the glasses to that hotspot.
+  - Open `https://<glasses-ip>:19110` on the Android phone.
+  - Chrome on Android is usually the best path for the phone GPS bridge.
+
+- **Other same-network arrangements**
+  - Travel router
+  - Mobile hotspot device
+  - Another shared LAN where both devices receive IP addresses on the same network
+
+Important notes:
+
+- If the phone and glasses are **not** on the same network, the bridge will not work.
+- If your router or hotspot uses **client isolation** and devices cannot reach each other, the bridge will not work until that is disabled or you switch networks.
+- For iPhone use, prefer the `https://` companion URL for the best chance of browser geolocation working correctly.
+
 ### Optional Configuration
 
 - **Google OAuth** — Enable Google Maps, Places, and Calendar integration by setting up OAuth credentials in the companion app's Setup tab
