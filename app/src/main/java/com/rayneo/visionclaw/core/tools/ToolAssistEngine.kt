@@ -52,12 +52,57 @@ class ToolAssistEngine(
             Regex("(?i)\\bmy (current )?(location|position|coordinates|gps)\\b"),
             Regex("(?i)\\bwhere (are we|is this|is here)\\b")
         )
+
+        private val ASK_MAPS_EXPLORE_PATTERNS = listOf(
+            // "tell me about the Golden Gate Bridge", "what is the Eiffel Tower"
+            Regex("(?i)\\b(tell me about|what('?s| is)|explore|describe|info on|about)\\b.{1,60}\\b(bridge|tower|museum|monument|park|building|church|cathedral|stadium|arena|temple|palace|castle|plaza|square|landmark|statue|memorial)\\b"),
+            // "explore [place name]"
+            Regex("(?i)^\\s*(explore|tell me about|what('?s| is))\\s+(.{3,})\\s*$"),
+            // "what landmarks are nearby", "nearby landmarks"
+            Regex("(?i)\\b(landmark|landmarks|notable place|points? of interest)s?\\b.{0,20}\\b(near|around|nearby|close|here)\\b"),
+            Regex("(?i)\\b(near|around|nearby)\\b.{0,20}\\b(landmark|landmarks|notable|points? of interest)s?\\b")
+        )
+
+        private val ASK_MAPS_3D_NAV_PATTERNS = listOf(
+            // "navigate 3D to X", "3D directions to X", "show me in 3D"
+            Regex("(?i)\\b(navigate|navigation|directions?|drive|go)\\s+(in\\s+)?3[dD]\\s+(to\\s+)?"),
+            Regex("(?i)\\b3[dD]\\s+(navigate|navigation|directions?|route|view)\\b"),
+            Regex("(?i)\\bshow\\s+(me\\s+)?(in\\s+)?3[dD]\\b")
+        )
+
+        private val RESEARCH_PATTERNS = listOf(
+            Regex("(?i)^\\s*research\\s+(.+?)\\s*$"),
+            Regex("(?i)^\\s*(?:please\\s+)?research\\s+(?:for me\\s+)?(.+?)\\s*$"),
+            Regex("(?i)^\\s*(?:do|run)\\s+research\\s+on\\s+(.+?)\\s*$"),
+            Regex("(?i)^\\s*(?:give me|do)\\s+a\\s+deep\\s+dive\\s+on\\s+(.+?)\\s*$"),
+            Regex("(?i)^\\s*(?:analyze|brief me on)\\s+(.+?)\\s*$")
+        )
+
+
+        private val EXPLICIT_LEARN_PREFIX = Regex("(?i)^\\s*learnlm\\b[:\\-\\s]*(.*?)\\s*$")
+        private val LOOSE_LEARN_LM_PREFIX = Regex("(?i)^\\s*learn\\s+l\\.?m\\.?\\b[:\\-\\s]*(.*?)\\s*$")
+
+        private val LEARN_CONTINUATION_PATTERNS = listOf(
+            Regex("(?i)^\\s*(?:continue|keep going|go on|next step|what should i try next)\\s*(?:on|with)?\\s*(?:the\\s+)?(?:previous|same)?\\s*(?:problem|lesson|topic)?\\s*$"),
+            Regex("(?i)^\\s*(?:continue|pick up)\\s+(?:where we left off|from before|the previous problem|the last lesson)\\s*$"),
+            Regex("(?i)^\\s*(?:help me with|teach me)\\s+(?:the next step|the next part|the same problem)\\s*$")
+        )
+
+        private val LEARN_PATTERNS = listOf(
+            Regex("(?i)^\\s*(?:help me learn|teach me about|teach me|tutor me on|help me understand|help me study)\\s+(.+?)\\s*$"),
+            Regex("(?i)^\\s*(?:show me how to|walk me through how to|walk me through)\\s+(.+?)\\s*$"),
+            Regex("(?i)^\\s*(?:continue learning about|continue teaching me about|keep teaching me about)\\s+(.+?)\\s*$"),
+            Regex("(?i)^\\s*how do i\\s+(.+?)\\s*$"),
+            Regex("(?i)^\\s*how can i\\s+(.+?)\\s*$"),
+            Regex("(?i)^\\s*how to\\s+(.+?)\\s*$")
+        )
     }
 
     data class AssistResult(
         val toolName: String,
         val resultText: String,
-        val contextPrompt: String   // what we inject into the Live session
+        val contextPrompt: String,  // what we inject into the Live session
+        val preferLiveVoice: Boolean = false  // true = route through Gemini Live voice, not local TTS
     )
 
     /**
@@ -82,6 +127,45 @@ class ToolAssistEngine(
         // ── Routes / Traffic ("traffic to Houston") ──────────────────
         if (ROUTES_PATTERNS.any { it.containsMatchIn(text) }) {
             return handleRoutes(text)
+        }
+
+        // ── Ask Maps 3D Nav ("navigate 3D to X") ──────────────────
+        if (ASK_MAPS_3D_NAV_PATTERNS.any { it.containsMatchIn(text) }) {
+            return handleAskMaps3DNav(text)
+        }
+
+        // ── Ask Maps Explore ("tell me about the Golden Gate Bridge") ─
+        if (ASK_MAPS_EXPLORE_PATTERNS.any { it.containsMatchIn(text) }) {
+            return handleAskMapsExplore(text)
+        }
+
+        val researchTopic = RESEARCH_PATTERNS
+            .firstNotNullOfOrNull { it.find(text)?.groupValues?.getOrNull(1) }
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        if (researchTopic != null) {
+            return handleResearch(text, researchTopic)
+        }
+
+        val explicitLearnPrompt = (EXPLICIT_LEARN_PREFIX.find(text) ?: LOOSE_LEARN_LM_PREFIX.find(text))
+            ?.groupValues?.getOrNull(1)
+            ?.trim()
+            ?.trimEnd('.', '?', '!')
+        if (explicitLearnPrompt != null) {
+            val normalizedPrompt = explicitLearnPrompt.ifBlank { "continue on the previous problem" }
+            return handleLearn(normalizedPrompt, extractLearnTopicHint(normalizedPrompt))
+        }
+
+        val learnTopic = LEARN_PATTERNS
+            .firstNotNullOfOrNull { it.find(text)?.groupValues?.getOrNull(1) }
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        if (learnTopic != null) {
+            return handleLearn(text, learnTopic)
+        }
+
+        if (isLearnContinuation(text)) {
+            return handleLearn(text, "")
         }
 
         return null
@@ -148,26 +232,19 @@ class ToolAssistEngine(
             toolName = "google_places",
             resultText = resultText,
             contextPrompt = "[TOOL RESULT — google_places nearby search]\n$resultText\n" +
-                "[Read these results to the user naturally. Highlight which places are open now, " +
-                "their ratings, and distances. The user asked: \"$transcript\"]"
+                "[Use these results faithfully. Lead with the nearest OPEN option if one exists. " +
+                "If the closest place is closed, say that briefly and then promote the nearest open one. " +
+                "Preserve ETA, weather, and Maps details instead of replacing them with a generic summary. " +
+                "The user asked: \"$transcript\"]"
         )
     }
 
     // ── Handler: Routes / Traffic ─────────────────────────────────────
 
     private suspend fun handleRoutes(transcript: String): AssistResult {
-        val loc = locationProvider()
-        if (loc == null) {
-            return AssistResult(
-                toolName = "google_routes",
-                resultText = "GPS not available for route calculation",
-                contextPrompt = "[SYSTEM: The user asked about directions/traffic but GPS is not available. " +
-                    "Tell them to enable Location Services on their glasses.]"
-            )
-        }
+        // Extract origin and destination from transcript
+        val (explicitOrigin, destination) = extractOriginAndDestination(transcript)
 
-        // Extract destination from transcript
-        val destination = extractDestination(transcript)
         if (destination.isBlank()) {
             return AssistResult(
                 toolName = "google_routes",
@@ -177,10 +254,25 @@ class ToolAssistEngine(
             )
         }
 
-        val origin = "${loc.latitude},${loc.longitude}"
+        // Use explicit origin if user spoke one, otherwise fall back to GPS
+        val origin: String = if (explicitOrigin.isNotBlank()) {
+            explicitOrigin
+        } else {
+            val loc = locationProvider()
+            if (loc == null) {
+                return AssistResult(
+                    toolName = "google_routes",
+                    resultText = "GPS not available for route calculation",
+                    contextPrompt = "[SYSTEM: The user asked about directions/traffic but GPS is not available. " +
+                        "Tell them to enable Location Services on their glasses, or say 'from [address] to [destination]'.]"
+                )
+            }
+            "${loc.latitude},${loc.longitude}"
+        }
+
         val args = "{\"origin\":\"$origin\",\"destination\":\"$destination\"}"
 
-        Log.d(TAG, "Routes assist: origin=$origin destination=$destination")
+        Log.d(TAG, "Routes assist: origin=$origin destination=$destination explicitOrigin=${explicitOrigin.isNotBlank()}")
 
         val result = toolDispatcher.dispatch("google_routes", args)
         val resultText = result.getOrElse { "Route lookup failed: ${it.message}" }
@@ -190,6 +282,147 @@ class ToolAssistEngine(
             resultText = resultText,
             contextPrompt = "[TOOL RESULT — google_routes]\n$resultText\n" +
                 "[Tell the user about the route, travel time, and traffic conditions naturally. " +
+                "The user asked: \"$transcript\"]"
+        )
+    }
+
+    private suspend fun handleResearch(transcript: String, topic: String): AssistResult {
+        val args = JSONObject().put("topic", topic).toString()
+        Log.d(TAG, "Research assist: topic=$topic")
+        val result = toolDispatcher.dispatch("research_topic", args)
+        val resultText = result.getOrElse { "Research unavailable right now." }
+
+        return AssistResult(
+            toolName = "research_topic",
+            resultText = resultText,
+            contextPrompt = "[TOOL RESULT — research_topic]\n$resultText\n" +
+                "[Summarize this research naturally for the user. The user asked: \"$transcript\"]"
+        )
+    }
+    private fun isLearnContinuation(text: String): Boolean {
+        val trimmed = text.trim()
+        val lower = trimmed.lowercase()
+        if (LEARN_CONTINUATION_PATTERNS.any { it.matches(trimmed) }) return true
+        return listOf(
+            "continue",
+            "resume",
+            "pick up",
+            "where we left off",
+            "from before",
+            "previous problem",
+            "last problem",
+            "same problem",
+            "previous lesson",
+            "last lesson",
+            "same lesson",
+            "previous topic",
+            "last topic",
+            "same topic"
+        ).any { lower.contains(it) }
+    }
+
+    private fun extractLearnTopicHint(prompt: String): String {
+        val trimmed = prompt.trim()
+        if (isLearnContinuation(trimmed)) return ""
+        return trimmed
+            .removePrefix("help me learn")
+            .removePrefix("Teach me")
+            .removePrefix("teach me")
+            .removePrefix("show me how to")
+            .removePrefix("walk me through")
+            .removePrefix("help me understand")
+            .removePrefix("help me study")
+            .removePrefix("how do i")
+            .removePrefix("how can i")
+            .removePrefix("how to")
+            .trim(' ', '.', '?', '!')
+    }
+
+    private suspend fun handleLearn(transcript: String, topic: String): AssistResult {
+        val continuation = isLearnContinuation(transcript)
+        val args = JSONObject().put("query", transcript).put("topic", topic).toString()
+        Log.d(TAG, "LearnLM assist: topic=$topic, continuation=$continuation")
+        val result = toolDispatcher.dispatch("learn_topic", args)
+        val resultText = result.getOrElse { "Tutor mode is unavailable right now." }
+
+        val contextPrompt = if (continuation) {
+            "[TOOL RESULT — learn_topic — CONTINUATION]\n$resultText\n" +
+                "[The user wants to continue their previous tutoring session. " +
+                "Start by giving a brief 1-2 sentence verbal summary of where they left off on the previous problem, " +
+                "then continue the voice tutoring conversation naturally. Keep the voice session going — do NOT end it. " +
+                "The user asked: \"$transcript\"]"
+        } else {
+            "[TOOL RESULT — learn_topic]\n$resultText\n" +
+                "[Present this as a concise tutoring response for the user. The user asked: \"$transcript\"]"
+        }
+
+        return AssistResult(
+            toolName = "learn_topic",
+            resultText = resultText,
+            contextPrompt = contextPrompt,
+            preferLiveVoice = continuation
+        )
+    }
+
+    // ── Handler: Ask Maps — Explore ──────────────────────────────────
+
+    private suspend fun handleAskMapsExplore(transcript: String): AssistResult {
+        // Extract the place/query from transcript
+        val query = extractExploreQuery(transcript)
+        if (query.isBlank()) {
+            return AssistResult(
+                toolName = "ask_maps",
+                resultText = "Could not determine what place to explore",
+                contextPrompt = "[SYSTEM: The user asked about a place but I couldn't determine which one. " +
+                    "Ask them: 'Which place would you like me to tell you about?']"
+            )
+        }
+
+        val action = if (transcript.lowercase().contains("landmark") ||
+            transcript.lowercase().contains("point of interest")) "nearby_landmarks" else "explore"
+
+        val args = "{\"action\":\"$action\",\"query\":\"$query\"}"
+        Log.d(TAG, "Ask Maps explore: query=$query action=$action")
+
+        val result = toolDispatcher.dispatch("ask_maps", args)
+        val resultText = result.getOrElse { "Place exploration failed: ${it.message}" }
+
+        return AssistResult(
+            toolName = "ask_maps",
+            resultText = resultText,
+            contextPrompt = "[TOOL RESULT — ask_maps explore]\n$resultText\n" +
+                "[Share the AI-generated place summary naturally. Include key details like rating, " +
+                "hours, and any interesting facts. If a 3D navigation link is available, mention " +
+                "the user can say 'navigate 3D' to see it in photorealistic 3D. " +
+                "The user asked: \"$transcript\"]"
+        )
+    }
+
+    // ── Handler: Ask Maps — 3D Navigation ──────────────────────────
+
+    private suspend fun handleAskMaps3DNav(transcript: String): AssistResult {
+        val destination = extract3DNavDestination(transcript)
+        if (destination.isBlank()) {
+            return AssistResult(
+                toolName = "ask_maps",
+                resultText = "Could not determine 3D navigation destination",
+                contextPrompt = "[SYSTEM: The user asked for 3D navigation but I couldn't determine the destination. " +
+                    "Ask them: 'Where would you like 3D navigation to?']"
+            )
+        }
+
+        val args = "{\"action\":\"navigate_3d\",\"destination\":\"$destination\"}"
+        Log.d(TAG, "Ask Maps 3D nav: destination=$destination")
+
+        val result = toolDispatcher.dispatch("ask_maps", args)
+        val resultText = result.getOrElse { "3D navigation failed: ${it.message}" }
+
+        return AssistResult(
+            toolName = "ask_maps",
+            resultText = resultText,
+            contextPrompt = "[TOOL RESULT — ask_maps navigate_3d]\n$resultText\n" +
+                "[Tell the user about the route with driving/walking ETAs. " +
+                "Mention the 3D photorealistic view is loading. " +
                 "The user asked: \"$transcript\"]"
         )
     }
@@ -217,6 +450,71 @@ class ToolAssistEngine(
             lower.contains("store") || lower.contains("shop") -> "store"
             else -> "restaurant" // reasonable default
         }
+    }
+
+    /**
+     * Extract both an explicit origin and a destination from the user's transcript.
+     * Handles patterns like:
+     *   "directions from 123 Main St to 456 Oak Ave"
+     *   "navigate from downtown to the airport"
+     *   "how do I get from work to home"
+     *   "directions to 456 Oak Ave"  (no origin → empty string)
+     */
+    private fun extractOriginAndDestination(transcript: String): Pair<String, String> {
+        // Pattern 1: "from <origin> to <destination>"
+        val fromTo = Regex("(?i)\\bfrom\\s+(.+?)\\s+to\\s+(.+?)\\s*[?.!]*$").find(transcript)
+        if (fromTo != null) {
+            val origin = fromTo.groupValues[1].trim().replace(Regex("[?.!]+$"), "").trim()
+            val dest = fromTo.groupValues[2].trim().replace(Regex("[?.!]+$"), "").trim()
+            if (origin.isNotBlank() && dest.isNotBlank()) {
+                return origin to dest
+            }
+        }
+
+        // No explicit origin — fall back to destination-only extraction
+        return "" to extractDestination(transcript)
+    }
+
+    private fun extractExploreQuery(transcript: String): String {
+        val patterns = listOf(
+            Regex("(?i)(?:tell me about|what(?:'?s| is)|explore|describe|info on)\\s+(?:the\\s+)?(.+?)\\s*[?.!]*$"),
+            Regex("(?i)(?:nearby|near me|around here)\\s+(.+?)\\s*[?.!]*$")
+        )
+        for (pattern in patterns) {
+            val match = pattern.find(transcript)
+            if (match != null) {
+                val query = match.groupValues[1].trim()
+                    .replace(Regex("[?.!]+$"), "").trim()
+                if (query.isNotBlank()) return query
+            }
+        }
+        // Fallback: strip common prefixes and return the rest
+        return transcript
+            .replace(Regex("(?i)^\\s*(tell me about|what('?s| is)|explore|describe|info on|nearby)\\s+"), "")
+            .replace(Regex("[?.!]+$"), "")
+            .trim()
+    }
+
+    private fun extract3DNavDestination(transcript: String): String {
+        val patterns = listOf(
+            Regex("(?i)(?:navigate|navigation|directions?)\\s+(?:in\\s+)?3[dD]\\s+(?:to\\s+)?(.+?)\\s*[?.!]*$"),
+            Regex("(?i)3[dD]\\s+(?:navigate|navigation|directions?|route)\\s+(?:to\\s+)?(.+?)\\s*[?.!]*$"),
+            Regex("(?i)show\\s+(?:me\\s+)?(?:in\\s+)?3[dD]\\s+(?:to\\s+)?(.+?)\\s*[?.!]*$")
+        )
+        for (pattern in patterns) {
+            val match = pattern.find(transcript)
+            if (match != null) {
+                val dest = match.groupValues[1].trim()
+                    .replace(Regex("[?.!]+$"), "").trim()
+                if (dest.isNotBlank()) return dest
+            }
+        }
+        // Fallback: extract destination from the "to X" pattern
+        val toMatch = Regex("(?i)\\bto\\s+(.{3,})$").find(transcript)
+        if (toMatch != null) {
+            return toMatch.groupValues[1].replace(Regex("[?.!]+$"), "").trim()
+        }
+        return ""
     }
 
     private fun extractDestination(transcript: String): String {

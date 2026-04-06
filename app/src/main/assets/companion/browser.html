@@ -79,6 +79,10 @@
   <select id="webForceDarkMode"><option value="true">On (default)</option><option value="false">Off</option></select>
   <div class="hint">Applies dark theme to web pages for better visibility on the MicroLED display.</div>
 
+  <label>Show Browser Status Overlay</label>
+  <select id="browserShowSystemInfo"><option value="true">On (default)</option><option value="false">Off</option></select>
+  <div class="hint">Controls the TapBrowser Wi-Fi, battery, and time strip. Turn this off to keep videos unobstructed.</div>
+
   <label>Pointer Sensitivity (0.4 &ndash; 1.8)</label>
   <input type="text" id="webPointerSensitivity" placeholder="1.0">
   <div class="hint">Controls trackpad cursor speed in the browser. Lower = more precise, higher = faster.</div>
@@ -126,6 +130,7 @@
 const BROWSER_FIELDS = {
   webDesktopMode:        { key: 'web_desktop_mode',         type: 'bool'  },
   webForceDarkMode:      { key: 'web_force_dark_mode',      type: 'bool'  },
+  browserShowSystemInfo: { key: 'browser_show_system_info', type: 'bool'  },
   webPointerSensitivity: { key: 'web_pointer_sensitivity',  type: 'float' }
 };
 
