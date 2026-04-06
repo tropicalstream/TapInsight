@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">AITap</string>
-    <string name="chat_hint">Ask AITap…</string>
+    <string name="app_name">TapResearch</string>
+    <string name="chat_hint">Ask TapResearch…</string>
     <string name="settings_title">Settings</string>
     <string name="gemini_api_key_label">Gemini API Key</string>
     <string name="calendar_api_key_label">Calendar API Key</string>
@@ -15,6 +15,9 @@
     <!-- Chat panel -->
     <string name="hud_time">--:--</string>
     <string name="hud_calendar">No upcoming events</string>
+    <string name="hud_ai_status">Gemini connection status</string>
+    <string name="hud_battery_charging">Battery charging</string>
+    <string name="hud_openclaw_status">OpenClaw gateway status</string>
     <string name="send">Send</string>
 
     <!-- Settings panel -->
