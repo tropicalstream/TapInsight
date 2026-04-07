@@ -415,14 +415,6 @@ To prevent credit burn, use this specific prompt pattern now that CDP is active:
 **Developer Command:**
 "Gort, switch to the `user` browser profile. Locate the Gemini tab. Instead of clicking via coordinates, use a DOM selector to find the 'Deep Research' toggle and execute a `native.click()`. If the selector is missing, log the error and stop."
 
-### 6. Analytical Summary for the "Oakland Build"
-
-| Component | Status | Role |
-|-----------|--------|------|
-| Model `qwen3.5-omni-plus-realtime` | | The "Brain" for audio/logic |
-| Transport `CDP / WebSocket` | | The "Eyes" (Reading the code) |
-| Hardware `Host computer (Linux workstation, Mac mini, Windows desktop, or mini PC)` | | The "Muscles" (Whisper acceleration) |
-
 ---
 
 ## License
