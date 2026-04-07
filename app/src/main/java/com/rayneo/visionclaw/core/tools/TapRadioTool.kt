@@ -276,14 +276,17 @@ class TapRadioTool(private val context: Context) : AiTapTool {
         // Search Radio Browser for stations
         val radioResults = searchRadioBrowser(query, limit = 5)
         if (radioResults.isNotEmpty()) {
-            sb.append("[RADIO STATIONS] (use action='play' to play these):\n")
+            sb.append("[RADIO STATIONS]:\n")
             for ((i, station) in radioResults.withIndex()) {
                 val stationName = station.optString("name", "Unknown").take(40)
                 val tags = station.optString("tags", "").take(30)
                 val country = station.optString("country", "")
+                val streamUrl = station.optString("url_resolved",
+                    station.optString("url", ""))
                 sb.append("${i + 1}. $stationName")
                 if (tags.isNotBlank()) sb.append(" ($tags)")
                 if (country.isNotBlank()) sb.append(" — $country")
+                if (streamUrl.isNotBlank()) sb.append(" [URL: $streamUrl]")
                 sb.append("\n")
             }
         }
@@ -292,7 +295,7 @@ class TapRadioTool(private val context: Context) : AiTapTool {
         val podcastResults = searchItunesMultiple(query, limit = 3)
         if (podcastResults.isNotEmpty()) {
             if (sb.isNotEmpty()) sb.append("\n")
-            sb.append("[PODCASTS] (use action='podcast' to play these):\n")
+            sb.append("[PODCASTS]:\n")
             for ((i, podcast) in podcastResults.withIndex()) {
                 val podName = podcast.optString("collectionName",
                     podcast.optString("trackName", "Unknown")).take(40)
@@ -307,9 +310,9 @@ class TapRadioTool(private val context: Context) : AiTapTool {
             return Result.success("No stations or podcasts found for '$query'. Try a different search term.")
         }
 
-        sb.append("\nTo play a RADIO STATION: call tapradio with action='play' and query='[exact station name]'.")
+        sb.append("\nTo play a RADIO STATION: call tapradio with action='play' and query set to the station's stream URL from the [URL: ...] field above.")
         sb.append("\nTo play a PODCAST: call tapradio with action='podcast' and query='[podcast name]'.")
-        sb.append("\nIMPORTANT: For radio stations use action='play', NOT action='podcast'.")
+        sb.append("\nIMPORTANT: Always use the stream URL (not the station name) when playing a radio station.")
         return Result.success(sb.toString())
     }
 

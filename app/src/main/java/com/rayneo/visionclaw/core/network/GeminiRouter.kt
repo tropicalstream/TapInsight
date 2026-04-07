@@ -143,9 +143,10 @@ class GeminiRouter(
                 "'find a news station', 'play rock music', 'what stations play [genre]'. " +
                 "This returns a list of matching stations for the user to CHOOSE from. ALWAYS use 'search' " +
                 "when the user says a GENRE or general category, even if they say 'play [genre]'.\n" +
-                "  - action='play' → Use ONLY when the user picks a SPECIFIC station by its exact name " +
-                "(e.g. after seeing search results: 'play KCSM Jazz', 'play that first one', " +
-                "'play NPR Program Stream'). Also use for direct station URLs.\n" +
+                "  - action='play' → Use ONLY when the user picks a SPECIFIC station. " +
+                "IMPORTANT: When playing a station from search results, pass the stream URL " +
+                "(from the [URL: ...] field) as the query, NOT the station name. " +
+                "Station names are unreliable for re-lookup. Also use for direct station URLs.\n" +
                 "  - action='list' → Show saved stations: 'what radio stations do I have'.\n" +
                 "  - action='stop' → Stop playback.\n" +
                 "TapRadio searches 30,000+ public radio stations by name, genre tag, or country. " +

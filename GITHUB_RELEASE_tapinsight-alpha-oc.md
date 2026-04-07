@@ -2,6 +2,10 @@
 
 This alpha refresh updates TapRadio, podcast playback, OpenClaw ticker behavior, and media URL handling.
 
+## Bug Fix Refresh
+
+- TapRadio follow-up playback now uses the selected station's stream URL instead of re-looking up by station name, which fixes failed or unreliable station playback after Gemini search results.
+
 ## Gemini Radio & Podcast Discovery
 
 TapRadio now integrates directly with Gemini voice commands, giving you hands-free access to 30,000+ internet radio stations and millions of podcasts through Apple's iTunes database, all played through the native ExoPlayer with full toolbar controls.
