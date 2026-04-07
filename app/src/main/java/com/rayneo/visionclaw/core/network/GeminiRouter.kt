@@ -131,12 +131,25 @@ class GeminiRouter(
                 "For standalone traffic queries without a destination, ask the user where they're headed.\n" +
                 "5) For music playback ONLY when the user explicitly asks for Spotify, Sonos, or music streaming " +
                 "(e.g. 'play on Spotify', 'Sonos play', 'stream music'). Do NOT use spotify_player or sonos_control " +
-                "for generic 'play' or 'open' media requests — those go to open_taplink (rule 17) or tapclaw_agent.\n" +
-                "5b) For internet radio or podcast requests ('play radio', 'play jazz', 'find a news station', " +
-                "'play NPR', 'turn on the radio', 'play a podcast about [topic]', 'what radio stations do I have'), " +
-                "ALWAYS call tapradio. Use action='search' to find stations by name/genre, action='play' to play a station " +
-                "by name or URL, action='list' to show saved stations, action='stop' to stop playback. " +
-                "TapRadio can search 30,000+ public stations by name, genre, or country.\n" +
+                "for generic 'play' or 'open' media requests.\n" +
+                "5a) PODCAST OVERRIDE (HIGHEST PRIORITY FOR 'play' COMMANDS): If the user's request contains " +
+                "the word 'podcast' anywhere, ALWAYS call tapradio with action='podcast' and query='[show name]'. " +
+                "Do NOT open YouTube. Do NOT use open_taplink. Do NOT use Google Search. " +
+                "This rule OVERRIDES rule 17. TapRadio searches Apple's iTunes podcast database " +
+                "(millions of shows) and 30,000+ public radio stations.\n" +
+                "5b) RADIO STATION ROUTING: For ANY internet radio request, ALWAYS call tapradio. " +
+                "ACTION SELECTION IS CRITICAL — use the correct action:\n" +
+                "  - action='search' → Use for genre/discovery requests: 'play classical', 'play jazz', " +
+                "'find a news station', 'play rock music', 'what stations play [genre]'. " +
+                "This returns a list of matching stations for the user to CHOOSE from. ALWAYS use 'search' " +
+                "when the user says a GENRE or general category, even if they say 'play [genre]'.\n" +
+                "  - action='play' → Use ONLY when the user picks a SPECIFIC station by its exact name " +
+                "(e.g. after seeing search results: 'play KCSM Jazz', 'play that first one', " +
+                "'play NPR Program Stream'). Also use for direct station URLs.\n" +
+                "  - action='list' → Show saved stations: 'what radio stations do I have'.\n" +
+                "  - action='stop' → Stop playback.\n" +
+                "TapRadio searches 30,000+ public radio stations by name, genre tag, or country. " +
+                "Do NOT route radio requests to YouTube or open_taplink.\n" +
                 "6) For contacts/phone numbers, call google_contacts.\n" +
                 "7) For sending texts or making calls, call send_message or place_call.\n" +
                 "8) For finding nearby restaurants, cafes, gas stations, pharmacies, or checking what's open nearby, " +
@@ -175,8 +188,10 @@ class GeminiRouter(
                 "16) For quick action phrases ('good morning', 'leaving work', 'heading home', 'meeting mode'), " +
                 "ALWAYS call quick_action. Say 'list quick actions' to see all available macros.\n" +
                 "17) When the user asks to 'show me', 'display', 'open', 'play', or 'listen to' an image, video, audio, website, or file on their glasses, " +
-                "ALWAYS call open_taplink with the appropriate URL. This includes showing saved camera images, " +
+                "call open_taplink with the appropriate URL. This includes showing saved camera images, " +
                 "YouTube videos, web articles, audio files, or any media content. " +
+                "EXCEPTION: If the request mentions 'podcast', 'radio', a radio station name (KPFA, NPR, KQED, BBC, etc.), " +
+                "or 'tapradio', route to tapradio instead (see rules 5a/5b). Rule 5a/5b ALWAYS override this rule for radio and podcasts. " +
                 "For workspace files (audio, images, etc.), use the MEDIA RELAY URL from the system context below. " +
                 "Audio files (MP3, WAV, etc.) automatically open in the built-in media player.\n" +
                 "17b) When the user asks to 'read' a text file (e.g. 'read notes.txt', 'read me that file'), " +
@@ -1653,17 +1668,19 @@ class GeminiRouter(
             tools.put(JSONObject()
                 .put("name", "tapradio")
                 .put("description", "Control TapRadio — search, play, and manage internet radio stations " +
-                    "and podcasts. Can search 30,000+ public stations by name, genre, or country. " +
-                    "Play saved stations or discover new ones via voice command.")
+                    "and podcasts. Searches 30,000+ public radio stations AND Apple's iTunes podcast database " +
+                    "(millions of shows). All playback uses the native TapRadio player with persistent " +
+                    "toolbar controls. Use action='podcast' for podcast shows by name.")
                 .put("parameters", JSONObject()
                     .put("type", "OBJECT")
                     .put("properties", JSONObject()
                         .put("action", JSONObject().put("type", "STRING")
                             .put("description", "Action: 'play' (play a station by name/URL), " +
-                                "'search' (find stations by query/genre), 'list' (show saved stations), " +
+                                "'podcast' (search iTunes for a podcast and play latest episode), " +
+                                "'search' (find stations + podcasts by query/genre), 'list' (show saved stations), " +
                                 "'stop' (stop playback), 'add' (add a station URL with name/genre)."))
                         .put("query", JSONObject().put("type", "STRING")
-                            .put("description", "Station name, genre, search term, or stream URL.")))
+                            .put("description", "Station name, podcast show name, genre, search term, or stream URL.")))
                     .put("required", JSONArray().put("action"))))
 
             // tapclaw_agent — personal AI assistant (requires user to enable)

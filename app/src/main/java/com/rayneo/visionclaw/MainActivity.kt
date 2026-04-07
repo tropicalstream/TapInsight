@@ -2293,6 +2293,15 @@ class MainActivity : AppCompatActivity() {
         val trimmed = transcript.trim().trimEnd('.', '!', '?')
         if (trimmed.isBlank()) return null
 
+        // --- RADIO / PODCAST GUARD ---
+        // If the transcript mentions podcast, radio, tapradio, or known radio station
+        // call letters, bail out immediately so Gemini can route to tapradio instead.
+        val lowerCheck = trimmed.lowercase()
+        val radioKeywords = listOf("podcast", "tapradio", "on tapradio",
+            "radio station", "internet radio", "play radio",
+            "kpfa", "kqed", "npr", "bbc radio", "wnyc", "wbez")
+        if (radioKeywords.any { lowerCheck.contains(it) }) return null
+
         // "play/open" is optional — Gemini Live often transcribes without it
         // e.g. " YouTube Drake." instead of "play YouTube Drake"
 
@@ -2384,40 +2393,45 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        // --- Generic "play <topic>" catch-all ---
+        // ONLY fires when the user explicitly mentions "youtube" in the request.
+        // Without "youtube", let Gemini's routing rules decide (tapradio for radio/podcasts,
+        // open_taplink for videos, etc.) — this prevents hijacking radio/podcast requests.
         val genericPlayPattern =
             Regex("(?i)^\\s*(?:play|put on|listen to|start)\\s+(.+?)\\s*$")
-        val genericTopic = genericPlayPattern.find(trimmed)?.groupValues?.getOrNull(1)
-            ?.trim()
-            ?.trimEnd('.', '!', '?')
-            ?.takeIf { topic ->
-                topic.isNotBlank() &&
-                    !topic.equals("music", ignoreCase = true) &&
-                    !topic.contains("radio", ignoreCase = true) &&
-                    !topic.contains("tapradio", ignoreCase = true) &&
-                    !topic.contains("station", ignoreCase = true) &&
-                    !topic.contains("scan", ignoreCase = true) &&
-                    !topic.contains("volume", ignoreCase = true)
+        if (lower.contains("youtube")) {
+            val genericTopic = genericPlayPattern.find(trimmed)?.groupValues?.getOrNull(1)
+                ?.trim()
+                ?.trimEnd('.', '!', '?')
+                ?.replace(Regex("(?i)\\byoutube\\b"), "")
+                ?.trim()
+                ?.takeIf { topic ->
+                    topic.isNotBlank() &&
+                        !topic.equals("music", ignoreCase = true) &&
+                        !topic.contains("scan", ignoreCase = true) &&
+                        !topic.contains("volume", ignoreCase = true)
+                }
+            if (!genericTopic.isNullOrBlank()) {
+                val looksVideoLike = listOf(
+                    "video",
+                    "videos",
+                    "documentary",
+                    "history of",
+                    "interview",
+                    "lecture",
+                    "trailer",
+                    "episode"
+                ).any { genericTopic.contains(it, ignoreCase = true) }
+                val mode = if (looksVideoLike) "video" else "music"
+                val searchTopic = if (mode == "music") "$genericTopic music" else genericTopic
+                return YouTubePlaybackRequest(
+                    query = genericTopic,
+                    mode = mode,
+                    searchUrl = buildYouTubeSearchUrl(searchTopic, mode),
+                    hudLabel = "Playing latest YouTube $mode for $genericTopic",
+                    responseText = "Playing the newest YouTube $mode results for $genericTopic with captions enabled."
+                )
             }
-        if (!genericTopic.isNullOrBlank()) {
-            val looksVideoLike = listOf(
-                "video",
-                "videos",
-                "documentary",
-                "history of",
-                "interview",
-                "lecture",
-                "trailer",
-                "episode"
-            ).any { genericTopic.contains(it, ignoreCase = true) }
-            val mode = if (looksVideoLike) "video" else "music"
-            val searchTopic = if (mode == "music") "$genericTopic music" else genericTopic
-            return YouTubePlaybackRequest(
-                query = genericTopic,
-                mode = mode,
-                searchUrl = buildYouTubeSearchUrl(searchTopic, mode),
-                hudLabel = "Playing latest YouTube $mode for $genericTopic",
-                responseText = "Playing the newest YouTube $mode results for $genericTopic with captions enabled."
-            )
         }
 
         return null

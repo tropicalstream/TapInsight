@@ -149,6 +149,7 @@ let stations = [];
 let currentIdx = -1;
 let editIdx = -1;
 let activeGenre = 'All';
+let adHocStream = null;  // { name, genre, url } — for podcast/ad-hoc streams not in station list
 let externalPlaybackState = { playing: false, stationName: '', genre: '', updatedAt: 0 };
 let nativePlaybackState = {
   available: false,
@@ -240,6 +241,73 @@ async function init() {
   renderStations();
   audio.volume = 0.7;
   updateUI();
+
+  // ── Auto-play via URL parameters ──────────────────────────────
+  // Supports: ?playUrl=<stream>&playName=<name>&playGenre=<genre>
+  // Used by TapRadioTool (Gemini voice commands) to route playback
+  // through the native ExoPlayer instead of the generic browser player.
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const playUrl = params.get('playUrl');
+    if (playUrl) {
+      const playName = params.get('playName') || 'Stream';
+      const playGenre = params.get('playGenre') || 'Mix';
+
+      // ── STOP any currently playing stream ──
+      // The Kotlin onNewIntent() already releases the old ExoPlayer before
+      // loading this page, but we also stop here as a safety net in case
+      // the page was loaded directly (not via onNewIntent).
+      if (hasNativeRadioBridge()) {
+        try { AndroidInterface.stopNativeRadioStream(); } catch(e) {
+          console.warn('stopNativeRadioStream safety-net failed (expected if already stopped):', e);
+        }
+      }
+      if (!audio.paused) { audio.pause(); audio.src = ''; }
+
+      // Check if this URL matches a saved station — use that index if so
+      const matchIdx = stations.findIndex(s =>
+        s.url === playUrl || s.name.toLowerCase() === playName.toLowerCase()
+      );
+      if (matchIdx >= 0) {
+        adHocStream = null;
+        playStation(matchIdx);
+      } else {
+        // Ad-hoc stream (podcast episode, etc.) — play via native bridge
+        // Store as ad-hoc state so UI can reflect the playing podcast
+        currentIdx = -1;
+        adHocStream = { name: playName, genre: normalizeGenre(playGenre), url: playUrl };
+        if (hasNativeRadioBridge()) {
+          const stateResult = AndroidInterface.playNativeRadioStream(
+            playUrl, playName, normalizeGenre(playGenre)
+          );
+          applyNativeRadioState(stateResult);
+        } else {
+          audio.src = playUrl;
+          audio.load();
+          audio.play().catch(e => console.warn('Auto-play failed:', e));
+        }
+        updateUI();
+      }
+      // Clean URL so refresh doesn't re-trigger auto-play
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+
+      // ── Delayed state sync ──
+      // ExoPlayer state transitions (preparing → buffering → playing) fire
+      // via notifyNativeRadioStateChanged() which evaluates JS on this page.
+      // If those callbacks arrive before init() finishes, they're lost.
+      // Re-sync state after a delay to catch up with the actual ExoPlayer state.
+      setTimeout(function() {
+        syncNativeRadioState();
+        updateUI();
+      }, 1500);
+      setTimeout(function() {
+        syncNativeRadioState();
+        updateUI();
+      }, 3500);
+    }
+  } catch(e) { console.warn('Auto-play param parsing failed:', e); }
 }
 
 async function loadStations() {
@@ -384,6 +452,7 @@ function toggleFav(idx) {
 function playStation(idx) {
   if (idx < 0 || idx >= stations.length) return;
   currentIdx = idx;
+  adHocStream = null;  // Clear ad-hoc state when playing a saved station
   if (hasNativeRadioBridge()) {
     try {
       applyNativeRadioState(AndroidInterface.playNativeRadioStream(
@@ -406,6 +475,19 @@ function playStation(idx) {
 }
 
 function togglePlay() {
+  // Handle ad-hoc podcast stream toggle when no station is selected
+  if (currentIdx < 0 && hasNativeRadioBridge()) {
+    const nPlaying = nativePlaybackState.playing || nativePlaybackState.preparing || nativePlaybackState.buffering;
+    if (nPlaying) {
+      try { applyNativeRadioState(AndroidInterface.pauseNativeRadioStream()); } catch(e) {}
+    } else if (adHocStream) {
+      try { applyNativeRadioState(AndroidInterface.resumeNativeRadioStream()); } catch(e) {}
+    } else if (stations.length) {
+      playStation(0); return;
+    }
+    updateUI();
+    return;
+  }
   if (currentIdx < 0) { if (stations.length) playStation(0); return; }
   if (hasNativeRadioBridge()) {
     try {
@@ -509,15 +591,35 @@ function reportPlaybackState() {
 
 function updateUI() {
   const station = currentIdx >= 0 ? stations[currentIdx] : null;
-  const playing = currentIdx >= 0 && isStationPlaying(station);
+  let playing = currentIdx >= 0 && isStationPlaying(station);
+
+  // ── Ad-hoc stream support (podcasts, etc.) ──
+  // When currentIdx is -1 but native ExoPlayer is actively playing,
+  // reflect the playing state in the toolbar using the ad-hoc stream info.
+  let displayName = station ? station.name : 'Select a station';
+  if (!playing && currentIdx === -1 && hasNativeRadioBridge()) {
+    const nPlaying = nativePlaybackState.playing || nativePlaybackState.preparing || nativePlaybackState.buffering;
+    if (nPlaying) {
+      playing = true;
+      displayName = nativePlaybackState.stationName || (adHocStream ? adHocStream.name : 'Podcast');
+    } else if (adHocStream) {
+      displayName = adHocStream.name;
+    }
+  }
+
   const btn = document.getElementById('btnPlay');
   btn.innerHTML = playing ? '&#9646;&#9646;' : '&#9654;';
   btn.classList.toggle('playing', playing);
   const now = document.getElementById('nowPlaying');
-  if (currentIdx >= 0) {
-    const s = station;
-    now.textContent = playing ? '\u25B6 ' + s.name : '\u23F8 ' + s.name;
-  } else { now.textContent = 'Select a station'; }
+  if (playing) {
+    now.textContent = '\u25B6 ' + displayName;
+  } else if (currentIdx >= 0) {
+    now.textContent = '\u23F8 ' + displayName;
+  } else if (adHocStream) {
+    now.textContent = '\u23F8 ' + adHocStream.name;
+  } else {
+    now.textContent = 'Select a station';
+  }
   renderStations();
   reportPlaybackState();
 }

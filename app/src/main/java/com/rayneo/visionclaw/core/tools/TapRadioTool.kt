@@ -14,12 +14,16 @@ import java.net.URLEncoder
  * TapRadioTool — Gemini-callable tool for searching, playing, and managing
  * internet radio stations and podcasts via TapRadio.
  *
+ * All playback routes through the native TapRadio player (ExoPlayer via
+ * radio.html auto-play parameters) — NOT the generic browser media player.
+ *
  * Actions:
- *   play   — play a station by name (fuzzy match saved list) or direct URL
- *   search — query Radio Browser API (30k+ public stations)
- *   list   — return saved station names
- *   stop   — stop current playback
- *   add    — add a station to saved list
+ *   play    — play a station/podcast by name or direct URL
+ *   search  — query Radio Browser API (30k+ stations) + iTunes (podcasts)
+ *   podcast — search iTunes for podcasts and play the latest episode
+ *   list    — return saved station names
+ *   stop    — stop current playback
+ *   add     — add a station to saved list
  */
 class TapRadioTool(private val context: Context) : AiTapTool {
     override val name = "tapradio"
@@ -27,6 +31,7 @@ class TapRadioTool(private val context: Context) : AiTapTool {
     companion object {
         private const val TAG = "TapRadioTool"
         private const val RADIO_PREFS_KEY = "tapradio_stations"
+        private const val ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
         private val RADIO_BROWSER_SERVERS = listOf(
             "https://de1.api.radio-browser.info",
             "https://nl1.api.radio-browser.info",
@@ -47,20 +52,36 @@ class TapRadioTool(private val context: Context) : AiTapTool {
         return when (action) {
             "play" -> playStation(query)
             "search" -> searchStations(query)
+            "podcast" -> playPodcast(query)
             "list" -> listStations()
             "stop" -> stopPlayback()
             "add" -> addStation(query, args["name"] ?: "", args["genre"] ?: "")
-            else -> Result.success("Unknown TapRadio action: $action. Use play, search, list, stop, or add.")
+            else -> Result.success("Unknown TapRadio action: $action. Use play, search, podcast, list, stop, or add.")
         }
+    }
+
+    // ── Play ────────────────────────────────────────────────────────
+
+    /**
+     * Build the open_taplink URL that routes through TapRadio's native
+     * ExoPlayer via radio.html auto-play parameters.
+     */
+    private fun buildNativePlayUrl(streamUrl: String, name: String, genre: String): String {
+        val encUrl = URLEncoder.encode(streamUrl, "UTF-8")
+        val encName = URLEncoder.encode(name, "UTF-8")
+        val encGenre = URLEncoder.encode(genre, "UTF-8")
+        return "open_taplink:file:///android_asset/radio.html" +
+            "?playUrl=$encUrl&playName=$encName&playGenre=$encGenre"
     }
 
     private suspend fun playStation(query: String): Result<String> {
         if (query.isBlank()) return Result.success("Please specify a station name or URL to play.")
 
-        // If it looks like a URL, open in browser directly
+        // Direct URL — route through native player
         if (query.startsWith("http://") || query.startsWith("https://")) {
             clearNowPlaying()
-            return Result.success("open_taplink:$query\nOpening stream in browser: $query")
+            val playLink = buildNativePlayUrl(query, "Stream", "Mix")
+            return Result.success("$playLink\nPlaying stream in TapRadio")
         }
 
         // Fuzzy match against saved stations
@@ -78,49 +99,247 @@ class TapRadioTool(private val context: Context) : AiTapTool {
             val genre = match.optString("genre", "")
             if (url.isNotBlank()) {
                 clearNowPlaying()
-                return Result.success("open_taplink:$url\nOpening $stationName in browser ($genre)")
+                val playLink = buildNativePlayUrl(url, stationName, genre)
+                return Result.success("$playLink\nPlaying $stationName on TapRadio ($genre)")
             }
         }
 
         // Not found in saved — try Radio Browser search then play first result
-        val searchResults = searchRadioBrowser(query, limit = 3)
+        val searchResults = searchRadioBrowser(query, limit = 5)
         if (searchResults.isNotEmpty()) {
-            val first = searchResults[0]
+            // Try exact match first, then fuzzy
+            val queryLowerRadio = query.lowercase()
+            val exactMatch = searchResults.firstOrNull {
+                it.optString("name", "").lowercase().contains(queryLowerRadio) ||
+                    queryLowerRadio.contains(it.optString("name", "").lowercase())
+            }
+            val first = exactMatch ?: searchResults[0]
             val url = first.optString("url_resolved", first.optString("url", ""))
             val stationName = first.optString("name", "Unknown")
-            val genre = first.optString("tags", "")
+            val genre = first.optString("tags", "").split(",").firstOrNull()?.trim() ?: "Mix"
             if (url.isNotBlank()) {
                 clearNowPlaying()
-                return Result.success("open_taplink:$url\nOpening $stationName in browser ($genre)")
+                val playLink = buildNativePlayUrl(url, stationName, genre)
+                return Result.success("$playLink\nPlaying $stationName on TapRadio ($genre)")
             }
         }
 
-        return Result.success("No station found matching '$query'. Try 'search $query' to discover stations.")
+        // Do NOT fall back to podcast search here — podcasts should only be
+        // played via the explicit 'podcast' action. Falling through to iTunes
+        // caused radio station selections to incorrectly play podcasts instead.
+        return Result.success("No radio station found matching '$query'. Try 'search $query' to discover stations, or say 'podcast $query' to find podcasts.")
     }
+
+    // ── Podcast ─────────────────────────────────────────────────────
+
+    /**
+     * Search iTunes for a podcast by name, parse its RSS feed to get
+     * the latest episode audio URL, and play via native TapRadio player.
+     */
+    private suspend fun playPodcast(query: String): Result<String> {
+        if (query.isBlank()) return Result.success("Please specify a podcast name to search for.")
+
+        val result = searchAndPlayPodcast(query)
+            ?: return Result.success("No podcast found matching '$query'. Try a different name.")
+        return Result.success(result)
+    }
+
+    private suspend fun searchAndPlayPodcast(query: String): String? = withContext(Dispatchers.IO) {
+        // 1) Search iTunes for the podcast
+        val podcast = searchItunes(query) ?: return@withContext null
+        val feedUrl = podcast.optString("feedUrl", "")
+        val podcastName = podcast.optString("collectionName",
+            podcast.optString("trackName", "Podcast"))
+        val artist = podcast.optString("artistName", "")
+
+        if (feedUrl.isBlank()) {
+            return@withContext "Found '$podcastName' but no RSS feed available."
+        }
+
+        // 2) Parse RSS feed to get the latest episode audio URL
+        val episode = parseRssFeedForLatestEpisode(feedUrl)
+        if (episode == null) {
+            return@withContext "Found '$podcastName' but could not load the latest episode. Feed: $feedUrl"
+        }
+
+        val episodeUrl = episode.first
+        val episodeTitle = episode.second
+
+        // 3) Play via native TapRadio player
+        val displayName = if (episodeTitle.isNotBlank()) "$podcastName: $episodeTitle" else podcastName
+        val playLink = buildNativePlayUrl(episodeUrl, displayName, "Podcast")
+        "$playLink\nPlaying podcast: $displayName" + if (artist.isNotBlank()) " by $artist" else ""
+    }
+
+    /**
+     * Search iTunes Search API for podcasts matching the query.
+     * Returns the best match or null.
+     */
+    private fun searchItunes(query: String): JSONObject? {
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        val url = "$ITUNES_SEARCH_URL?term=$encoded&media=podcast&entity=podcast&limit=5"
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 5000
+        conn.readTimeout = 5000
+        conn.setRequestProperty("User-Agent", "TapInsight/1.1.2")
+        return try {
+            if (conn.responseCode == 200) {
+                val body = conn.inputStream.bufferedReader().readText()
+                val json = JSONObject(body)
+                val results = json.optJSONArray("results")
+                if (results != null && results.length() > 0) {
+                    results.getJSONObject(0)
+                } else null
+            } else null
+        } catch (e: Exception) {
+            Log.w(TAG, "iTunes search failed: ${e.message}")
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Parse an RSS/Atom podcast feed and extract the audio URL and title
+     * of the most recent episode. Uses simple XML parsing to avoid
+     * pulling in a full XML library dependency.
+     *
+     * Returns Pair(audioUrl, episodeTitle) or null if no enclosure found.
+     */
+    private fun parseRssFeedForLatestEpisode(feedUrl: String): Pair<String, String>? {
+        val conn = URL(feedUrl).openConnection() as HttpURLConnection
+        conn.connectTimeout = 5000
+        conn.readTimeout = 8000
+        conn.setRequestProperty("User-Agent", "TapInsight/1.1.2")
+        conn.instanceFollowRedirects = true
+        return try {
+            if (conn.responseCode != 200) return null
+            val xml = conn.inputStream.bufferedReader().readText()
+
+            // Find the first <item> block (most recent episode)
+            val itemStart = xml.indexOf("<item>").takeIf { it >= 0 }
+                ?: xml.indexOf("<item ").takeIf { it >= 0 }
+                ?: return null
+            val itemEnd = xml.indexOf("</item>", itemStart).takeIf { it >= 0 }
+                ?: xml.length
+            val item = xml.substring(itemStart, itemEnd)
+
+            // Extract enclosure URL (the actual audio file)
+            val audioUrl = extractEnclosureUrl(item) ?: return null
+
+            // Extract episode title
+            val title = extractXmlTag(item, "title") ?: ""
+
+            Pair(audioUrl, title)
+        } catch (e: Exception) {
+            Log.w(TAG, "RSS feed parse failed for $feedUrl: ${e.message}")
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Extract the url attribute from an <enclosure> tag. */
+    private fun extractEnclosureUrl(itemXml: String): String? {
+        // Match <enclosure ... url="..." .../>
+        val encIdx = itemXml.indexOf("<enclosure").takeIf { it >= 0 } ?: return null
+        val encEnd = itemXml.indexOf(">", encIdx).takeIf { it >= 0 } ?: return null
+        val encTag = itemXml.substring(encIdx, encEnd + 1)
+
+        // Extract url attribute value
+        val urlAttr = Regex("""url\s*=\s*["']([^"']+)["']""").find(encTag)
+        return urlAttr?.groupValues?.getOrNull(1)?.trim()
+    }
+
+    /** Extract text content from the first occurrence of an XML tag. */
+    private fun extractXmlTag(xml: String, tag: String): String? {
+        // Handle CDATA: <title><![CDATA[Episode Title]]></title>
+        val openTag = "<$tag>"
+        val closeTag = "</$tag>"
+        val start = xml.indexOf(openTag).takeIf { it >= 0 } ?: return null
+        val end = xml.indexOf(closeTag, start).takeIf { it >= 0 } ?: return null
+        var content = xml.substring(start + openTag.length, end).trim()
+        // Strip CDATA wrapper if present
+        if (content.startsWith("<![CDATA[")) {
+            content = content.removePrefix("<![CDATA[").removeSuffix("]]>").trim()
+        }
+        return content.ifBlank { null }
+    }
+
+    // ── Search ──────────────────────────────────────────────────────
 
     private suspend fun searchStations(query: String): Result<String> {
         if (query.isBlank()) return Result.success("Please provide a search term (e.g. genre, station name, or country).")
 
-        val results = searchRadioBrowser(query, limit = 5)
-        if (results.isEmpty()) {
-            return Result.success("No stations found for '$query'. Try a different search term.")
+        val sb = StringBuilder()
+
+        // Search Radio Browser for stations
+        val radioResults = searchRadioBrowser(query, limit = 5)
+        if (radioResults.isNotEmpty()) {
+            sb.append("[RADIO STATIONS] (use action='play' to play these):\n")
+            for ((i, station) in radioResults.withIndex()) {
+                val stationName = station.optString("name", "Unknown").take(40)
+                val tags = station.optString("tags", "").take(30)
+                val country = station.optString("country", "")
+                sb.append("${i + 1}. $stationName")
+                if (tags.isNotBlank()) sb.append(" ($tags)")
+                if (country.isNotBlank()) sb.append(" — $country")
+                sb.append("\n")
+            }
         }
 
-        val sb = StringBuilder("Found ${results.size} stations:\n")
-        for (station in results) {
-            val stationName = station.optString("name", "Unknown").take(40)
-            val tags = station.optString("tags", "").take(30)
-            val country = station.optString("country", "")
-            val codec = station.optString("codec", "")
-            sb.append("• $stationName")
-            if (tags.isNotBlank()) sb.append(" ($tags)")
-            if (country.isNotBlank()) sb.append(" — $country")
-            if (codec.isNotBlank()) sb.append(" [$codec]")
-            sb.append("\n")
+        // Also search iTunes for podcasts
+        val podcastResults = searchItunesMultiple(query, limit = 3)
+        if (podcastResults.isNotEmpty()) {
+            if (sb.isNotEmpty()) sb.append("\n")
+            sb.append("[PODCASTS] (use action='podcast' to play these):\n")
+            for ((i, podcast) in podcastResults.withIndex()) {
+                val podName = podcast.optString("collectionName",
+                    podcast.optString("trackName", "Unknown")).take(40)
+                val artist = podcast.optString("artistName", "").take(25)
+                sb.append("${i + 1}. $podName")
+                if (artist.isNotBlank()) sb.append(" by $artist")
+                sb.append("\n")
+            }
         }
-        sb.append("\nSay 'play [station name]' to start listening.")
+
+        if (sb.isEmpty()) {
+            return Result.success("No stations or podcasts found for '$query'. Try a different search term.")
+        }
+
+        sb.append("\nTo play a RADIO STATION: call tapradio with action='play' and query='[exact station name]'.")
+        sb.append("\nTo play a PODCAST: call tapradio with action='podcast' and query='[podcast name]'.")
+        sb.append("\nIMPORTANT: For radio stations use action='play', NOT action='podcast'.")
         return Result.success(sb.toString())
     }
+
+    /** Search iTunes for multiple podcast results. */
+    private suspend fun searchItunesMultiple(query: String, limit: Int = 3): List<JSONObject> =
+        withContext(Dispatchers.IO) {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val url = "$ITUNES_SEARCH_URL?term=$encoded&media=podcast&entity=podcast&limit=$limit"
+            val conn = URL(url).openConnection() as HttpURLConnection
+            conn.connectTimeout = 5000
+            conn.readTimeout = 5000
+            conn.setRequestProperty("User-Agent", "TapInsight/1.1.2")
+            try {
+                if (conn.responseCode == 200) {
+                    val body = conn.inputStream.bufferedReader().readText()
+                    val json = JSONObject(body)
+                    val results = json.optJSONArray("results")
+                    if (results != null) {
+                        (0 until results.length()).map { results.getJSONObject(it) }
+                    } else emptyList()
+                } else emptyList()
+            } catch (e: Exception) {
+                Log.w(TAG, "iTunes multi-search failed: ${e.message}")
+                emptyList()
+            } finally {
+                conn.disconnect()
+            }
+        }
+
+    // ── List / Stop / Add ───────────────────────────────────────────
 
     private fun listStations(): Result<String> {
         val stations = getSavedStations()
@@ -197,28 +416,74 @@ class TapRadioTool(private val context: Context) : AiTapTool {
         return try { JSONArray(raw) } catch (_: Exception) { JSONArray() }
     }
 
+    /**
+     * Search Radio Browser using multiple strategies:
+     *  1. Advanced search (name + tag combined) — broadest match
+     *  2. By-name fallback — exact name substring
+     *  3. By-tag fallback — matches genre/tag keywords
+     * Deduplicates by station name and returns the union.
+     */
     private suspend fun searchRadioBrowser(query: String, limit: Int = 5): List<JSONObject> =
         withContext(Dispatchers.IO) {
             val encoded = URLEncoder.encode(query, "UTF-8")
+            val seen = mutableSetOf<String>()
+            val results = mutableListOf<JSONObject>()
+
             for (server in RADIO_BROWSER_SERVERS) {
                 try {
-                    val url = "$server/json/stations/byname/$encoded?limit=$limit&order=votes&reverse=true"
-                    val conn = URL(url).openConnection() as HttpURLConnection
-                    conn.connectTimeout = 5000
-                    conn.readTimeout = 5000
-                    conn.setRequestProperty("User-Agent", "TapInsight/1.1.2")
-                    val code = conn.responseCode
-                    if (code == 200) {
-                        val body = conn.inputStream.bufferedReader().readText()
-                        conn.disconnect()
-                        val arr = JSONArray(body)
-                        return@withContext (0 until arr.length()).map { arr.getJSONObject(it) }
+                    // 1) Advanced search — matches name OR tag, ordered by votes
+                    val advUrl = "$server/json/stations/search?name=$encoded&tag=$encoded" +
+                        "&limit=$limit&order=votes&reverse=true"
+                    val advResults = fetchStations(advUrl)
+                    for (s in advResults) {
+                        val key = s.optString("name", "").lowercase()
+                        if (key.isNotBlank() && seen.add(key)) results.add(s)
                     }
-                    conn.disconnect()
+
+                    // 2) By-name — in case advanced search missed substring matches
+                    if (results.size < limit) {
+                        val nameUrl = "$server/json/stations/byname/$encoded" +
+                            "?limit=$limit&order=votes&reverse=true"
+                        for (s in fetchStations(nameUrl)) {
+                            val key = s.optString("name", "").lowercase()
+                            if (key.isNotBlank() && seen.add(key)) results.add(s)
+                        }
+                    }
+
+                    // 3) By-tag — catches genre searches like "jazz", "news", "comedy"
+                    if (results.size < limit) {
+                        val tagUrl = "$server/json/stations/bytag/$encoded" +
+                            "?limit=$limit&order=votes&reverse=true"
+                        for (s in fetchStations(tagUrl)) {
+                            val key = s.optString("name", "").lowercase()
+                            if (key.isNotBlank() && seen.add(key)) results.add(s)
+                        }
+                    }
+
+                    if (results.isNotEmpty()) {
+                        return@withContext results.take(limit)
+                    }
                 } catch (e: Exception) {
                     Log.d(TAG, "Radio Browser search failed on $server: ${e.message}")
                 }
             }
             emptyList()
         }
+
+    /** Fetch station list from a single Radio Browser URL. */
+    private fun fetchStations(urlStr: String): List<JSONObject> {
+        val conn = URL(urlStr).openConnection() as HttpURLConnection
+        conn.connectTimeout = 5000
+        conn.readTimeout = 5000
+        conn.setRequestProperty("User-Agent", "TapInsight/1.1.2")
+        return try {
+            if (conn.responseCode == 200) {
+                val body = conn.inputStream.bufferedReader().readText()
+                val arr = JSONArray(body)
+                (0 until arr.length()).map { arr.getJSONObject(it) }
+            } else emptyList()
+        } finally {
+            conn.disconnect()
+        }
+    }
 }

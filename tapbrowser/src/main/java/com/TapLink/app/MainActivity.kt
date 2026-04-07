@@ -131,6 +131,25 @@ class MainActivity :
         private const val TAPCLAW_MAIN_ACTIVITY = "com.rayneo.visionclaw.MainActivity"
         private var activeInstanceRef: WeakReference<MainActivity>? = null
 
+        // ── Static ExoPlayer reference ──
+        // When the Activity is destroyed and recreated (common on AR glasses with
+        // limited RAM), the instance-level nativeRadioPlayer field is lost but the
+        // ExoPlayer may still be playing audio in the background. This static ref
+        // lets a new Activity instance stop an orphaned player from a previous
+        // instance, preventing two streams from playing simultaneously.
+        @Volatile
+        private var staticNativeRadioPlayer: ExoPlayer? = null
+
+        /** Stop any orphaned native radio player from a previous Activity instance. */
+        @JvmStatic
+        fun stopOrphanedNativeRadioPlayer() {
+            try {
+                staticNativeRadioPlayer?.stop()
+                staticNativeRadioPlayer?.release()
+            } catch (_: Exception) {}
+            staticNativeRadioPlayer = null
+        }
+
         @JvmStatic
         fun prepareForIncomingYouTubeAutoplay() {
             activeInstanceRef?.get()?.let { activity ->
@@ -535,6 +554,12 @@ class MainActivity :
 
     @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility", "DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
+        // ── Stop any orphaned radio player from a previous Activity instance ──
+        // If the system destroyed the old Activity (common on AR glasses with limited
+        // RAM) and onDestroy didn't run or ran too late, the static ref lets us kill
+        // the orphaned ExoPlayer before this new instance starts its own stream.
+        stopOrphanedNativeRadioPlayer()
+
         runCatching { com.ffalcon.mercury.android.sdk.MercurySDK.init(application) }
         parseTapClawLaunchIntent(intent)
         super.onCreate(savedInstanceState)
@@ -1791,6 +1816,22 @@ class MainActivity :
                     lastYouTubeInjectionUrl = null
                     DebugLog.d("YouTubeAuto", "onNewIntent: non-YT URL, cleared autoplay state")
                 }
+
+                // ── RADIO HANDOFF: stop the current native radio stream BEFORE loading ──
+                // When switching podcasts/stations, the old ExoPlayer must be released
+                // before the new page loads and starts a new stream. Doing this here in
+                // Kotlin (on the UI thread) is reliable; relying on JavaScript calling
+                // stopNativeRadioStream() through the bridge during page init is racy
+                // because runOnUiBlocking can time out while the UI thread is busy
+                // processing the page navigation.
+                if (formatted.contains("radio.html", ignoreCase = true) &&
+                    formatted.contains("playUrl=", ignoreCase = true)) {
+                    if (nativeRadioPlayer != null) {
+                        DebugLog.d("TapRadioNative", "onNewIntent: stopping current radio stream before loading new radio.html")
+                        releaseNativeRadioPlayer(clearMetadata = true, abandonFocus = false)
+                    }
+                }
+
                 webView.settings.mediaPlaybackRequiresUserGesture = false // restore for non-map
                 webView.loadUrl(formatted)
                 persistActiveUrl("tapclaw_new_intent", formatted, webView)
@@ -2739,7 +2780,9 @@ class MainActivity :
 
     private fun syncTapRadioPlaybackUi() {
         if (!::dualWebViewGroup.isInitialized) return
-        uiHandler.postDelayed({
+        // Sync at multiple intervals to ensure radio.html receives the state
+        // even if the page is still loading during the first attempt.
+        val syncAction = Runnable {
             dualWebViewGroup.getAllWebViews().forEach { candidate ->
                 val url = candidate.url.orEmpty()
                 if (!url.contains("radio.html", ignoreCase = true)) return@forEach
@@ -2751,7 +2794,9 @@ class MainActivity :
                 }
             }
             dualWebViewGroup.refreshMaskedNowPlaying()
-        }, 250L)
+        }
+        uiHandler.postDelayed(syncAction, 300L)
+        uiHandler.postDelayed(syncAction, 1200L)
     }
 
     fun getLastLocation(): Pair<Double, Double>? {
@@ -6354,6 +6399,17 @@ class MainActivity :
 
     private fun notifyNativeRadioStateChanged() {
         if (!::dualWebViewGroup.isInitialized) return
+        broadcastRadioStateToWebViews()
+        // ── Delayed re-broadcast ──
+        // When a new radio.html page is loading, the immediate broadcast may arrive
+        // before the page's JavaScript context is ready (window.tapRadioNativePlaybackUpdate
+        // doesn't exist yet). Re-broadcast after a delay to catch pages that just finished loading.
+        uiHandler.postDelayed({ broadcastRadioStateToWebViews() }, 800L)
+        uiHandler.postDelayed({ broadcastRadioStateToWebViews() }, 2000L)
+    }
+
+    private fun broadcastRadioStateToWebViews() {
+        if (!::dualWebViewGroup.isInitialized) return
         val stateJson = buildNativeRadioPlaybackStateJson()
         val script =
             """
@@ -6396,6 +6452,7 @@ class MainActivity :
             nativeRadioPlayer?.release()
         } catch (_: Exception) {}
         nativeRadioPlayer = null
+        staticNativeRadioPlayer = null  // clear static ref to prevent orphaned cleanup from re-releasing
         nativeRadioPreparing = false
         nativeRadioBuffering = false
         if (clearMetadata) {
@@ -6430,6 +6487,16 @@ class MainActivity :
         val sameStream = trimmedUrl == nativeRadioUrl && nativeRadioPlayer != null
         if (sameStream) {
             return resumeNativeRadioStream()
+        }
+
+        // ── Kill any orphaned player from a previous Activity instance ──
+        // This is the final safety net: if onDestroy didn't clean up (system killed
+        // the process) and onCreate missed it (shouldn't happen, but belt-and-suspenders),
+        // stop the static player reference before creating a new one.
+        val orphan = staticNativeRadioPlayer
+        if (orphan != null && orphan !== nativeRadioPlayer) {
+            try { orphan.stop(); orphan.release() } catch (_: Exception) {}
+            staticNativeRadioPlayer = null
         }
 
         requestNativeRadioAudioFocus()
@@ -6502,6 +6569,7 @@ class MainActivity :
             player.prepare()
             player.playWhenReady = true
             nativeRadioPlayer = player
+            staticNativeRadioPlayer = player  // keep static ref for cross-instance cleanup
         } catch (e: Exception) {
             nativeRadioPreparing = false
             nativeRadioBuffering = false
@@ -8942,6 +9010,12 @@ class MainActivity :
         if (activeInstanceRef?.get() === this) {
             activeInstanceRef = null
         }
+        // ── Release native radio ExoPlayer ──
+        // Critical: without this, the ExoPlayer continues playing audio in the
+        // background after the Activity is destroyed (holds WAKE_MODE_LOCAL lock).
+        // On AR glasses with limited RAM, the system frequently destroys TapBrowser
+        // when the user switches back to VisionClaw, creating orphaned players.
+        releaseNativeRadioPlayer(clearMetadata = true, abandonFocus = true)
         super.onDestroy()
         // Cancel all pending handler callbacks to prevent activity leaks
         uiHandler.removeCallbacksAndMessages(null)
