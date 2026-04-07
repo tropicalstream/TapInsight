@@ -45,12 +45,12 @@ Built on [TapLinkX3](https://github.com/informalTechCode/TAPLINKX3) (see acknowl
 
 ### TapClaw — OpenClaw AI Agent Integration
 
-TapClaw connects your glasses to an [OpenClaw](https://openclaw.ai) AI agent running on your Mac. This gives the glasses access to a powerful, tool-equipped agent that can control smart home devices, check emails, run automations, and analyze what you see through the camera — all by voice.
+TapClaw connects your glasses to an [OpenClaw](https://openclaw.ai) AI agent running on your host computer. That host can be a Linux machine, a Mac, or a Windows PC. This gives the glasses access to a powerful, tool-equipped agent that can control smart home devices, check emails, run automations, and analyze what you see through the camera — all by voice.
 
-The integration uses a lightweight image relay service that runs on the same Mac as OpenClaw. When you ask the agent to look at something, the glasses capture a camera frame, POST it to the relay over your local network, and the agent reads the saved image from its workspace. This bypasses the OpenClaw gateway's attachment limitations entirely.
+The integration uses a lightweight image relay service that runs on the same host computer as OpenClaw. When you ask the agent to look at something, the glasses capture a camera frame, POST it to the relay over your local network, and the agent reads the saved image from its workspace. This bypasses the OpenClaw gateway's attachment limitations entirely.
 
 Key components:
-- **Image Relay** — A Python HTTP server (port 18790) that receives camera frames and saves them to the OpenClaw workspace. Installs as a macOS launchd service that auto-starts on login.
+- **Image Relay** — A Python HTTP server (port 18790) that receives camera frames and saves them to the OpenClaw workspace. A macOS helper script can install it as a launchd service, and Linux or Windows can run the same relay manually or via a login service.
 - **Remote Access** — Cloudflare Tunnel support for accessing your OpenClaw agent from anywhere, not just your home network.
 - **Image Archival** — Every analyzed camera frame is permanently saved in dated folders (`saved_photos/YYYY-MM-DD/`) with timestamps.
 - **Media Display** — The agent can display images, videos, web pages, and text files on your glasses using the `open_taplink` tool through TapBrowser.
@@ -181,9 +181,9 @@ Key technical details:
 
 ## TapClaw Image Relay Setup
 
-The image relay is required for camera-based AI analysis through OpenClaw. It runs on the same Mac as your OpenClaw instance.
+The image relay is required for camera-based AI analysis through OpenClaw. It runs on the same host computer as your OpenClaw instance.
 
-### One-Command Install
+### One-Command Install (macOS)
 
 ```bash
 bash tools/install-relay.sh
@@ -191,17 +191,35 @@ bash tools/install-relay.sh
 
 This installs the relay to `~/.tapclaw/`, creates a macOS launchd service that auto-starts on login, and verifies the relay is running. Frames are saved to `~/.openclaw/workspace/camera_frame.jpg` and archived in dated folders.
 
-### Manual Start
+### Manual Start (Linux, macOS, or Windows)
 
 ```bash
 python3 tools/image_relay.py
 ```
 
-### Uninstall
+Linux:
+
+```bash
+python3 -m pip install Pillow
+python3 tools/image_relay.py
+```
+
+Windows PowerShell:
+
+```powershell
+py -3 -m pip install Pillow
+py -3 tools\image_relay.py
+```
+
+On Linux, use a `systemd --user` service, `tmux`, `screen`, or desktop autostart if you want the relay to come up automatically after login. On Windows, use Task Scheduler or your Startup folder.
+
+### Uninstall (macOS helper)
 
 ```bash
 bash tools/install-relay.sh --uninstall
 ```
+
+On Linux, remove the `systemd --user` unit or startup command you created for `image_relay.py`. On Windows, remove the Task Scheduler or Startup entry.
 
 ### Endpoints
 
@@ -215,7 +233,8 @@ To access your OpenClaw agent from outside your home network, set up a Cloudflar
 
 ```bash
 # 1. Install cloudflared
-brew install cloudflared
+#    macOS: brew install cloudflared
+#    Linux: install cloudflared from your distro package manager or Cloudflare package repo
 
 # 2. Authenticate with your Cloudflare account
 cloudflared tunnel login
@@ -244,7 +263,8 @@ openclaw config set gateway.controlUi.allowedOrigins "https://tapclaw.yourdomain
 cloudflared tunnel run tapclaw
 
 # Auto-start on login:
-brew services start cloudflared
+#   macOS: brew services start cloudflared
+#   Linux: use your system service manager or `cloudflared service install`
 ```
 
 Your gateway is now reachable at `wss://tapclaw.yourdomain.com`. Use this as the Gateway URL in the companion app.
@@ -276,7 +296,7 @@ This is alpha software provided as-is. The developers are not responsible for an
 
 ## Developer Docs: OpenClaw CDP Browser Control
 
-**Target Platform:** macOS (Apple Silicon)
+**Target Platform:** OpenClaw host computer with Chrome or Chromium (Linux, macOS, or Windows)
 **OpenClaw Version:** 2026.4.2
 **Method:** Direct CDP Attachment via Port 9222
 
@@ -285,6 +305,8 @@ This is alpha software provided as-is. The developers are not responsible for an
 The CDP method bypasses visual screen-scraping (Peekaboo) and extension relays. It creates a binary WebSocket pipe between the OpenClaw Gateway and the Chrome V8 engine. This allows the agent to read the DOM tree directly, making it immune to UI shifts that break coordinates-based automation.
 
 ### 2. Installation & Environment Setup
+
+TapClaw does not require a Mac. The key requirement is that your OpenClaw host can run Chrome or Chromium with `--remote-debugging-port=9222` and is reachable from the glasses.
 
 **Step A: Clean the Configuration**
 
@@ -300,15 +322,38 @@ openclaw config set browser.profiles.user '{
 openclaw config set browser.defaultProfile "user"
 ```
 
-**Step B: The "Launch Secret" (macOS)**
+**Step B: Launch Chrome with remote debugging**
 
 Chrome will only write the required `DevToolsActivePort` file if started with the explicit debugging flag from the CLI.
 
-1. Fully Quit Chrome (Cmd+Q).
+macOS:
+
+1. Fully quit Chrome (`Cmd+Q`).
 2. Launch via Terminal:
 
 ```bash
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --restore-last-session &
+```
+
+Linux:
+
+1. Fully quit Chrome or Chromium.
+2. Launch from a shell:
+
+```bash
+CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser)"
+"$CHROME_BIN" --remote-debugging-port=9222 --restore-last-session >/tmp/tapclaw-chrome.log 2>&1 &
+```
+
+Windows PowerShell:
+
+1. Fully quit Chrome.
+2. Launch from PowerShell:
+
+```powershell
+$chrome = "${Env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
+if (!(Test-Path $chrome)) { $chrome = "${Env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe" }
+Start-Process $chrome -ArgumentList "--remote-debugging-port=9222","--restore-last-session"
 ```
 
 ### 3. Running the Bridge
@@ -340,20 +385,27 @@ openclaw browser start --profile user
 ### 4. Troubleshooting
 
 **Issue: `Could not find DevToolsActivePort`**
-- Cause: Chrome was opened via the Dock (GUI) instead of the Terminal (CLI).
-- Fix: Kill all Chrome processes (`killall "Google Chrome"`) and restart using the command in Section 2B.
+- Cause: Chrome was opened normally instead of from a shell or PowerShell with the debugging flag.
+- Fix: Quit all Chrome processes and restart using the command in Section 2B.
 
 **Issue: `Error: Unrecognized key: "entries"`**
 - Cause: Attempting to use the old 2025 "nested" config schema.
 - Fix: Use the flat schema: `openclaw config set tools.canvas.enabled false`.
 
 **Issue: Connection Refused (Port 9222)**
-- Cause: macOS Firewall or a conflicting "Zombie" instance of Chrome.
+- Cause: Local firewall settings or a conflicting "zombie" instance of Chrome.
 - Fix:
 
 ```bash
 lsof -i :9222  # Find what is using the port
 kill -9 <PID>  # Kill the ghost process
+```
+
+Windows PowerShell:
+
+```powershell
+Get-NetTCPConnection -LocalPort 9222
+taskkill /PID <PID> /F
 ```
 
 ### 5. Optimized Workflow for "Deep Research"
@@ -369,7 +421,7 @@ To prevent credit burn, use this specific prompt pattern now that CDP is active:
 |-----------|--------|------|
 | Model `qwen3.5-omni-plus-realtime` | | The "Brain" for audio/logic |
 | Transport `CDP / WebSocket` | | The "Eyes" (Reading the code) |
-| Hardware `M1 Mac Mini (Unified Memory)` | | The "Muscles" (Whisper acceleration) |
+| Hardware `Host computer (Linux workstation, Mac mini, Windows desktop, or mini PC)` | | The "Muscles" (Whisper acceleration) |
 
 ---
 

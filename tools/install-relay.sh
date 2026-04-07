@@ -1,10 +1,11 @@
 #!/bin/bash
 #
-# TapClaw Image Relay — One-command installer for macOS
+# TapClaw Image Relay — macOS helper installer
 #
-# Installs the image relay as a background service that auto-starts on login.
-# The relay receives camera frames from the AR glasses and saves them to
-# OpenClaw's workspace so the agent can analyze them.
+# Installs the image relay as a background service that auto-starts on login
+# on macOS. The same relay can also run on Linux or Windows, but Linux/Windows
+# setup uses the manual `image_relay.py` command plus systemd, tmux, screen,
+# Startup, or Task Scheduler instead.
 #
 # Usage:
 #   curl -sL <url>/install-relay.sh | bash

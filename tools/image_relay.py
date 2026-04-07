@@ -5,7 +5,7 @@ media files from the OpenClaw workspace.
 
 The OpenClaw gateway strips binary attachments from WebSocket RPC calls.
 This lightweight HTTP relay bypasses that limitation:
-  1. Glasses POST a JPEG to http://<mac-ip>:18790/frame
+  1. Glasses POST a JPEG to http://<host-ip>:18790/frame
   2. Relay saves it to ~/.openclaw/workspace/camera_frame.jpg
   3. Glasses send text-only agent call: "analyze camera_frame.jpg in workspace"
   4. OpenClaw agent reads the file and responds with vision analysis
@@ -17,12 +17,13 @@ Media serving (audio, video, images):
   - TapBrowser auto-detects audio/video extensions and opens the media player
 
 Usage:
-    python3 image_relay.py                   # default port 18790
-    python3 image_relay.py --port 18791      # custom port
-    python3 image_relay.py --workspace /path # custom workspace dir
+    python3 image_relay.py                   # Linux/macOS, default port 18790
+    python3 image_relay.py --port 18791      # Linux/macOS, custom port
+    python3 image_relay.py --workspace /path # Linux/macOS, custom workspace dir
+    py -3 image_relay.py                     # Windows, default port 18790
 
-Runs on the same Mac as OpenClaw. Bind to 0.0.0.0 so the glasses can reach it
-over the local network.
+Runs on the same host computer as OpenClaw. Bind to 0.0.0.0 so the glasses can
+reach it over the local network.
 """
 
 import argparse
@@ -237,7 +238,7 @@ def main():
     print(f"TapClaw Image Relay listening on 0.0.0.0:{args.port}")
     print(f"Workspace: {args.workspace}")
     print(f"Frames will be saved to: {os.path.join(args.workspace, FRAME_FILENAME)}")
-    print(f"POST http://<mac-ip>:{args.port}/frame with JPEG body")
+    print(f"POST http://<host-ip>:{args.port}/frame with JPEG body")
     print()
 
     try:

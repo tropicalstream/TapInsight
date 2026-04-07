@@ -177,7 +177,7 @@ ingress:
 <!-- Vision Relay -->
 <div class="section" style="border-left-color:#5e1b1b">
   <div class="section-title" style="color:#ef9a9a">📷 Vision Relay</div>
-  <p class="section-desc">Required for camera vision commands like <code>tapclaw what do you see</code>. A small background service on your Mac receives camera frames and saves them to TapClaw's workspace.</p>
+  <p class="section-desc">Required for camera vision commands like <code>tapclaw what do you see</code>. A small background service on the same computer as TapClaw/OpenClaw receives camera frames and saves them to the workspace. That host can be Linux, a Mac, or a Windows PC.</p>
   <div style="display:flex;gap:8px;margin-bottom:8px">
     <button style="flex:1;background:#4a1515;color:#ef9a9a;padding:8px;font-size:12px;border-radius:6px;border:1px solid #5e1b1b;cursor:pointer" onclick="checkRelayStatus()">Check Relay</button>
     <button style="flex:1;background:#4a1515;color:#ef9a9a;padding:8px;font-size:12px;border-radius:6px;border:1px solid #5e1b1b;cursor:pointer" onclick="viewSavedImages()">View Saved Images</button>
@@ -186,13 +186,20 @@ ingress:
   <details>
     <summary style="font-size:12px;color:#ef9a9a;cursor:pointer">Install instructions</summary>
     <div style="font-size:11px;color:#999;line-height:1.7;margin-top:8px">
-      Run once on your Mac (same machine as TapClaw):<br>
+      Run on the same computer as TapClaw/OpenClaw:<br><br>
+      <b>Linux manual start:</b><br>
+      <code style="background:#0a0f14;padding:2px 6px;border-radius:4px;color:#9ef3ff;display:inline-block;margin:4px 0">python3 -m pip install Pillow</code><br>
+      <code style="background:#0a0f14;padding:2px 6px;border-radius:4px;color:#9ef3ff;display:inline-block;margin:4px 0">python3 tools/image_relay.py</code><br><br>
+      <b>macOS quick install:</b><br>
       <code style="background:#0a0f14;padding:2px 6px;border-radius:4px;color:#9ef3ff;display:inline-block;margin:4px 0">pip3 install Pillow</code><br>
       <code style="background:#0a0f14;padding:2px 6px;border-radius:4px;color:#9ef3ff;display:inline-block;margin:4px 0">bash tools/install-relay.sh</code><br><br>
-      This installs a background service that starts automatically on login.<br><br>
-      <b>Manual start:</b> <code style="background:#0a0f14;padding:2px 6px;border-radius:4px;color:#9ef3ff">python3 tools/image_relay.py</code><br>
-      <b>Uninstall:</b> <code style="background:#0a0f14;padding:2px 6px;border-radius:4px;color:#9ef3ff">bash tools/install-relay.sh --uninstall</code><br>
-      <b>Logs:</b> <code style="background:#0a0f14;padding:2px 6px;border-radius:4px;color:#9ef3ff">/tmp/tapclaw-image-relay.log</code>
+      <b>Windows manual start:</b><br>
+      <code style="background:#0a0f14;padding:2px 6px;border-radius:4px;color:#9ef3ff;display:inline-block;margin:4px 0">py -3 -m pip install Pillow</code><br>
+      <code style="background:#0a0f14;padding:2px 6px;border-radius:4px;color:#9ef3ff;display:inline-block;margin:4px 0">py -3 tools\\image_relay.py</code><br><br>
+      The macOS script installs a background service that starts automatically on login. On Linux, use a <code>systemd --user</code> service, <code>tmux</code>, <code>screen</code>, or desktop autostart if you want the relay to auto-start. On Windows, use Task Scheduler or your Startup folder.<br><br>
+      <b>Manual start on any OS:</b> <code style="background:#0a0f14;padding:2px 6px;border-radius:4px;color:#9ef3ff">python3 tools/image_relay.py</code><br>
+      <b>Uninstall macOS helper:</b> <code style="background:#0a0f14;padding:2px 6px;border-radius:4px;color:#9ef3ff">bash tools/install-relay.sh --uninstall</code><br>
+      <b>Logs:</b> <code style="background:#0a0f14;padding:2px 6px;border-radius:4px;color:#9ef3ff">/tmp/tapclaw-image-relay.log</code> on macOS, your terminal / systemd journal / redirected log file on Linux, or your terminal / redirected log file on Windows
     </div>
   </details>
 
@@ -233,7 +240,7 @@ ingress:
       &bull; Videos (YouTube, direct links) &mdash; auto-plays in TapBrowser<br>
       &bull; Web pages &mdash; any URL accessible from the glasses<br>
       &bull; Text files &mdash; rendered in TapBrowser for reading<br><br>
-      <b>Camera frames</b> captured by the Vision Relay are stored in <code>~/.openclaw/workspace/</code> on your Mac. Archived frames are saved in <code>saved_photos/</code> organized by date.
+      <b>Camera frames</b> captured by the Vision Relay are stored in <code>~/.openclaw/workspace/</code> on your TapClaw/OpenClaw host computer. Archived frames are saved in <code>saved_photos/</code> organized by date.
     </div>
   </div>
 </div>
@@ -636,7 +643,7 @@ async function checkRelayStatus() {
     }
   } catch (e) {
     el.innerHTML = '<span style="color:#f44336">⚠ Relay not reachable</span>'
-      + '<br><span style="color:#888">Make sure the image relay is running on your Mac (<code>python3 tools/image_relay.py</code>).</span>';
+      + '<br><span style="color:#888">Make sure the image relay is running on your TapClaw/OpenClaw host computer (<code>python3 tools/image_relay.py</code> on Linux/macOS or <code>py -3 tools\\image_relay.py</code> on Windows).</span>';
   }
 }
 
@@ -675,7 +682,7 @@ async function viewSavedImages() {
     }
   } catch (_) {
     empty.style.display = 'block';
-    empty.textContent = 'Cannot reach the image relay. Is it running on your Mac?';
+    empty.textContent = 'Cannot reach the image relay. Is it running on your TapClaw/OpenClaw host computer?';
   }
   gallery.scrollIntoView({ behavior: 'smooth' });
 }
