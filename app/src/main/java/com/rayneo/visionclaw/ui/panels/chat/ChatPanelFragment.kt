@@ -97,6 +97,8 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         private const val CARD_FOCUS_GLOW_CORNER_DP = 14f
         private const val CARD_FOCUS_GLOW_COLOR = 0xFF00FFFF.toInt()
         private const val READER_SCROLL_SCALE = 48f
+        private const val READER_SCRIM_ANIM_MS = 160L
+        private const val READER_STREAM_FOLLOW_THRESHOLD_DP = 56f
     }
 
     private inner class DiscreteCarouselManager(context: Context) :
@@ -163,6 +165,8 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
     private lateinit var readerOverlay: FrameLayout
     private lateinit var readerScroll: NestedScrollView
     private lateinit var readerText: TextView
+    private lateinit var readerTopScrim: View
+    private lateinit var readerBottomScrim: View
     private lateinit var inlineOscilloscope: VoiceOscilloscopeView
     private lateinit var coreEyeContainer: FrameLayout
     private lateinit var coreEyePreviewTexture: TextureView
@@ -202,6 +206,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         exitReaderMode(animated = false)
     }
     private var readerModeActive = false
+    private var readerAutoFollowStreaming = false
     private var isSettled = true
     private var lastScrollSampleMs = 0L
     private var velocityTapBlockUntilMs = 0L
@@ -279,6 +284,8 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         readerOverlay = view.findViewById(R.id.readerOverlay)
         readerScroll = view.findViewById(R.id.readerScroll)
         readerText = view.findViewById(R.id.readerText)
+        readerTopScrim = view.findViewById(R.id.readerTopScrim)
+        readerBottomScrim = view.findViewById(R.id.readerBottomScrim)
         inlineOscilloscope = view.findViewById(R.id.chatInlineOscilloscope)
         coreEyeContainer = view.findViewById(R.id.coreEyeContainer)
         coreEyePreviewTexture = view.findViewById(R.id.coreEyePreviewTexture)
@@ -319,6 +326,13 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         chatRecycler.isNestedScrollingEnabled = false
         chatRecycler.setOnTouchListener { _, _ -> true }
         readerOverlay.visibility = View.GONE
+        readerScroll.setOnScrollChangeListener(
+            NestedScrollView.OnScrollChangeListener { _, _, _, _, _ ->
+                readerAutoFollowStreaming = shouldAutoFollowReaderStream()
+                updateReaderScrollScrims(animated = true)
+            }
+        )
+        updateReaderScrollScrims(animated = false)
 
         chatRecycler.addOnScrollListener(
             object : RecyclerView.OnScrollListener() {
@@ -393,7 +407,16 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
                                 if (readerModeActive && focusedCardIndex == latestPos) {
                                     val updatedText = adapter.getCardText(latestPos)?.trim().orEmpty()
                                     if (updatedText.isNotBlank()) {
+                                        val keepStreamingTailVisible = shouldAutoFollowReaderStream()
                                         readerText.text = updatedText
+                                        readerScroll.post {
+                                            if (!readerModeActive || !isAdded) return@post
+                                            if (keepStreamingTailVisible) {
+                                                scrollReaderToComfortBottom(animated = false)
+                                            } else {
+                                                updateReaderScrollScrims(animated = false)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -486,6 +509,9 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
             val step = (deltaY * READER_SCROLL_SCALE).toInt()
             if (step != 0) {
                 readerScroll.smoothScrollBy(0, step)
+                readerScroll.post {
+                    updateReaderScrollScrims(animated = true)
+                }
             }
             return true
         }
@@ -1279,18 +1305,46 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
             .start()
     }
 
+    private var readerScrimRunnable: Runnable? = null
+
     private fun enterReaderMode(position: Int, animated: Boolean): Boolean {
         val text = adapter.getCardText(position)?.trim().orEmpty()
         if (text.isBlank()) return false
         readerModeActive = true
-        readerText.text = text
-        readerScroll.scrollTo(0, 0)
-        readerOverlay.visibility = View.VISIBLE
+
+        // Cancel any in-flight exit animation to prevent conflicts
+        readerOverlay.animate().cancel()
+
+        // Hide everything behind the overlay BEFORE making it visible —
+        // prevents a single-frame flash where both layers render at full opacity
+        chatRecycler.visibility = View.INVISIBLE
         hudContainer.visibility = View.GONE
         setStreamActiveIndicator(false)
         hideVoiceOscilloscope()
         coreEyeContainer.visibility = View.GONE
-        chatRecycler.alpha = 0.20f
+
+        // Load content and reset scroll position
+        readerText.text = text
+        readerScroll.scrollTo(0, 0)
+        readerAutoFollowStreaming = false
+
+        // Now reveal the overlay — everything behind it is already hidden
+        readerOverlay.visibility = View.VISIBLE
+        updateReaderScrollScrims(animated = false)
+
+        // First post: reset scroll after initial layout pass
+        readerScroll.post {
+            readerScroll.scrollTo(0, 0)
+            readerAutoFollowStreaming = shouldAutoFollowReaderStream()
+            updateReaderScrollScrims(animated = false)
+        }
+        // Second post: catch late text measurement to update bottom scrim
+        readerScrimRunnable?.let { readerScroll.removeCallbacks(it) }
+        readerScrimRunnable = Runnable {
+            if (readerModeActive && isAdded) updateReaderScrollScrims(animated = true)
+        }
+        readerScroll.postDelayed(readerScrimRunnable!!, 150L)
+
         applyFocusVisuals(animate = false)
         if (!animated) {
             readerOverlay.alpha = 1f
@@ -1314,14 +1368,20 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
     private fun exitReaderMode(animated: Boolean) {
         if (!readerModeActive) return
         readerModeActive = false
+        readerAutoFollowStreaming = false
         readerCardUrl = null
         uiHandler.removeCallbacks(pendingUrlOpenRunnable)
+        // Cancel any pending scrim update from enterReaderMode
+        readerScrimRunnable?.let { readerScroll.removeCallbacks(it) }
+        readerScrimRunnable = null
         val finalize: () -> Unit = {
             readerOverlay.visibility = View.GONE
             readerOverlay.alpha = 1f
             readerOverlay.scaleX = 1f
             readerOverlay.scaleY = 1f
+            updateReaderScrollScrims(animated = false)
             hudContainer.visibility = View.VISIBLE
+            chatRecycler.visibility = View.VISIBLE
             chatRecycler.alpha = 1f
             if (!hudModeEnabled) {
                 coreEyeContainer.visibility = if (coreEyeEnabled) View.VISIBLE else View.GONE
@@ -1340,6 +1400,64 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
             .setDuration(250L)
             .setInterpolator(AccelerateDecelerateInterpolator())
             .withEndAction(finalize)
+            .start()
+    }
+
+    private fun updateReaderScrollScrims(animated: Boolean) {
+        if (!this::readerTopScrim.isInitialized || !this::readerBottomScrim.isInitialized) return
+        if (!readerModeActive || readerOverlay.visibility != View.VISIBLE) {
+            setReaderScrimState(readerTopScrim, visible = false, animated = animated)
+            setReaderScrimState(readerBottomScrim, visible = false, animated = animated)
+            return
+        }
+        val showTop = readerScroll.canScrollVertically(-1)
+        val showBottom = readerScroll.canScrollVertically(1)
+        setReaderScrimState(readerTopScrim, visible = showTop, animated = animated)
+        setReaderScrimState(readerBottomScrim, visible = showBottom, animated = animated)
+    }
+
+    private fun shouldAutoFollowReaderStream(): Boolean {
+        if (!this::readerScroll.isInitialized || readerOverlay.visibility != View.VISIBLE) return false
+        val child = readerScroll.getChildAt(0) ?: return true
+        val viewportHeight =
+            (readerScroll.height - readerScroll.paddingTop - readerScroll.paddingBottom).coerceAtLeast(0)
+        if (viewportHeight == 0) return false
+        return child.height <= viewportHeight || isReaderNearBottom()
+    }
+
+    private fun isReaderNearBottom(): Boolean {
+        val child = readerScroll.getChildAt(0) ?: return true
+        val remainingBelowViewport =
+            child.bottom - (readerScroll.scrollY + readerScroll.height - readerScroll.paddingBottom)
+        return remainingBelowViewport <= dpToPx(READER_STREAM_FOLLOW_THRESHOLD_DP)
+    }
+
+    private fun scrollReaderToComfortBottom(animated: Boolean) {
+        val child = readerScroll.getChildAt(0) ?: return
+        val targetY = (child.bottom - (readerScroll.height - readerScroll.paddingBottom)).coerceAtLeast(0)
+        if (animated) {
+            readerScroll.smoothScrollTo(0, targetY)
+        } else {
+            readerScroll.scrollTo(0, targetY)
+        }
+        readerAutoFollowStreaming = true
+        updateReaderScrollScrims(animated = false)
+    }
+
+    private fun dpToPx(dp: Float): Int {
+        return (dp * resources.displayMetrics.density).toInt()
+    }
+
+    private fun setReaderScrimState(scrim: View, visible: Boolean, animated: Boolean) {
+        scrim.animate().cancel()
+        if (!animated) {
+            scrim.alpha = if (visible) 1f else 0f
+            return
+        }
+        scrim.animate()
+            .alpha(if (visible) 1f else 0f)
+            .setDuration(READER_SCRIM_ANIM_MS)
+            .setInterpolator(AccelerateDecelerateInterpolator())
             .start()
     }
 
@@ -1663,6 +1781,12 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
             val focused = position == focusedCardIndex
             applyFocusGlow(focusTarget, focused && !readerModeActive)
 
+            // When reader mode is active, flatten all cards to Z=0 so nothing
+            // can poke above the reader overlay (elevation 24dp).
+            if (readerModeActive) {
+                setCardState(focusTarget, CARD_UNFOCUSED_SCALE, 0f, 0f, false)
+                continue
+            }
             val targetScale = if (focused) CARD_FOCUS_SCALE else CARD_UNFOCUSED_SCALE
             val targetAlpha = if (focused) CARD_FOCUS_ALPHA else CARD_UNFOCUSED_ALPHA
             val targetZ = if (focused) CARD_FOCUS_Z else CARD_UNFOCUSED_Z

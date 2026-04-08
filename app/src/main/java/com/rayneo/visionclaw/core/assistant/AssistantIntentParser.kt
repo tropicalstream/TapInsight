@@ -135,9 +135,27 @@ object AssistantIntentParser {
         val trimmed = resultText.trim()
         if (trimmed.isBlank()) return null
         if (trimmed.startsWith("taplink://", ignoreCase = true)) {
-            return normalizeUrl(trimmed.removePrefix("taplink://").trim())
+            return normalizeTapLinkUrl(trimmed.substring("taplink://".length))
         }
-        return DOMAIN_REGEX.find(trimmed)?.groupValues?.getOrNull(1)?.let { normalizeUrl(it) }
+        return DOMAIN_REGEX.find(trimmed)?.groupValues?.getOrNull(1)?.let { normalizeTapLinkUrl(it) }
+    }
+
+    fun normalizeTapLinkUrl(raw: String): String? {
+        val candidate = raw
+            .trim()
+            .trim('"', '\'', '`')
+            .takeIf { it.isNotBlank() }
+            ?: return null
+
+        return when {
+            candidate.startsWith("file://", ignoreCase = true) -> candidate
+            candidate.startsWith("https://", ignoreCase = true) ||
+                candidate.startsWith("http://", ignoreCase = true) -> sanitizeDomain(candidate)
+            candidate.startsWith("//") -> sanitizeDomain("https:$candidate")
+            candidate.startsWith("/") -> null
+            DOMAIN_REGEX.matches(candidate) -> normalizeUrl(candidate)
+            else -> null
+        }
     }
 
     fun displayLabelForUrl(url: String): String = hostLabel(url)

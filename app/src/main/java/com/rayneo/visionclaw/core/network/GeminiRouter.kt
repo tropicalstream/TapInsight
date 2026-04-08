@@ -146,6 +146,8 @@ class GeminiRouter(
                 "  - action='play' → Use ONLY when the user picks a SPECIFIC station. " +
                 "IMPORTANT: When playing a station from search results, pass the stream URL " +
                 "(from the [URL: ...] field) as the query, NOT the station name. " +
+                "Also pass name='station name' and genre='genre' whenever the search results provide them " +
+                "so TapRadio can show the right metadata in its native player. " +
                 "Station names are unreliable for re-lookup. Also use for direct station URLs.\n" +
                 "  - action='list' → Show saved stations: 'what radio stations do I have'.\n" +
                 "  - action='stop' → Stop playback.\n" +
@@ -225,6 +227,9 @@ class GeminiRouter(
                 "All links must use https:// format.\n" +
                 "Always prefer direct, known URLs when you can confidently provide them " +
                 "(e.g. https://www.youtube.com/@depechemode for an official YouTube channel).\n" +
+                "When the user asks to see a picture or image of something and you do not have a stable direct image URL, " +
+                "open a Google Images results page instead of inventing or truncating an image URL:\n" +
+                "- Use https://www.google.com/search?tbm=isch&q=QUERY+HERE\n" +
                 "Only use a Google Search URL when the user explicitly asks to 'google' or 'web search' something:\n" +
                 "- For video queries: https://www.google.com/search?q=QUERY+HERE&tbm=vid\n" +
                 "- For all other queries: https://www.google.com/search?q=QUERY+HERE\n" +
@@ -232,6 +237,7 @@ class GeminiRouter(
                 "For informational lookups ('search for X', 'look up X', 'what is X'), answer using Google Search grounding instead of opening a URL."
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val READ_TIMEOUT_MS = 30_000
+        private const val VISION_READ_TIMEOUT_MS = 60_000
         @Suppress("unused") private const val GATEWAY_KEY_PLACEHOLDER = "gateway"
     }
 
@@ -1051,7 +1057,8 @@ class GeminiRouter(
         prompt: String,
         imageBase64: String,
         mimeType: String = "image/jpeg",
-        model: String = DEFAULT_MODEL
+        model: String = DEFAULT_MODEL,
+        systemInstruction: String? = null
     ): GeminiResult = withContext(Dispatchers.IO) {
         val apiKey = resolveApiKey()
         val gatewayBaseUrl = resolveGatewayBaseUrl()
@@ -1072,6 +1079,10 @@ class GeminiRouter(
                 })
             }
 
+            val effectiveSystemInstruction = mergeSystemInstruction(
+                systemInstruction,
+                buildVisionLocationInstruction()
+            )
             val requestBody = JSONObject().apply {
                 put("contents", JSONArray().put(
                     JSONObject().apply {
@@ -1079,6 +1090,13 @@ class GeminiRouter(
                         put("parts", parts)
                     }
                 ))
+                if (!effectiveSystemInstruction.isNullOrBlank()) {
+                    put("systemInstruction", JSONObject().apply {
+                        put("parts", JSONArray().put(
+                            JSONObject().put("text", effectiveSystemInstruction)
+                        ))
+                    })
+                }
                 put("generationConfig", JSONObject().apply {
                     put("temperature", 0.4)
                     put("maxOutputTokens", 2048)
@@ -1089,7 +1107,12 @@ class GeminiRouter(
             val modelsToTry = buildModelFallbackList(requestedModel, audioPreferred = false)
             var lastError: GeminiResult.Error? = null
             for (candidateModel in modelsToTry) {
-                val http = postGenerateContent(effectiveApiKey, candidateModel, requestBody)
+                val http = postGenerateContent(
+                    effectiveApiKey,
+                    candidateModel,
+                    requestBody,
+                    minReadTimeoutMs = VISION_READ_TIMEOUT_MS
+                )
                 if (http.code in 200..299) {
                     val text = extractResponseText(http.body)
                     return@withContext GeminiResult.Success(text = text, model = candidateModel)
@@ -1197,7 +1220,8 @@ class GeminiRouter(
     private fun postGenerateContent(
         apiKey: String,
         model: String,
-        requestBody: JSONObject
+        requestBody: JSONObject,
+        minReadTimeoutMs: Int = READ_TIMEOUT_MS
     ): HttpResponse {
         val gatewayBase = resolveGatewayBaseUrl()?.let { "$it/v1beta/models" }
         val canFallbackToDirect = apiKey != GATEWAY_KEY_PLACEHOLDER
@@ -1205,7 +1229,7 @@ class GeminiRouter(
         if (!gatewayBase.isNullOrBlank()) {
             val gatewayUrl = "$gatewayBase/$model:generateContent?key=$apiKey"
             val gatewayAttempt = runCatching {
-                postGenerateContentToUrl(gatewayUrl, requestBody)
+                postGenerateContentToUrl(gatewayUrl, requestBody, minReadTimeoutMs)
             }
             if (gatewayAttempt.isSuccess) {
                 val gatewayResponse = gatewayAttempt.getOrThrow()
@@ -1226,15 +1250,20 @@ class GeminiRouter(
         }
 
         val directUrl = "$BASE_URL/$model:generateContent?key=$apiKey"
-        return postGenerateContentToUrl(directUrl, requestBody)
+        return postGenerateContentToUrl(directUrl, requestBody, minReadTimeoutMs)
     }
 
     private fun postGenerateContentToUrl(
         url: String,
-        requestBody: JSONObject
+        requestBody: JSONObject,
+        minReadTimeoutMs: Int = READ_TIMEOUT_MS
     ): HttpResponse {
         val userTimeout = timeoutSecondsProvider()
-        val effectiveReadTimeout = if (userTimeout > 0) userTimeout * 1000 else READ_TIMEOUT_MS
+        val effectiveReadTimeout = if (userTimeout > 0) {
+            (userTimeout * 1000).coerceAtLeast(minReadTimeoutMs)
+        } else {
+            minReadTimeoutMs
+        }
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             setRequestProperty("Content-Type", "application/json")
@@ -1259,6 +1288,29 @@ class GeminiRouter(
         ).use { it.readText() }
         return HttpResponse(responseCode, body)
     }
+
+    private fun mergeSystemInstruction(vararg parts: String?): String? {
+        val merged = parts
+            .mapNotNull { it?.trim()?.takeIf { text -> text.isNotBlank() } }
+            .distinct()
+        return merged.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
+    }
+
+    private fun buildVisionLocationInstruction(): String? {
+        val locationCtx = locationContextProvider()?.trim().orEmpty()
+        if (locationCtx.isBlank()) return null
+        return buildString {
+            append("CURRENT LOCATION:\n")
+            append(locationCtx)
+            append("\n\n")
+            append(
+                "When the image may show a place, landmark, storefront, transit stop, " +
+                    "street, trail marker, venue, or neighborhood detail, use this location context " +
+                    "to narrow likely identifications. If the image is not place-related, ignore the location context."
+            )
+        }
+    }
+
     private fun extractResponseText(body: String): String {
         val json = JSONObject(body)
         return json.optJSONArray("candidates")
@@ -1484,6 +1536,8 @@ class GeminiRouter(
                 .put("description", "Display or play content on the AR glasses by opening a URL in the TapBrowser viewer. " +
                     "Supports images (JPEG, PNG), videos (YouTube, MP4), audio (MP3, WAV, OGG, M4A, FLAC), web pages, and text files. " +
                     "Use this whenever the user asks to 'show', 'display', 'view', 'open', 'play', or 'listen to' any content on their glasses. " +
+                    "Always pass a fully-qualified absolute URL (for example https://example.com/image.jpg or file:///android_asset/page.html). " +
+                    "Never pass a relative path like /v1/... . " +
                     "For workspace files, use the media relay URL from the MEDIA RELAY section in the system prompt. " +
                     "Audio files automatically open in the built-in media player with playback controls.")
                 .put("parameters", JSONObject()
@@ -1681,7 +1735,17 @@ class GeminiRouter(
                                 "'search' (find stations + podcasts by query/genre), 'list' (show saved stations), " +
                                 "'stop' (stop playback), 'add' (add a station URL with name/genre)."))
                         .put("query", JSONObject().put("type", "STRING")
-                            .put("description", "Station name, podcast show name, genre, search term, or stream URL.")))
+                            .put("description", "Station name, podcast show name, genre, search term, or stream URL."))
+                        .put("name", JSONObject().put("type", "STRING")
+                            .put("description", "Optional station or podcast title to preserve native TapRadio metadata when query is only a stream URL."))
+                        .put("genre", JSONObject().put("type", "STRING")
+                            .put("description", "Optional genre/category to display in TapRadio, e.g. Jazz, News, Podcast."))
+                        .put("subtitle", JSONObject().put("type", "STRING")
+                            .put("description", "Optional episode title or secondary label for podcast/rich audio playback."))
+                        .put("artist", JSONObject().put("type", "STRING")
+                            .put("description", "Optional artist, network, or publisher name for richer TapRadio metadata."))
+                        .put("kind", JSONObject().put("type", "STRING")
+                            .put("description", "Optional playback kind such as 'radio' or 'podcast'.")))
                     .put("required", JSONArray().put("action"))))
 
             // tapclaw_agent — personal AI assistant (requires user to enable)

@@ -40,6 +40,7 @@ import kotlin.coroutines.resume
  */
 class OpenClawClient(
     private val gatewayUrlProvider: () -> String?,
+    private val fallbackGatewayUrlProvider: () -> String? = { null },
     private val gatewayTokenProvider: () -> String?,
     private val deviceIdProvider: () -> String? = { null },
     private val publicKeyProvider: () -> String? = { null },
@@ -84,7 +85,8 @@ class OpenClawClient(
         context: String? = null,
         imageBase64: String? = null
     ): ClawResult = withContext(Dispatchers.IO) {
-        val wsUrl = resolveWsUrl() ?: return@withContext ClawResult.NotConfigured
+        val wsCandidates = resolveWsCandidates()
+        if (wsCandidates.isEmpty()) return@withContext ClawResult.NotConfigured
         val token = gatewayTokenProvider()
         if (token.isNullOrBlank()) {
             Log.w(TAG, "OpenClaw gateway token is not set")
@@ -100,58 +102,81 @@ class OpenClawClient(
             append(message)
         }
 
+        var lastError: ClawResult.Error? = null
         val hasImage = !imageBase64.isNullOrBlank()
-        Log.d(TAG, "Sending to TapClaw via WebSocket: agent=$agentId url=$wsUrl hasImage=$hasImage msg=${message.take(100)}")
 
-        // If we have a camera image, upload it to the image relay running on the
-        // same host as the OpenClaw gateway. The relay saves it directly to
-        // OpenClaw's workspace (~/.openclaw/workspace/camera_frame.jpg).
-        // The agent can then read the file from its workspace.
-        //
-        // This bypasses the gateway's attachment stripping — no image data
-        // goes through the WebSocket RPC. The relay is a lightweight HTTP
-        // service auto-started via launchd on the Mac.
-        var imageDelivered = false
-        if (hasImage) {
-            val relayUrl = buildRelayUrl(wsUrl)
-            imageDelivered = uploadToRelay(imageBase64!!, relayUrl)
+        for ((index, wsUrl) in wsCandidates.withIndex()) {
+            Log.d(
+                TAG,
+                "Sending to TapClaw via WebSocket: agent=$agentId url=$wsUrl hasImage=$hasImage msg=${message.take(100)}"
+            )
+
+            // If we have a camera image, upload it to the image relay running on the
+            // same host as the OpenClaw gateway. The relay saves it directly to
+            // OpenClaw's workspace (~/.openclaw/workspace/camera_frame.jpg).
+            // The agent can then read the file from its workspace.
+            var imageDelivered = false
+            if (hasImage) {
+                val relayUrl = buildRelayUrl(wsUrl)
+                imageDelivered = uploadToRelay(imageBase64!!, relayUrl)
+            }
+
+            val finalMessage = if (imageDelivered) {
+                "$fullMessage\n\n[A camera image from the user's AR glasses has been saved to your workspace as $FRAME_FILENAME — please open and analyze this image file to answer the user's question.]"
+            } else {
+                fullMessage
+            }
+
+            val result = try {
+                sendViaWebSocket(wsUrl, token, agentId, finalMessage, idempotencyKey, null)
+            } catch (e: java.net.ConnectException) {
+                Log.e(TAG, "Cannot connect to TapClaw at $wsUrl", e)
+                ClawResult.Error("Cannot connect to TapClaw. Make sure it's running and accessible.")
+            } catch (e: java.net.SocketTimeoutException) {
+                Log.e(TAG, "TapClaw request timed out at $wsUrl", e)
+                ClawResult.Error("TapClaw request timed out. Try again or increase the timeout.")
+            } catch (e: Exception) {
+                Log.e(TAG, "TapClaw request failed at $wsUrl", e)
+                ClawResult.Error(e.localizedMessage ?: "TapClaw request failed")
+            }
+
+            when (result) {
+                is ClawResult.Success -> return@withContext result
+                is ClawResult.Error -> {
+                    lastError = result
+                    val hasAlternate = index < wsCandidates.lastIndex
+                    if (hasAlternate && shouldRetryWithAlternateEndpoint(result.message)) {
+                        Log.w(TAG, "Primary TapClaw endpoint failed, trying alternate endpoint next: ${result.message}")
+                        continue
+                    }
+                    return@withContext result
+                }
+                is ClawResult.NotConfigured -> Unit
+            }
         }
 
-        val finalMessage = if (imageDelivered) {
-            "$fullMessage\n\n[A camera image from the user's AR glasses has been saved to your workspace as $FRAME_FILENAME — please open and analyze this image file to answer the user's question.]"
-        } else {
-            fullMessage
-        }
-
-        try {
-            sendViaWebSocket(wsUrl, token, agentId, finalMessage, idempotencyKey, null)
-        } catch (e: java.net.ConnectException) {
-            Log.e(TAG, "Cannot connect to TapClaw at $wsUrl", e)
-            ClawResult.Error("Cannot connect to TapClaw. Make sure it's running and accessible.")
-        } catch (e: java.net.SocketTimeoutException) {
-            Log.e(TAG, "TapClaw request timed out", e)
-            ClawResult.Error("TapClaw request timed out. Try again or increase the timeout.")
-        } catch (e: Exception) {
-            Log.e(TAG, "TapClaw request failed", e)
-            ClawResult.Error(e.localizedMessage ?: "TapClaw request failed")
-        }
+        lastError ?: ClawResult.Error("Cannot connect to TapClaw. Make sure it's running and accessible.")
     }
 
     suspend fun ping(): ClawResult = withContext(Dispatchers.IO) {
-        val wsUrl = resolveWsUrl() ?: return@withContext ClawResult.NotConfigured
+        val wsCandidates = resolveWsCandidates()
+        if (wsCandidates.isEmpty()) return@withContext ClawResult.NotConfigured
         val token = gatewayTokenProvider()
 
-        try {
-            val result = callMethod(wsUrl, token, "health", JSONObject())
-            if (result != null) {
-                ClawResult.Success(text = "TapClaw is reachable", sessionId = null)
-            } else {
-                ClawResult.Error("TapClaw health check failed")
+        var lastError = "TapClaw health check failed"
+        for (wsUrl in wsCandidates) {
+            try {
+                val result = callMethod(wsUrl, token, "health", JSONObject())
+                if (result != null) {
+                    return@withContext ClawResult.Success(text = "TapClaw is reachable", sessionId = null)
+                }
+                lastError = "TapClaw health check failed"
+            } catch (e: Exception) {
+                Log.e(TAG, "TapClaw ping failed at $wsUrl", e)
+                lastError = "Cannot reach TapClaw: ${e.localizedMessage}"
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "TapClaw ping failed", e)
-            ClawResult.Error("Cannot reach TapClaw: ${e.localizedMessage}")
         }
+        ClawResult.Error(lastError)
     }
 
     // ── Connect frame builder ───────────────────────────────────────────
@@ -740,11 +765,11 @@ class OpenClawClient(
 
     // ── Private helpers ──────────────────────────────────────────────────
 
-    private fun resolveWsUrl(): String? {
-        val raw = gatewayUrlProvider()?.trim().orEmpty()
-        if (raw.isBlank()) return null
+    private fun normalizeWsUrl(raw: String?): String? {
+        val rawValue = raw?.trim().orEmpty()
+        if (rawValue.isBlank()) return null
 
-        var url = raw.trimEnd('/')
+        var url = rawValue.trimEnd('/')
         url = when {
             url.startsWith("ws://") || url.startsWith("wss://") -> url
             url.startsWith("https://") -> url.replace("https://", "wss://")
@@ -754,8 +779,6 @@ class OpenClawClient(
 
         val schemeEnd = url.indexOf("://") + 3
         val hostPart = url.substring(schemeEnd)
-        // Only auto-append default port for local/IP-based URLs.
-        // Cloudflare Tunnel / domain-based wss:// URLs use standard port 443.
         val isSecure = url.startsWith("wss://")
         val looksLikeDomain = hostPart.contains('.') &&
             !hostPart.matches(Regex("^\\d+\\.\\d+\\.\\d+\\.\\d+.*"))
@@ -763,6 +786,25 @@ class OpenClawClient(
             url = url.substring(0, schemeEnd) + hostPart + ":$DEFAULT_PORT"
         }
         return url
+    }
+
+    private fun resolveWsCandidates(): List<String> {
+        return listOf(
+            gatewayUrlProvider(),
+            fallbackGatewayUrlProvider()
+        ).mapNotNull { normalizeWsUrl(it) }
+            .distinct()
+    }
+
+    private fun shouldRetryWithAlternateEndpoint(message: String): Boolean {
+        val lower = message.lowercase()
+        return lower.contains("cannot connect") ||
+            lower.contains("timed out") ||
+            lower.contains("connection failed") ||
+            lower.contains("closed unexpectedly") ||
+            lower.contains("unreachable") ||
+            lower.contains("failed to connect") ||
+            lower.contains("no route")
     }
 
     /**

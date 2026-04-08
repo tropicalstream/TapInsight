@@ -11,14 +11,15 @@ import com.rayneo.visionclaw.BuildConfig
 import com.rayneo.visionclaw.core.assistant.AssistantIntent
 import com.rayneo.visionclaw.core.assistant.AssistantIntentParser
 import com.rayneo.visionclaw.core.config.AppConfig
+import com.rayneo.visionclaw.core.location.DeviceLocationResolver
 import com.rayneo.visionclaw.core.model.ChatMessage
-import com.rayneo.visionclaw.core.network.GeminiRouter
-import com.rayneo.visionclaw.core.network.LearnLmRouter
-import com.rayneo.visionclaw.core.network.ResearchRouter
 import com.rayneo.visionclaw.core.network.GoogleAirQualityClient
 import com.rayneo.visionclaw.core.network.GoogleCalendarClient
 import com.rayneo.visionclaw.core.network.GoogleNewsClient
 import com.rayneo.visionclaw.core.network.GoogleTasksClient
+import com.rayneo.visionclaw.core.network.GeminiRouter
+import com.rayneo.visionclaw.core.network.LearnLmRouter
+import com.rayneo.visionclaw.core.network.ResearchRouter
 import com.rayneo.visionclaw.core.model.DeviceLocationContext
 import com.rayneo.visionclaw.core.storage.AppPreferences
 import com.rayneo.visionclaw.core.storage.db.ChatDatabase
@@ -56,6 +57,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_ASSISTANT_CHAT_CARDS = 20
         private const val SESSION_ONLY_CHAT_LOG = true
         private const val HUD_CALENDAR_REFRESH_MIN_INTERVAL_MS = 60_000L
+        private const val VISION_LOCATION_PRECISE_MAX_AGE_MS = 2 * 60 * 1000L
+        private const val VISION_LOCATION_PRECISE_MAX_ACCURACY_METERS = 250f
+        private const val VISION_LOCATION_FALLBACK_MAX_AGE_MS = 15 * 60 * 1000L
+        private const val VISION_LOCATION_TIMEOUT_MS = 5_000L
         const val PANEL_CHAT = 0
         const val PANEL_WEB = 1
     }
@@ -64,6 +69,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = AppPreferences(application)
     val preferences: AppPreferences get() = prefs
     val appConfig = AppConfig.load(application)
+    private val deviceLocationResolver = DeviceLocationResolver(application)
     private val chatMessageDao: ChatMessageDao =
         ChatDatabase.getInstance(application).chatMessageDao()
     private val chatHistoryMutex = Mutex()
@@ -105,11 +111,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             latestDeviceLocationContext?.let { loc ->
                 val ageSeconds = (System.currentTimeMillis() - loc.timestampMs) / 1000
                 val fresh = if (ageSeconds < 300) "current" else "${ageSeconds / 60}min ago"
+                val now = Date()
+                val zone = TimeZone.getDefault()
+                val timestamp = SimpleDateFormat("EEEE, MMMM d, yyyy h:mm a", Locale.US).apply {
+                    timeZone = zone
+                }.format(now)
                 buildString {
                     append("The user is at latitude ${loc.latitude}, longitude ${loc.longitude}")
                     append(" (accuracy: ${loc.accuracyMeters?.toInt() ?: "unknown"}m, $fresh).")
+                    append(" Current local date/time: $timestamp (${zone.id}).")
                     append(" Use this for google_places nearby searches and google_routes origin.")
                     append(" When the user asks 'where am I', use these coordinates to describe their location.")
+                    append(" When the user asks about the horizon, sun position, shadows, sunrise, sunset, or direction-dependent outdoor observations,")
+                    append(" use both this location and local time to reason about what they are seeing.")
                 }
             }
         },
@@ -468,6 +482,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return latestDeviceLocationContext
     }
 
+    private fun hasFreshVisionLocationContext(context: DeviceLocationContext?): Boolean {
+        if (context == null) return false
+        val ageMs = System.currentTimeMillis() - context.timestampMs
+        val accuracy = context.accuracyMeters ?: Float.MAX_VALUE
+        return ageMs <= VISION_LOCATION_PRECISE_MAX_AGE_MS &&
+            accuracy <= VISION_LOCATION_PRECISE_MAX_ACCURACY_METERS &&
+            context.provider != "ip_geolocation"
+    }
+
+    private suspend fun ensureVisionLocationContext() {
+        if (hasFreshVisionLocationContext(latestDeviceLocationContext)) {
+            return
+        }
+
+        val resolved = withContext(Dispatchers.IO) {
+            deviceLocationResolver.peekCached(
+                maxAgeMs = VISION_LOCATION_PRECISE_MAX_AGE_MS,
+                maxAccuracyMeters = VISION_LOCATION_PRECISE_MAX_ACCURACY_METERS,
+                allowApproximate = false
+            ) ?: deviceLocationResolver.resolveNavigationBlocking(timeoutMs = VISION_LOCATION_TIMEOUT_MS)
+                ?: deviceLocationResolver.resolve(
+                    maxAgeMs = VISION_LOCATION_FALLBACK_MAX_AGE_MS,
+                    timeoutMs = VISION_LOCATION_TIMEOUT_MS,
+                    requirePrecise = false,
+                    allowApproximateFallback = true
+                )
+        }
+
+        if (resolved != null) {
+            updateDeviceLocationContext(resolved)
+            Log.d(
+                TAG,
+                "Vision request location ready provider=${resolved.provider} lat=${resolved.latitude} lon=${resolved.longitude} acc=${resolved.accuracyMeters}"
+            )
+        } else {
+            Log.w(TAG, "Vision request continuing without a fresh location context")
+        }
+    }
+
     // ── Chat / Gemini ────────────────────────────────────────────────────
     private val _chatResponse = MutableLiveData<String?>()
     val chatResponse: LiveData<String?> = _chatResponse
@@ -658,6 +711,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun sendVisionQuery(prompt: String, imageBase64: String) {
         viewModelScope.launch {
             _isLoading.value = true
+            ensureVisionLocationContext()
             when (val result = geminiRouter.sendVisionPrompt(prompt, imageBase64)) {
                 is GeminiRouter.GeminiResult.Success -> {
                     val rendered = ensureBottomRawUrls(sanitizeAssistantDisplayText(result.text))
@@ -694,6 +748,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _isLoading.value = true
             try {
                 val geminiResult = if (frameBase64 != null) {
+                    ensureVisionLocationContext()
                     geminiRouter.sendVisionPrompt(text, frameBase64)
                 } else {
                     geminiRouter.sendPrompt(text)

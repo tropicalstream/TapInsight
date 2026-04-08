@@ -127,6 +127,7 @@ class MainActivity : AppCompatActivity() {
         private const val GEMINI_BARGE_IN_HOLD_MS = 420L
         private const val GEMINI_BARGE_IN_COOLDOWN_MS = 1_200L
         private const val GEMINI_BARGE_IN_SUPPRESS_MS = 1_500L
+        private const val GEMINI_BARGE_IN_GRACE_AFTER_OUTPUT_MS = 2_500L
         private const val MULTIMODAL_FRAME_INTERVAL_MS = 2_000L
         private const val CAMERA_IDLE_TIMEOUT_MS = 5_000L
         // AITap: always use Gemini Live directly for continuous camera + voice.
@@ -249,6 +250,10 @@ class MainActivity : AppCompatActivity() {
             try {
                 val assist = engine.maybeAssist(safe) ?: return@launch
                 Log.d(TAG, "ToolAssist matched [${assist.toolName}]: ${assist.resultText.take(200)}")
+                if (hasGeminiStartedReplyForCurrentTurn()) {
+                    Log.d(TAG, "ToolAssist skipped late injection [${assist.toolName}] because Gemini output already started")
+                    return@launch
+                }
 
                 // LearnLM continuation prefers staying in Gemini Live voice
                 if (assist.preferLiveVoice && geminiLiveSession != null) {
@@ -274,10 +279,14 @@ class MainActivity : AppCompatActivity() {
                 }
                 val sent = geminiLiveSession?.sendClientText(assist.contextPrompt) == true
                 Log.d(TAG, "ToolAssist injected clientContent sent=$sent")
-                runOnUiThread {
-                    viewModel.appendLiveAssistantStreamChunk(assist.resultText)
-                    viewModel.commitLiveAssistantStreamIfNeeded()
-                    showHudNotification(assist.resultText.take(120))
+                if (sent) {
+                    runOnUiThread {
+                        showHudNotification(toolAssistHudStatus(assist.toolName, assist.resultText))
+                    }
+                } else {
+                    runOnUiThread {
+                        presentToolAssistLocally(assist.toolName, assist.resultText)
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "ToolAssist error", e)
@@ -339,6 +348,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastLiveActivityHeartbeatMs = 0L
     @Volatile private var lastMultimodalFrameSentMs = 0L
     @Volatile private var lastUserSpeechActivityMs = 0L
+    @Volatile private var lastGeminiOutputActivityMs = 0L
+    @Volatile private var currentGeminiOutputTurnStartedMs = 0L
     @Volatile private var forceDirectGeminiLive = true
     @Volatile private var lastVoiceActivationMs = 0L
     /** Monotonically increasing counter to detect stale WebSocket callbacks from old sessions. */
@@ -567,6 +578,13 @@ class MainActivity : AppCompatActivity() {
                 prefs.openClawEndpoint.takeIf { it.isNotBlank() }
                     ?: pairingPrefs.getString("openclaw_pair_device_token_gateway", null)
                         ?.takeIf { it.isNotBlank() }
+            },
+            fallbackGatewayUrlProvider = {
+                pairingPrefs.getString("openclaw_pair_device_token_gateway", null)
+                    ?.takeIf {
+                        it.isNotBlank() &&
+                            !it.equals(prefs.openClawEndpoint.takeIf { endpoint -> endpoint.isNotBlank() }, ignoreCase = true)
+                    }
             },
             gatewayTokenProvider = {
                 prefs.openClawToken.takeIf { it.isNotBlank() }
@@ -1117,6 +1135,34 @@ class MainActivity : AppCompatActivity() {
             publishDeviceLocationContext(resolved)
         }
         return viewModel.getDeviceLocationContext()?.takeIf(::isPreciseLocationContext) ?: resolved
+    }
+
+    private fun ensureLiveSessionLocationContext(): DeviceLocationContext? {
+        val current = viewModel.getDeviceLocationContext()
+        if (current != null &&
+            current.provider != "ip_geolocation" &&
+            System.currentTimeMillis() - current.timestampMs <= LOCATION_SNAPSHOT_MAX_AGE_MS
+        ) {
+            return current
+        }
+        deviceLocationResolver.peekCached(
+            maxAgeMs = LOCATION_SNAPSHOT_MAX_AGE_MS,
+            maxAccuracyMeters = 1_000f,
+            allowApproximate = false
+        )?.let { cached ->
+            publishDeviceLocationContext(cached)
+            return cached
+        }
+        val fallback = deviceLocationResolver.resolveBlocking(
+            maxAgeMs = LOCATION_SNAPSHOT_MAX_AGE_MS,
+            timeoutMs = 1_200L,
+            requirePrecise = false,
+            allowApproximateFallback = true
+        )
+        if (fallback != null) {
+            publishDeviceLocationContext(fallback)
+        }
+        return viewModel.getDeviceLocationContext() ?: fallback
     }
 
     private fun isPreciseLocationContext(context: DeviceLocationContext): Boolean {
@@ -1725,6 +1771,9 @@ class MainActivity : AppCompatActivity() {
         // ── Start fresh session ──────────────────────────────────────
         nativeSttFallbackTriggered = false
         viewModel.activateVoiceAssistant()
+        if (locationPermissionGranted) {
+            refreshLocationSnapshot(force = true)
+        }
         showListeningOverlay(true)
         updateListeningTranscript("Listening…")
         pushOscilloscopeLevel(0.08f, OSCILLOSCOPE_USER_COLOR, force = true)
@@ -1823,16 +1872,18 @@ class MainActivity : AppCompatActivity() {
                 Log.d(TAG, "ToolAssist recovery injected=$sent")
                 if (sent) {
                     runOnUiThread {
-                        viewModel.appendLiveAssistantStreamChunk(assist.resultText)
-                        viewModel.commitLiveAssistantStreamIfNeeded()
-                        showHudNotification(assist.resultText.take(120))
+                        showHudNotification(toolAssistHudStatus(assist.toolName, assist.resultText))
+                    }
+                } else {
+                    runOnUiThread {
+                        presentToolAssistLocally(assist.toolName, assist.resultText)
                     }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "ToolAssist recovery error", e)
             }
         }
-        return localMapTurn
+        return true
     }
 
     private fun refreshToolBridgeStatus() {
@@ -1970,16 +2021,10 @@ class MainActivity : AppCompatActivity() {
                     startResearchPoll(topic)
                 }
             }
-            /** Extract a URL after "open_taplink:" and strip spaces / %20 from the domain. */
-            fun sanitizeOpenTapLinkUrl(text: String): String {
+            /** Extract a URL after "open_taplink:" and normalize only valid absolute URLs. */
+            fun sanitizeOpenTapLinkUrl(text: String): String? {
                 val raw = text.substringAfter("open_taplink:").substringBefore("\n").trim()
-                val noSpaces = raw.replace(" ", "")
-                val schemeEnd = noSpaces.indexOf("://")
-                if (schemeEnd < 0) return noSpaces
-                val authorityStart = schemeEnd + 3
-                val pathStart = noSpaces.indexOf('/', authorityStart).let { if (it < 0) noSpaces.length else it }
-                val domain = noSpaces.substring(0, pathStart).replace("%20", "")
-                return domain + noSpaces.substring(pathStart)
+                return AssistantIntentParser.normalizeTapLinkUrl(raw)
             }
 
             val autoOpenUrl = when {
@@ -2093,8 +2138,6 @@ class MainActivity : AppCompatActivity() {
                         viewModel.openUrl(autoOpenUrl)
                     }
                 }
-                viewModel.appendLiveAssistantStreamChunk(hudText)
-                viewModel.commitLiveAssistantStreamIfNeeded()
                 showHudNotification(hudText)
                 if (sent) {
                     setHudConnectionStatus(ChatPanelFragment.ConnectionStatus.TOOLS_READY)
@@ -2858,6 +2901,24 @@ class MainActivity : AppCompatActivity() {
         return toolName in setOf("google_places", "google_routes", "google_air_quality", "location", "learn_topic", "translate_text", "battery_saver", "quick_action")
     }
 
+    private fun hasGeminiStartedReplyForCurrentTurn(): Boolean {
+        return geminiLiveSession != null &&
+            awaitingServerTurnComplete &&
+            currentGeminiOutputTurnStartedMs != 0L
+    }
+
+    private fun toolAssistHudStatus(toolName: String, resultText: String): String {
+        return when (toolName) {
+            "ask_maps" -> "Checking place details…"
+            "google_places" -> "Checking nearby places…"
+            "google_routes" -> "Checking route details…"
+            "google_air_quality" -> "Checking air quality…"
+            "location" -> "Refreshing location…"
+            "tapradio" -> "Preparing audio…"
+            else -> resultText.take(120)
+        }
+    }
+
     private fun looksLikeMapInfoIntent(transcript: String): Boolean {
         val lower = transcript.trim().lowercase(Locale.US)
         if (lower.isBlank()) return false
@@ -3298,6 +3359,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun markUserSpeechActivity() {
         lastUserSpeechActivityMs = SystemClock.uptimeMillis()
+        lastGeminiOutputActivityMs = 0L
+        currentGeminiOutputTurnStartedMs = 0L
         awaitingServerTurnComplete = true
         disarmSilenceWatchdog()
         if (liveState == GeminiLiveState.FOLLOW_UP || liveState == GeminiLiveState.THINKING) {
@@ -3305,6 +3368,15 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread { updateListeningTranscript("Listening… Speak now") }
         }
         touchGeminiLiveActivity(force = true)
+    }
+
+    private fun noteGeminiOutputActivity() {
+        val now = SystemClock.uptimeMillis()
+        if (currentGeminiOutputTurnStartedMs == 0L || now - lastGeminiOutputActivityMs > 1_500L) {
+            currentGeminiOutputTurnStartedMs = now
+        }
+        lastGeminiOutputActivityMs = now
+        touchGeminiLiveActivity()
     }
 
     private fun maybeSendMultimodalImageFrame(imageBase64: String) {
@@ -3350,6 +3422,20 @@ class MainActivity : AppCompatActivity() {
     private fun startGeminiAudioCapture() {
         if (geminiCaptureActive || geminiLiveSession != null) return
 
+        if (locationPermissionGranted) {
+            val prepared = ensureLiveSessionLocationContext()
+            Log.d(
+                TAG,
+                "Prepared Gemini Live context provider=${prepared?.provider} lat=${prepared?.latitude} lon=${prepared?.longitude} acc=${prepared?.accuracyMeters}"
+            )
+        }
+
+        startGeminiAudioCaptureInternal()
+    }
+
+    private fun startGeminiAudioCaptureInternal() {
+        if (geminiCaptureActive || geminiLiveSession != null) return
+
         viewModel.resetLiveAssistantStream()
         geminiAudioPlayer?.stopAndFlush()
         liveSessionReady = false
@@ -3359,6 +3445,8 @@ class MainActivity : AppCompatActivity() {
         lastLiveActivityHeartbeatMs = 0L
         lastMultimodalFrameSentMs = 0L
         lastUserSpeechActivityMs = 0L
+        lastGeminiOutputActivityMs = 0L
+        currentGeminiOutputTurnStartedMs = 0L
         latestLiveTranscript = ""
         latestLiveOutputTranscript = ""
         pendingLiveInputTranscript = ""
@@ -3469,7 +3557,7 @@ class MainActivity : AppCompatActivity() {
 
                                         liveState = GeminiLiveState.THINKING
                                         awaitingServerTurnComplete = true
-                                        touchGeminiLiveActivity()
+                                        noteGeminiOutputActivity()
                                         latestLiveOutputTranscript =
                                                 mergeLiveTranscript(latestLiveOutputTranscript, safe)
                                         runOnUiThread {
@@ -3489,7 +3577,7 @@ class MainActivity : AppCompatActivity() {
 
                                         liveState = GeminiLiveState.THINKING
                                         awaitingServerTurnComplete = true
-                                        touchGeminiLiveActivity()
+                                        noteGeminiOutputActivity()
                                         // Verbatim dialog mode: ignore free-form model text/metadata payloads.
                                         // Chat persistence is driven only by outputTranscription.
                                     }
@@ -3497,7 +3585,7 @@ class MainActivity : AppCompatActivity() {
                                         if (!isCurrentSession() || isGeminiOutputSuppressed()) return
                                         liveState = GeminiLiveState.THINKING
                                         awaitingServerTurnComplete = true
-                                        touchGeminiLiveActivity()
+                                        noteGeminiOutputActivity()
                                         val outputPeak = calculatePcm16Peak(data, data.size)
                                         val normalised = (outputPeak / 32767f).coerceIn(0f, 1f)
                                         pushOscilloscopeLevel(normalised, OSCILLOSCOPE_MODEL_COLOR)
@@ -3778,6 +3866,11 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val now = SystemClock.uptimeMillis()
+        val outputStartedAt = currentGeminiOutputTurnStartedMs
+        if (outputStartedAt == 0L || now - outputStartedAt < GEMINI_BARGE_IN_GRACE_AFTER_OUTPUT_MS) {
+            geminiBargeInCandidateSinceMs = 0L
+            return
+        }
         if (now - geminiBargeInLastTriggerMs < GEMINI_BARGE_IN_COOLDOWN_MS) {
             return
         }
@@ -3799,7 +3892,7 @@ class MainActivity : AppCompatActivity() {
             geminiBargeInCandidateSinceMs = now
             return
         }
-        val holdMs = (GEMINI_BARGE_IN_HOLD_MS * sensitivity).toLong().coerceIn(220L, 900L)
+        val holdMs = (GEMINI_BARGE_IN_HOLD_MS * sensitivity).toLong().coerceIn(450L, 1_200L)
         if (now - geminiBargeInCandidateSinceMs < holdMs) {
             return
         }
@@ -3937,6 +4030,8 @@ class MainActivity : AppCompatActivity() {
         lastLiveActivityHeartbeatMs = 0L
         lastMultimodalFrameSentMs = 0L
         lastUserSpeechActivityMs = 0L
+        lastGeminiOutputActivityMs = 0L
+        currentGeminiOutputTurnStartedMs = 0L
 
         // Bump the epoch so stale callbacks from the dying session are ignored.
         geminiSessionEpoch++

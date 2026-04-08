@@ -2,6 +2,7 @@ package com.rayneo.visionclaw.core.tools
 
 import android.content.Context
 import android.util.Log
+import com.rayneo.visionclaw.core.assistant.AssistantIntentParser
 
 class TapLinkTool(private val context: Context) : AiTapTool {
     override val name = "open_taplink"
@@ -15,7 +16,14 @@ class TapLinkTool(private val context: Context) : AiTapTool {
             return Result.failure(IllegalArgumentException("No URL provided"))
         }
 
+        val normalized = AssistantIntentParser.normalizeTapLinkUrl(url)
+            ?: return Result.failure(
+                IllegalArgumentException(
+                    "open_taplink requires a full https://, http://, protocol-relative //host/path, or file:/// URL. Relative paths are not supported."
+                )
+            )
+
         // The URL will be opened by the TapBrowser panel via the ViewModel
-        return Result.success("taplink://$url")
+        return Result.success("taplink://$normalized")
     }
 }

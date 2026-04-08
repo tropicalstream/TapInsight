@@ -28,6 +28,20 @@ import java.net.URLEncoder
 class TapRadioTool(private val context: Context) : AiTapTool {
     override val name = "tapradio"
 
+    private data class PlaybackMetadata(
+        val name: String? = null,
+        val genre: String? = null,
+        val subtitle: String? = null,
+        val artist: String? = null,
+        val kind: String? = null
+    ) {
+        fun cleanName(): String? = name?.trim()?.takeIf { it.isNotBlank() }
+        fun cleanGenre(): String? = genre?.trim()?.takeIf { it.isNotBlank() }
+        fun cleanSubtitle(): String? = subtitle?.trim()?.takeIf { it.isNotBlank() }
+        fun cleanArtist(): String? = artist?.trim()?.takeIf { it.isNotBlank() }
+        fun cleanKind(): String? = kind?.trim()?.takeIf { it.isNotBlank() }
+    }
+
     companion object {
         private const val TAG = "TapRadioTool"
         private const val RADIO_PREFS_KEY = "tapradio_stations"
@@ -46,11 +60,18 @@ class TapRadioTool(private val context: Context) : AiTapTool {
     override suspend fun execute(args: Map<String, String>): Result<String> {
         val action = args["action"]?.trim()?.lowercase() ?: "list"
         val query = args["query"]?.trim() ?: ""
+        val metadata = PlaybackMetadata(
+            name = args["name"],
+            genre = args["genre"],
+            subtitle = args["subtitle"],
+            artist = args["artist"],
+            kind = args["kind"]
+        )
 
         Log.d(TAG, "action=$action query=$query")
 
         return when (action) {
-            "play" -> playStation(query)
+            "play" -> playStation(query, metadata)
             "search" -> searchStations(query)
             "podcast" -> playPodcast(query)
             "list" -> listStations()
@@ -66,22 +87,60 @@ class TapRadioTool(private val context: Context) : AiTapTool {
      * Build the open_taplink URL that routes through TapRadio's native
      * ExoPlayer via radio.html auto-play parameters.
      */
-    private fun buildNativePlayUrl(streamUrl: String, name: String, genre: String): String {
-        val encUrl = URLEncoder.encode(streamUrl, "UTF-8")
-        val encName = URLEncoder.encode(name, "UTF-8")
-        val encGenre = URLEncoder.encode(genre, "UTF-8")
-        return "open_taplink:file:///android_asset/radio.html" +
-            "?playUrl=$encUrl&playName=$encName&playGenre=$encGenre"
+    private fun buildNativePlayUrl(
+        streamUrl: String,
+        name: String,
+        genre: String,
+        subtitle: String = "",
+        artist: String = "",
+        kind: String = ""
+    ): String {
+        val params = mutableListOf(
+            "playUrl=${URLEncoder.encode(streamUrl, "UTF-8")}",
+            "playName=${URLEncoder.encode(name, "UTF-8")}",
+            "playGenre=${URLEncoder.encode(genre, "UTF-8")}"
+        )
+        if (subtitle.isNotBlank()) {
+            params += "playSubtitle=${URLEncoder.encode(subtitle, "UTF-8")}"
+        }
+        if (artist.isNotBlank()) {
+            params += "playArtist=${URLEncoder.encode(artist, "UTF-8")}"
+        }
+        if (kind.isNotBlank()) {
+            params += "playKind=${URLEncoder.encode(kind, "UTF-8")}"
+        }
+        return "open_taplink:file:///android_asset/radio.html?${params.joinToString("&")}"
     }
 
-    private suspend fun playStation(query: String): Result<String> {
+    private suspend fun playStation(query: String, metadata: PlaybackMetadata): Result<String> {
         if (query.isBlank()) return Result.success("Please specify a station name or URL to play.")
+
+        val savedByUrl = getSavedStations().firstOrNull { station ->
+            station.optString("url", "").equals(query, ignoreCase = true)
+        }
 
         // Direct URL — route through native player
         if (query.startsWith("http://") || query.startsWith("https://")) {
             clearNowPlaying()
-            val playLink = buildNativePlayUrl(query, "Stream", "Mix")
-            return Result.success("$playLink\nPlaying stream in TapRadio")
+            val stationName = metadata.cleanName()
+                ?: savedByUrl?.optString("name", "")?.trim()?.takeIf { it.isNotBlank() }
+                ?: "Stream"
+            val genre = metadata.cleanGenre()
+                ?: savedByUrl?.optString("genre", "")?.trim()?.takeIf { it.isNotBlank() }
+                ?: "Mix"
+            val playLink = buildNativePlayUrl(
+                query,
+                stationName,
+                genre,
+                subtitle = metadata.cleanSubtitle().orEmpty(),
+                artist = metadata.cleanArtist().orEmpty(),
+                kind = metadata.cleanKind().orEmpty()
+            )
+            val detail = buildString {
+                append("Playing $stationName on TapRadio")
+                if (genre.isNotBlank()) append(" ($genre)")
+            }
+            return Result.success("$playLink\n$detail")
         }
 
         // Fuzzy match against saved stations
@@ -99,7 +158,14 @@ class TapRadioTool(private val context: Context) : AiTapTool {
             val genre = match.optString("genre", "")
             if (url.isNotBlank()) {
                 clearNowPlaying()
-                val playLink = buildNativePlayUrl(url, stationName, genre)
+                val playLink = buildNativePlayUrl(
+                    url,
+                    stationName,
+                    genre,
+                    subtitle = metadata.cleanSubtitle().orEmpty(),
+                    artist = metadata.cleanArtist().orEmpty(),
+                    kind = metadata.cleanKind().orEmpty()
+                )
                 return Result.success("$playLink\nPlaying $stationName on TapRadio ($genre)")
             }
         }
@@ -119,7 +185,14 @@ class TapRadioTool(private val context: Context) : AiTapTool {
             val genre = first.optString("tags", "").split(",").firstOrNull()?.trim() ?: "Mix"
             if (url.isNotBlank()) {
                 clearNowPlaying()
-                val playLink = buildNativePlayUrl(url, stationName, genre)
+                val playLink = buildNativePlayUrl(
+                    url,
+                    stationName,
+                    genre,
+                    subtitle = metadata.cleanSubtitle().orEmpty(),
+                    artist = metadata.cleanArtist().orEmpty(),
+                    kind = metadata.cleanKind().orEmpty()
+                )
                 return Result.success("$playLink\nPlaying $stationName on TapRadio ($genre)")
             }
         }
@@ -167,7 +240,14 @@ class TapRadioTool(private val context: Context) : AiTapTool {
 
         // 3) Play via native TapRadio player
         val displayName = if (episodeTitle.isNotBlank()) "$podcastName: $episodeTitle" else podcastName
-        val playLink = buildNativePlayUrl(episodeUrl, displayName, "Podcast")
+        val playLink = buildNativePlayUrl(
+            episodeUrl,
+            podcastName,
+            "Podcast",
+            subtitle = episodeTitle,
+            artist = artist,
+            kind = "podcast"
+        )
         "$playLink\nPlaying podcast: $displayName" + if (artist.isNotBlank()) " by $artist" else ""
     }
 
@@ -310,7 +390,7 @@ class TapRadioTool(private val context: Context) : AiTapTool {
             return Result.success("No stations or podcasts found for '$query'. Try a different search term.")
         }
 
-        sb.append("\nTo play a RADIO STATION: call tapradio with action='play' and query set to the station's stream URL from the [URL: ...] field above.")
+        sb.append("\nTo play a RADIO STATION: call tapradio with action='play', query set to the station's stream URL from the [URL: ...] field above, and include name='[station name]' plus genre='[genre]' when available.")
         sb.append("\nTo play a PODCAST: call tapradio with action='podcast' and query='[podcast name]'.")
         sb.append("\nIMPORTANT: Always use the stream URL (not the station name) when playing a radio station.")
         return Result.success(sb.toString())

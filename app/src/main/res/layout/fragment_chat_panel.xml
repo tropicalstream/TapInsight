@@ -265,8 +265,9 @@
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:background="#000000"
-        android:clipChildren="false"
-        android:clipToPadding="false"
+        android:clipChildren="true"
+        android:clipToPadding="true"
+        android:elevation="24dp"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
@@ -277,28 +278,63 @@
             android:id="@+id/readerBorder"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:layout_margin="6dp"
+            android:layout_margin="10dp"
             android:background="@drawable/bg_reader_border" />
 
         <androidx.core.widget.NestedScrollView
             android:id="@+id/readerScroll"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:clipToPadding="false"
+            android:layout_margin="12dp"
+            android:clipToPadding="true"
             android:fillViewport="true"
+            android:overScrollMode="never"
             android:paddingHorizontal="18dp"
             android:paddingTop="22dp"
-            android:paddingBottom="20dp">
+            android:paddingBottom="88dp"
+            android:scrollbars="none">
 
             <TextView
                 android:id="@+id/readerText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:fontFamily="sans-serif-medium"
-                android:lineSpacingExtra="4dp"
+                android:breakStrategy="high_quality"
+                android:fontFamily="sans-serif"
+                android:gravity="top|start"
+                android:hyphenationFrequency="normal"
+                android:includeFontPadding="false"
+                android:lineSpacingExtra="6dp"
+                android:lineSpacingMultiplier="1.08"
                 android:textColor="#FFFFFFFF"
+                android:textIsSelectable="false"
                 android:textSize="18sp" />
         </androidx.core.widget.NestedScrollView>
+
+        <View
+            android:id="@+id/readerTopScrim"
+            android:layout_width="match_parent"
+            android:layout_height="28dp"
+            android:layout_marginHorizontal="12dp"
+            android:layout_marginTop="12dp"
+            android:alpha="0"
+            android:background="@drawable/bg_reader_top_scrim"
+            android:clickable="false"
+            android:focusable="false"
+            android:importantForAccessibility="no"
+            android:layout_gravity="top" />
+
+        <View
+            android:id="@+id/readerBottomScrim"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginHorizontal="12dp"
+            android:layout_marginBottom="12dp"
+            android:alpha="0"
+            android:background="@drawable/bg_reader_bottom_scrim"
+            android:clickable="false"
+            android:focusable="false"
+            android:importantForAccessibility="no"
+            android:layout_gravity="bottom" />
     </FrameLayout>
 
     <com.rayneo.visionclaw.ui.VoiceOscilloscopeView

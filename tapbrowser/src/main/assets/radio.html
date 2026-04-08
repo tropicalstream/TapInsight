@@ -244,6 +244,7 @@ async function init() {
 
   // ── Auto-play via URL parameters ──────────────────────────────
   // Supports: ?playUrl=<stream>&playName=<name>&playGenre=<genre>
+  // Optional metadata: &playSubtitle=<subtitle>&playArtist=<artist>&playKind=<kind>
   // Used by TapRadioTool (Gemini voice commands) to route playback
   // through the native ExoPlayer instead of the generic browser player.
   try {
@@ -252,6 +253,9 @@ async function init() {
     if (playUrl) {
       const playName = params.get('playName') || 'Stream';
       const playGenre = params.get('playGenre') || 'Mix';
+      const playSubtitle = params.get('playSubtitle') || '';
+      const playArtist = params.get('playArtist') || '';
+      const effectiveDisplayName = playSubtitle ? (playName + ': ' + playSubtitle) : playName;
 
       // ── STOP any currently playing stream ──
       // The Kotlin onNewIntent() already releases the old ExoPlayer before
@@ -275,10 +279,16 @@ async function init() {
         // Ad-hoc stream (podcast episode, etc.) — play via native bridge
         // Store as ad-hoc state so UI can reflect the playing podcast
         currentIdx = -1;
-        adHocStream = { name: playName, genre: normalizeGenre(playGenre), url: playUrl };
+        adHocStream = {
+          name: effectiveDisplayName,
+          genre: normalizeGenre(playGenre),
+          subtitle: playSubtitle,
+          artist: playArtist,
+          url: playUrl
+        };
         if (hasNativeRadioBridge()) {
           const stateResult = AndroidInterface.playNativeRadioStream(
-            playUrl, playName, normalizeGenre(playGenre)
+            playUrl, effectiveDisplayName, normalizeGenre(playGenre)
           );
           applyNativeRadioState(stateResult);
         } else {
