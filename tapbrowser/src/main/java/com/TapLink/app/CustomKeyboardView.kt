@@ -786,6 +786,8 @@ class CustomKeyboardView @JvmOverloads constructor(context: Context, attrs: Attr
         isAnchoredMode = anchored
         updateKeyFocus()
     }
+    fun getHoveredKeyLabel(): String? = hoveredKey?.text?.toString()
+
     fun performFocusedTap() {
         // In non-anchored mode, usage relies on cursor hover. Only click if hovering a key.
         // In other modes (or if fallback needed), use focusedKey.

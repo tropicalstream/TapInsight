@@ -3,19 +3,25 @@ package com.TapLinkX3.app
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.PorterDuff
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
+import android.media.audiofx.Visualizer
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Parcel
+import android.os.PowerManager
 import android.os.SystemClock
 import android.text.Editable
 import android.text.TextUtils
@@ -34,7 +40,14 @@ import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
+import android.net.http.SslError
+import android.webkit.SslErrorHandler
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
+import com.TapLink.app.media.MediaFileInterceptor
+import com.TapLink.app.media.MediaLibraryBridge
+import java.util.concurrent.atomic.AtomicReference
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -46,6 +59,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import kotlin.math.roundToInt
+import kotlin.math.pow
 import org.json.JSONObject
 
 @SuppressLint("ClickableViewAccessibility")
@@ -66,6 +80,19 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
     private val PREFS_NAME = "TapLinkPrefs"
     private val KEY_WINDOWS_STATE = "saved_windows_state"
+    private val KEY_BROWSER_SHOW_SYSTEM_INFO = "browser_show_system_info"
+    private val sharedConfigPrefs =
+            context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
+    private val sharedConfigListener =
+            SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == KEY_BROWSER_SHOW_SYSTEM_INFO) {
+                    post {
+                        updateSystemInfoBarVisibility()
+                        requestLayout()
+                        invalidate()
+                    }
+                }
+            }
 
     private data class BrowserWindow(
             val id: String = java.util.UUID.randomUUID().toString(),
@@ -93,7 +120,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             val timestamp: Long
     )
 
-    private val windows = mutableListOf<BrowserWindow>()
+    private val windows = java.util.concurrent.CopyOnWriteArrayList<BrowserWindow>()
     private var activeWindowId: String? = null
 
     interface WindowCallback {
@@ -144,8 +171,27 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private var lastMediaPlayingAt = 0L
     private var lastMediaInteractionTime = 0L
     private val mediaScrollFreezeMs = 1500L
-    private val mediaStateByWindowId = mutableMapOf<String, Boolean>()
-    private val mediaLastPlayedAtByWindowId = mutableMapOf<String, Long>()
+    private val mediaStateByWindowId = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val mediaLastPlayedAtByWindowId = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private var nativeTapRadioPlaying = false
+    private var nativeTapRadioLastActiveAt = 0L
+    private val youtubeMediaTeardownScript =
+            """
+            (function() {
+                try {
+                    document.querySelectorAll('video, audio').forEach(function(el) {
+                        try {
+                            el.pause();
+                            el.autoplay = false;
+                            el.muted = true;
+                            el.currentTime = 0;
+                            el.removeAttribute('src');
+                            el.load();
+                        } catch (inner) {}
+                    });
+                } catch (outer) {}
+            })();
+            """.trimIndent()
 
     // Idle detection for power saving
     private var lastUserInteractionTime = 0L
@@ -411,6 +457,50 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
+    /**
+     * Pause HTML5 <video> and <audio> elements across EVERY window, regardless
+     * of the current URL. Used on explicit user navigation away from TapBrowser
+     * (e.g. double-tap-return-to-chat) so background media can't keep playing
+     * after the user has clearly switched away. YouTube-specific teardown lives
+     * in [pauseYouTubeMediaAcrossAllWindows]; this is the non-YouTube sweep.
+     */
+    fun pauseAllWindowsMedia() {
+        windows.forEach { win ->
+            try {
+                win.webView.post {
+                    win.webView.evaluateJavascript(
+                        "try { document.querySelectorAll('video, audio').forEach(function(e) { " +
+                            "try { e.pause(); e.muted = true; } catch (err) {} " +
+                            "}); } catch (err) {}",
+                        null
+                    )
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun pauseYouTubeMediaAcrossAllWindows(resetTracking: Boolean = true) {
+        windows.forEach { win ->
+            val url = win.webView.url.orEmpty()
+            if (!url.contains("youtube.com", ignoreCase = true) &&
+                            !url.contains("youtu.be", ignoreCase = true)
+            ) {
+                return@forEach
+            }
+
+            try {
+                win.webView.stopLoading()
+            } catch (_: Exception) {}
+
+            win.webView.post { win.webView.evaluateJavascript(youtubeMediaTeardownScript, null) }
+            mediaStateByWindowId[win.id] = false
+        }
+
+        if (resetTracking) {
+            updateMediaState(anyTrackedMediaPlaying())
+        }
+    }
+
     private val fullScreenOverlayContainer =
             FrameLayout(context).apply {
                 clipChildren = true
@@ -510,6 +600,41 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // Update scroll bar thumb positions
         updateScrollBarThumbs(xProgress, yProgress)
         applyScrollbarTransform()
+    }
+
+    fun recenterViewportForDashboard(targetWebView: WebView? = webView) {
+        context.getSharedPreferences("TapLinkPrefs", Context.MODE_PRIVATE)
+                .edit()
+                .putInt("uiTransXProgress", 50)
+                .putInt("uiTransYProgress", 50)
+                .apply()
+        updateUiTranslation()
+
+        targetWebView?.post {
+            try {
+                targetWebView.scrollTo(0, 0)
+            } catch (_: Exception) {}
+            try {
+                targetWebView.evaluateJavascript(
+                        """
+                        (function() {
+                            try {
+                                window.scrollTo(0, 0);
+                                if (document.documentElement) {
+                                    document.documentElement.scrollLeft = 0;
+                                    document.documentElement.scrollTop = 0;
+                                }
+                                if (document.body) {
+                                    document.body.scrollLeft = 0;
+                                    document.body.scrollTop = 0;
+                                }
+                            } catch (e) {}
+                        })();
+                        """.trimIndent(),
+                        null
+                )
+            } catch (_: Exception) {}
+        }
     }
 
     private fun isWebViewScrollEnabled(): Boolean {
@@ -782,6 +907,27 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             return
         }
 
+        // Hide scrollbars entirely on AR nav map pages (full-viewport 3D map)
+        val currentUrl = webView.url ?: ""
+        if (currentUrl.contains("ar_nav.html")) {
+            horizontalScrollBar.visibility = View.GONE
+            verticalScrollBar.visibility = View.GONE
+            (webViewsContainer.layoutParams as? FrameLayout.LayoutParams)?.let { p ->
+                val targetWidth = if (isScrollModeActive) containerWidth else containerWidth - baseLeftMargin
+                val targetHeight = (480 - baseBottomMargin - keyboardHeight).coerceAtLeast(0)
+                if (p.width != targetWidth || p.height != targetHeight || p.rightMargin != 0) {
+                    p.width = targetWidth
+                    p.height = targetHeight
+                    p.leftMargin = baseLeftMargin
+                    p.rightMargin = 0
+                    p.bottomMargin = baseBottomMargin
+                    webViewsContainer.layoutParams = p
+                    webViewsContainer.requestLayout()
+                }
+            }
+            return
+        }
+
         // Always check WebView scrollability since we disabled viewport panning
         val metrics = resolveScrollMetrics(now)
         val webHRange = metrics.rangeX
@@ -866,10 +1012,6 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 p.rightMargin = targetRightMargin
                 p.bottomMargin = targetBottomMargin
 
-                // DebugLog.d("ScrollDebug", "Applying Layout: Mode=${if(isScrollModeActive)"Scroll"
-                // else
-                // "Normal"}, [${p.width} x ${p.height}], Margins: L=${p.leftMargin},
-                // R=${p.rightMargin}, B=${p.bottomMargin}")
                 webViewsContainer.layoutParams = p
                 // Force layout update on WebView itself to ensure it resizes
                 webView.requestLayout()
@@ -1182,7 +1324,21 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     private var isScreenMasked = false
+    private var isHostPaused = false
     private var isHoveringMaskToggle = false
+    // WakeLock keeps CPU awake while screen is masked (projector off) so audio doesn't skip.
+    // Without this, Android Doze will periodically sleep the CPU causing ~10s audio stutters.
+    private val maskWakeLock: PowerManager.WakeLock =
+        (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TapInsight:MaskAudioPlayback")
+    private val pausedMediaWakeLock: PowerManager.WakeLock =
+        (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TapInsight:PausedMediaPlayback")
+    private val mediaWifiLock: WifiManager.WifiLock? =
+        (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)?.run {
+            @Suppress("DEPRECATION")
+            createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "TapInsight:StreamingAudio")
+        }
     private var maskOverlay: FrameLayout =
             FrameLayout(context).apply {
                 setBackgroundColor(Color.BLACK)
@@ -1194,9 +1350,38 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
                 // Consume all touch events to prevent propagation to navbar/webview behind
                 // and route taps into mask overlay controls.
+                //
+                // Tap model: on ACTION_DOWN, if the finger lands directly on the
+                // Visualizer toggle button (small 52×52 target), fire immediately
+                // — the glasses' input path would otherwise require drifting the
+                // cursor before ACTION_UP registered. For everything else we still
+                // wait for ACTION_UP with a generous slop+duration so any natural
+                // tap qualifies.
                 setOnTouchListener { _, event ->
-                    if (event.actionMasked == MotionEvent.ACTION_UP) {
-                        dispatchMaskOverlayTouch(event.rawX, event.rawY)
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            maskOverlayTouchDownX = event.rawX
+                            maskOverlayTouchDownY = event.rawY
+                            maskOverlayTouchDownTime = SystemClock.uptimeMillis()
+                            // Immediate fire for the tiny Visualizer toggle pill.
+                            if (isTouchOnVisualizerToggle(event.rawX, event.rawY)) {
+                                dispatchMaskOverlayTouch(event.rawX, event.rawY)
+                            }
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            val dx = event.rawX - maskOverlayTouchDownX
+                            val dy = event.rawY - maskOverlayTouchDownY
+                            val distSq = dx * dx + dy * dy
+                            val duration = SystemClock.uptimeMillis() - maskOverlayTouchDownTime
+                            val isTap = distSq <= (maskOverlayTapSlopPx * maskOverlayTapSlopPx) && duration <= maskOverlayTapMaxDurationMs
+                            if (isTap) {
+                                dispatchMaskOverlayTouch(event.rawX, event.rawY)
+                            }
+                        }
+                        MotionEvent.ACTION_CANCEL -> {
+                            // Reset touch state when parent cancels the touch sequence
+                            maskOverlayTouchDownTime = 0L
+                        }
                     }
                     true
                 }
@@ -1211,6 +1396,46 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private lateinit var btnMaskNext: FontIconView // 10s forward
     private lateinit var btnMaskNextTrack: FontIconView // Skip to next song
     private lateinit var btnMaskUnmask: ImageButton
+    private lateinit var maskNowPlayingText: TextView
+    private var lastMaskedDomTitle: String? = null
+    private var lastMaskedDomTitleUrl: String? = null
+    private var lastMaskedDomTitleAt: Long = 0L
+    private val maskedDomTitleFreshMs = 15000L
+    private val maskNowPlayingPeriodicRefresh: Runnable = object : Runnable {
+        override fun run() {
+            if (!isScreenMasked) return
+            refreshMaskedNowPlayingFromJs()
+            refreshMaskedNowPlaying()
+            postDelayed(this, 5000L)
+        }
+    }
+    private lateinit var btnVisualizerToggle: SpectrumVizButton
+    private lateinit var maskVisualizerView: AudioVisualizerView
+    private var isVisualizerVisible = false
+    private var audioVisualizer: Visualizer? = null
+    // Double-buffer for thread-safe FFT data: audio thread writes to back buffer,
+    // UI thread reads from front buffer. References swapped atomically.
+    @Volatile private var fftFrontBuffer = FloatArray(32)
+    private var fftBackBuffer = FloatArray(32)
+    private val fftMagnitudes: FloatArray get() = fftFrontBuffer  // read alias for UI thread
+    private var lastVisualizerToggleTime = 0L
+    private var lastVisualizerThemeTapTime = 0L
+    private var maskOverlayTouchDownX = 0f
+    private var maskOverlayTouchDownY = 0f
+    private var maskOverlayTouchDownTime = 0L
+    // Tap slop — generous enough that small cursor drift during a press
+    // does not disqualify the tap on AR glasses input.
+    private val maskOverlayTapSlopPx = 60f
+    // Lightweight dedup for mask overlay touch dispatch — prevents the same physical tap
+    // from being processed twice when multiple code paths fire within the same input cycle.
+    // Short enough that intentional rapid taps (e.g. theme cycling, toggle on/off)
+    // still register but long enough to swallow the immediate double-fire from
+    // a paired ACTION_DOWN / ACTION_UP hitting the same button.
+    private var lastMaskOverlayDispatchTime = 0L
+    private val MASK_OVERLAY_DISPATCH_DEBOUNCE_MS = 140L
+    // Allow slower taps — up to ~700ms — since the AR glasses' input pipeline
+    // can add noticeable latency between ACTION_DOWN and ACTION_UP.
+    private val maskOverlayTapMaxDurationMs = 700L
 
     // Fullscreen Mode UI elements
     private lateinit var fullScreenControlsContainer: FrameLayout
@@ -1625,6 +1850,56 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         return newWebView
     }
 
+    fun resetToSingleWindow(loadDefaultUrl: Boolean = false): WebView {
+        windows.toList().forEach { win ->
+            try {
+                win.webView.stopLoading()
+            } catch (_: Exception) {}
+            try {
+                webViewsContainer.removeView(win.webView)
+            } catch (_: Exception) {}
+            try {
+                win.webView.destroy()
+            } catch (_: Exception) {}
+            win.thumbnail?.recycle()
+        }
+
+        windows.clear()
+        mediaStateByWindowId.clear()
+        mediaLastPlayedAtByWindowId.clear()
+        activeWindowId = null
+        isMediaPlaying = false
+        hideMediaControls()
+        webViewsContainer.removeAllViews()
+
+        val freshWebView = InternalWebView(context)
+        configureWebView(freshWebView)
+        applyBrowsingModeToWebView(freshWebView, isDesktopMode)
+        if (loadDefaultUrl) {
+            freshWebView.loadUrl(Constants.DEFAULT_URL)
+        }
+
+        val freshWindow = BrowserWindow(webView = freshWebView, title = "New Tab")
+        freshWebView.visibility = View.VISIBLE
+        webViewsContainer.addView(
+                freshWebView,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        )
+        windowCallback?.onWindowCreated(freshWebView)
+
+        windows.add(freshWindow)
+        activeWindowId = freshWindow.id
+        webView = freshWebView
+        updateScrollBarsVisibility()
+        windowCallback?.onWindowSwitched(freshWebView)
+        freshWebView.post { injectPageObservers(freshWebView) }
+        startRefreshing()
+        hideWindowsOverview()
+        saveAllWindowsState()
+        return freshWebView
+    }
+
     fun switchToWindow(id: String) {
         val targetWindow = windows.find { it.id == id } ?: return
 
@@ -1634,14 +1909,19 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             return
         }
 
-        // Hide current active webview
-        webView.visibility = View.INVISIBLE
+        // Pause the old WebView to free CPU/network resources while inactive
+        val oldWebView = webView
+        oldWebView.visibility = View.INVISIBLE
+        oldWebView.onPause()
+        oldWebView.pauseTimers()
 
         // Switch active window
         activeWindowId = id
         webView = targetWindow.webView
 
-        // Show new active webview and bring to front within container to ensure z-ordering
+        // Resume the new WebView and bring to front
+        webView.resumeTimers()
+        webView.onResume()
         webView.visibility = View.VISIBLE
         webView.bringToFront()
 
@@ -1691,15 +1971,19 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             }
         }
         saveAllWindowsState()
-        if (mediaStateByWindowId.isNotEmpty()) {
-            updateMediaState(mediaStateByWindowId.values.any { it })
+        if (mediaStateByWindowId.isNotEmpty() || nativeTapRadioPlaying) {
+            updateMediaState(anyTrackedMediaPlaying())
         } else {
             isMediaPlaying = false
             hideMediaControls()
         }
     }
 
-    fun saveAllWindowsState() {
+    fun saveWindowMetadataState(forceSync: Boolean = false) {
+        saveAllWindowsState(forceSync = forceSync, includeWebViewState = false)
+    }
+
+    fun saveAllWindowsState(forceSync: Boolean = false, includeWebViewState: Boolean = true) {
         try {
             val root = org.json.JSONObject()
             root.put("activeId", activeWindowId)
@@ -1719,29 +2003,31 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 winObj.put("title", win.title)
                 winObj.put("url", win.webView.url ?: "")
 
-                // Save full WebView state (history, etc) - with size limit
-                try {
-                    val state = Bundle()
-                    win.webView.saveState(state)
-                    val parcel = Parcel.obtain()
-                    state.writeToParcel(parcel, 0)
-                    val bytes = parcel.marshall()
-                    parcel.recycle()
+                if (includeWebViewState) {
+                    // Save full WebView state (history, etc) - with size limit
+                    try {
+                        val state = Bundle()
+                        win.webView.saveState(state)
+                        val parcel = Parcel.obtain()
+                        state.writeToParcel(parcel, 0)
+                        val bytes = parcel.marshall()
+                        parcel.recycle()
 
-                    // Only save state if under size limit
-                    if (bytes.size < maxStateSize) {
-                        val stateString = Base64.encodeToString(bytes, Base64.DEFAULT)
-                        winObj.put("state", stateString)
-                    } else {
-                        Log.w(
-                                "Persistence",
-                                "Window ${win.id} state too large (${bytes.size} bytes), skipping state save"
-                        )
-                        // Don't save state, just URL - will reload on restore
+                        // Only save state if under size limit
+                        if (bytes.size < maxStateSize) {
+                            val stateString = Base64.encodeToString(bytes, Base64.DEFAULT)
+                            winObj.put("state", stateString)
+                        } else {
+                            Log.w(
+                                    "Persistence",
+                                    "Window ${win.id} state too large (${bytes.size} bytes), skipping state save"
+                            )
+                            // Don't save state, just URL - will reload on restore
+                        }
+                    } catch (e: Exception) {
+                        Log.e("Persistence", "Error saving state for window ${win.id}", e)
+                        // Continue without state for this window
                     }
-                } catch (e: Exception) {
-                    Log.e("Persistence", "Error saving state for window ${win.id}", e)
-                    // Continue without state for this window
                 }
 
                 windowsArray.put(winObj)
@@ -1762,14 +2048,18 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 return
             }
 
-            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val editor = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .edit()
                     .putString(KEY_WINDOWS_STATE, jsonString)
-                    .apply()
+            if (forceSync) {
+                editor.commit()
+            } else {
+                editor.apply()
+            }
 
             DebugLog.d(
                     "Persistence",
-                    "Saved ${windows.size} windows with state (${jsonString.length} chars)"
+                    "Saved ${windows.size} windows with${if (includeWebViewState) "" else "out"} bundles (${jsonString.length} chars)"
             )
         } catch (e: Exception) {
             Log.e("Persistence", "Error saving window state", e)
@@ -1895,6 +2185,31 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
         webView.addJavascriptInterface(MediaInterface(this, webView), "MediaInterface")
 
+        // On-glasses Media Library JS bridge. Per-WebView urlRef so each
+        // tab's trust gate tracks that tab's current URL — the bridge is
+        // called from JS on a background thread and can't touch WebView
+        // state, so we stash the last-known URL here from the lifecycle
+        // callbacks below. MediaFileInterceptor shares the bridge's
+        // MediaLibraryService instance so /media/… URL resolution goes
+        // through the exact same safe-path logic as the JS bridge.
+        val mediaBridgeUrlRef = AtomicReference("")
+        // Gemini 3.1 TTS client for on-glasses text-to-speech. Reads the API
+        // key out of "visionclaw_prefs" / "gemini_api_key" so it matches
+        // whatever the companion app has saved. Passed into the bridge so
+        // MediaLibraryBridge.speakText() has a synth to delegate to.
+        val ttsClient = com.TapLink.app.media.GlassesTtsClient(
+            apiKeyProvider = { com.TapLink.app.media.resolveGlassesGeminiKey(context) }
+        )
+        val mediaLibraryBridge = MediaLibraryBridge(context, mediaBridgeUrlRef, ttsClient)
+        val mediaFileInterceptor = MediaFileInterceptor(context, mediaLibraryBridge.service)
+        webView.addJavascriptInterface(mediaLibraryBridge, MediaLibraryBridge.JS_NAME)
+        // Async TTS back-channel: wraps evaluateJavascript in webView.post so
+        // the worker-thread synth can safely post completion events back into
+        // JS without touching the WebView from the wrong thread.
+        mediaLibraryBridge.jsEvaluator = { js ->
+            webView.post { webView.evaluateJavascript(js, null) }
+        }
+
         // Keep WebAppInterface for referencing context/logic if needed, but primary comms via URL
         // scheme
         // Enable Native Bridge for Chat
@@ -1902,6 +2217,59 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
         webView.webViewClient =
                 object : android.webkit.WebViewClient() {
+                    /**
+                     * Intercept requests to the virtual media host
+                     * (appassets.androidplatform.net/media/...) and serve
+                     * directly from the on-glasses Media/ folder with
+                     * Range-request support. Everything else flows through
+                     * normal WebView networking.
+                     */
+                    override fun shouldInterceptRequest(
+                        view: android.webkit.WebView?,
+                        request: WebResourceRequest?
+                    ): WebResourceResponse? {
+                        val resp = mediaFileInterceptor.handle(request)
+                        if (resp != null) return resp
+                        return super.shouldInterceptRequest(view, request)
+                    }
+
+                    /**
+                     * Log any load failure on our virtual host so we can tell
+                     * whether a spinner hang is "interceptor never responded"
+                     * vs "page loaded but the audio tag stalled".
+                     */
+                    override fun onReceivedError(
+                        view: android.webkit.WebView?,
+                        request: WebResourceRequest?,
+                        error: android.webkit.WebResourceError?
+                    ) {
+                        val url = request?.url?.toString().orEmpty()
+                        if (url.contains("appassets.androidplatform.net")) {
+                            val code = try { error?.errorCode } catch (_: Exception) { null }
+                            val desc = try { error?.description?.toString() } catch (_: Exception) { null }
+                            android.util.Log.w(
+                                "MediaFileInterceptor",
+                                "onReceivedError url=$url code=$code desc=$desc"
+                            )
+                        }
+                        super.onReceivedError(view, request, error)
+                    }
+
+                    override fun onReceivedHttpError(
+                        view: android.webkit.WebView?,
+                        request: WebResourceRequest?,
+                        errorResponse: WebResourceResponse?
+                    ) {
+                        val url = request?.url?.toString().orEmpty()
+                        if (url.contains("appassets.androidplatform.net")) {
+                            android.util.Log.w(
+                                "MediaFileInterceptor",
+                                "onReceivedHttpError url=$url status=${errorResponse?.statusCode} reason=${errorResponse?.reasonPhrase}"
+                            )
+                        }
+                        super.onReceivedHttpError(view, request, errorResponse)
+                    }
+
                     override fun shouldOverrideUrlLoading(
                             view: android.webkit.WebView?,
                             request: android.webkit.WebResourceRequest?
@@ -1921,6 +2289,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             }
                             return true
                         }
+                        // Intercept media file links → open in TapInsight media player
+                        if (view != null && interceptMediaUrl(view, url)) return true
                         return false
                     }
 
@@ -1930,6 +2300,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             favicon: Bitmap?
                     ) {
                         super.onPageStarted(view, url, favicon)
+                        // Tell the JS-bridge trust gate which page we're on.
+                        mediaBridgeUrlRef.set(url ?: "")
                         clearExternalScrollMetrics()
                     }
 
@@ -1950,27 +2322,62 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             }
                             return true
                         }
+                        if (url != null && view != null && interceptMediaUrl(view, url)) return true
                         return false
+                    }
+
+                    /**
+                     * Trust the TapInsight companion server's self-signed certificate
+                     * *only* when the URL is on the loopback interface (127.0.0.1,
+                     * [::1] or localhost).  Without this override, top-level navigations
+                     * from the dashboard to https://127.0.0.1:19110/library — and fetch()
+                     * calls from media_player.html — fail with a blank screen because
+                     * the WebView rejects the cert.  The key is generated inside this
+                     * app's private files dir, so anything reachable only on loopback
+                     * is by definition served by us.
+                     */
+                    override fun onReceivedSslError(
+                        view: android.webkit.WebView?,
+                        handler: SslErrorHandler?,
+                        error: SslError?
+                    ) {
+                        val host = error?.url?.let { android.net.Uri.parse(it).host }?.lowercase() ?: ""
+                        val isLoopback =
+                            host == "127.0.0.1" ||
+                            host == "localhost" ||
+                            host == "[::1]" ||
+                            host == "::1"
+                        if (isLoopback && handler != null) {
+                            android.util.Log.i(
+                                "TapLink",
+                                "Accepting self-signed cert for loopback URL: ${error?.url}"
+                            )
+                            handler.proceed()
+                        } else {
+                            super.onReceivedSslError(view, handler, error)
+                        }
                     }
 
                     override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                         super.onPageFinished(view, url)
+                        mediaBridgeUrlRef.set(url ?: "")
                         try {
-                            // val mediaInterfaceClass =
-                            //        Class.forName(
-                            //                "com.TapLinkX3.app.DualWebViewGroup\$MediaInterface"
-                            //        )
-                            // Actually we are inside DualWebViewGroup, so can call method directly?
-                            // Yes, injectMediaListeners() is a private method of DualWebViewGroup.
-                            // But WebViewClient is an anonymous inner class.
-                            // So we need to call DualWebViewGroup.this.injectMediaListeners()
-                            // But in Kotlin inner class, we can just call it if it's visible.
-                            // injectMediaListeners is private in DualWebViewGroup.
-                            // Kotlin anonymous object inside a method (configureWebView)
-                            // configureWebView is a method of DualWebViewGroup.
-                            // So yes, we can call injectMediaListeners() directly.
                             view?.let { injectPageObservers(it) }
                             updateScrollBarsVisibility()
+
+                            // Record the URL the WebView is actually showing.
+                            // This is the ground-truth URL that TapClaw tools
+                            // need when the user later says "email me this
+                            // video" — Gemini cannot see this page, so it
+                            // would otherwise invent a URL from training
+                            // memory.  We record YouTube watch, search, and
+                            // asset pages; LastUrlBridge classifies the URL
+                            // and skips obvious duplicates / blank pages.
+                            LastUrlBridge.record(
+                                context = view?.context,
+                                url = url,
+                                title = view?.title
+                            )
                         } catch (e: Exception) {
                             android.util.Log.e("TapLink", "Error in onPageFinished", e)
                         }
@@ -2317,6 +2724,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             .apply {
                                 leftMargin = toggleBarWidthPx // Position after toggle bar
                                 bottomMargin = navBarHeightPx // Account for nav bar
+                                gravity = Gravity.TOP or Gravity.START
                             }
             )
             addView(leftToggleBar)
@@ -2366,6 +2774,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         MeasureSpec.makeMeasureSpec(640, MeasureSpec.AT_MOST),
                         MeasureSpec.makeMeasureSpec(24, MeasureSpec.EXACTLY)
                 )
+                updateSystemInfoBarVisibility()
                 leftSystemInfoView.requestLayout()
                 leftSystemInfoView.invalidate()
             }
@@ -2790,19 +3199,24 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         val now = System.currentTimeMillis()
         val isIdle = (now - lastUserInteractionTime) > idleThresholdMs
 
-        // Logic (prioritized):
+        // With BinocularSbsLayout handling SBS rendering directly (no PixelCopy),
+        // the refresh loop only drives scrollbar checks and cursor blink.
+        // Lower rates save CPU/GPU for audio decoding and reduce thermal throttling.
+        //
         // 1. Screen masked: 10fps (100ms) - minimal updates
-        // 2. Idle (no user interaction for 5s) and not playing media: 10fps (100ms)
-        // 3. Media playing: 60fps (16ms) - smooth video playback
-        // 4. Anchored + Normal browsing: 60fps (16ms) - needs smooth head tracking
-        // 5. Non-anchored without media: 30fps (33ms) - balanced for browsing
+        // 2. Scrolling: 60fps (16ms) - smooth scroll bar tracking
+        // 3. Idle and not playing media: 10fps (100ms)
+        // 4. Media playing (audio/video): 4fps (250ms) — scrollbars rarely change,
+        //    and freeing the main-thread + GPU eliminates audio-thread starvation
+        // 5. Anchored browsing: 30fps (33ms) - responsive scroll bars
+        // 6. Default: 30fps (33ms)
         refreshInterval =
                 when {
                     isScreenMasked -> maskedRefreshIntervalMs
                     isInScrollMode -> 16L
                     isIdle && !isMediaPlaying -> idleRefreshIntervalMs
-                    isMediaPlaying -> 16L
-                    isAnchored && !isFullscreen -> 16L
+                    isMediaPlaying -> 250L
+                    isAnchored && !isFullscreen -> 33L
                     else -> 33L
                 }
     }
@@ -2899,18 +3313,34 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     fun maskScreen() {
+        if (isScreenMasked) return  // Idempotent: prevent duplicate handler accumulation
         isScreenMasked = true
         maskOverlay.visibility = View.VISIBLE
         maskOverlay.bringToFront()
         // Hide both cursor views
         leftToggleBar.findViewById<FontIconView>(R.id.btnMask)?.setText(R.string.fa_eye_slash)
         keepScreenOn = true
+        updatePlaybackWakeLocks()
+        refreshMaskedNowPlaying()
+        refreshMaskedNowPlayingFromJs()
+        // Start periodic now-playing refresh (every 5s) — remove first to guarantee single handler
+        removeCallbacks(maskNowPlayingPeriodicRefresh)
+        postDelayed(maskNowPlayingPeriodicRefresh, 5000L)
         updateRefreshRate()
     }
 
     fun unmaskScreen() {
         isScreenMasked = false
+        updatePlaybackWakeLocks()
+        removeCallbacks(maskNowPlayingPeriodicRefresh)
+        lastMaskedDomTitle = null
+        lastMaskedDomTitleUrl = null
+        lastMaskedDomTitleAt = 0L
         maskOverlay.visibility = View.GONE
+        if (::maskNowPlayingText.isInitialized) {
+            maskNowPlayingText.visibility = View.GONE
+        }
+        if (isVisualizerVisible) hideVisualizer()
         // Let MainActivity handle cursor visibility restoration - cursors will be shown
         // if they were visible before masking through updateCursorPosition call
         leftToggleBar.findViewById<FontIconView>(R.id.btnMask)?.setText(R.string.fa_eye)
@@ -2920,9 +3350,37 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
     fun isScreenMasked() = isScreenMasked
 
+    fun setHostPaused(paused: Boolean) {
+        if (isHostPaused == paused) return
+        isHostPaused = paused
+        updatePlaybackWakeLocks()
+    }
+
     fun isFullScreenOverlayVisible() = fullScreenOverlayContainer.visibility == View.VISIBLE
 
+    /** Hit-test a raw screen coordinate against the Visualizer toggle button.
+     *  Used by the parent's ACTION_DOWN path so a plain tap fires immediately
+     *  instead of waiting for tap classification at ACTION_UP. */
+    private fun isTouchOnVisualizerToggle(screenX: Float, screenY: Float): Boolean {
+        if (!::btnVisualizerToggle.isInitialized) return false
+        if (btnVisualizerToggle.visibility != View.VISIBLE) return false
+        val loc = IntArray(2)
+        btnVisualizerToggle.getLocationOnScreen(loc)
+        val scale = uiScale
+        val pad = 24f * scale
+        val w = btnVisualizerToggle.width * scale
+        val h = btnVisualizerToggle.height * scale
+        return screenX >= loc[0] - pad && screenX <= loc[0] + w + pad &&
+               screenY >= loc[1] - pad && screenY <= loc[1] + h + pad
+    }
+
     fun dispatchMaskOverlayTouch(screenX: Float, screenY: Float) {
+        // Global debounce: prevent the same physical tap from triggering this method
+        // multiple times via different code paths (maskOverlay listener + MainActivity handlers)
+        val now = SystemClock.uptimeMillis()
+        if (now - lastMaskOverlayDispatchTime < MASK_OVERLAY_DISPATCH_DEBOUNCE_MS) return
+        lastMaskOverlayDispatchTime = now
+
         val location = IntArray(2)
         maskOverlay.getLocationOnScreen(location)
         val scale = uiScale
@@ -2947,6 +3405,45 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             // DebugLog.d("MediaControls", "Unmask button pressed")
             unmaskScreen()
             return
+        }
+
+        // Check visualizer toggle button
+        if (::btnVisualizerToggle.isInitialized && btnVisualizerToggle.visibility == View.VISIBLE) {
+            val vizBtnLoc = IntArray(2)
+            btnVisualizerToggle.getLocationOnScreen(vizBtnLoc)
+            val vizW = btnVisualizerToggle.width * scale
+            val vizH = btnVisualizerToggle.height * scale
+            // Expand hit area for small 52×52 button — the glasses' cursor is
+            // imprecise, so a generous slop keeps taps reliable.
+            val pad = 24f * scale
+            if (screenX >= vizBtnLoc[0] - pad &&
+                screenX <= vizBtnLoc[0] + vizW + pad &&
+                screenY >= vizBtnLoc[1] - pad &&
+                screenY <= vizBtnLoc[1] + vizH + pad
+            ) {
+                btnVisualizerToggle.performClick()
+                return
+            }
+        }
+
+        // Tap on the visualizer itself → cycle themes (debounced 400ms)
+        if (::maskVisualizerView.isInitialized && maskVisualizerView.visibility == View.VISIBLE) {
+            val vizLoc = IntArray(2)
+            maskVisualizerView.getLocationOnScreen(vizLoc)
+            val vizW = maskVisualizerView.width * scale
+            val vizH = maskVisualizerView.height * scale
+            if (screenX >= vizLoc[0] &&
+                screenX <= vizLoc[0] + vizW &&
+                screenY >= vizLoc[1] &&
+                screenY <= vizLoc[1] + vizH
+            ) {
+                val now = SystemClock.uptimeMillis()
+                if (now - lastVisualizerThemeTapTime < 500) return  // debounce theme taps (prevent multi-fire from touch+mouse)
+                lastVisualizerThemeTapTime = now
+                maskVisualizerView.cycleThemeOrWrap()
+                updateVisualizerButtonColor()
+                return
+            }
         }
 
         // Check media control buttons
@@ -3145,6 +3642,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         if (chatView.visibility == View.VISIBLE) {
             chatView.visibility = View.GONE
         } else {
+            pauseYouTubeMediaAcrossAllWindows()
             chatView.visibility = View.VISIBLE
             chatView.bringToFront()
             maybePromptForGroqApiKey()
@@ -3409,72 +3907,33 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         if (currentTime - lastCaptureTime < MIN_CAPTURE_INTERVAL) {
             return
         }
+        lastCaptureTime = currentTime
 
-        synchronized(bitmapLock) {
-            try {
-                val halfWidth = width / 2
-                val currentBitmap = bitmap
+        try {
+            // Check scrollbar visibility periodically (once per second)
+            // Skip if in fullscreen mode to save power
+            val isFullScreen = fullScreenOverlayContainer.visibility == View.VISIBLE
 
-                if (currentBitmap == null ||
-                                currentBitmap.isRecycled ||
-                                currentBitmap.width != halfWidth ||
-                                currentBitmap.height != height
-                ) {
-                    setupBitmap(halfWidth, height)
+            if (!isFullScreen && currentTime - lastScrollBarCheckTime > 1000) {
+                if (!shouldFreezeScrollBars()) {
+                    updateScrollBarsVisibility()
                 }
-
-                // Get the current bitmap after potential setup
-                val bitmapToUse = bitmap ?: return
-
-                // Check scrollbar visibility periodically (once per second)
-                // Skip if in fullscreen mode to save power
-                val isFullScreen = fullScreenOverlayContainer.visibility == View.VISIBLE
-
-                if (!isFullScreen && currentTime - lastScrollBarCheckTime > 1000) {
-                    if (!shouldFreezeScrollBars()) {
-                        updateScrollBarsVisibility()
-                    }
-                    lastScrollBarCheckTime = currentTime
-                }
-
-                // Force cursor refresh if editing - skip in fullscreen
-                if (!isFullScreen && _isUrlEditing && urlEditText.isFocused) {
-                    urlEditText.invalidate()
-                }
-
-                val captureRect = android.graphics.Rect(0, 0, halfWidth, height)
-                val window = (context as Activity).window
-
-                PixelCopy.request(
-                        window,
-                        captureRect,
-                        bitmapToUse,
-                        { copyResult ->
-                            // Log PixelCopy result for debugging
-                            if (copyResult != PixelCopy.SUCCESS) {
-                                Log.w("MirrorDebug", "PixelCopy failed with result: $copyResult")
-                            }
-
-                            if (copyResult == PixelCopy.SUCCESS && isRefreshing) {
-                                synchronized(bitmapLock) {
-                                    if (!bitmapToUse.isRecycled && bitmap === bitmapToUse) {
-                                        drawBitmapToSurface()
-                                        lastCaptureTime = System.currentTimeMillis()
-                                    } else {
-                                        Log.w(
-                                                "MirrorDebug",
-                                                "Bitmap state issue - recycled: ${bitmapToUse.isRecycled}, same: ${bitmap === bitmapToUse}"
-                                        )
-                                    }
-                                }
-                            }
-                        },
-                        refreshHandler
-                )
-            } catch (e: Exception) {
-                Log.e("MirrorDebug", "Error capturing content", e)
-                stopRefreshing()
+                lastScrollBarCheckTime = currentTime
             }
+
+            // Force cursor refresh if editing - skip in fullscreen
+            if (!isFullScreen && _isUrlEditing && urlEditText.isFocused) {
+                urlEditText.invalidate()
+            }
+
+            // NOTE: PixelCopy + drawBitmapToSurface() removed — BinocularSbsLayout now
+            // renders the SBS output directly from the view hierarchy, making the old
+            // capture-to-bitmap-then-draw pipeline dead code. Removing it frees ~60 GPU
+            // PixelCopy ops/sec and eliminates bitmapLock contention that was starving
+            // the audio decoder thread on the X3 Pro (manifesting as periodic stutters).
+        } catch (e: Exception) {
+            Log.e("MirrorDebug", "Error in refresh tick", e)
+            stopRefreshing()
         }
     }
 
@@ -3809,11 +4268,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             }
         }
 
-        // Hide system info bar in scroll mode, show otherwise
-        if (isInScrollMode) {
-            leftSystemInfoView.visibility = View.GONE
-        } else {
-            leftSystemInfoView.visibility = View.VISIBLE
+        // Hide system info bar when disabled or while nav/scroll overlays are hidden.
+        updateSystemInfoBarVisibility()
+        if (leftSystemInfoView.visibility == View.VISIBLE) {
             // Calculate system info bar position
             val infoBarHeight = 24
             val infoBarY = eyeHeight - navBarHeight - infoBarHeight // Position above nav bar
@@ -3979,8 +4436,20 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
+    private var sharedConfigListenerRegistered = false
+
     fun cleanupResources() {
+        if (maskWakeLock.isHeld) maskWakeLock.release()
+        if (pausedMediaWakeLock.isHeld) pausedMediaWakeLock.release()
+        try {
+            if (mediaWifiLock?.isHeld == true) mediaWifiLock.release()
+        } catch (_: Exception) {}
+        if (sharedConfigListenerRegistered) {
+            sharedConfigPrefs.unregisterOnSharedPreferenceChangeListener(sharedConfigListener)
+            sharedConfigListenerRegistered = false
+        }
         stopRefreshing()
+        releaseAudioCapture()
         synchronized(bitmapLock) {
             bitmap?.let { currentBitmap ->
                 if (!currentBitmap.isRecycled) {
@@ -4035,7 +4504,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     fun showInfoBars() {
-        leftSystemInfoView.visibility = View.VISIBLE
+        updateSystemInfoBarVisibility()
     }
 
     fun hideInfoBars() {
@@ -4043,6 +4512,18 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     private fun Int.dp(): Int = (this * resources.displayMetrics.density).roundToInt()
+
+    private fun isBrowserSystemInfoEnabled(): Boolean =
+            sharedConfigPrefs.getBoolean(KEY_BROWSER_SHOW_SYSTEM_INFO, true)
+
+    private fun updateSystemInfoBarVisibility() {
+        leftSystemInfoView.visibility =
+                if (!isBrowserSystemInfoEnabled() || isInScrollMode || isNavBarsHidden) {
+                    View.GONE
+                } else {
+                    View.VISIBLE
+                }
+    }
 
     // Add keyboard mirror handling
     fun setKeyboard(originalKeyboard: CustomKeyboardView) {
@@ -4166,8 +4647,6 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
-        // DebugLog.d("GestureDebug", "DualWebViewGroup onInterceptTouchEvent: ${ev.action}")
-
         // Let windows overview handle its own touch events
         if (windowsOverviewContainer?.visibility == View.VISIBLE) {
             return false // Don't intercept, let children handle touches
@@ -4499,13 +4978,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 val wasTap = dur < 300 && travelX < 8 && travelY < 8
 
                 if (wasTap && !isAnchored) {
-                    // Check for potential content changes
                     postDelayed({ updateScrollBarsVisibility() }, 500)
                 }
 
                 // Handle non-anchored tap for keyboard
                 if (kbVisible && !isAnchored && wasTap) {
-                    // Focus-driven tap: send the highlighted key
                     customKeyboard?.performFocusedTap()
                     return true
                 }
@@ -5550,14 +6027,32 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         return leftToggleBar.visibility == View.VISIBLE
     }
 
-    fun isPointInToggleBar(screenX: Float, screenY: Float): Boolean {
+    private fun isPointInToggleBarButton(screenX: Float, screenY: Float): Boolean {
+        if (leftToggleBar.visibility != View.VISIBLE) return false
         val (localX, localY) = computeAnchoredCoordinates(screenX, screenY)
-        return isPointInView(localX, localY, leftToggleBar)
+        val buttonIds = listOf(
+            R.id.btnModeToggle,
+            R.id.btnYouTube,
+            R.id.btnBookmarks,
+            R.id.btnZoomOut,
+            R.id.btnZoomIn,
+            R.id.btnMask,
+            R.id.btnAnchor
+        )
+        if (buttonIds.any { id -> isPointInChild(localX, localY, leftToggleBar, leftToggleBar.findViewById(id)) }) {
+            return true
+        }
+        return windowsButton?.let { isPointInChild(localX, localY, leftToggleBar, it) } == true
+    }
+
+    fun isPointInToggleBar(screenX: Float, screenY: Float): Boolean {
+        return isPointInToggleBarButton(screenX, screenY)
     }
 
     fun isPointInNavBar(screenX: Float, screenY: Float): Boolean {
+        if (leftNavigationBar.visibility != View.VISIBLE) return false
         val (localX, localY) = computeAnchoredCoordinates(screenX, screenY)
-        return isPointInView(localX, localY, leftNavigationBar)
+        return navButtons.entries.any { isPointInChild(localX, localY, leftNavigationBar, it.value.left) }
     }
 
     private fun isPointInView(containerX: Float, containerY: Float, view: View?): Boolean {
@@ -5642,8 +6137,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     fun handleNavigationClick(screenX: Float, screenY: Float) {
         if (isInScrollMode) return
 
+        val (localX, localY) = computeAnchoredCoordinates(screenX, screenY)
+
         if (isSettingsVisible && settingsMenu != null) {
-            val (localX, localY) = computeAnchoredCoordinates(screenX, screenY)
             if (isPointInView(localX, localY, settingsMenu)) {
                 dispatchSettingsTouchEvent(screenX, screenY)
                 return
@@ -5664,14 +6160,14 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
             for (buttonId in toggleBarButtons) {
                 val button = leftToggleBar.findViewById<View>(buttonId)
-                if (isOver(button, screenX, screenY)) {
+                if (isPointInChild(localX, localY, leftToggleBar, button)) {
                     handleLeftMenuAction(buttonId)
                     return
                 }
             }
 
             windowsButton?.let { btn ->
-                if (isOver(btn, screenX, screenY)) {
+                if (isPointInChild(localX, localY, leftToggleBar, btn)) {
                     showButtonClickFeedback(btn)
                     toggleWindowMode()
                     return
@@ -5680,10 +6176,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
 
         if (leftNavigationBar.visibility == View.VISIBLE) {
-            navButtons.entries.firstOrNull { isOver(it.value.left, screenX, screenY) }?.let {
-                    (key, button) ->
-                triggerNavigationAction(key, button)
-            }
+            navButtons.entries.firstOrNull {
+                    isPointInChild(localX, localY, leftNavigationBar, it.value.left)
+                }?.let { (key, button) ->
+                    triggerNavigationAction(key, button)
+                }
         }
     }
 
@@ -5744,23 +6241,27 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     private fun handleZoomButtonClick(direction: String) {
-        val zoomFactor = if (direction == "in") 1.1f else 0.9f
-        currentWebZoom *= zoomFactor
-
-        // Save preference
-        context.getSharedPreferences("TapLinkPrefs", Context.MODE_PRIVATE)
-                .edit()
-                .putFloat("webZoomLevel", currentWebZoom)
-                .apply()
-
+        // For ar_nav.html: delegate to the 3D map's own zoom handler
         webView.evaluateJavascript(
                 """
         (function() {
-            document.body.style.zoom = "$currentWebZoom";
+            if (window.__arNavZoom) { window.__arNavZoom('$direction'); return; }
+            document.body.style.zoom = "${if (direction == "in") currentWebZoom * 1.1f else currentWebZoom * 0.9f}";
         })();
     """,
                 null
         )
+
+        // Only update CSS zoom tracking for non-AR pages
+        val url = webView.url ?: ""
+        if (!url.contains("ar_nav.html")) {
+            val zoomFactor = if (direction == "in") 1.1f else 0.9f
+            currentWebZoom *= zoomFactor
+            context.getSharedPreferences("TapLinkPrefs", Context.MODE_PRIVATE)
+                    .edit()
+                    .putFloat("webZoomLevel", currentWebZoom)
+                    .apply()
+        }
 
         postDelayed(
                 {
@@ -5815,7 +6316,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             leftBookmarksView.setAnchoredMode(true)
         }
 
-        // Use unbarred anchor icon when anchored
+        // Use solid anchor icon when anchored
         leftToggleBar.findViewById<FontIconView>(R.id.btnAnchor)?.text =
                 context.getString(R.string.fa_anchor)
     }
@@ -5835,6 +6336,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             leftBookmarksView.setAnchoredMode(false)
         }
 
+        // Use barred anchor icon when not anchored
         leftToggleBar.findViewById<FontIconView>(R.id.btnAnchor)?.text =
                 context.getString(R.string.fa_anchor_circle_xmark)
         webView.visibility = View.VISIBLE
@@ -6005,11 +6507,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             ContextCompat.getDrawable(context, R.drawable.nav_button_background)
                     // Icon already set via XML text attribute
                     if (id == R.id.btnAnchor) {
-                        text =
-                                context.getString(
-                                        if (isAnchored) R.string.fa_anchor
-                                        else R.string.fa_anchor_circle_xmark
-                                )
+                        text = if (isAnchored) context.getString(R.string.fa_anchor)
+                               else context.getString(R.string.fa_anchor_circle_xmark)
                     }
                     setPadding(iconPadding, iconPadding, iconPadding, iconPadding)
                     elevation = 4f
@@ -6043,6 +6542,54 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         leftWindowsButton.setOnClickListener {
             showButtonClickFeedback(leftWindowsButton)
             toggleWindowMode()
+        }
+    }
+
+    // ── Browser Agent button glow ────────────────────────────────────
+
+    private var agentGlowAnimator: android.animation.ObjectAnimator? = null
+
+    /**
+     * Pulse the agent button with a cyan glow while the agent session is
+     * active (Gemini is listening / working). Call [setAgentGlowActive](false)
+     * to stop.
+     */
+    fun setAgentGlowActive(active: Boolean) {
+        val btn = leftToggleBar.findViewById<FontIconView>(R.id.btnAnchor) ?: return
+        agentGlowAnimator?.cancel()
+        agentGlowAnimator = null
+        if (active) {
+            btn.setTextColor(android.graphics.Color.parseColor("#00E5FF")) // cyan
+            val animator = android.animation.ObjectAnimator.ofFloat(btn, "alpha", 1f, 0.35f).apply {
+                duration = 800
+                repeatMode = android.animation.ObjectAnimator.REVERSE
+                repeatCount = android.animation.ObjectAnimator.INFINITE
+                interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+                start()
+            }
+            agentGlowAnimator = animator
+        } else {
+            btn.alpha = 1f
+            btn.setTextColor(android.graphics.Color.WHITE)
+        }
+    }
+
+    /**
+     * Capture a JPEG screenshot of the primary WebView for the browser agent.
+     * Returns null if capture fails.
+     */
+    fun captureWebViewScreenshot(): android.graphics.Bitmap? {
+        return try {
+            val bmp = android.graphics.Bitmap.createBitmap(
+                webView.width, webView.height,
+                android.graphics.Bitmap.Config.ARGB_8888
+            )
+            val canvas = android.graphics.Canvas(bmp)
+            webView.draw(canvas)
+            bmp
+        } catch (e: Exception) {
+            Log.e("BrowserAgent", "Screenshot capture failed: ${e.message}", e)
+            null
         }
     }
 
@@ -6973,12 +7520,20 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        sharedConfigPrefs.registerOnSharedPreferenceChangeListener(sharedConfigListener)
+        sharedConfigListenerRegistered = true
+        updateSystemInfoBarVisibility()
         startRefreshing()
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        if (sharedConfigListenerRegistered) {
+            sharedConfigPrefs.unregisterOnSharedPreferenceChangeListener(sharedConfigListener)
+            sharedConfigListenerRegistered = false
+        }
         stopRefreshing()
+        releaseAudioCapture()
     }
 
     override fun onWindowVisibilityChanged(visibility: Int) {
@@ -7007,7 +7562,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
             leftToggleBar.isClickable = false
             leftNavigationBar.isClickable = false
-            leftSystemInfoView.visibility = View.GONE
+            updateSystemInfoBarVisibility()
 
             // Then animate menus away
             leftToggleBar
@@ -7036,7 +7591,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 // Re-enable touch interception and show system info bar
                 leftToggleBar.isClickable = true
                 leftNavigationBar.isClickable = true
-                leftSystemInfoView.visibility = View.VISIBLE
+                updateSystemInfoBarVisibility()
 
                 // Then show menus with animation
                 leftToggleBar.visibility = View.VISIBLE
@@ -7080,7 +7635,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             // Immediately disable touch interception before animating
             leftToggleBar.isClickable = false
             leftNavigationBar.isClickable = false
-            leftSystemInfoView.visibility = View.GONE
+            updateSystemInfoBarVisibility()
 
             // Then animate menus away
             leftToggleBar
@@ -7109,7 +7664,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 // Re-enable touch interception and show system info bar
                 leftToggleBar.isClickable = true
                 leftNavigationBar.isClickable = true
-                leftSystemInfoView.visibility = View.VISIBLE
+                updateSystemInfoBarVisibility()
 
                 // Then show menus with animation
                 leftToggleBar.visibility = View.VISIBLE
@@ -7609,6 +8164,29 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
     private fun setupMaskOverlayUI() {
 
+        maskNowPlayingText =
+                TextView(context).apply {
+                    setTextColor(Color.argb(128, 255, 255, 255))
+                    textSize = 12f
+                    gravity = Gravity.CENTER
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                    visibility = View.GONE
+                    alpha = 0.5f
+                }
+        val nowPlayingParams =
+                FrameLayout.LayoutParams(
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                FrameLayout.LayoutParams.WRAP_CONTENT
+                        )
+                        .apply {
+                            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                            leftMargin = 56
+                            rightMargin = 56
+                            bottomMargin = 54
+                        }
+        maskOverlay.addView(maskNowPlayingText, nowPlayingParams)
+
         // Unmask button (Bottom Right)
         btnMaskUnmask =
                 ImageButton(context).apply {
@@ -7616,6 +8194,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     setBackgroundColor(Color.TRANSPARENT)
                     scaleType = ImageView.ScaleType.FIT_CENTER
                     setPadding(8, 8, 8, 8)
+                    alpha = 0.5f
                     setOnClickListener { unmaskScreen() }
                 }
         val unmaskParams =
@@ -7632,6 +8211,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER
                     setBackgroundColor(Color.TRANSPARENT)
+                    alpha = 0.5f
                     visibility = View.GONE // Hidden by default until media detected
                 }
         val controlsParams =
@@ -7645,12 +8225,13 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         btnMaskPrevTrack =
                 createMediaButton(R.string.fa_backward_step) {
                     // Try to click previous track button (works on YouTube, Spotify, etc.)
-                    getMediaControlWebView()
-                            .evaluateJavascript(
-                                    """
+                    val targetWebView = getMediaControlWebView()
+                    evaluateMediaControlCommand(
+                            targetWebView,
+                            """
                 (function() {
                     // Try common previous track selectors
-                    var prevBtn = document.querySelector('.ytp-prev-button') || 
+                    var prevBtn = document.querySelector('.ytp-prev-button') ||
                                   document.querySelector('[aria-label*="previous" i]') ||
                                   document.querySelector('[title*="previous" i]') ||
                                   document.querySelector('button[data-testid="control-button-skip-back"]');
@@ -7660,24 +8241,22 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     if (media) media.currentTime = 0;
                 })();
             """.trimIndent(),
-                                    null
-                            )
+                            "(function(){ if(window.prevStation){ window.prevStation(); } })();"
+                    )
+                    scheduleTrackChangeRefresh()
                 }
         btnMaskPrev =
                 createMediaButton(R.string.fa_backward) {
-                    getMediaControlWebView()
-                            .evaluateJavascript(
-                                    "document.querySelector('video, audio').currentTime -= 10;",
-                                    null
-                            )
+                    val targetWebView = getMediaControlWebView()
+                    evaluateMediaControlCommand(
+                            targetWebView,
+                            "document.querySelector('video, audio').currentTime -= 10;",
+                            "(function(){ if(window.prevStation){ window.prevStation(); } })();"
+                    )
                 }
         btnMaskPlay =
                 createMediaButton(R.string.fa_play) {
-                    getMediaControlWebView()
-                            .evaluateJavascript(
-                                    "document.querySelector('video, audio').play();",
-                                    null
-                            )
+                    playMedia()
                     // Immediately update button visibility for responsive UI
                     lastMediaInteractionTime = SystemClock.uptimeMillis()
                     btnMaskPlay.visibility = View.GONE
@@ -7686,11 +8265,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 }
         btnMaskPause =
                 createMediaButton(R.string.fa_pause) {
-                    getMediaControlWebView()
-                            .evaluateJavascript(
-                                    "document.querySelector('video, audio').pause();",
-                                    null
-                            )
+                    pauseMedia()
                     // Immediately update button visibility for responsive UI
                     lastMediaInteractionTime = SystemClock.uptimeMillis()
                     btnMaskPause.visibility = View.GONE
@@ -7699,32 +8274,98 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 }
         btnMaskNext =
                 createMediaButton(R.string.fa_forward) {
-                    getMediaControlWebView()
-                            .evaluateJavascript(
-                                    "document.querySelector('video, audio').currentTime += 10;",
-                                    null
-                            )
+                    val targetWebView = getMediaControlWebView()
+                    evaluateMediaControlCommand(
+                            targetWebView,
+                            "document.querySelector('video, audio').currentTime += 10;",
+                            "(function(){ if(window.nextStation){ window.nextStation(); } })();"
+                    )
                 }
         btnMaskNextTrack =
                 createMediaButton(R.string.fa_forward_step) {
-                    // Try to click next track button (works on YouTube, Spotify, etc.)
-                    getMediaControlWebView()
-                            .evaluateJavascript(
-                                    """
+                    // Advance to the next track. Programmatic .click() on
+                    // .ytp-next-button often leaves YouTube's SPA chrome
+                    // (title, description) stale, so we prefer navigating
+                    // directly to the Up Next URL, which forces a clean
+                    // yt-navigate cycle.
+                    val targetWebView = getMediaControlWebView()
+                    evaluateMediaControlCommand(
+                            targetWebView,
+                            """
                 (function() {
-                    // Try common next track selectors
-                    var nextBtn = document.querySelector('.ytp-next-button') || 
-                                  document.querySelector('[aria-label*="next" i]') ||
-                                  document.querySelector('[title*="next" i]') ||
-                                  document.querySelector('button[data-testid="control-button-skip-forward"]');
-                    if (nextBtn) { nextBtn.click(); return; }
-                    // Fallback: Skip to end (triggers autoplay to next)
+                    var beforeUrl = window.location.href;
+                    var forceReloadIfUrlAdvanced = function(delayMs) {
+                        // YouTube's SPA sometimes swaps the video stream via
+                        // pushState but leaves the title/description/metadata
+                        // chrome stale. If the URL has advanced (new ?v= or
+                        // list index) but YouTube hasn't fully re-rendered,
+                        // force a real navigation to the new URL so every
+                        // piece of metadata refreshes in lockstep.
+                        setTimeout(function() {
+                            try {
+                                var now = window.location.href;
+                                if (now !== beforeUrl) {
+                                    window.location.replace(now);
+                                }
+                            } catch(e) {}
+                        }, delayMs);
+                    };
+
+                    // ── Strategy 1: Direct SPA navigation to Up Next video ──
+                    // Covers autoplay rail, playlist panels, and YouTube Mix
+                    // side panels. Navigating via window.location guarantees
+                    // the page chrome re-renders.
+                    var upLink =
+                        // Autoplay "Up Next" block (single video, autoplay on)
+                        document.querySelector('ytd-compact-autoplay-renderer a#thumbnail[href*="/watch"]') ||
+                        // Playlist/Mix panel: track immediately after the
+                        // currently-selected one (sibling-next selector).
+                        document.querySelector('ytd-playlist-panel-video-renderer[selected] + ytd-playlist-panel-video-renderer a[href*="/watch"]') ||
+                        document.querySelector('ytd-playlist-panel-video-renderer[selected] ~ ytd-playlist-panel-video-renderer a[href*="/watch"]') ||
+                        // Related rail (single-video without autoplay on)
+                        document.querySelector('#related ytd-compact-video-renderer a#thumbnail[href*="/watch"]') ||
+                        document.querySelector('ytd-compact-video-renderer a#thumbnail[href*="/watch"]') ||
+                        // Mobile layout
+                        document.querySelector('ytm-compact-autoplay-renderer a[href*="/watch"]');
+                    if (upLink && upLink.href) {
+                        window.location.href = upLink.href;
+                        return;
+                    }
+
+                    // ── Strategy 2: Dispatch a real MouseEvent on .ytp-next-button ──
+                    var nextBtn =
+                        document.querySelector('.ytp-next-button:not([aria-disabled="true"])') ||
+                        document.querySelector('.ytp-next-button') ||
+                        document.querySelector('button[aria-label^="Next" i]') ||
+                        document.querySelector('button[data-testid="control-button-skip-forward"]');
+                    if (nextBtn) {
+                        try {
+                            nextBtn.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
+                        } catch(e) {
+                            nextBtn.click();
+                        }
+                        // Catch the case where YouTube's SPA advances the
+                        // URL but leaves the page chrome stale.
+                        forceReloadIfUrlAdvanced(1500);
+                        return;
+                    }
+
+                    // ── Strategy 3: Fire 'ended' so YouTube's autoplay takes over ──
                     var media = document.querySelector('video, audio');
-                    if (media) media.currentTime = media.duration;
+                    if (media && isFinite(media.duration)) {
+                        try {
+                            media.currentTime = Math.max(0, media.duration - 0.05);
+                            media.dispatchEvent(new Event('ended', {bubbles:true}));
+                        } catch(e) {}
+                        forceReloadIfUrlAdvanced(2500);
+                    }
                 })();
             """.trimIndent(),
-                                    null
-                            )
+                            "(function(){ if(window.nextStation){ window.nextStation(); } })();"
+                    )
+                    // YouTube SPA navigations take several seconds to update the title.
+                    // Schedule aggressive delayed refreshes to catch the new video name.
+                    scheduleTrackChangeRefresh()
                 }
 
         btnMaskPause.visibility = View.GONE // Initially show Play
@@ -7735,6 +8376,3582 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         maskMediaControlsContainer.addView(btnMaskPause)
         maskMediaControlsContainer.addView(btnMaskNext)
         maskMediaControlsContainer.addView(btnMaskNextTrack)
+
+        // ── Audio Visualizer ──
+        maskVisualizerView = AudioVisualizerView(context).apply {
+            visibility = View.GONE
+            alpha = 0.6f
+        }
+        val vizParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, 180
+        ).apply {
+            gravity = Gravity.CENTER
+            leftMargin = 40
+            rightMargin = 40
+        }
+        maskOverlay.addView(maskVisualizerView, vizParams)
+
+        // Toggle button — placed inline with the media-controls toolbar, as
+        // the right-most child. Custom-drawn spectrum-bars-with-mirror icon
+        // that matches the reference art (purple/magenta EQ silhouette with
+        // a soft reflection below).
+        btnVisualizerToggle = SpectrumVizButton(context).apply {
+            isClickable = true
+            isFocusable = true
+            layoutParams = LinearLayout.LayoutParams(40, 40).apply {
+                leftMargin = 4
+                rightMargin = 4
+            }
+            setOnClickListener {
+                val now = SystemClock.uptimeMillis()
+                if (now - lastVisualizerToggleTime < 200) return@setOnClickListener
+                lastVisualizerToggleTime = now
+                if (!isVisualizerVisible) {
+                    showVisualizer()
+                } else {
+                    hideVisualizer()
+                }
+            }
+        }
+        updateVisualizerButtonColor()
+        maskMediaControlsContainer.addView(btnVisualizerToggle)
+    }
+
+    private fun showVisualizer() {
+        isVisualizerVisible = true
+        maskVisualizerView.visibility = View.VISIBLE
+        maskVisualizerView.bringToFront()
+        maskVisualizerView.startAnimating()
+        startAudioCapture()
+        // Bring controls and text back to front
+        maskMediaControlsContainer.bringToFront()
+        maskNowPlayingText.bringToFront()
+        btnVisualizerToggle.bringToFront()
+        btnVisualizerToggle.alpha = 1.0f
+        updateVisualizerButtonColor()
+    }
+
+    private fun hideVisualizer() {
+        isVisualizerVisible = false
+        stopAudioCapture()
+        maskVisualizerView.stopAnimating()
+        maskVisualizerView.visibility = View.GONE
+        btnVisualizerToggle.alpha = 0.5f
+        updateVisualizerButtonColor()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startAudioCapture() {
+        // Reuse existing Visualizer if already created — releasing and recreating
+        // Visualizer(0) disrupts the audio pipeline and can stop TapRadio playback.
+        val existing = audioVisualizer
+        if (existing != null) {
+            try {
+                if (!existing.enabled) existing.enabled = true
+                Log.d("AudioViz", "Visualizer re-enabled (reused existing instance)")
+                return
+            } catch (e: Exception) {
+                // Existing instance is dead, release and recreate
+                Log.w("AudioViz", "Existing visualizer unusable, recreating: ${e.message}")
+                try { existing.release() } catch (_: Exception) {}
+                audioVisualizer = null
+            }
+        }
+        try {
+            // Session 0 = mix of all audio output
+            val viz = Visualizer(0)
+            viz.captureSize = Visualizer.getCaptureSizeRange()[1]  // max for best resolution
+            viz.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
+                override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, samplingRate: Int) {}
+                override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, samplingRate: Int) {
+                    if (fft == null) return
+                    val buckets = fftMagnitudes.size
+                    val fftSize = fft.size / 2  // real/imag pairs
+                    val capture = FloatArray(buckets)
+                    for (i in 0 until buckets) {
+                        val startFrac = (i.toFloat() / buckets.toFloat()).toDouble().pow(1.55).toFloat()
+                        val endFrac = ((i + 1).toFloat() / buckets.toFloat()).toDouble().pow(1.55).toFloat()
+                        val start = (startFrac * fftSize).toInt().coerceIn(1, maxOf(1, fftSize - 1))
+                        val end = (endFrac * fftSize).toInt().coerceIn(start + 1, fftSize)
+                        var peakDb = 0f
+                        var avgDb = 0f
+                        var samples = 0
+                        for (bin in start until end) {
+                            val reIdx = bin * 2
+                            val imIdx = reIdx + 1
+                            if (imIdx >= fft.size) break
+                            val re = fft[reIdx].toFloat()
+                            val im = fft[imIdx].toFloat()
+                            val magnitude = kotlin.math.sqrt(re * re + im * im)
+                            val db = (20f * kotlin.math.log10(1f + magnitude)).coerceAtLeast(0f)
+                            if (db > peakDb) peakDb = db
+                            avgDb += db
+                            samples++
+                        }
+                        val meanDb = if (samples > 0) avgDb / samples else 0f
+                        val pos = i.toFloat() / (buckets - 1).coerceAtLeast(1)
+                        val mixedDb = peakDb * 0.58f + meanDb * 0.42f
+                        val normalized = (mixedDb / 44f).coerceIn(0f, 1f)
+                        val eqWeight = when {
+                            pos < 0.16f -> 0.48f + pos * 0.55f
+                            pos < 0.42f -> 0.68f + (pos - 0.16f) * 1.0f
+                            pos < 0.76f -> 0.94f + (pos - 0.42f) * 0.95f
+                            else -> 1.26f + (pos - 0.76f) * 1.55f
+                        }
+                        val compressed = normalized.toDouble().pow(0.72).toFloat()
+                        capture[i] = (compressed * eqWeight).coerceIn(0f, 1f)
+                    }
+                    // Write to back buffer, then atomically swap with front buffer
+                    for (i in 0 until buckets) {
+                        val leftFar = capture[maxOf(0, i - 2)]
+                        val left = capture[maxOf(0, i - 1)]
+                        val center = capture[i]
+                        val right = capture[minOf(buckets - 1, i + 1)]
+                        val rightFar = capture[minOf(buckets - 1, i + 2)]
+                        val pos = i.toFloat() / (buckets - 1).coerceAtLeast(1)
+                        val smoothed = leftFar * 0.08f + left * 0.18f + center * 0.38f + right * 0.22f + rightFar * 0.14f
+                        val stereoBalance = when {
+                            pos < 0.2f -> 0.72f
+                            pos < 0.55f -> 0.82f + (pos - 0.2f) * 0.38f
+                            else -> 0.95f + (pos - 0.55f) * 0.55f
+                        }
+                        fftBackBuffer[i] = (smoothed * stereoBalance).coerceIn(0f, 1f)
+                    }
+                    // Atomic swap: UI thread sees complete frame or previous frame, never partial
+                    val tmp = fftFrontBuffer
+                    fftFrontBuffer = fftBackBuffer
+                    fftBackBuffer = tmp
+                }
+            }, Visualizer.getMaxCaptureRate(), false, true)  // waveform=false, fft=true
+            viz.enabled = true
+            audioVisualizer = viz
+            Log.d("AudioViz", "Visualizer capture started, size=${viz.captureSize}")
+        } catch (e: Exception) {
+            Log.e("AudioViz", "Failed to start Visualizer: ${e.message}")
+            // Fall back to random data mode — fftMagnitudes will stay at 0
+        }
+    }
+
+    private fun stopAudioCapture() {
+        // Only disable — don't release. Releasing Visualizer(0) and recreating it
+        // disrupts the audio pipeline and can stop TapRadio/media playback.
+        try {
+            audioVisualizer?.enabled = false
+        } catch (_: Exception) {}
+        // Zero out both buffers so bars drop to silence
+        fftFrontBuffer.fill(0f)
+        fftBackBuffer.fill(0f)
+    }
+
+    /** Fully release the Visualizer (call on destroy/cleanup only). */
+    fun releaseAudioCapture() {
+        try {
+            audioVisualizer?.enabled = false
+            audioVisualizer?.release()
+        } catch (_: Exception) {}
+        audioVisualizer = null
+        fftFrontBuffer.fill(0f)
+        fftBackBuffer.fill(0f)
+    }
+
+    private fun updatePlaybackWakeLocks() {
+        val shouldHoldMaskWakeLock = isScreenMasked
+        if (shouldHoldMaskWakeLock) {
+            if (!maskWakeLock.isHeld) maskWakeLock.acquire()
+        } else if (maskWakeLock.isHeld) {
+            maskWakeLock.release()
+        }
+
+        // Streaming radio/video needs a steady CPU + Wi-Fi path on these glasses.
+        // The device log shows real AudioTrack underruns, so hold playback resources
+        // for any active media session, not only when the host Activity is paused.
+        val shouldHoldPlaybackWakeLock = isMediaPlaying
+        if (shouldHoldPlaybackWakeLock) {
+            if (!pausedMediaWakeLock.isHeld) pausedMediaWakeLock.acquire()
+            try {
+                if (mediaWifiLock?.isHeld == false) mediaWifiLock.acquire()
+            } catch (_: Exception) {}
+        } else {
+            if (pausedMediaWakeLock.isHeld) pausedMediaWakeLock.release()
+            try {
+                if (mediaWifiLock?.isHeld == true) mediaWifiLock.release()
+            } catch (_: Exception) {}
+        }
+    }
+
+    /** Refresh the visualizer button's visual state. The button itself draws
+     *  its own art; here we just flip the active flag and nudge alpha so the
+     *  idle state reads as dimmer than the active state.
+     */
+    private fun updateVisualizerButtonColor() {
+        if (!::btnVisualizerToggle.isInitialized) return
+        btnVisualizerToggle.isSelected = isVisualizerVisible
+        btnVisualizerToggle.setActive(isVisualizerVisible)
+        btnVisualizerToggle.alpha = if (isVisualizerVisible) 1.0f else 0.78f
+    }
+
+    /**
+     * Custom-drawn "spectrum" button that matches the reference art.
+     *
+     *   • Vertical magenta→violet gradient bars
+     *   • Heights follow a wave envelope (sum-of-sines) giving the classic
+     *     4-5 peak spectrum shape
+     *   • Mirrored reflection below the midline, fading to transparent
+     *   • Transparent background so it sits inline with the media toolbar
+     *
+     * Active vs idle is communicated by alpha and bar brightness.
+     */
+    inner class SpectrumVizButton(context: Context) : View(context) {
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var active = false
+
+        fun setActive(a: Boolean) {
+            if (active == a) return
+            active = a
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (w <= 0f || h <= 0f) return
+
+            // ─── Layout ───
+            val barCount = 20
+            val padX = w * 0.08f
+            val usableW = w - padX * 2f
+            val gap = 1.5f
+            val barW = (usableW - gap * (barCount - 1)) / barCount
+
+            // Midline sits slightly below center so the main bars get more vertical room.
+            val midY = h * 0.55f
+            val topRoom = midY - h * 0.08f         // room above midline for main bars
+            val bottomRoom = h - midY - h * 0.05f  // room below midline for reflection
+
+            // ─── Wave envelope: sum of sines produces the 4-5 peak shape ───
+            // f(x) where x ∈ [0,1]: sin(x·2π) + 0.55·sin(x·5π) + 0.25·sin(x·8π)
+            // normalised into [0.12, 1.0]
+            val envelope = FloatArray(barCount)
+            var envMin = Float.MAX_VALUE
+            var envMax = -Float.MAX_VALUE
+            for (i in 0 until barCount) {
+                val x = i.toFloat() / (barCount - 1).toFloat()
+                val v = kotlin.math.sin(x * 2.0 * Math.PI).toFloat() +
+                        0.55f * kotlin.math.sin(x * 5.0 * Math.PI).toFloat() +
+                        0.25f * kotlin.math.sin(x * 8.0 * Math.PI).toFloat()
+                envelope[i] = v
+                if (v < envMin) envMin = v
+                if (v > envMax) envMax = v
+            }
+            val span = (envMax - envMin).coerceAtLeast(0.0001f)
+            for (i in 0 until barCount) {
+                envelope[i] = 0.15f + 0.85f * ((envelope[i] - envMin) / span)
+            }
+
+            // ─── Main bars (above midline) ───
+            // Neon palette: electric cyan top, hot-pink midsection, laser
+            // magenta bottom — reads as a glowing EQ silhouette against any
+            // toolbar background.
+            val topColor    = android.graphics.Color.parseColor("#00FFF0") // electric cyan
+            val midColor    = android.graphics.Color.parseColor("#FF3CEC") // hot magenta
+            val bottomColor = android.graphics.Color.parseColor("#FF1E8C") // laser pink
+            val dimFactor = if (active) 1.0f else 0.90f
+
+            val corner = barW * 0.45f
+
+            // Soft outer glow behind the main bars to sell the neon feel
+            p.style = Paint.Style.FILL
+            for (i in 0 until barCount) {
+                val left = padX + i * (barW + gap)
+                val right = left + barW
+                val barH = envelope[i] * topRoom
+                val top = midY - barH
+                val bottom = midY
+                p.color = applyAlphaToColor(
+                    android.graphics.Color.parseColor("#FF59E8"),
+                    (95 * dimFactor).toInt()
+                )
+                p.setShadowLayer(barW * 0.9f, 0f, 0f,
+                    applyAlphaToColor(
+                        android.graphics.Color.parseColor("#FF59E8"),
+                        (200 * dimFactor).toInt()
+                    )
+                )
+                canvas.drawRoundRect(
+                    android.graphics.RectF(left, top, right, bottom),
+                    corner, corner, p
+                )
+            }
+            p.setShadowLayer(0f, 0f, 0f, 0)
+
+            // Bright bars on top of the glow
+            for (i in 0 until barCount) {
+                val left = padX + i * (barW + gap)
+                val right = left + barW
+                val barH = envelope[i] * topRoom
+                val top = midY - barH
+                val bottom = midY
+
+                p.shader = android.graphics.LinearGradient(
+                    left, top, left, bottom,
+                    intArrayOf(
+                        applyAlphaToColor(topColor,    (255 * dimFactor).toInt()),
+                        applyAlphaToColor(midColor,    (255 * dimFactor).toInt()),
+                        applyAlphaToColor(bottomColor, (255 * dimFactor).toInt())
+                    ),
+                    floatArrayOf(0f, 0.55f, 1f),
+                    android.graphics.Shader.TileMode.CLAMP
+                )
+                canvas.drawRoundRect(
+                    android.graphics.RectF(left, top, right, bottom),
+                    corner, corner, p
+                )
+                p.shader = null
+
+                // Bright highlight bead at the very top of each bar
+                val beadH = (barH * 0.10f).coerceAtLeast(1.5f)
+                p.color = applyAlphaToColor(
+                    android.graphics.Color.parseColor("#FFFFFF"),
+                    (220 * dimFactor).toInt()
+                )
+                canvas.drawRoundRect(
+                    android.graphics.RectF(left, top, right, top + beadH),
+                    corner, corner, p
+                )
+
+                // ── Mirror reflection below midline ──
+                // Height proportional to the main bar, but clamped to bottomRoom
+                val reflH = (barH * 0.75f).coerceAtMost(bottomRoom)
+                val reflTop = midY
+                val reflBottom = midY + reflH
+
+                p.shader = android.graphics.LinearGradient(
+                    left, reflTop, left, reflBottom,
+                    intArrayOf(
+                        applyAlphaToColor(bottomColor, (170 * dimFactor).toInt()),
+                        applyAlphaToColor(midColor,    (60  * dimFactor).toInt()),
+                        applyAlphaToColor(topColor, 0)
+                    ),
+                    floatArrayOf(0f, 0.5f, 1f),
+                    android.graphics.Shader.TileMode.CLAMP
+                )
+                canvas.drawRoundRect(
+                    android.graphics.RectF(left, reflTop, right, reflBottom),
+                    corner, corner, p
+                )
+                p.shader = null
+            }
+        }
+
+        private fun applyAlphaToColor(color: Int, alpha: Int): Int {
+            val a = alpha.coerceIn(0, 255)
+            return (a shl 24) or (color and 0x00FFFFFF)
+        }
+    }
+
+    /**
+     * Animated audio visualizer view drawn on Canvas.
+     * Themes cycle on long-press of the toggle button.
+     */
+    inner class AudioVisualizerView(context: Context) : View(context) {
+
+        // Theme constants (enum class not allowed inside inner class)
+        // Breathing-meditation theme is now the default (index 0). The 8-bit
+        // graphic-equalizer theme has been removed. Three classic Winamp-style
+        // themes are appended at the end.
+        val THEME_BREATHE = 0
+        val THEME_WAVE = 1
+        val THEME_PULSE_RING = 2
+        val THEME_MEDITATIVE = 3
+        val THEME_TRON = 4
+        val THEME_CLOSE_ENCOUNTERS = 5
+        val THEME_FRACTAL = 6
+        val THEME_WINAMP_BARS = 7        // Classic yellow→red bar spectrum w/ peak caps
+        val THEME_WINAMP_SCOPE = 8       // Green oscilloscope waveform on black
+        val THEME_WINAMP_STARFIELD = 9   // vis_nsfs-style warp-speed starfield
+        private val THEME_COUNT = 10
+
+        // Breathing timer state
+        private var breathCycleMs = 0L          // elapsed ms in current cycle
+        private var breathInhaleMs = 4000L      // 4s inhale
+        private var breathHoldMs = 1000L        // 1s hold
+        private var breathExhaleMs = 6000L      // 6s exhale
+        private var breathPauseMs = 1000L       // 1s pause
+        private val breathTotalMs get() = breathInhaleMs + breathHoldMs + breathExhaleMs + breathPauseMs
+        private var lastBreathFrameTime = 0L
+
+        var currentTheme = THEME_BREATHE
+            private set
+        private val barCount = 32
+        private val barHeights = FloatArray(barCount)
+        private val targetHeights = FloatArray(barCount)
+        private val velocities = FloatArray(barCount)
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var animating = false
+        private val random = java.util.Random()
+        private var frameCount = 0L
+        private val wavePath = android.graphics.Path()
+
+        // Peak-hold buffers used by the Tron light-wall EQ columns.
+        // Sized lazily in drawTron to match the column count it chooses, so we
+        // don't hard-code a magic number in two places.
+        private var tronPeakL = FloatArray(24)
+        private var tronPeakR = FloatArray(24)
+
+        // Persistent scratch state for the 3D-fractal theme.
+        // These are allocated once so the per-frame onDraw never churns the GC.
+        private val fractalStarField = FloatArray(128) { (it * 17.31f) % 1f }
+        private val fractalIfsPts = FloatArray(180)         // chaos-game trail
+        private var fractalIfsInit = false
+        private val fractalRotSeed = FloatArray(8) { (it * 41.9f) % 1f }
+
+        // Persistent state for the Atomic (pulse-ring) visualizer.
+        // 10 electrons distributed across 5 shells. Each has a home shell,
+        // a current angular position, a spin direction, and a jump phase
+        // that animates transient "quantum leaps" on audio spikes.
+        private val atomElectronCount = 10
+        private val atomShellCount = 5
+        private val atomElectronShell       = IntArray(atomElectronCount)
+        private val atomElectronHomeShell   = IntArray(atomElectronCount)
+        private val atomElectronAngle       = FloatArray(atomElectronCount)
+        private val atomElectronSpeed       = FloatArray(atomElectronCount)
+        private val atomElectronJumpPhase   = FloatArray(atomElectronCount)
+        private val atomElectronTargetShell = IntArray(atomElectronCount)
+        private val atomElectronFlash       = FloatArray(atomElectronCount)
+        private val atomBandPrev            = FloatArray(atomShellCount)
+        private val atomShellTilt           = FloatArray(atomShellCount)
+        private var atomInit = false
+
+        // Persistent state for the Tron Recognizer + Tank actors.
+        // X position rides across the grid; pieces respond to audio.
+        private var tronRecogX = -0.25f   // -0.25..1.25 in normalized X
+        private var tronTankX  = 1.15f
+
+        // Persistent state for the Meditative theme.
+        // ── Drifting nebula stars (slow parallax backdrop) ──
+        private val medStarCount = 60
+        private val medStarX    = FloatArray(medStarCount) { (it * 73.13f) % 1f }
+        private val medStarY    = FloatArray(medStarCount) { (it * 19.77f) % 1f }
+        private val medStarSize = FloatArray(medStarCount) { 0.25f + (it * 13.9f) % 0.75f }
+        private val medStarTwinkle = FloatArray(medStarCount) { (it * 7.31f) % 1f }
+        // ── Particle history trails: ring buffer of last N positions per particle ──
+        private val medParticleCount = 18
+        private val medTrailLen = 10
+        private val medTrailX = FloatArray(medParticleCount * medTrailLen)
+        private val medTrailY = FloatArray(medParticleCount * medTrailLen)
+        private var medTrailHead = 0
+        private var medTrailInit = false
+        // ── Bass-spike ray burst: transient energy that decays per frame ──
+        private var medBurstEnergy = 0f
+        private var medBurstRot = 0f
+        private var medPrevBass = 0f
+        // ── Mandala petal rotation (accumulates slowly with mid-band) ──
+        private var medMandalaRot = 0f
+
+        // ── Winamp-style themes: persistent state ──────────────────────────
+        // Classic-bars peak caps (falling white dots over each spectrum column)
+        private val winampBarPeak = FloatArray(barCount)
+        private val winampBarHold = IntArray(barCount)
+        // Scope: rolling oscilloscope history — each entry is a [-1,1] sample
+        private val winampScopeLen = 128
+        private val winampScope = FloatArray(winampScopeLen)
+        private var winampScopeHead = 0
+        // Starfield (vis_nsfs-style): 3D stars that fly toward the viewer
+        private val winampStarN = 160
+        private val winampStarX = FloatArray(winampStarN)
+        private val winampStarY = FloatArray(winampStarN)
+        private val winampStarZ = FloatArray(winampStarN)
+        private var winampStarsInit = false
+        private val winampRand = java.util.Random(0xC0FFEE)
+
+        // Theme color palettes
+        private val neonColors = intArrayOf(
+            Color.parseColor("#FF00FF"), Color.parseColor("#00FFFF"),
+            Color.parseColor("#FF006E"), Color.parseColor("#00FF88"),
+            Color.parseColor("#8B5CF6"), Color.parseColor("#06B6D4")
+        )
+        private val spectrumColors = intArrayOf(
+            Color.parseColor("#FF0000"), Color.parseColor("#FF7700"),
+            Color.parseColor("#FFFF00"), Color.parseColor("#00FF00"),
+            Color.parseColor("#0077FF"), Color.parseColor("#8800FF")
+        )
+
+        fun cycleTheme() {
+            currentTheme = (currentTheme + 1) % THEME_COUNT
+            invalidate()
+        }
+
+        private fun applyTheme(theme: Int) {
+            currentTheme = ((theme % THEME_COUNT) + THEME_COUNT) % THEME_COUNT
+            frameCount = 0L
+            breathCycleMs = 0L
+            lastBreathFrameTime = 0L
+            wavePath.reset()
+            paint.reset()
+            paint.isAntiAlias = true
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            invalidate()
+        }
+
+        /** Advance theme sequentially and wrap back to the first theme without hiding. */
+        fun cycleThemeOrWrap(): Boolean {
+            applyTheme(currentTheme + 1)
+            updateVisualizerButtonColor()
+            return false
+        }
+
+        fun startAnimating() {
+            animating = true
+            applyTheme(currentTheme)
+            postInvalidateOnAnimation()
+        }
+
+        fun stopAnimating() {
+            animating = false
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (!animating) return
+
+            canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+            paint.reset()
+            paint.isAntiAlias = true
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            paint.shader = null
+            paint.textAlign = Paint.Align.LEFT
+            paint.typeface = android.graphics.Typeface.DEFAULT
+            wavePath.reset()
+
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (w <= 0 || h <= 0) return
+
+            // Pull real FFT magnitudes from the audio capture
+            frameCount++
+            for (i in 0 until barCount) {
+                targetHeights[i] = fftMagnitudes[i]
+            }
+            // Smooth interpolation — fast attack, slower decay for punchy response
+            for (i in 0 until barCount) {
+                val target = targetHeights[i]
+                if (target > barHeights[i]) {
+                    // Fast attack: snap up quickly to new peaks
+                    barHeights[i] = barHeights[i] * 0.3f + target * 0.7f
+                } else {
+                    // Slower decay: smooth falloff for visual appeal
+                    barHeights[i] = barHeights[i] * 0.75f + target * 0.25f
+                }
+                barHeights[i] = barHeights[i].coerceIn(0.0f, 1f)
+            }
+
+            when (currentTheme) {
+                THEME_BREATHE -> drawBreathe(canvas, w, h)
+                THEME_WAVE -> drawWave(canvas, w, h)
+                THEME_PULSE_RING -> drawPulseRing(canvas, w, h)
+                THEME_MEDITATIVE -> drawMeditative(canvas, w, h)
+                THEME_TRON -> drawTron(canvas, w, h)
+                THEME_CLOSE_ENCOUNTERS -> drawCloseEncounters(canvas, w, h)
+                THEME_FRACTAL -> drawFractal(canvas, w, h)
+                THEME_WINAMP_BARS -> drawWinampBars(canvas, w, h)
+                THEME_WINAMP_SCOPE -> drawWinampScope(canvas, w, h)
+                THEME_WINAMP_STARFIELD -> drawWinampStarfield(canvas, w, h)
+            }
+
+            if (animating) postInvalidateOnAnimation()
+        }
+
+        private fun bandEnergy(startInclusive: Int, endInclusive: Int): Float {
+            val safeStart = startInclusive.coerceIn(0, barCount - 1)
+            val safeEnd = endInclusive.coerceIn(safeStart, barCount - 1)
+            var total = 0f
+            var count = 0
+            for (i in safeStart..safeEnd) {
+                total += barHeights[i]
+                count++
+            }
+            return if (count > 0) total / count else 0f
+        }
+
+        private fun remapVisualizerPosition(pos: Float): Float {
+            val clamped = pos.coerceIn(0f, 1f)
+            val curved = clamped.toDouble().pow(1.18).toFloat()
+            return (curved * 0.78f + clamped * 0.22f).coerceIn(0f, 1f)
+        }
+
+        private fun bandWindow(centerPos: Float, radius: Int = 2): Float {
+            val center = (centerPos.coerceIn(0f, 1f) * (barCount - 1)).toInt().coerceIn(0, barCount - 1)
+            var total = 0f
+            var weightSum = 0f
+            for (offset in -radius..radius) {
+                val idx = (center + offset).coerceIn(0, barCount - 1)
+                val weight = 1f / (1f + kotlin.math.abs(offset).toFloat())
+                total += barHeights[idx] * weight
+                weightSum += weight
+            }
+            return if (weightSum > 0f) total / weightSum else 0f
+        }
+
+        private fun measuredAudioAt(pos: Float, lowCut: Float = 0.82f, highBoost: Float = 1.22f): Float {
+            val remapped = remapVisualizerPosition(pos)
+            val wide = bandWindow(remapped, 3)
+            val tight = bandWindow(remapped, 1)
+            val blended = (wide * 0.45f + tight * 0.55f).coerceIn(0f, 1f)
+            val tonalWeight = when {
+                remapped < 0.18f -> lowCut
+                remapped < 0.52f -> 0.9f + (remapped - 0.18f) * 0.55f
+                else -> 1.02f + (remapped - 0.52f) * ((highBoost - 1.02f) / 0.48f)
+            }
+            val compressed = blended.toDouble().pow(0.82).toFloat()
+            return (compressed * tonalWeight).coerceIn(0f, 1f)
+        }
+
+        private fun measuredYOffset(sample: Float, amplitude: Float, floor: Float = 0.28f): Float {
+            return (sample - floor) * amplitude
+        }
+
+        /**
+         * Classical Orchestra Theme — Musicians on a warm concert stage.
+         *
+         * ALL figure geometry uses a unit scale `u` derived from canvas
+         * height so proportions stay correct regardless of aspect ratio.
+         * When audio is present, every musician visibly plays their
+         * instrument — bow strokes, finger movement, body sway — all
+         * proportional to their frequency band's energy.
+         * When silent, every musician holds still at rest position.
+         */
+        private fun drawWave(canvas: Canvas, w: Float, h: Float) {
+            val avgLevel = bandEnergy(0, barCount - 1)
+            val bass = bandEnergy(0, 6)
+            val lowMid = bandEnergy(7, 14)
+            val highMid = bandEnergy(15, 23)
+            val treble = bandEnergy(24, 31)
+            val active = avgLevel > 0.04f
+            val motion = if (active) avgLevel.coerceIn(0f, 1f) else 0f
+
+            // Unit scale: all musician geometry derives from this.
+            // Large scale fills the glasses frame edge-to-edge.
+            val u = h * 0.035f
+            val stageTop = h * 0.42f
+            val stageCenterY = h * 0.62f
+
+            // Time bases for musical motion (doubled speed: ~1.5s and ~2.4s cycles)
+            val tSlow = frameCount * 0.044f
+            val tMed  = frameCount * 0.070f
+
+            // ── Background ──
+            paint.style = Paint.Style.FILL
+            paint.shader = android.graphics.LinearGradient(
+                0f, 0f, 0f, h,
+                intArrayOf(
+                    Color.parseColor("#06090F"),
+                    Color.parseColor("#0E1722"),
+                    Color.parseColor("#14100C")
+                ),
+                floatArrayOf(0f, 0.55f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, w, h, paint)
+            paint.shader = null
+
+            // Stage floor — edge-to-edge for baroque close-up
+            paint.color = Color.argb(78, 200, 165, 85)
+            canvas.drawOval(w * 0.02f, stageTop, w * 0.98f, h * 1.05f, paint)
+            paint.color = Color.argb(140, 24, 16, 8)
+            canvas.drawRect(0f, stageTop + 2f, w, h, paint)
+            paint.style = Paint.Style.STROKE
+            paint.color = Color.argb(90, 240, 200, 130)
+            paint.strokeWidth = 1.2f
+            canvas.drawLine(w * 0.02f, stageTop, w * 0.98f, stageTop, paint)
+
+            // Stage spots — spread across full width
+            paint.style = Paint.Style.FILL
+            val sA = (30 + motion * 40f).toInt().coerceIn(30, 75)
+            paint.color = Color.argb(sA, 255, 225, 160)
+            canvas.drawCircle(w * 0.18f, h * 0.08f, 4f + treble * 2.5f, paint)
+            canvas.drawCircle(w * 0.50f, h * 0.04f, 5f + highMid * 3f, paint)
+            canvas.drawCircle(w * 0.82f, h * 0.08f, 4f + lowMid * 2.5f, paint)
+
+            // Light cones — wider to cover full stage
+            if (motion > 0.05f) {
+                paint.color = Color.argb((motion * 18f).toInt().coerceIn(0, 22), 255, 220, 150)
+                val cone = android.graphics.Path()
+                for (spot in floatArrayOf(0.18f, 0.50f, 0.82f)) {
+                    cone.reset()
+                    cone.moveTo(w * spot, h * 0.06f)
+                    cone.lineTo(w * (spot - 0.08f), stageTop)
+                    cone.lineTo(w * (spot + 0.08f), stageTop)
+                    cone.close()
+                    canvas.drawPath(cone, paint)
+                }
+            }
+
+            // ═══ Drawing helpers ═══
+
+            // Diverse skin tone palette
+            val skinTones = intArrayOf(
+                Color.parseColor("#FCDEC0"),  // light
+                Color.parseColor("#C68642"),  // medium brown
+                Color.parseColor("#8D5524"),  // dark brown
+                Color.parseColor("#E0AC69"),  // golden
+                Color.parseColor("#503335"),  // deep brown
+                Color.parseColor("#D4A574"),  // olive
+                Color.parseColor("#A0522D")   // sienna
+            )
+
+            fun drawHead(hx: Float, hy: Float, r: Float, skinColor: Int = skinTones[0]) {
+                paint.style = Paint.Style.FILL
+                paint.color = skinColor
+                canvas.drawCircle(hx, hy, r, paint)
+                paint.color = Color.argb(45, 20, 12, 8)
+                canvas.drawCircle(hx, hy + r * 0.18f, r * 0.82f, paint)
+            }
+
+            fun drawTorso(bx: Float, top: Float, bw: Float, bh: Float, color: Int) {
+                paint.style = Paint.Style.FILL
+                paint.color = color
+                canvas.drawRoundRect(bx - bw / 2f, top, bx + bw / 2f, top + bh, bw * 0.28f, bw * 0.28f, paint)
+            }
+
+            fun drawLimb(sx: Float, sy: Float, ex: Float, ey: Float, hx: Float, hy: Float, width: Float, color: Int) {
+                paint.style = Paint.Style.STROKE
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+                paint.strokeWidth = width
+                paint.color = color
+                canvas.drawLine(sx, sy, ex, ey, paint)
+                canvas.drawLine(ex, ey, hx, hy, paint)
+            }
+
+            // ═══ Musicians ═══
+            val headR = u * 1.6f
+            val bodyW = u * 2.8f
+            val bodyH = u * 8f
+            val armW = u * 0.18f + 1.2f  // arm stroke width
+
+            fun drawViolinist(cx: Float, cy: Float, energy: Float, dress: Int, skinColor: Int, seed: Float) {
+                val e = if (active) energy.coerceIn(0f, 1f) else 0f
+                val torsoTop = cy - u * 5f
+                val shoulderY = cy - u * 2.4f
+                val shoulderL = cx - u * 1.2f
+                val shoulderR = cx + u * 1.2f
+
+                // Gentle sway tied to energy
+                val sway = kotlin.math.sin((tSlow + seed).toDouble()).toFloat() * e * u * 0.5f
+                drawHead(cx + sway * 0.3f, torsoTop - headR * 1.1f, headR, skinColor)
+                drawTorso(cx + sway * 0.12f, torsoTop, bodyW, bodyH, dress)
+
+                // Violin body tucked under chin, left side
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#A96A2A")
+                val vl = cx - u * 0.5f
+                val vt = cy - u * 1.8f
+                canvas.drawOval(vl, vt, vl + u * 2.8f, vt + u * 2.2f, paint)
+                // Strings
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 0.4f
+                paint.color = Color.parseColor("#DDD0B0")
+                canvas.drawLine(vl + u * 0.7f, vt + u * 0.3f, vl + u * 2.1f, vt + u * 1.9f, paint)
+
+                // Left arm: neck hand — slight vibrato shift
+                val vibrato = kotlin.math.sin((tMed * 2.4f + seed * 3f).toDouble()).toFloat() * e * u * 0.4f
+                drawLimb(
+                    shoulderL, shoulderY,
+                    cx - u * 0.2f, cy - u * 1.4f,
+                    cx + u * 0.8f + vibrato * 0.3f, cy - u * 1.6f - vibrato,
+                    armW, skinColor
+                )
+
+                // Right arm: BOW arm — clear sweeping motion
+                // The bow hand moves in an arc; bow angle rotates with it.
+                val bowPhase = kotlin.math.sin((tMed + seed * 1.7f).toDouble()).toFloat()
+                val bowSwing = bowPhase * e * (u * 1.2f + e * u * 2.5f) // visible motion
+                val elbowR_x = shoulderR + u * 0.8f
+                val elbowR_y = cy - u * 0.6f + bowSwing * 0.3f
+                val handR_x = cx + u * 2f
+                val handR_y = cy + u * 0.2f + bowSwing * 0.5f
+                drawLimb(shoulderR, shoulderY, elbowR_x, elbowR_y, handR_x, handR_y, armW, skinColor)
+
+                // Bow stick
+                paint.style = Paint.Style.STROKE
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeWidth = 1.2f
+                paint.color = Color.parseColor("#E0D0B0")
+                val bowTip_x = cx - u * 1.2f
+                val bowTip_y = cy - u * 1.2f + bowSwing * 0.4f
+                canvas.drawLine(handR_x, handR_y, bowTip_x, bowTip_y, paint)
+
+            }
+
+            fun drawCellist(cx: Float, cy: Float, energy: Float, dress: Int, skinColor: Int, seed: Float) {
+                val e = if (active) energy.coerceIn(0f, 1f) else 0f
+                val torsoTop = cy - u * 5.5f
+                val shoulderY = cy - u * 2.8f
+                val shoulderL = cx - u * 1.2f
+                val shoulderR = cx + u * 1.2f
+
+                val sway = kotlin.math.sin((tSlow * 0.8f + seed).toDouble()).toFloat() * e * u * 0.4f
+                drawHead(cx + sway * 0.25f, torsoTop - headR * 1.1f, headR, skinColor)
+                drawTorso(cx + sway * 0.1f, torsoTop, bodyW * 1.05f, bodyH * 0.95f, dress)
+
+                // Cello body — between knees
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#8E5524")
+                canvas.drawRoundRect(
+                    cx - u * 1.6f, cy - u * 1.2f,
+                    cx + u * 1.6f, cy + u * 4.5f,
+                    u * 0.8f, u * 0.8f, paint
+                )
+                // Neck
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 1.2f
+                paint.color = Color.parseColor("#7A4820")
+                canvas.drawLine(cx, cy - u * 3.8f, cx, cy + u * 5f, paint)
+
+                // Left arm: fingering the neck — vibrato motion
+                val vib = kotlin.math.sin((tMed * 2f + seed * 2.5f).toDouble()).toFloat() * e * u * 0.5f
+                drawLimb(
+                    shoulderL, shoulderY,
+                    cx - u * 0.3f, cy - u * 0.5f,
+                    cx + u * 0.2f, cy + u * 0.6f - vib,
+                    armW, skinColor
+                )
+
+                // Right arm: bow across strings — visible sweep
+                val bowPhase = kotlin.math.sin((tMed * 0.9f + seed * 2.1f).toDouble()).toFloat()
+                val bowSwing = bowPhase * e * (u * 1f + e * u * 2f)
+                val eR_x = shoulderR + u * 1f
+                val eR_y = cy - u * 0.3f + bowSwing * 0.25f
+                val hR_x = cx + u * 1.5f
+                val hR_y = cy + u * 0.8f + bowSwing * 0.4f
+                drawLimb(shoulderR, shoulderY, eR_x, eR_y, hR_x, hR_y, armW, skinColor)
+
+                // Bow
+                paint.style = Paint.Style.STROKE
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeWidth = 1.2f
+                paint.color = Color.parseColor("#DDD0B5")
+                canvas.drawLine(
+                    cx - u * 1.8f, cy + u * 0.5f + bowSwing * 0.3f,
+                    cx + u * 2.2f, cy - u * 0.4f - bowSwing * 0.25f,
+                    paint
+                )
+            }
+
+            fun drawWoodwind(cx: Float, cy: Float, energy: Float, dress: Int, skinColor: Int, seed: Float) {
+                val e = if (active) energy.coerceIn(0f, 1f) else 0f
+                val torsoTop = cy - u * 4.5f
+                val shoulderY = cy - u * 2.2f
+                val shoulderL = cx - u * 1.1f
+                val shoulderR = cx + u * 1.1f
+
+                // Slight rhythmic lean
+                val lean = kotlin.math.sin((tSlow * 1.1f + seed).toDouble()).toFloat() * e * u * 0.3f
+                drawHead(cx + lean * 0.2f, torsoTop - headR * 1.12f, headR, skinColor)
+                drawTorso(cx + lean * 0.1f, torsoTop, bodyW * 0.95f, bodyH * 0.9f, dress)
+
+                // Clarinet: angled down from mouth
+                paint.style = Paint.Style.STROKE
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeWidth = u * 0.3f
+                paint.color = Color.parseColor("#1A1A1A")
+                val clTop_x = cx + u * 0.1f
+                val clTop_y = cy - u * 2.8f
+                val clBot_x = cx + u * 0.6f
+                val clBot_y = cy + u * 2.2f
+                canvas.drawLine(clTop_x, clTop_y, clBot_x, clBot_y, paint)
+                // Keys
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#C8A848")
+                for (k in 1..4) {
+                    val t = k / 5f
+                    val kx = clTop_x + (clBot_x - clTop_x) * t + u * 0.15f
+                    val ky = clTop_y + (clBot_y - clTop_y) * t
+                    canvas.drawCircle(kx, ky, u * 0.12f, paint)
+                }
+
+                // Finger movement: both hands flex on keys, reactive to treble
+                val fingerPhase = kotlin.math.sin((tMed * 1.6f + seed * 1.3f).toDouble()).toFloat()
+                val fingerMove = fingerPhase * e * u * 0.6f
+
+                // Left hand: upper half of instrument
+                drawLimb(
+                    shoulderL, shoulderY,
+                    cx - u * 0.5f, cy - u * 1.2f + fingerMove * 0.2f,
+                    cx + u * 0.15f, cy - u * 1.5f + fingerMove,
+                    armW, skinColor
+                )
+                // Right hand: lower half
+                drawLimb(
+                    shoulderR, shoulderY,
+                    cx + u * 0.6f, cy - u * 0.4f - fingerMove * 0.15f,
+                    cx + u * 0.4f, cy + u * 0.5f - fingerMove * 0.5f,
+                    armW, skinColor
+                )
+            }
+
+            fun drawHornPlayer(cx: Float, cy: Float, energy: Float, dress: Int, skinColor: Int, seed: Float) {
+                val e = if (active) energy.coerceIn(0f, 1f) else 0f
+                val torsoTop = cy - u * 4.5f
+                val shoulderY = cy - u * 2.2f
+                val shoulderL = cx - u * 1.1f
+                val shoulderR = cx + u * 1.1f
+                val headY = torsoTop - headR * 1.1f
+                val mouthY = headY + headR * 0.5f  // mouth is lower half of head
+
+                drawHead(cx, headY, headR, skinColor)
+                drawTorso(cx, torsoTop, bodyW * 0.97f, bodyH * 0.9f, dress)
+
+                // French horn: mouthpiece at face, bell at lap held by right hand
+                val bellCx = cx + u * 1.8f
+                val bellCy = cy + u * 0.2f
+                val bellR = u * 1.8f + e * u * 0.4f
+
+                // Tubing: from mouth → down to bell (drawn first, behind arms)
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = u * 0.22f
+                paint.color = Color.parseColor("#D4A84C")
+                val tubePath = android.graphics.Path()
+                tubePath.moveTo(cx + u * 0.6f, mouthY)  // mouthpiece at face
+                tubePath.quadTo(cx + u * 1.8f, cy - u * 1.5f, bellCx - bellR * 0.3f, bellCy - u * 0.5f)
+                canvas.drawPath(tubePath, paint)
+
+                // Mouthpiece nub at face
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#E0C050")
+                canvas.drawCircle(cx + u * 0.6f, mouthY, u * 0.18f, paint)
+
+                // Bell
+                paint.color = Color.parseColor("#C9952E")
+                canvas.drawCircle(bellCx, bellCy, bellR, paint)
+                // Dark inner bell
+                paint.color = Color.parseColor("#3A2A10")
+                canvas.drawCircle(bellCx + u * 0.2f, bellCy, bellR * 0.6f, paint)
+
+                // Left arm: valve hand on tubing — visible finger action
+                val valvePhase = kotlin.math.sin((tMed * 1.8f + seed * 1.4f).toDouble()).toFloat()
+                val valveMove = valvePhase * e * u * 0.5f
+                drawLimb(
+                    shoulderL, shoulderY,
+                    cx + u * 0.3f, cy - u * 0.8f + valveMove * 0.2f,
+                    cx + u * 0.8f, cy - u * 0.5f + valveMove,
+                    armW, skinColor
+                )
+                // Right arm: supports bell from below
+                drawLimb(
+                    shoulderR, shoulderY,
+                    cx + u * 1.4f, cy - u * 0.4f,
+                    bellCx - u * 0.3f, bellCy + u * 0.8f,
+                    armW, skinColor
+                )
+            }
+
+            fun drawConductor(cx: Float, cy: Float, skinColor: Int) {
+                val e = motion
+                val torsoTop = cy - u * 5.5f
+                val shoulderY = cy - u * 2.8f
+                val shoulderL = cx - u * 1.3f
+                val shoulderR = cx + u * 1.3f
+
+                val sway = kotlin.math.sin((tSlow * 0.7f).toDouble()).toFloat() * e * u * 0.4f
+                drawHead(cx + sway * 0.3f, torsoTop - headR * 1.15f, headR * 1.06f, skinColor)
+                drawTorso(cx + sway * 0.12f, torsoTop, bodyW * 1.1f, bodyH * 1.05f, Color.parseColor("#1A1F2A"))
+
+                // Conducting gesture: smooth figure-8 that grows with volume
+                val bx = kotlin.math.sin((tSlow * 1.1f).toDouble()).toFloat() * e * (u * 0.8f + e * u * 2.5f)
+                val by = kotlin.math.cos((tSlow * 2.2f).toDouble()).toFloat() * e * (u * 0.5f + e * u * 1.8f)
+
+                // Left arm: cue hand
+                drawLimb(
+                    shoulderL, shoulderY,
+                    shoulderL - u * 1f - bx * 0.2f, shoulderY + u * 1.2f - by * 0.25f,
+                    shoulderL - u * 1.8f - bx * 0.35f, shoulderY + u * 2.5f - by * 0.4f,
+                    armW * 1.05f, skinColor
+                )
+
+                // Right arm: baton
+                val bhX = shoulderR + u * 1.5f + bx * 0.4f
+                val bhY = shoulderY + u * 0.8f - by * 0.5f
+                drawLimb(
+                    shoulderR, shoulderY,
+                    shoulderR + u * 0.8f + bx * 0.2f, shoulderY + u * 0.4f - by * 0.3f,
+                    bhX, bhY,
+                    armW * 1.05f, skinColor
+                )
+                // Baton stick
+                paint.style = Paint.Style.STROKE
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeWidth = 1f
+                paint.color = Color.parseColor("#FFF3D6")
+                canvas.drawLine(bhX, bhY, bhX + u * 2f, bhY - u * 1.5f - by * 0.3f, paint)
+            }
+
+            // ═══ Place musicians — baroque close seating, edge-to-edge ═══
+            // 7 musicians packed tightly across the full frame width
+            // Slight Y offsets give depth (front/back row feel)
+            drawViolinist(w * 0.06f, stageCenterY + u * 0.3f, highMid, Color.parseColor("#24324A"), skinTones[0], 0f)
+            drawViolinist(w * 0.19f, stageCenterY + u * 1.0f, treble, Color.parseColor("#2D1F34"), skinTones[3], 1.3f)
+            drawCellist(w * 0.33f, stageCenterY + u * 1.8f, bass, Color.parseColor("#2A2434"), skinTones[5], 0.7f)
+            drawConductor(w * 0.50f, stageCenterY - u * 0.4f, skinTones[1])
+            drawWoodwind(w * 0.67f, stageCenterY + u * 0.6f, treble, Color.parseColor("#213247"), skinTones[4], 2.1f)
+            drawHornPlayer(w * 0.81f, stageCenterY + u * 1.4f, lowMid, Color.parseColor("#342521"), skinTones[6], 3.4f)
+            drawCellist(w * 0.94f, stageCenterY + u * 2.0f, bass * 0.8f + lowMid * 0.2f, Color.parseColor("#2B1F22"), skinTones[2], 4.0f)
+        }
+
+        /**
+         * Atomic Structure visualizer (formerly "pulse ring").
+         *
+         * The scene is a tilted Bohr-style atom:
+         *   • Nucleus: cluster of protons (red) + neutrons (gray), jittering
+         *     with bass energy; surrounded by a soft halo.
+         *   • 5 concentric electron shells (1s, 2s, 2p, 3s, 3p) drawn as
+         *     tilted ellipses so the atom feels three-dimensional.
+         *   • 10 electrons orbit the shells. Each has a "home shell" and
+         *     persistent angular velocity.
+         *
+         * Audio response:
+         *   • Each of the 5 shells is mapped to a frequency band. When a band
+         *     spikes above its recent baseline, one of its electrons is
+         *     triggered to perform a quantum leap — it animates from its
+         *     home shell to an excited shell and falls back, emitting a
+         *     bright expanding "photon" flash at the jump point.
+         *   • Shell tilt drifts slowly; drift speed scales with overall level.
+         *   • Nucleus wobble amplitude scales with bass.
+         */
+        private fun drawPulseRing(canvas: Canvas, w: Float, h: Float) {
+            val cx = w / 2f
+            val cy = h / 2f
+            val maxR = kotlin.math.min(w, h) * 0.45f
+            val t = frameCount * 0.03f
+
+            val avgLevel = bandEnergy(0, barCount - 1)
+            val bass     = bandEnergy(0, 5)
+            val lowMid   = bandEnergy(6, 12)
+            val mid      = bandEnergy(13, 19)
+            val highMid  = bandEnergy(20, 25)
+            val treble   = bandEnergy(26, 31)
+            val bandEnergies = floatArrayOf(bass, lowMid, mid, highMid, treble)
+
+            // Lazy one-time init of electron/shell state.
+            if (!atomInit) {
+                // Distribute 10 electrons across 5 shells: 1,2,2,2,3 (Aufbau-ish).
+                val layout = intArrayOf(0, 1, 1, 2, 2, 2, 3, 3, 4, 4)
+                for (i in 0 until atomElectronCount) {
+                    atomElectronHomeShell[i] = layout[i]
+                    atomElectronShell[i]     = layout[i]
+                    atomElectronAngle[i]     = (i * 0.6283f) % 6.2832f
+                    // Alternate direction so shells don't all spin the same way.
+                    val dir = if (i % 2 == 0) 1f else -1f
+                    atomElectronSpeed[i]     = dir * (0.6f + ((i * 13) % 7) * 0.08f)
+                    atomElectronJumpPhase[i] = 0f
+                    atomElectronTargetShell[i] = layout[i]
+                    atomElectronFlash[i]     = 0f
+                }
+                for (s in 0 until atomShellCount) {
+                    atomShellTilt[s] = 0.32f + s * 0.13f + (s * 31.7f) % 0.5f
+                }
+                atomInit = true
+            }
+
+            // Slow drift of shell tilt so the atom rotates in 3D subtly.
+            for (s in 0 until atomShellCount) {
+                atomShellTilt[s] += 0.002f + avgLevel * 0.006f
+            }
+
+            // Detect per-band spikes and trigger quantum leaps.
+            for (b in 0 until atomShellCount) {
+                val cur = bandEnergies[b]
+                val prev = atomBandPrev[b]
+                // A "spike" = sudden rise above a threshold
+                if (cur > 0.22f && (cur - prev) > 0.10f) {
+                    // Find a resting electron whose home shell matches the
+                    // firing band; if none found, pick any available.
+                    var chosen = -1
+                    for (i in 0 until atomElectronCount) {
+                        if (atomElectronJumpPhase[i] <= 0f && atomElectronHomeShell[i] == b) {
+                            chosen = i; break
+                        }
+                    }
+                    if (chosen < 0) {
+                        for (i in 0 until atomElectronCount) {
+                            if (atomElectronJumpPhase[i] <= 0f) { chosen = i; break }
+                        }
+                    }
+                    if (chosen >= 0) {
+                        atomElectronTargetShell[chosen] =
+                            (atomElectronHomeShell[chosen] + 1 + (cur * 2f).toInt())
+                                .coerceAtMost(atomShellCount - 1)
+                        atomElectronJumpPhase[chosen] = 0.001f  // starts the jump
+                        atomElectronFlash[chosen]     = 1.0f    // ignite photon
+                    }
+                }
+                // Smooth the baseline so subsequent spikes need to exceed it
+                atomBandPrev[b] = prev * 0.80f + cur * 0.20f
+            }
+
+            // ── Deep-space radial background ─────────────────────────────
+            paint.reset()
+            paint.isAntiAlias = true
+            paint.style = Paint.Style.FILL
+            paint.shader = android.graphics.RadialGradient(
+                cx, cy, maxR * 1.6f,
+                intArrayOf(
+                    Color.parseColor("#0A0820"),
+                    Color.parseColor("#04030F"),
+                    Color.parseColor("#000000")
+                ),
+                floatArrayOf(0f, 0.55f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, w, h, paint)
+            paint.shader = null
+
+            // ── Shell palette (cool→warm, innermost→outermost) ──────────
+            val shellColors = intArrayOf(
+                Color.parseColor("#FF4080"),  // 1s — magenta/red
+                Color.parseColor("#FFD028"),  // 2s — gold
+                Color.parseColor("#6CE0FF"),  // 2p — cyan
+                Color.parseColor("#A880FF"),  // 3s — lavender
+                Color.parseColor("#70FFB8")   // 3p — mint
+            )
+            val shellLabels = arrayOf("1s", "2s", "2p", "3s", "3p")
+            val shellRadii = FloatArray(atomShellCount) { s ->
+                maxR * (0.22f + s * 0.13f)
+            }
+
+            // ── Electron shells as tilted ellipses ──────────────────────
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.1f
+            for (s in 0 until atomShellCount) {
+                val r = shellRadii[s]
+                val tilt = atomShellTilt[s]
+                val yScale = (0.42f + 0.4f * kotlin.math.cos(tilt.toDouble()).toFloat())
+                    .coerceIn(0.28f, 0.95f)
+                val rect = android.graphics.RectF(
+                    cx - r, cy - r * yScale,
+                    cx + r, cy + r * yScale
+                )
+                paint.color = shellColors[s]
+                paint.alpha = (40 + bandEnergies[s] * 90).toInt().coerceIn(40, 180)
+                paint.setShadowLayer(4f + bandEnergies[s] * 8f, 0f, 0f, shellColors[s])
+                canvas.drawOval(rect, paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── Nucleus: protons (red) and neutrons (grey) cluster ──────
+            val nucleusR = maxR * (0.10f + bass * 0.05f)
+            // Soft halo glow
+            paint.style = Paint.Style.FILL
+            paint.shader = android.graphics.RadialGradient(
+                cx, cy, nucleusR * 3.2f,
+                intArrayOf(
+                    Color.argb((120 + bass * 100).toInt().coerceAtMost(220), 255, 180, 80),
+                    Color.argb(40, 200, 40, 20),
+                    Color.TRANSPARENT
+                ),
+                floatArrayOf(0f, 0.55f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawCircle(cx, cy, nucleusR * 3.2f, paint)
+            paint.shader = null
+
+            val nucleonCount = 11
+            for (n in 0 until nucleonCount) {
+                val na = (n * 2.399f + t * 0.4f)
+                val wobble = bass * 0.3f + 0.1f
+                val rr = nucleusR * (0.25f + ((n * 17) % 10) / 14f)
+                val nx = cx + kotlin.math.cos(na.toDouble()).toFloat() * rr * (1f + wobble * kotlin.math.sin((t * 3f + n).toDouble()).toFloat())
+                val ny = cy + kotlin.math.sin(na.toDouble()).toFloat() * rr * (1f + wobble * kotlin.math.cos((t * 3f + n).toDouble()).toFloat())
+                val isProton = (n % 2 == 0)
+                val color = if (isProton) Color.parseColor("#FF3040") else Color.parseColor("#C8C8D0")
+                paint.color = color
+                paint.alpha = (220 + bass * 35).toInt().coerceAtMost(255)
+                paint.setShadowLayer(5f + bass * 4f, 0f, 0f, color)
+                canvas.drawCircle(nx, ny, nucleusR * 0.28f, paint)
+                // Specular highlight
+                paint.color = Color.WHITE
+                paint.alpha = 140
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+                canvas.drawCircle(nx - nucleusR * 0.09f, ny - nucleusR * 0.09f, nucleusR * 0.08f, paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // Atomic symbol at center of nucleus
+            paint.style = Paint.Style.FILL
+            paint.typeface = android.graphics.Typeface.MONOSPACE
+            paint.textAlign = Paint.Align.CENTER
+            paint.textSize = nucleusR * 0.55f
+            paint.color = Color.parseColor("#FFE090")
+            paint.alpha = (110 + avgLevel * 120).toInt().coerceIn(110, 230)
+            paint.setShadowLayer(4f, 0f, 0f, Color.parseColor("#FFB040"))
+            canvas.drawText("Ne", cx, cy - nucleusR * 1.6f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            paint.typeface = android.graphics.Typeface.DEFAULT
+            paint.textAlign = Paint.Align.LEFT
+
+            // ── Electrons: advance angles, update jump phases, render ──
+            for (i in 0 until atomElectronCount) {
+                // Speed scales subtly with overall level so the atom
+                // "spins up" during loud passages.
+                val baseSpeed = atomElectronSpeed[i]
+                val dAng = baseSpeed * (0.03f + avgLevel * 0.06f)
+                atomElectronAngle[i] = (atomElectronAngle[i] + dAng) % 6.2832f
+
+                // Advance jump phase if leaping (0→1 outbound, 1→2 return)
+                var jumpT = atomElectronJumpPhase[i]
+                val home = atomElectronHomeShell[i]
+                val tgt  = atomElectronTargetShell[i]
+                var renderShell = home.toFloat()
+                if (jumpT > 0f) {
+                    jumpT += 0.045f + avgLevel * 0.05f
+                    if (jumpT >= 2f) {
+                        jumpT = 0f
+                    }
+                    atomElectronJumpPhase[i] = jumpT
+                    // Interpolate shell index: 0→1 out, 1→2 return
+                    val p = if (jumpT < 1f) jumpT else (2f - jumpT)
+                    // Smooth cosine easing for a natural leap
+                    val eased = (1f - kotlin.math.cos((p * Math.PI).toFloat())) * 0.5f
+                    renderShell = home + (tgt - home) * eased
+                }
+                val shellIdxLow  = renderShell.toInt().coerceIn(0, atomShellCount - 1)
+                val shellIdxHigh = (shellIdxLow + 1).coerceAtMost(atomShellCount - 1)
+                val blend = (renderShell - shellIdxLow).coerceIn(0f, 1f)
+                val rLow  = shellRadii[shellIdxLow]
+                val rHigh = shellRadii[shellIdxHigh]
+                val eR    = rLow + (rHigh - rLow) * blend
+                val tilt  = atomShellTilt[shellIdxLow] * (1f - blend) +
+                            atomShellTilt[shellIdxHigh] * blend
+                val yScale = (0.42f + 0.4f * kotlin.math.cos(tilt.toDouble()).toFloat())
+                    .coerceIn(0.28f, 0.95f)
+
+                val ang = atomElectronAngle[i]
+                val ex = cx + kotlin.math.cos(ang.toDouble()).toFloat() * eR
+                val ey = cy + kotlin.math.sin(ang.toDouble()).toFloat() * eR * yScale
+
+                // Electron color chosen from the home shell's palette.
+                val eColor = shellColors[home]
+
+                // Short trailing arc behind the electron
+                paint.style = Paint.Style.STROKE
+                paint.strokeCap = Paint.Cap.ROUND
+                val trailLen = 0.45f
+                val arcRect = android.graphics.RectF(
+                    cx - eR, cy - eR * yScale,
+                    cx + eR, cy + eR * yScale
+                )
+                val startDeg = Math.toDegrees(ang.toDouble()).toFloat() - 180f * trailLen * 0.5f * kotlin.math.sign(baseSpeed)
+                val sweepDeg = -180f * trailLen * kotlin.math.sign(baseSpeed)
+                paint.color = eColor
+                paint.alpha = (50 + avgLevel * 70).toInt().coerceIn(50, 170)
+                paint.strokeWidth = 1.8f + avgLevel * 2.2f
+                paint.setShadowLayer(4f, 0f, 0f, eColor)
+                canvas.drawArc(arcRect, startDeg, sweepDeg, false, paint)
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+
+                // Electron body
+                paint.style = Paint.Style.FILL
+                val pulse = if (jumpT > 0f) 1.7f else 1f
+                val er = 3.2f + bandEnergies[home] * 3.0f
+                paint.color = eColor
+                paint.alpha = 255
+                paint.setShadowLayer(8f + bandEnergies[home] * 10f, 0f, 0f, eColor)
+                canvas.drawCircle(ex, ey, er * pulse, paint)
+                // White-hot core
+                paint.color = Color.WHITE
+                paint.alpha = 230
+                paint.setShadowLayer(3f, 0f, 0f, eColor)
+                canvas.drawCircle(ex, ey, er * 0.4f, paint)
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+
+                // Photon emission flash — expanding bright ring at jump start,
+                // fades quickly into oblivion.
+                val flash = atomElectronFlash[i]
+                if (flash > 0.02f) {
+                    val photonR = (1f - flash) * (shellRadii[atomShellCount - 1] * 0.35f)
+                    paint.style = Paint.Style.STROKE
+                    paint.strokeWidth = 1.6f + flash * 2.5f
+                    paint.color = Color.WHITE
+                    paint.alpha = (flash * 230).toInt().coerceIn(0, 230)
+                    paint.setShadowLayer(6f + flash * 10f, 0f, 0f, eColor)
+                    canvas.drawCircle(ex, ey, 3f + photonR, paint)
+                    // Outer ring in shell color
+                    paint.color = eColor
+                    paint.alpha = (flash * 180).toInt().coerceIn(0, 200)
+                    canvas.drawCircle(ex, ey, 3f + photonR * 1.8f, paint)
+                    paint.setShadowLayer(0f, 0f, 0f, 0)
+                    atomElectronFlash[i] = flash * 0.86f
+                }
+            }
+
+            // ── Shell labels on the right edge (dim legend) ─────────────
+            paint.style = Paint.Style.FILL
+            paint.typeface = android.graphics.Typeface.MONOSPACE
+            paint.textAlign = Paint.Align.LEFT
+            paint.textSize = maxR * 0.055f
+            for (s in 0 until atomShellCount) {
+                paint.color = shellColors[s]
+                paint.alpha = (80 + bandEnergies[s] * 170).toInt().coerceIn(80, 240)
+                paint.setShadowLayer(3f, 0f, 0f, shellColors[s])
+                canvas.drawText(shellLabels[s], cx + shellRadii[s] + 4f, cy + paint.textSize * 0.35f, paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            paint.typeface = android.graphics.Typeface.DEFAULT
+            paint.textAlign = Paint.Align.LEFT
+
+            // ── HUD ─────────────────────────────────────────────────────
+            paint.typeface = android.graphics.Typeface.MONOSPACE
+            paint.textSize = h * 0.028f
+            paint.color = Color.parseColor("#6CE0FF")
+            paint.alpha = (90 + avgLevel * 120).toInt().coerceIn(90, 220)
+            paint.setShadowLayer(4f, 0f, 0f, Color.parseColor("#6CE0FF"))
+            canvas.drawText("ATOMIC · QUANTUM LEAP", 6f, h * 0.045f, paint)
+            paint.textAlign = Paint.Align.RIGHT
+            paint.color = Color.parseColor("#FFD028")
+            canvas.drawText("Z=10 · ν %04d".format(frameCount % 10000), w - 6f, h * 0.045f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            paint.typeface = android.graphics.Typeface.DEFAULT
+            paint.textAlign = Paint.Align.LEFT
+        }
+        /**
+         * Meditative theme — enhanced.
+         *
+         * A calm, layered space: a deep nebula backdrop with drifting twinkling
+         * stars, a slowly-rotating 12-petal mandala, nine breathing concentric
+         * rings with gentle depth parallax, audio-reactive particle trails that
+         * leave glowing tracers, a bloom-aura orb at the center, and a radial
+         * ray burst that flashes on strong bass transients. Indigo / lavender /
+         * soft gold palette throughout — every addition stays soft so the
+         * overall feel remains meditative rather than energetic.
+         */
+        private fun drawMeditative(canvas: Canvas, w: Float, h: Float) {
+            val cx = w / 2f
+            val cy = h / 2f
+            val maxR = minOf(w, h) * 0.48f
+            val breathPhase = (frameCount % 180) / 180f
+            val breath = (kotlin.math.sin(breathPhase * Math.PI * 2).toFloat() + 1f) / 2f
+            val slowBreath = (kotlin.math.sin((frameCount % 360) / 360f * Math.PI * 2).toFloat() + 1f) / 2f
+            val avgLevel = bandEnergy(0, barCount - 1)
+            val bass = bandEnergy(0, 6)
+            val lowMid = bandEnergy(4, 12)
+            val mid = bandEnergy(8, 18)
+            val treble = bandEnergy(20, 31)
+
+            // ── Bass-burst detection: on a strong rising edge, seed a gentle
+            //    radial ray burst. Decays smoothly so it blooms and fades.
+            val bassRise = (bass - medPrevBass).coerceAtLeast(0f)
+            if (bassRise > 0.06f && medBurstEnergy < bass * 0.9f) {
+                medBurstEnergy = (medBurstEnergy + bassRise * 1.6f).coerceAtMost(1f)
+                medBurstRot += 6f + mid * 14f
+            }
+            medBurstEnergy = (medBurstEnergy - 0.018f).coerceAtLeast(0f)
+            medPrevBass = bass
+            medMandalaRot = (medMandalaRot + 0.10f + mid * 0.55f) % 360f
+
+            // ════════════════════════════════════════════════════════════════
+            //  1. NEBULA BACKDROP — deep radial gradient with drifting stars
+            // ════════════════════════════════════════════════════════════════
+            paint.style = Paint.Style.FILL
+            paint.shader = android.graphics.RadialGradient(
+                cx, cy, maxR * 1.55f,
+                intArrayOf(
+                    Color.argb(60, 60, 35, 110),    // indigo center haze
+                    Color.argb(30, 30, 20, 70),
+                    Color.argb(0, 0, 0, 0)
+                ),
+                floatArrayOf(0f, 0.55f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, w, h, paint)
+            paint.shader = null
+
+            // Drifting starfield — parallax with very slow drift, twinkle with treble.
+            for (i in 0 until medStarCount) {
+                val driftSpeed = 0.00010f + (i % 7) * 0.00006f
+                medStarX[i] = ((medStarX[i] + driftSpeed) % 1f)
+                val twinkle = (kotlin.math.sin(((frameCount + i * 13L) % 220) / 220f * Math.PI * 2).toFloat() + 1f) / 2f
+                val sx = medStarX[i] * w
+                val sy = medStarY[i] * h
+                val s = medStarSize[i] * (1.1f + twinkle * 1.2f + treble * 1.6f)
+                val baseAlpha = (60 + twinkle * 120 + treble * 60).toInt().coerceIn(40, 220)
+                paint.color = when (i % 4) {
+                    0 -> Color.parseColor("#E6E6FA")  // lavender
+                    1 -> Color.parseColor("#B794F4")  // violet
+                    2 -> Color.parseColor("#FFD9A8")  // warm gold
+                    else -> Color.parseColor("#87CEEB") // pale sky
+                }
+                paint.alpha = baseAlpha
+                canvas.drawCircle(sx, sy, s, paint)
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            //  2. MANDALA PETALS — 12 soft petals rotating behind the rings
+            // ════════════════════════════════════════════════════════════════
+            paint.style = Paint.Style.STROKE
+            val petalCount = 12
+            val petalR = maxR * (0.86f + slowBreath * 0.04f)
+            for (p in 0 until petalCount) {
+                val a = (medMandalaRot + p * (360f / petalCount)) * Math.PI.toFloat() / 180f
+                val ex = cx + kotlin.math.cos(a) * petalR
+                val ey = cy + kotlin.math.sin(a) * petalR
+                val bandIdx = (p * (barCount - 1) / petalCount).coerceIn(0, barCount - 1)
+                val petalAudio = barHeights[bandIdx].coerceIn(0f, 1f)
+                paint.strokeWidth = 1.0f + petalAudio * 2.2f + slowBreath * 0.8f
+                paint.color = blendColors(
+                    Color.parseColor("#4B0082"),     // indigo
+                    Color.parseColor("#FFD700"),     // soft gold
+                    (petalAudio * 0.55f + slowBreath * 0.2f).coerceIn(0f, 1f)
+                )
+                paint.alpha = (35 + petalAudio * 130 + slowBreath * 25).toInt().coerceIn(30, 180)
+                canvas.drawLine(cx, cy, ex, ey, paint)
+
+                // Soft petal tip bloom
+                paint.style = Paint.Style.FILL
+                paint.alpha = (paint.alpha * 0.55f).toInt().coerceIn(20, 130)
+                canvas.drawCircle(ex, ey, 2.2f + petalAudio * 5f, paint)
+                paint.style = Paint.Style.STROKE
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            //  3. CONCENTRIC BREATHING RINGS — 9 layers with depth parallax
+            // ════════════════════════════════════════════════════════════════
+            paint.style = Paint.Style.STROKE
+            val ringCount = 9
+            for (r in 0 until ringCount) {
+                val baseR = maxR * (0.12f + r * 0.094f)
+                val phase = (frameCount % 180 + r * 20) / 180f
+                val ringBreath = (kotlin.math.sin(phase * Math.PI * 2).toFloat() + 1f) / 2f
+                val ringAudio = measuredAudioAt((0.10f + r.toFloat() / ringCount * 0.78f).coerceIn(0f, 1f), lowCut = 0.9f, highBoost = 1.18f)
+                val radius = baseR + ringBreath * maxR * 0.05f + ringAudio * maxR * 0.11f
+                paint.strokeWidth = 1.2f + ringBreath * 1.1f + ringAudio * 3.0f
+                val alpha = (40 + ringBreath * 45 + ringAudio * 95).toInt().coerceIn(40, 220)
+                val color = blendColors(
+                    Color.parseColor("#4B0082"),
+                    Color.parseColor("#B794F4"),
+                    (ringBreath * 0.45f + ringAudio * 0.55f).coerceIn(0f, 1f)
+                )
+                paint.color = color
+                paint.alpha = alpha
+                canvas.drawCircle(cx, cy, radius, paint)
+
+                // Inner soft echo — ghost ring just inside, half alpha, no audio boost.
+                if (r % 2 == 0) {
+                    paint.strokeWidth = 0.8f + ringBreath * 0.6f
+                    paint.alpha = (alpha * 0.35f).toInt().coerceIn(20, 110)
+                    canvas.drawCircle(cx, cy, radius - 3f - ringBreath * 2f, paint)
+                }
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            //  4. BASS-BURST RAYS — radial beams that bloom on strong bass
+            // ════════════════════════════════════════════════════════════════
+            if (medBurstEnergy > 0.02f) {
+                paint.style = Paint.Style.STROKE
+                paint.strokeCap = Paint.Cap.ROUND
+                val rayCount = 14
+                val rayLen = maxR * (0.28f + medBurstEnergy * 0.72f)
+                for (k in 0 until rayCount) {
+                    val a = (medBurstRot + k * (360f / rayCount)) * Math.PI.toFloat() / 180f
+                    val x0 = cx + kotlin.math.cos(a) * (maxR * 0.08f)
+                    val y0 = cy + kotlin.math.sin(a) * (maxR * 0.08f)
+                    val x1 = cx + kotlin.math.cos(a) * rayLen
+                    val y1 = cy + kotlin.math.sin(a) * rayLen
+                    paint.strokeWidth = 1.4f + medBurstEnergy * 3.8f
+                    paint.color = if (k % 3 == 0) Color.parseColor("#FFD700") else Color.parseColor("#DDA0DD")
+                    paint.alpha = (medBurstEnergy * 190).toInt().coerceIn(0, 200)
+                    canvas.drawLine(x0, y0, x1, y1, paint)
+                }
+                paint.strokeCap = Paint.Cap.BUTT
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            //  5. PARTICLE TRAILS — fading history ring for each particle
+            // ════════════════════════════════════════════════════════════════
+            val particleColors = intArrayOf(
+                Color.parseColor("#7B68EE"),  // medium slate blue
+                Color.parseColor("#DDA0DD"),  // plum / lavender
+                Color.parseColor("#FFD700"),  // soft gold
+                Color.parseColor("#E6E6FA"),  // lavender mist
+                Color.parseColor("#87CEEB")   // sky blue
+            )
+
+            // Initialize trails on first draw so they don't snap to center.
+            if (!medTrailInit) {
+                for (i in 0 until medParticleCount) {
+                    for (t in 0 until medTrailLen) {
+                        medTrailX[i * medTrailLen + t] = cx
+                        medTrailY[i * medTrailLen + t] = cy
+                    }
+                }
+                medTrailInit = true
+            }
+
+            // Advance ring buffer head.
+            medTrailHead = (medTrailHead + 1) % medTrailLen
+
+            paint.style = Paint.Style.FILL
+            for (i in 0 until medParticleCount) {
+                val sample = measuredAudioAt(i.toFloat() / (medParticleCount - 1).coerceAtLeast(1), lowCut = 0.9f, highBoost = 1.2f)
+                val angle = (i * 20f + frameCount * (0.14f + sample * 0.52f)) % 360f
+                val dist = maxR * (0.14f + sample * 0.70f) + breath * maxR * 0.05f
+                val rad = Math.toRadians(angle.toDouble())
+                val px = cx + dist * kotlin.math.cos(rad).toFloat()
+                val py = cy + dist * kotlin.math.sin(rad).toFloat()
+
+                // Store new position into ring-buffer head slot.
+                medTrailX[i * medTrailLen + medTrailHead] = px
+                medTrailY[i * medTrailLen + medTrailHead] = py
+
+                val col = particleColors[i % particleColors.size]
+
+                // Draw fading trail from oldest (tail) to newest (head).
+                for (t in 0 until medTrailLen) {
+                    val slot = (medTrailHead - t + medTrailLen) % medTrailLen
+                    val tx = medTrailX[i * medTrailLen + slot]
+                    val ty = medTrailY[i * medTrailLen + slot]
+                    val ageFactor = 1f - t.toFloat() / medTrailLen
+                    val size = (1.2f + sample * 5.8f) * ageFactor
+                    if (size < 0.4f) continue
+                    paint.color = col
+                    paint.alpha = ((35 + sample * 140) * ageFactor * ageFactor).toInt().coerceIn(0, 200)
+                    canvas.drawCircle(tx, ty, size, paint)
+                }
+
+                // Head particle: crisp core + soft glow halo
+                val headSize = 2.2f + sample * 6.8f
+                paint.color = col
+                paint.alpha = (90 + sample * 160).toInt().coerceIn(70, 240)
+                canvas.drawCircle(px, py, headSize, paint)
+                paint.alpha = (paint.alpha * 0.28f).toInt().coerceIn(20, 100)
+                canvas.drawCircle(px, py, headSize * 3.0f, paint)
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            //  6. CENTRAL ORB — multi-layer bloom aura
+            // ════════════════════════════════════════════════════════════════
+            paint.style = Paint.Style.FILL
+            val orbR = 7f + breath * 4.5f + avgLevel * 12f
+            // Outer haze — large soft violet bloom
+            paint.color = Color.parseColor("#7B68EE")
+            paint.alpha = (35 + slowBreath * 30 + bass * 60).toInt().coerceIn(30, 150)
+            canvas.drawCircle(cx, cy, orbR * (5.0f + bass * 1.2f), paint)
+            // Mid aura — plum
+            paint.color = Color.parseColor("#DDA0DD")
+            paint.alpha = (85 + breath * 50 + mid * 70).toInt().coerceIn(80, 220)
+            canvas.drawCircle(cx, cy, orbR * (2.6f + bass * 0.45f), paint)
+            // Soft gold inner ring for warmth
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.6f + avgLevel * 2.2f
+            paint.color = Color.parseColor("#FFD700")
+            paint.alpha = (90 + avgLevel * 120 + medBurstEnergy * 120).toInt().coerceIn(80, 230)
+            canvas.drawCircle(cx, cy, orbR * (1.7f + mid * 0.35f), paint)
+            // Crisp bright core
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#FFD9FF")
+            paint.alpha = (180 + avgLevel * 55 + treble * 20).toInt().coerceIn(170, 255)
+            canvas.drawCircle(cx, cy, orbR * (1f + treble * 0.14f), paint)
+
+            // ════════════════════════════════════════════════════════════════
+            //  7. GENTLE VIGNETTE — keeps edges soft so the viz feels calm
+            // ════════════════════════════════════════════════════════════════
+            paint.shader = android.graphics.RadialGradient(
+                cx, cy, kotlin.math.max(w, h) * 0.62f,
+                intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT, Color.argb(110, 0, 0, 0)),
+                floatArrayOf(0f, 0.60f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, w, h, paint)
+            paint.shader = null
+        }
+
+        /**
+         * TRON (1982) Theme — Retro neon grid with light cycle wall made of
+         * spectrum-analyzer bricks, Bit companion as tweeter visualizer, and
+         * a Recognizer hovering in the background. Authentic 80s film aesthetic
+         * with cyan/orange neon glow on pure black.
+         */
+        /**
+         * TRON (1982) Theme — The Grid comes alive with music.
+         *
+         * Immersive neon world: perspective grid floor, two light cycles
+         * racing and leaving spectrum-analyzer trail walls, a Recognizer
+         * patrolling overhead with bass-reactive searchlight, Tron programs
+         * throwing identity discs that orbit with treble energy, and Bit
+         * companion morphing between YES/NO states.
+         *
+         * Every visual element is driven by audio frequency bands.
+         * When silent, the Grid goes dark — only dim outlines remain.
+         */
+        private fun drawTron(canvas: Canvas, w: Float, h: Float) {
+            val cx = w / 2f
+            val cy = h / 2f
+            val t = frameCount * 0.035f
+            val bass = bandEnergy(0, 5)
+            val lowMid = bandEnergy(6, 13)
+            val highMid = bandEnergy(14, 22)
+            val treble = bandEnergy(23, 31)
+            val avg = bandEnergy(0, barCount - 1)
+            val active = avg > 0.03f
+
+            val cyan = Color.parseColor("#00DFFF")
+            val cyanDim = Color.parseColor("#004466")
+            val orange = Color.parseColor("#FF6A00")
+            val orangeDim = Color.parseColor("#662A00")
+            val white = Color.WHITE
+
+            // ── Void background with subtle bass pulse ──
+            paint.style = Paint.Style.FILL
+            val bgPulse = if (active) (bass * 12f).toInt().coerceIn(0, 15) else 0
+            paint.color = Color.rgb(bgPulse, bgPulse / 2, bgPulse)
+            canvas.drawRect(0f, 0f, w, h, paint)
+
+            // ── Horizon glow: warm cyan band on the horizon line that pulses
+            //    with overall energy. Sells the "inside the Grid" feel.
+            val horizon = h * 0.38f
+            paint.shader = android.graphics.LinearGradient(
+                0f, horizon - h * 0.10f, 0f, horizon + h * 0.02f,
+                intArrayOf(Color.TRANSPARENT, Color.argb(24, 0, 190, 255), Color.argb(110, 0, 220, 255)),
+                floatArrayOf(0f, 0.7f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, horizon - h * 0.12f, w, horizon + 2f, paint)
+            paint.shader = null
+
+            // Bright horizon rim line — bass-reactive.
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.2f + bass * 1.8f
+            paint.color = cyan
+            paint.alpha = (180 + bass * 75).toInt().coerceIn(180, 255)
+            paint.setShadowLayer(10f + bass * 8f, 0f, 0f, cyan)
+            canvas.drawLine(0f, horizon, w, horizon, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // Distant city-skyline hint — thin vertical beams below horizon
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 0.8f
+            for (s in 0 until 11) {
+                val bx = (w * 0.08f) + s * (w * 0.084f)
+                val bh = (h * 0.015f) + (((s * 37) % 5) / 4f) * h * 0.022f
+                paint.color = cyan
+                paint.alpha = (45 + bass * 80).toInt().coerceIn(45, 180)
+                paint.setShadowLayer(2f, 0f, 0f, cyan)
+                canvas.drawLine(bx, horizon, bx, horizon - bh, paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── PERSPECTIVE GRID FLOOR ──
+            // Grid lines pulse with bass — the floor itself becomes a visualizer
+            val vanishX = cx
+            paint.style = Paint.Style.STROKE
+
+            // Horizontal grid lines with bass-reactive wave distortion
+            val hLines = 16
+            for (i in 1..hLines) {
+                val prog = i.toFloat() / hLines
+                val yBase = horizon + (h - horizon) * prog
+                val squeeze = prog  // 0 at horizon, 1 at bottom
+                val halfW = w * 0.58f * squeeze
+                val leftX = vanishX - halfW
+                val rightX = vanishX + halfW
+
+                // Bass makes grid lines wave
+                val wave = if (active) bass * 3f * kotlin.math.sin((prog * 8f + t * 1.2f).toDouble()).toFloat() else 0f
+                paint.strokeWidth = 0.5f + prog * 0.8f
+                paint.color = cyan
+                paint.alpha = (10 + 50 * prog * (0.3f + avg * 0.7f)).toInt().coerceIn(0, 80)
+                paint.setShadowLayer(2f * prog + bass * 3f * prog, 0f, 0f, cyanDim)
+                canvas.drawLine(leftX, yBase + wave, rightX, yBase - wave * 0.5f, paint)
+            }
+
+            // Vertical converging lines — treble energy makes them brighter
+            val vLines = 18
+            for (i in -vLines / 2..vLines / 2) {
+                val botX = cx + i * w * 0.072f
+                val brightness = (1f - kotlin.math.abs(i.toFloat()) / (vLines / 2f))
+                paint.strokeWidth = 0.4f + brightness * 0.4f
+                paint.color = cyan
+                paint.alpha = (8 + 25 * brightness * (0.2f + treble * 0.8f)).toInt().coerceIn(0, 55)
+                paint.setShadowLayer(1f, 0f, 0f, cyanDim)
+                canvas.drawLine(vanishX + i * 0.8f, horizon, botX, h, paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── MCP CONE — rotating wall of colored blocks (Tron arcade game) ──
+            // A conical shield of colored bricks that rotate slowly. Each brick
+            // is an audio bin — lit bricks pulse with frequency energy, creating
+            // a Breakout-style spectrum visualizer shaped like the MCP cone.
+            val mcpCx = cx + w * 0.18f
+            val mcpTopY = h * 0.02f
+            val mcpBotY = h * 0.38f
+            val mcpH = mcpBotY - mcpTopY
+            val mcpRows = 10
+            val mcpColsPerRow = 12
+            val mcpRotation = t * 0.4f  // slow rotation
+
+            // MCP face glow at apex (the humanoid face in the cone)
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#FF2200")
+            paint.alpha = (40 + avg * 80).toInt().coerceIn(40, 120)
+            paint.setShadowLayer(12f + avg * 10f, 0f, 0f, Color.parseColor("#FF2200"))
+            canvas.drawCircle(mcpCx, mcpTopY + mcpH * 0.08f, h * 0.035f + avg * h * 0.015f, paint)
+
+            // Draw the cone blocks — rows get wider toward the bottom (cone shape)
+            val mcpBlockColors = intArrayOf(
+                Color.parseColor("#FF0040"), Color.parseColor("#FF6600"),
+                Color.parseColor("#FFCC00"), Color.parseColor("#00FF66"),
+                Color.parseColor("#00CCFF"), Color.parseColor("#6644FF"),
+                Color.parseColor("#FF00CC"), Color.parseColor("#FF4400"),
+                Color.parseColor("#44FFAA"), Color.parseColor("#FF8800")
+            )
+
+            for (row in 0 until mcpRows) {
+                val rowProg = (row + 1f) / mcpRows
+                val rowY = mcpTopY + mcpH * rowProg
+                val rowHalfW = w * 0.04f + w * 0.22f * rowProg  // widens toward bottom
+                val brickH = mcpH / mcpRows * 0.85f
+                val brickW = (rowHalfW * 2f) / mcpColsPerRow * 0.9f
+
+                for (col in 0 until mcpColsPerRow) {
+                    // Rotate column index for spinning effect
+                    val rotatedCol = ((col + (mcpRotation * mcpColsPerRow / (2f * Math.PI.toFloat())).toInt()) % mcpColsPerRow + mcpColsPerRow) % mcpColsPerRow
+                    val colProg = (col.toFloat() / mcpColsPerRow) - 0.5f
+                    val bx = mcpCx + colProg * rowHalfW * 2f
+
+                    // Map to audio bin
+                    val binIdx = ((row * mcpColsPerRow + rotatedCol) * barCount / (mcpRows * mcpColsPerRow)).coerceIn(0, barCount - 1)
+                    val energy = barHeights[binIdx]
+
+                    if (energy > 0.08f) {
+                        // Lit block — color from palette, brightness from energy
+                        paint.style = Paint.Style.FILL
+                        paint.color = mcpBlockColors[row % mcpBlockColors.size]
+                        paint.alpha = (80 + energy * 175).toInt().coerceIn(80, 255)
+                        paint.setShadowLayer(2f + energy * 5f, 0f, 0f, mcpBlockColors[row % mcpBlockColors.size])
+                        canvas.drawRect(bx, rowY - brickH, bx + brickW, rowY, paint)
+                    } else {
+                        // Dim outline block
+                        paint.style = Paint.Style.STROKE
+                        paint.strokeWidth = 0.4f
+                        paint.color = Color.parseColor("#220808")
+                        paint.alpha = 30
+                        paint.setShadowLayer(0f, 0f, 0f, 0)
+                        canvas.drawRect(bx, rowY - brickH, bx + brickW, rowY, paint)
+                    }
+                }
+            }
+
+            // Red glow base of MCP cone
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#FF2200")
+            paint.alpha = (15 + bass * 30).toInt().coerceIn(15, 45)
+            paint.setShadowLayer(8f, 0f, 0f, Color.parseColor("#FF2200"))
+            canvas.drawRect(mcpCx - w * 0.24f, mcpBotY, mcpCx + w * 0.24f, mcpBotY + 2f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ══════════════════════════════════════════════════════════════
+            // RECOGNIZER — the U-shaped flying enforcer patrol craft
+            // Scans the grid from above, bobbing and tracking to the music.
+            // Horizontal position advances each frame; speed scales with
+            // high-mid energy. Bass makes it bob deeper. Treble spikes fire
+            // its downward scanning beam onto the grid floor.
+            // ══════════════════════════════════════════════════════════════
+            tronRecogX += 0.003f + highMid * 0.010f
+            if (tronRecogX > 1.25f) tronRecogX = -0.25f
+            val recogCx = w * tronRecogX
+            val recogCy = h * 0.18f +
+                kotlin.math.sin((t * 1.1f).toDouble()).toFloat() * h * 0.02f +
+                bass * h * 0.018f
+            val recogW = w * 0.22f
+            val recogH = h * 0.075f
+            val legW = recogW * 0.18f
+            val legH = recogH * 0.90f
+            val bridgeW = recogW * 0.56f
+            val bridgeTopY = recogCy - recogH * 0.55f
+
+            // Dark hull fill — left leg, right leg, cross-bar, raised bridge
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#08080C")
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            val recogLeft = android.graphics.Path()
+            recogLeft.moveTo(recogCx - recogW * 0.5f, recogCy - recogH * 0.10f)
+            recogLeft.lineTo(recogCx - recogW * 0.5f + legW, recogCy - recogH * 0.10f)
+            recogLeft.lineTo(recogCx - recogW * 0.5f + legW, recogCy + legH * 0.55f)
+            recogLeft.lineTo(recogCx - recogW * 0.5f, recogCy + legH * 0.55f)
+            recogLeft.close()
+            canvas.drawPath(recogLeft, paint)
+            val recogRight = android.graphics.Path()
+            recogRight.moveTo(recogCx + recogW * 0.5f - legW, recogCy - recogH * 0.10f)
+            recogRight.lineTo(recogCx + recogW * 0.5f, recogCy - recogH * 0.10f)
+            recogRight.lineTo(recogCx + recogW * 0.5f, recogCy + legH * 0.55f)
+            recogRight.lineTo(recogCx + recogW * 0.5f - legW, recogCy + legH * 0.55f)
+            recogRight.close()
+            canvas.drawPath(recogRight, paint)
+            // Cross-bar (bottom of the U)
+            canvas.drawRect(
+                recogCx - recogW * 0.5f, recogCy - recogH * 0.10f,
+                recogCx + recogW * 0.5f, recogCy + recogH * 0.05f, paint
+            )
+            // Raised central command bridge
+            canvas.drawRect(
+                recogCx - bridgeW * 0.5f, bridgeTopY,
+                recogCx + bridgeW * 0.5f, recogCy - recogH * 0.10f + 1f, paint
+            )
+
+            // Orange/red neon edge light — the iconic Recognizer glow
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.4f
+            paint.color = orange
+            paint.alpha = (200 + avg * 55).toInt().coerceIn(200, 255)
+            paint.setShadowLayer(6f + bass * 4f, 0f, 0f, orange)
+            canvas.drawPath(recogLeft, paint)
+            canvas.drawPath(recogRight, paint)
+            canvas.drawRect(
+                recogCx - bridgeW * 0.5f, bridgeTopY,
+                recogCx + bridgeW * 0.5f, recogCy - recogH * 0.10f + 1f, paint
+            )
+
+            // Vertical circuit stripes on each leg
+            paint.strokeWidth = 0.8f
+            paint.alpha = (140 + avg * 80).toInt().coerceIn(140, 230)
+            for (s in 0 until 3) {
+                val sxL = recogCx - recogW * 0.5f + legW * (0.3f + s * 0.2f)
+                canvas.drawLine(sxL, recogCy - recogH * 0.05f, sxL, recogCy + legH * 0.50f, paint)
+                val sxR = recogCx + recogW * 0.5f - legW + legW * (0.3f + s * 0.2f)
+                canvas.drawLine(sxR, recogCy - recogH * 0.05f, sxR, recogCy + legH * 0.50f, paint)
+            }
+
+            // Central cyclops eye — bright scanning lamp
+            paint.style = Paint.Style.FILL
+            paint.color = white
+            paint.alpha = (220 + treble * 35).toInt().coerceIn(220, 255)
+            paint.setShadowLayer(12f + treble * 6f, 0f, 0f, orange)
+            canvas.drawCircle(recogCx, recogCy - recogH * 0.04f,
+                recogH * 0.10f + treble * 2f, paint)
+
+            // Treble scan beam — downward cone when treble spikes
+            if (treble > 0.30f) {
+                paint.shader = android.graphics.LinearGradient(
+                    recogCx, recogCy + recogH * 0.05f,
+                    recogCx, horizon,
+                    intArrayOf(
+                        Color.argb((220 * treble).toInt().coerceIn(60, 220), 255, 180, 60),
+                        Color.TRANSPARENT
+                    ),
+                    floatArrayOf(0f, 1f),
+                    android.graphics.Shader.TileMode.CLAMP
+                )
+                paint.style = Paint.Style.FILL
+                paint.alpha = 255
+                val beam = android.graphics.Path()
+                beam.moveTo(recogCx - recogH * 0.06f, recogCy + recogH * 0.05f)
+                beam.lineTo(recogCx + recogH * 0.06f, recogCy + recogH * 0.05f)
+                beam.lineTo(recogCx + recogW * 0.22f, horizon)
+                beam.lineTo(recogCx - recogW * 0.22f, horizon)
+                beam.close()
+                canvas.drawPath(beam, paint)
+                paint.shader = null
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ══════════════════════════════════════════════════════════════
+            // TRON TANK — heavy blocky combat vehicle rolling the grid floor
+            // Geometric stack: tread base + trapezoid hull + pyramid turret
+            // + dual barrel. Rolls leftward; speed scales with low-mid
+            // energy. Treads blink to bass. Cannon muzzle-flashes on treble.
+            // ══════════════════════════════════════════════════════════════
+            tronTankX -= 0.0025f + lowMid * 0.008f
+            if (tronTankX < -0.25f) tronTankX = 1.25f
+            val tankCx = w * tronTankX
+            val tankCy = horizon + (h - horizon) * 0.42f
+            val tankW = w * 0.16f
+            val tankH = h * 0.08f
+
+            // Soft ground shadow
+            paint.style = Paint.Style.FILL
+            paint.color = Color.argb(130, 0, 4, 10)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            canvas.drawOval(
+                tankCx - tankW * 0.60f, tankCy + tankH * 0.30f,
+                tankCx + tankW * 0.60f, tankCy + tankH * 0.48f, paint
+            )
+
+            // Tread base — long dark rectangle
+            paint.color = Color.parseColor("#05060A")
+            canvas.drawRect(
+                tankCx - tankW * 0.52f, tankCy + tankH * 0.15f,
+                tankCx + tankW * 0.52f, tankCy + tankH * 0.35f, paint
+            )
+            // Tread detail — vertical segment lines (pulse with bass)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 0.7f
+            paint.color = cyan
+            paint.alpha = (90 + bass * 100).toInt().coerceIn(90, 220)
+            paint.setShadowLayer(3f + bass * 3f, 0f, 0f, cyan)
+            for (seg in 0 until 9) {
+                val sx = tankCx - tankW * 0.48f + seg * (tankW * 0.96f / 8f)
+                canvas.drawLine(sx, tankCy + tankH * 0.17f, sx, tankCy + tankH * 0.33f, paint)
+            }
+
+            // Hull body — trapezoid
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#0A0B12")
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            val hull = android.graphics.Path()
+            hull.moveTo(tankCx - tankW * 0.50f, tankCy + tankH * 0.15f)
+            hull.lineTo(tankCx - tankW * 0.36f, tankCy - tankH * 0.10f)
+            hull.lineTo(tankCx + tankW * 0.36f, tankCy - tankH * 0.10f)
+            hull.lineTo(tankCx + tankW * 0.50f, tankCy + tankH * 0.15f)
+            hull.close()
+            canvas.drawPath(hull, paint)
+            // Hull neon outline — pulses with low-mid
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.3f
+            paint.color = cyan
+            paint.alpha = (180 + lowMid * 75).toInt().coerceIn(180, 255)
+            paint.setShadowLayer(5f + lowMid * 4f, 0f, 0f, cyan)
+            canvas.drawPath(hull, paint)
+            // Mid-hull circuit line
+            canvas.drawLine(
+                tankCx - tankW * 0.42f, tankCy + tankH * 0.02f,
+                tankCx + tankW * 0.42f, tankCy + tankH * 0.02f, paint
+            )
+
+            // Pyramid turret
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#0B0C14")
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            val turret = android.graphics.Path()
+            turret.moveTo(tankCx - tankW * 0.20f, tankCy - tankH * 0.10f)
+            turret.lineTo(tankCx, tankCy - tankH * 0.42f)
+            turret.lineTo(tankCx + tankW * 0.20f, tankCy - tankH * 0.10f)
+            turret.close()
+            canvas.drawPath(turret, paint)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.2f
+            paint.color = cyan
+            paint.alpha = (190 + highMid * 65).toInt().coerceIn(190, 255)
+            paint.setShadowLayer(5f + highMid * 3f, 0f, 0f, cyan)
+            canvas.drawPath(turret, paint)
+
+            // Cannon barrel — horizontal from turret, forward-facing (left, because tank rolls left)
+            val barrelY = tankCy - tankH * 0.22f
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#0A0A12")
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            canvas.drawRect(
+                tankCx - tankW * 0.55f, barrelY - tankH * 0.035f,
+                tankCx + tankW * 0.06f, barrelY + tankH * 0.035f, paint
+            )
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.0f
+            paint.color = cyan
+            paint.alpha = (180 + avg * 70).toInt().coerceIn(180, 250)
+            paint.setShadowLayer(4f, 0f, 0f, cyan)
+            canvas.drawRect(
+                tankCx - tankW * 0.55f, barrelY - tankH * 0.035f,
+                tankCx + tankW * 0.06f, barrelY + tankH * 0.035f, paint
+            )
+
+            // Cannon muzzle-flash on treble spikes
+            if (treble > 0.35f) {
+                paint.style = Paint.Style.FILL
+                paint.color = white
+                paint.alpha = (255 * (treble - 0.10f)).toInt().coerceIn(160, 255)
+                paint.setShadowLayer(18f + treble * 10f, 0f, 0f, orange)
+                canvas.drawCircle(
+                    tankCx - tankW * 0.55f, barrelY,
+                    tankH * 0.09f + treble * tankH * 0.06f, paint
+                )
+                // Short tracer streak
+                paint.style = Paint.Style.STROKE
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeWidth = 2.0f + treble * 2f
+                paint.color = orange
+                paint.alpha = (200 + treble * 55).toInt().coerceIn(200, 255)
+                paint.setShadowLayer(8f, 0f, 0f, orange)
+                canvas.drawLine(
+                    tankCx - tankW * 0.56f, barrelY,
+                    tankCx - tankW * 0.86f, barrelY - tankH * 0.05f, paint
+                )
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── LIGHT CYCLES — two cycles racing, leaving spectrum walls ──
+
+            // Cyan cycle (left side) — position scrolls with time
+            val cycle1X = (w * 0.15f + ((t * 12f) % (w * 0.35f))).coerceIn(w * 0.05f, w * 0.48f)
+            val cycle1Y = h * 0.78f
+            val cycleH = h * 0.045f
+
+            fun drawLightCycle(px: Float, py: Float, color: Int, dimColor: Int, facing: Float) {
+                val cw = cycleH * 2.2f
+                val ch = cycleH
+                // Cycle body — sleek wedge
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#0A0A14")
+                val cp = android.graphics.Path()
+                cp.moveTo(px + cw * 0.6f * facing, py)
+                cp.lineTo(px + cw * 0.1f * facing, py - ch * 0.7f)
+                cp.lineTo(px - cw * 0.5f * facing, py - ch * 0.3f)
+                cp.lineTo(px - cw * 0.5f * facing, py + ch * 0.15f)
+                cp.close()
+                canvas.drawPath(cp, paint)
+                // Neon circuit lines on cycle
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 1.2f
+                paint.color = color
+                paint.alpha = (160 + avg * 80).toInt().coerceIn(160, 240)
+                paint.setShadowLayer(5f, 0f, 0f, color)
+                canvas.drawPath(cp, paint)
+                // Wheel glow
+                paint.style = Paint.Style.FILL
+                paint.color = color
+                paint.alpha = (180 + avg * 75).toInt().coerceIn(180, 255)
+                canvas.drawCircle(px + cw * 0.35f * facing, py, ch * 0.2f, paint)
+                canvas.drawCircle(px - cw * 0.35f * facing, py, ch * 0.18f, paint)
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+            }
+
+            drawLightCycle(cycle1X, cycle1Y, cyan, cyanDim, 1f)
+
+            // Orange cycle (right side, going opposite direction)
+            val cycle2X = (w * 0.85f - ((t * 10f) % (w * 0.35f))).coerceIn(w * 0.52f, w * 0.95f)
+            val cycle2Y = h * 0.82f
+            drawLightCycle(cycle2X, cycle2Y, orange, orangeDim, -1f)
+
+            // ══════════════════════════════════════════════════════════════
+            // LIGHT-CYCLE LIGHT WALLS — true graphic-equalizer
+            // ══════════════════════════════════════════════════════════════
+            // Each wall is a real column-style EQ:
+            //   • vertical column per frequency bin (not per-brick rows)
+            //   • smooth neon gradient (wall color at base → white at peak)
+            //   • sliding "peak cap" that falls back under gravity
+            //   • mirrored reflection onto the grid floor
+            //   • brighter floor trail line with a chasing bright spot
+            // The effect is unmistakably a floating ribbon of light
+            // streaming out of the light cycle — exactly like the film,
+            // but now visibly "pumping" with the music.
+            val wallCols = 24
+            val trailH = h * 0.30f
+            val trailBot = cycle1Y + cycleH * 0.15f
+            val trailTop = trailBot - trailH
+            val trailLeft = w * 0.02f
+            val trailRight = cycle1X - cycleH
+
+            // Lazily-init peak-hold arrays on first use
+            if (tronPeakL.size != wallCols) {
+                tronPeakL = FloatArray(wallCols)
+                tronPeakR = FloatArray(wallCols)
+            }
+
+            fun drawEqColumn(
+                bx: Float, bw: Float, baseY: Float, topY: Float,
+                energy: Float, peak: Float, wallColor: Int, wallMid: Int,
+                reflect: Boolean
+            ) {
+                val wallH = baseY - topY
+                val colH = energy * wallH
+                val cx = bx + bw * 0.5f
+                // ─ Base dim silhouette (always visible)
+                paint.style = Paint.Style.FILL
+                paint.color = wallColor
+                paint.alpha = 24
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+                canvas.drawRect(bx + 0.3f, topY, bx + bw - 0.3f, baseY, paint)
+
+                // ─ Lit column with vertical gradient
+                if (colH > 0.6f) {
+                    val topOfCol = baseY - colH
+                    paint.shader = android.graphics.LinearGradient(
+                        cx, baseY, cx, topOfCol,
+                        intArrayOf(wallColor, wallMid, Color.WHITE),
+                        floatArrayOf(0f, 0.65f, 1f),
+                        android.graphics.Shader.TileMode.CLAMP
+                    )
+                    paint.alpha = (150 + energy * 105).toInt().coerceIn(150, 255)
+                    paint.setShadowLayer(3f + energy * 6f, 0f, 0f, wallColor)
+                    canvas.drawRect(bx + 0.3f, topOfCol, bx + bw - 0.3f, baseY, paint)
+                    paint.shader = null
+                }
+
+                // ─ Peak cap (falls slowly)
+                val peakY = baseY - peak * wallH
+                if (peak > 0.03f) {
+                    paint.style = Paint.Style.FILL
+                    paint.color = Color.WHITE
+                    paint.alpha = (170 + peak * 85).toInt().coerceIn(170, 255)
+                    paint.setShadowLayer(5f, 0f, 0f, wallColor)
+                    canvas.drawRect(bx + 0.3f, peakY - 1.4f, bx + bw - 0.3f, peakY + 0.4f, paint)
+                }
+
+                // ─ Reflection on the "floor" (vertical squash, fading)
+                if (reflect && colH > 0.6f) {
+                    val reflectH = colH * 0.45f
+                    paint.shader = android.graphics.LinearGradient(
+                        cx, baseY, cx, baseY + reflectH,
+                        intArrayOf(wallColor, Color.TRANSPARENT),
+                        floatArrayOf(0f, 1f),
+                        android.graphics.Shader.TileMode.CLAMP
+                    )
+                    paint.alpha = (70 + energy * 70).toInt().coerceIn(70, 160)
+                    paint.setShadowLayer(0f, 0f, 0f, 0)
+                    canvas.drawRect(bx + 0.3f, baseY + 0.5f, bx + bw - 0.3f, baseY + reflectH, paint)
+                    paint.shader = null
+                }
+            }
+
+            // ─── Cyan wall behind the cyan cycle
+            if (trailRight > trailLeft + 5f) {
+                val colW = (trailRight - trailLeft) / wallCols
+                for (col in 0 until wallCols) {
+                    val binIdx = (col * barCount / wallCols).coerceIn(0, barCount - 1)
+                    val energy = barHeights[binIdx]
+                    // Peak-hold: attack fast, decay slow (classic EQ behaviour)
+                    tronPeakL[col] = if (energy > tronPeakL[col]) energy
+                        else (tronPeakL[col] - 0.012f).coerceAtLeast(0f)
+                    val bx = trailLeft + col * colW
+                    drawEqColumn(
+                        bx, colW, trailBot, trailTop,
+                        energy, tronPeakL[col],
+                        cyan, Color.parseColor("#55EEFF"),
+                        reflect = true
+                    )
+                }
+            }
+
+            // ─── Orange wall behind the orange cycle
+            val trailBot2 = cycle2Y + cycleH * 0.15f
+            val trailTop2 = trailBot2 - trailH * 0.9f
+            val trailLeft2 = cycle2X + cycleH
+            val trailRight2 = w * 0.98f
+            if (trailRight2 > trailLeft2 + 5f) {
+                val colW2 = (trailRight2 - trailLeft2) / wallCols
+                for (col in 0 until wallCols) {
+                    val binIdx = ((wallCols - 1 - col) * barCount / wallCols).coerceIn(0, barCount - 1)
+                    val energy = barHeights[binIdx]
+                    tronPeakR[col] = if (energy > tronPeakR[col]) energy
+                        else (tronPeakR[col] - 0.012f).coerceAtLeast(0f)
+                    val bx = trailLeft2 + col * colW2
+                    drawEqColumn(
+                        bx, colW2, trailBot2, trailTop2,
+                        energy, tronPeakR[col],
+                        orange, Color.parseColor("#FFB855"),
+                        reflect = true
+                    )
+                }
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            paint.shader = null
+
+            // ─── Base floor trails — thin hot line with a chasing bright spot
+            paint.style = Paint.Style.STROKE
+            paint.strokeCap = Paint.Cap.ROUND
+            paint.strokeWidth = 2.2f
+            paint.color = cyan
+            paint.alpha = (140 + avg * 110).toInt().coerceIn(140, 250)
+            paint.setShadowLayer(8f, 0f, 0f, cyan)
+            canvas.drawLine(trailLeft, trailBot, cycle1X - cycleH * 0.5f, trailBot, paint)
+            paint.color = orange
+            paint.setShadowLayer(8f, 0f, 0f, orange)
+            canvas.drawLine(cycle2X + cycleH * 0.5f, trailBot2, trailRight2, trailBot2, paint)
+
+            // Chasing bright spot — runs along the trail in sync with the cycle
+            paint.style = Paint.Style.FILL
+            val chaseL = trailLeft + ((t * 60f) % (cycle1X - trailLeft).coerceAtLeast(1f))
+            paint.color = white
+            paint.alpha = (200 + avg * 55).toInt().coerceIn(200, 255)
+            paint.setShadowLayer(10f, 0f, 0f, cyan)
+            canvas.drawCircle(chaseL, trailBot, 2.2f + avg * 2f, paint)
+            val chaseR = trailRight2 - ((t * 55f) % (trailRight2 - cycle2X).coerceAtLeast(1f))
+            paint.setShadowLayer(10f, 0f, 0f, orange)
+            canvas.drawCircle(chaseR, trailBot2, 2.2f + avg * 2f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── TRON PROGRAMS with IDENTITY DISCS (throw & return) ──
+            // Discs fly out toward the opponent and boomerang back.
+            // Throw distance scales with energy; disc spins as it travels.
+
+            fun drawProgram(px: Float, py: Float, color: Int, throwDir: Float,
+                            throwPhase: Float, discEnergy: Float) {
+                val u = h * 0.012f
+                val headY = py - u * 8f
+                // Helmet
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#0A0A14")
+                canvas.drawCircle(px, headY, u * 2f, paint)
+                // Visor glow
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 1.2f
+                paint.color = color
+                paint.alpha = (120 + discEnergy * 120).toInt().coerceIn(120, 240)
+                paint.setShadowLayer(4f, 0f, 0f, color)
+                canvas.drawArc(
+                    px - u * 1.8f, headY - u * 0.8f,
+                    px + u * 1.8f, headY + u * 1f,
+                    200f, 140f, false, paint
+                )
+                // Body
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#080812")
+                val body = android.graphics.Path()
+                body.moveTo(px, headY + u * 1.5f)
+                body.lineTo(px - u * 2.5f, py - u * 2f)
+                body.lineTo(px - u * 2f, py + u * 2f)
+                body.lineTo(px + u * 2f, py + u * 2f)
+                body.lineTo(px + u * 2.5f, py - u * 2f)
+                body.close()
+                canvas.drawPath(body, paint)
+                // Circuit lines
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 0.9f
+                paint.color = color
+                paint.alpha = (60 + discEnergy * 100).toInt().coerceIn(60, 180)
+                paint.setShadowLayer(3f, 0f, 0f, color)
+                canvas.drawPath(body, paint)
+                canvas.drawLine(px, headY + u * 2f, px, py + u * 1f, paint)
+                canvas.drawLine(px - u * 1.5f, py - u * 1.5f, px + u * 1.5f, py - u * 1.5f, paint)
+
+                // ── Identity disc: throw and return boomerang ──
+                // throwPhase cycles 0→2π. 0→π = flying out, π→2π = returning.
+                // Use a sine curve so the disc smoothly arcs outward and back.
+                val phase = throwPhase % (2f * Math.PI.toFloat())
+                val outFraction = kotlin.math.sin(phase.toDouble()).toFloat().coerceIn(0f, 1f)
+                // Max throw distance scales with energy
+                val maxDist = w * 0.18f + discEnergy * w * 0.12f
+                val throwDist = outFraction * maxDist
+                // Disc arcs upward in parabola as it flies
+                val arcHeight = outFraction * (1f - outFraction) * h * 0.15f
+
+                val discX = px + throwDir * throwDist
+                val discY = py - u * 4f - arcHeight
+                val discR = u * 1.4f + discEnergy * u * 0.6f
+                val discSpin = t * 12f  // fast spin
+
+                // NOTE: Per design the Tron identity discs intentionally have
+                // NO trailing light — only the crisp spinning ring itself. The
+                // trail path that used to be drawn here has been removed.
+
+                // ── Identity disc: crisp glowing ring, no trail ──
+                // Pure Tron disc: dark metal rim, hot neon edge-light, dim
+                // interior with a spinning cross-hair insignia.
+                // Outer halo (contained, non-trailing)
+                paint.style = Paint.Style.FILL
+                paint.color = color
+                paint.alpha = (35 + discEnergy * 55).toInt().coerceIn(35, 95)
+                paint.setShadowLayer(discR * 2.2f, 0f, 0f, color)
+                canvas.drawCircle(discX, discY, discR * 1.55f, paint)
+
+                // Dark metal rim (outer bezel)
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#0B0D14")
+                paint.alpha = 230
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+                canvas.drawCircle(discX, discY, discR, paint)
+
+                // Hot neon edge ring — this is the iconic bright circle
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = kotlin.math.max(1.2f, discR * 0.14f)
+                paint.color = color
+                paint.alpha = (220 + discEnergy * 35).toInt().coerceIn(220, 255)
+                paint.setShadowLayer(8f + discEnergy * 6f, 0f, 0f, color)
+                canvas.drawCircle(discX, discY, discR * 0.92f, paint)
+
+                // Inner ring (dim highlight arc)
+                paint.strokeWidth = 0.8f
+                paint.color = color
+                paint.alpha = (110 + discEnergy * 80).toInt().coerceIn(110, 200)
+                paint.setShadowLayer(2.5f, 0f, 0f, color)
+                canvas.drawCircle(discX, discY, discR * 0.58f, paint)
+
+                // Spinning cross-hair insignia — keeps the disc feeling "alive"
+                paint.strokeWidth = 0.8f
+                paint.color = white
+                paint.alpha = (150 + discEnergy * 80).toInt().coerceIn(150, 230)
+                paint.setShadowLayer(3f, 0f, 0f, color)
+                val cs = kotlin.math.cos(discSpin.toDouble()).toFloat()
+                val sn = kotlin.math.sin(discSpin.toDouble()).toFloat()
+                canvas.drawLine(discX - cs * discR * 0.55f, discY - sn * discR * 0.55f,
+                    discX + cs * discR * 0.55f, discY + sn * discR * 0.55f, paint)
+                canvas.drawLine(discX + sn * discR * 0.55f, discY - cs * discR * 0.55f,
+                    discX - sn * discR * 0.55f, discY + cs * discR * 0.55f, paint)
+
+                // Central bright pip
+                paint.style = Paint.Style.FILL
+                paint.color = white
+                paint.alpha = (210 + discEnergy * 45).toInt().coerceIn(210, 255)
+                paint.setShadowLayer(5f, 0f, 0f, color)
+                canvas.drawCircle(discX, discY, discR * 0.11f, paint)
+
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+            }
+
+            // Cyan program — throws disc rightward toward orange
+            val prog1Phase = t * 1.8f + highMid * 2f
+            drawProgram(cx - w * 0.14f, h * 0.58f, cyan, 1f, prog1Phase, highMid)
+
+            // Orange program — throws disc leftward toward cyan
+            val prog2Phase = t * 1.5f + lowMid * 2f + Math.PI.toFloat() // offset so throws alternate
+            drawProgram(cx + w * 0.14f, h * 0.60f, orange, -1f, prog2Phase, lowMid)
+
+            // ── BIT COMPANION ──
+            // Floats near top-left, morphs YES(spiky yellow)/NO(angular red)/neutral(cyan)
+            val bitCx = w * 0.08f
+            val bitCy = h * 0.20f
+            val bitBaseR = h * 0.05f
+            val bitR = bitBaseR * (0.7f + treble * 0.8f)
+            val bitBob = kotlin.math.sin((t * 1.5f).toDouble()).toFloat() * h * 0.012f
+            val bitSpin = t * 2.5f
+
+            val bitColor = when {
+                treble > 0.55f -> Color.parseColor("#FFEE00") // YES — excited
+                treble < 0.12f -> Color.parseColor("#FF2200") // NO — quiet
+                else -> cyan
+            }
+            val vertices = when {
+                treble > 0.55f -> 12  // spiky star
+                treble < 0.12f -> 4   // angular diamond
+                else -> 8             // octagon
+            }
+            val spike = if (treble > 0.55f) 0.6f else if (treble < 0.12f) 0.3f else 0.1f
+
+            // Glow
+            paint.style = Paint.Style.FILL
+            paint.color = bitColor
+            paint.alpha = (20 + treble * 50).toInt().coerceIn(20, 70)
+            paint.setShadowLayer(bitR * 1.8f, 0f, 0f, bitColor)
+            canvas.drawCircle(bitCx, bitCy + bitBob, bitR * 1.8f, paint)
+
+            // Body
+            val bitPath = android.graphics.Path()
+            for (v in 0 until vertices) {
+                val angle = (v.toFloat() / vertices) * Math.PI.toFloat() * 2f + bitSpin
+                val isOuter = v % 2 == 0
+                val vr = if (isOuter) bitR * (1f + spike) else bitR * (0.6f + spike * 0.2f)
+                val vx = bitCx + kotlin.math.cos(angle.toDouble()).toFloat() * vr
+                val vy = bitCy + bitBob + kotlin.math.sin(angle.toDouble()).toFloat() * vr
+                if (v == 0) bitPath.moveTo(vx, vy) else bitPath.lineTo(vx, vy)
+            }
+            bitPath.close()
+
+            paint.style = Paint.Style.FILL
+            paint.color = bitColor
+            paint.alpha = (100 + treble * 140).toInt().coerceIn(100, 240)
+            paint.setShadowLayer(5f, 0f, 0f, bitColor)
+            canvas.drawPath(bitPath, paint)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.2f
+            paint.color = white
+            paint.alpha = (160 + treble * 80).toInt().coerceIn(160, 240)
+            canvas.drawPath(bitPath, paint)
+
+            // Bit eye
+            paint.style = Paint.Style.FILL
+            paint.color = white
+            paint.alpha = (200 + treble * 55).toInt().coerceIn(200, 255)
+            canvas.drawCircle(bitCx, bitCy + bitBob, bitBaseR * 0.18f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── CRT scanlines — subtle, never dominant ──
+            // Evenly-spaced 2px dark bands across the whole frame, darkened
+            // further by overall energy so the lines "breathe" with the track.
+            paint.style = Paint.Style.FILL
+            paint.shader = null
+            val scanAlpha = (20 + avg * 18f).toInt().coerceIn(20, 48)
+            paint.color = Color.argb(scanAlpha, 0, 0, 0)
+            var sy = 0f
+            while (sy < h) {
+                canvas.drawRect(0f, sy, w, sy + 1f, paint)
+                sy += 3f
+            }
+
+            // ── Corner vignette — gentle darkening toward edges ──
+            paint.shader = android.graphics.RadialGradient(
+                cx, cy, kotlin.math.max(w, h) * 0.62f,
+                intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT, Color.argb(120, 0, 0, 8)),
+                floatArrayOf(0f, 0.55f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, w, h, paint)
+            paint.shader = null
+
+            // ── HUD overlay ──
+            paint.style = Paint.Style.FILL
+            paint.typeface = android.graphics.Typeface.MONOSPACE
+            paint.textSize = h * 0.028f
+            paint.textAlign = Paint.Align.LEFT
+            paint.color = cyan
+            paint.alpha = (60 + avg * 80).toInt().coerceIn(60, 150)
+            paint.setShadowLayer(4f, 0f, 0f, cyan)
+            canvas.drawText("END OF LINE", 4f, h - 4f, paint)
+            paint.textAlign = Paint.Align.RIGHT
+            paint.color = orange
+            paint.alpha = (60 + avg * 80).toInt().coerceIn(60, 150)
+            paint.setShadowLayer(4f, 0f, 0f, orange)
+            canvas.drawText("GRID %04d".format((frameCount % 10000).toInt()), w - 4f, h - 4f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            paint.typeface = android.graphics.Typeface.DEFAULT
+        }
+
+        private fun drawBreathe(canvas: Canvas, w: Float, h: Float) {
+            val cx = w / 2f
+            val cy = h / 2f
+            val maxR = minOf(w, h) * 0.45f
+
+            // Advance breathing timer
+            val now = System.currentTimeMillis()
+            if (lastBreathFrameTime > 0) {
+                breathCycleMs = (breathCycleMs + (now - lastBreathFrameTime)) % breathTotalMs
+            }
+            lastBreathFrameTime = now
+
+            // Determine phase and progress (0..1) within that phase
+            val elapsed = breathCycleMs
+            val (phase, progress) = when {
+                elapsed < breathInhaleMs -> "INHALE" to (elapsed.toFloat() / breathInhaleMs)
+                elapsed < breathInhaleMs + breathHoldMs -> "HOLD" to ((elapsed - breathInhaleMs).toFloat() / breathHoldMs)
+                elapsed < breathInhaleMs + breathHoldMs + breathExhaleMs -> "EXHALE" to ((elapsed - breathInhaleMs - breathHoldMs).toFloat() / breathExhaleMs)
+                else -> "REST" to ((elapsed - breathInhaleMs - breathHoldMs - breathExhaleMs).toFloat() / breathPauseMs)
+            }
+
+            // Circle size based on breath phase — expands on inhale, shrinks on exhale
+            val breathSize = when (phase) {
+                "INHALE" -> 0.3f + progress * 0.7f       // grows 0.3 → 1.0
+                "HOLD"   -> 1.0f                          // full
+                "EXHALE" -> 1.0f - progress * 0.7f        // shrinks 1.0 → 0.3
+                else     -> 0.3f                           // resting small
+            }
+
+            // Use average audio level from barHeights to tint the color
+            val avgLevel = barHeights.average().toFloat().coerceIn(0f, 1f)
+
+            // Color palette: quiet → deep teal, loud → warm amber/coral
+            val quietColor = Color.parseColor("#2E8B8B")   // teal
+            val midColor = Color.parseColor("#5B9EA6")      // lighter teal
+            val warmColor = Color.parseColor("#E8A87C")     // peach
+            val hotColor = Color.parseColor("#D4726A")       // coral
+            val baseColor = when {
+                avgLevel < 0.33f -> blendColors(quietColor, midColor, avgLevel / 0.33f)
+                avgLevel < 0.66f -> blendColors(midColor, warmColor, (avgLevel - 0.33f) / 0.33f)
+                else -> blendColors(warmColor, hotColor, (avgLevel - 0.66f) / 0.34f)
+            }
+
+            // Outer soft glow
+            val radius = maxR * breathSize
+            paint.style = Paint.Style.FILL
+            paint.color = baseColor
+            paint.alpha = (40 + avgLevel * 50).toInt()
+            paint.setShadowLayer(8f, 0f, 0f, baseColor)
+            canvas.drawCircle(cx, cy, radius * 1.4f, paint)
+
+            // Main breathing circle
+            paint.alpha = (85 + avgLevel * 85).toInt()
+            paint.setShadowLayer(6f, 0f, 0f, baseColor)
+            canvas.drawCircle(cx, cy, radius, paint)
+
+            // Inner bright core
+            val coreColor = blendColors(baseColor, Color.WHITE, 0.45f)
+            paint.color = coreColor
+            paint.alpha = (130 + avgLevel * 110).toInt().coerceAtMost(240)
+            paint.setShadowLayer(4f, 0f, 0f, Color.WHITE)
+            canvas.drawCircle(cx, cy, radius * 0.5f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // Breathing guide text
+            val label = when (phase) {
+                "INHALE" -> "breathe in"
+                "HOLD"   -> "hold"
+                "EXHALE" -> "breathe out"
+                else     -> "rest"
+            }
+            paint.color = Color.WHITE
+            paint.alpha = 200
+            paint.textSize = 14f * (w / 400f).coerceIn(0.8f, 1.5f)
+            paint.textAlign = Paint.Align.CENTER
+            paint.style = Paint.Style.FILL
+            paint.setShadowLayer(4f, 0f, 0f, baseColor)
+            canvas.drawText(label, cx, cy + radius + paint.textSize * 1.6f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // Subtle ring pulse that follows the breath
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.5f + avgLevel * 2f
+            paint.color = baseColor
+            paint.alpha = (40 + breathSize * 60).toInt()
+            canvas.drawCircle(cx, cy, radius * 1.15f, paint)
+        }
+
+        /**
+         * Close Encounters of the Third Kind theme — Massive mothership
+         * hovering overhead with individually-illuminated light panels that
+         * flash in different colors, reacting to audio frequencies. Inspired
+         * by the "dueling tones" climax at Devils Tower where the mothership
+         * communicates through musical tones paired with colored lights.
+         * Each panel is its own spectrum bin, flashing independently.
+         */
+        // Per-panel random state for Close Encounters (deterministic per panel index)
+        private val cePanelHues = FloatArray(72) { (it * 137.508f) % 360f }
+        private val cePanelPhases = FloatArray(72) { (it * 73.13f) % 1f }
+        private val cePanelSpeeds = FloatArray(72) { 0.4f + (it * 31.37f % 1f) * 1.6f }
+
+        private fun drawCloseEncounters(canvas: Canvas, w: Float, h: Float) {
+            // ══════════════════════════════════════════════════════════════
+            //  Close Encounters of the Third Kind — redesigned to match the
+            //  iconic climax frame: massive saucer silhouette filling the
+            //  top of the frame, blue star-dotted canopy above, bright
+            //  red/orange core glowing at the ship's center, a horizontal
+            //  band of rectangular window lights in the underside, and a
+            //  rotating ring of rim lights along the lower edge that flash
+            //  through the five CE3K tone colors in reaction to audio.
+            //
+            //  Five-note tone → color mapping follows Spielberg's canonical
+            //  on-set assignment:  RE-RED, MI-YELLOW, DO↑-PURPLE,
+            //                      DO↓-GREEN, SOL-ORANGE.
+            //
+            //  Below the ship: rocky canyon silhouette, crowd of scientist
+            //  silhouettes watching from the landing pad, converging light
+            //  strips on the ground, and tall flood towers on either side.
+            val cx = w / 2f
+            val t = frameCount * 0.018f
+            val bassEnergy      = bandEnergy(0, 5)    // → drives the RED tone
+            val lowMidEnergy    = bandEnergy(6, 11)   // → drives YELLOW
+            val midEnergy       = bandEnergy(12, 18)  // → drives PURPLE
+            val highMidEnergy   = bandEnergy(19, 24)  // → drives GREEN
+            val trebleEnergy    = bandEnergy(25, 31)  // → drives ORANGE
+            val avgLevel        = bandEnergy(0, barCount - 1)
+            val active          = avgLevel > 0.03f
+
+            // ── Sky gradient: deep indigo top, night-canyon browns at bottom ──
+            paint.reset()
+            paint.isAntiAlias = true
+            paint.style = Paint.Style.FILL
+            paint.shader = android.graphics.LinearGradient(
+                0f, 0f, 0f, h,
+                intArrayOf(
+                    Color.parseColor("#0A0728"),
+                    Color.parseColor("#05031A"),
+                    Color.parseColor("#0A0608")
+                ),
+                floatArrayOf(0f, 0.55f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, w, h, paint)
+            paint.shader = null
+
+            // ── Bright RED/ORANGE CORE glow (the ship's central sun) ──
+            // This is the dominant light source in the reference image. It
+            // spills across the entire upper half. Pulses with bass + overall.
+            val coreX  = cx
+            val coreY  = h * 0.30f
+            val coreR  = h * (0.28f + bassEnergy * 0.06f + avgLevel * 0.04f)
+            paint.shader = android.graphics.RadialGradient(
+                coreX, coreY, coreR,
+                intArrayOf(
+                    Color.argb(240, 255, 240, 200),
+                    Color.argb((210 + bassEnergy * 45).toInt().coerceAtMost(255), 255, 120, 40),
+                    Color.argb(150, 200, 40, 20),
+                    Color.argb(40, 80, 20, 40),
+                    Color.TRANSPARENT
+                ),
+                floatArrayOf(0f, 0.18f, 0.45f, 0.72f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, w, h * 0.70f, paint)
+            paint.shader = null
+
+            // ── Blue starry canopy/dome overhead (matches reference image) ──
+            // A lattice of tiny blue dots forming an arch above the ship,
+            // denser near the top-center, fading away at the edges.
+            val canopyCx = cx
+            val canopyCy = h * 0.05f
+            val canopyRx = w * 0.70f
+            val canopyRy = h * 0.42f
+            for (s in 0 until 220) {
+                // Deterministic pseudo-random positions
+                val seed  = (s * 0.6180339f) % 1f
+                val seed2 = ((s * 1.61803f) + 0.37f) % 1f
+                val ang = (seed * Math.PI.toFloat())  // 0..π → upper arc
+                val r = 0.55f + seed2 * 0.45f
+                val px = canopyCx + kotlin.math.cos(ang.toDouble()).toFloat() * canopyRx * r * (1f - (seed * 0.1f))
+                val py = canopyCy + kotlin.math.sin(ang.toDouble()).toFloat() * canopyRy * r
+                if (py > h * 0.45f) continue  // keep stars above the ship
+                // Twinkle — pace modulated by mid-highs
+                val twPhase = (t * (0.8f + seed * 2.3f) + seed2 * 6.28f) % 6.2832f
+                val tw = 0.35f + 0.65f * (0.5f + 0.5f * kotlin.math.sin(twPhase.toDouble()).toFloat())
+                paint.style = Paint.Style.FILL
+                paint.color = when (s % 6) {
+                    0 -> Color.parseColor("#BFDFFF")
+                    1 -> Color.parseColor("#80B4FF")
+                    2 -> Color.parseColor("#A0C8FF")
+                    3 -> Color.parseColor("#6096FF")
+                    4 -> Color.WHITE
+                    else -> Color.parseColor("#50A0FF")
+                }
+                paint.alpha = (60 + tw * 170 + highMidEnergy * 40).toInt().coerceIn(60, 230)
+                paint.setShadowLayer(1.6f + tw * 1.8f, 0f, 0f, paint.color)
+                canvas.drawCircle(px, py, 0.7f + tw * 1.2f + (if (s % 19 == 0) 1.2f else 0f), paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── Rocky canyon silhouette on the ground (not Devils Tower) ──
+            // Jagged mesa walls left and right, distant hills in the middle.
+            val groundY = h * 0.72f
+            val canyonPath = android.graphics.Path()
+            canyonPath.moveTo(0f, h)
+            canyonPath.lineTo(0f, groundY - h * 0.05f)
+            canyonPath.lineTo(w * 0.05f, groundY - h * 0.09f)
+            canyonPath.lineTo(w * 0.09f, groundY - h * 0.06f)
+            canyonPath.lineTo(w * 0.14f, groundY - h * 0.11f)
+            canyonPath.lineTo(w * 0.19f, groundY - h * 0.03f)
+            canyonPath.lineTo(w * 0.24f, groundY - h * 0.05f)
+            canyonPath.lineTo(w * 0.30f, groundY - h * 0.02f)
+            canyonPath.lineTo(w * 0.42f, groundY - h * 0.01f)
+            canyonPath.lineTo(w * 0.55f, groundY - h * 0.02f)
+            canyonPath.lineTo(w * 0.70f, groundY - h * 0.01f)
+            canyonPath.lineTo(w * 0.77f, groundY - h * 0.04f)
+            canyonPath.lineTo(w * 0.82f, groundY - h * 0.02f)
+            canyonPath.lineTo(w * 0.88f, groundY - h * 0.10f)
+            canyonPath.lineTo(w * 0.93f, groundY - h * 0.06f)
+            canyonPath.lineTo(w * 0.97f, groundY - h * 0.09f)
+            canyonPath.lineTo(w, groundY - h * 0.05f)
+            canyonPath.lineTo(w, h)
+            canyonPath.close()
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#0A0806")
+            paint.alpha = 255
+            canvas.drawPath(canyonPath, paint)
+
+            // Warm underbelly glow at the canyon rim (light from the ship
+            // spilling down onto the rocks)
+            paint.shader = android.graphics.LinearGradient(
+                0f, groundY - h * 0.12f, 0f, groundY + h * 0.05f,
+                intArrayOf(
+                    Color.TRANSPARENT,
+                    Color.argb((50 + avgLevel * 100).toInt().coerceIn(50, 160), 255, 120, 40),
+                    Color.TRANSPARENT
+                ),
+                floatArrayOf(0f, 0.5f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, groundY - h * 0.12f, w, groundY + h * 0.05f, paint)
+            paint.shader = null
+
+            // ── Mothership silhouette (wide saucer bottom, dome on top) ──
+            val shipBob = kotlin.math.sin((t * 0.7f).toDouble()).toFloat() * h * 0.005f
+            val shipCx = cx
+            val shipCy = h * 0.30f + shipBob
+            val shipW = w * 0.92f
+            val shipH = h * 0.26f
+            val shipBottom = shipCy + shipH * 0.5f
+
+            // Lower hull — wide flattened ellipse (silhouette)
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#070710")
+            val hullRect = android.graphics.RectF(
+                shipCx - shipW / 2f, shipCy - shipH * 0.10f,
+                shipCx + shipW / 2f, shipCy + shipH * 0.50f
+            )
+            canvas.drawOval(hullRect, paint)
+
+            // Upper dome — dark semi-circular cap above hull
+            paint.color = Color.parseColor("#060610")
+            val domeRect = android.graphics.RectF(
+                shipCx - shipW * 0.38f, shipCy - shipH * 0.90f,
+                shipCx + shipW * 0.38f, shipCy + shipH * 0.05f
+            )
+            canvas.drawOval(domeRect, paint)
+
+            // Thin rim highlight around the dome (cooler blue backlight)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.1f
+            paint.color = Color.parseColor("#5080FF")
+            paint.alpha = (60 + avgLevel * 80).toInt().coerceIn(60, 180)
+            paint.setShadowLayer(5f, 0f, 0f, Color.parseColor("#6090FF"))
+            canvas.drawOval(domeRect, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // Subtle rim highlight along the lower hull
+            paint.strokeWidth = 1.0f
+            paint.color = Color.parseColor("#FFB070")
+            paint.alpha = (70 + avgLevel * 100).toInt().coerceIn(70, 220)
+            paint.setShadowLayer(8f, 0f, 0f, Color.parseColor("#FF8040"))
+            canvas.drawOval(hullRect, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── Horizontal WINDOW-LIGHT BAND (the bright strip of rectangles) ──
+            // This is the signature horizontal band of glowing rectangles
+            // across the underside of the ship in the reference image. Each
+            // rectangle is one audio bin — they sequence left-to-right and
+            // pulse with their bin's energy.
+            val bandCy = shipCy + shipH * 0.18f
+            val bandCount = 14
+            val bandSpan = shipW * 0.68f
+            val bandCellW = bandSpan / bandCount
+            val bandH = shipH * 0.11f
+            val bandStartX = shipCx - bandSpan / 2f
+            for (b in 0 until bandCount) {
+                val binIdx = (b * barCount / bandCount).coerceIn(0, barCount - 1)
+                val energy = barHeights[binIdx]
+                val bx = bandStartX + b * bandCellW
+                val rect = android.graphics.RectF(
+                    bx + bandCellW * 0.10f, bandCy - bandH * 0.5f,
+                    bx + bandCellW * 0.90f, bandCy + bandH * 0.5f
+                )
+                // Dim base (always visible)
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#FFC060")
+                paint.alpha = (110 + energy * 110).toInt().coerceIn(110, 230)
+                paint.setShadowLayer(6f + energy * 8f, 0f, 0f, Color.parseColor("#FF7020"))
+                canvas.drawRoundRect(rect, bandH * 0.15f, bandH * 0.15f, paint)
+                // Lit overlay — white hot center when this bin fires
+                if (energy > 0.12f) {
+                    paint.color = Color.parseColor("#FFFFE0")
+                    paint.alpha = (energy * 240).toInt().coerceIn(60, 240)
+                    paint.setShadowLayer(5f, 0f, 0f, Color.parseColor("#FFE0A0"))
+                    canvas.drawRoundRect(
+                        rect.left + bandCellW * 0.08f, bandCy - bandH * 0.22f,
+                        rect.right - bandCellW * 0.08f, bandCy + bandH * 0.22f,
+                        bandH * 0.1f, bandH * 0.1f, paint
+                    )
+                }
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── ROTATING rim lights cycling through the 5 CE3K tone colors ──
+            // A ring of ~36 round lights around the lower rim. The ring
+            // spins continuously; lights shift through the 5-tone color
+            // palette and flash brighter when their mapped tone fires.
+            //
+            // We identify which tone is currently dominant and make lights
+            // at that color burn white-hot.
+            val toneColors = intArrayOf(
+                Color.parseColor("#FF2020"),  // RE  — RED
+                Color.parseColor("#FFD60A"),  // MI  — YELLOW
+                Color.parseColor("#A050FF"),  // DO↑ — PURPLE
+                Color.parseColor("#22E655"),  // DO↓ — GREEN
+                Color.parseColor("#FF7A1F")   // SOL — ORANGE
+            )
+            val toneNames = arrayOf("RE", "MI", "DO↑", "DO↓", "SOL")
+            val toneEnergies = floatArrayOf(
+                bassEnergy, lowMidEnergy, midEnergy, highMidEnergy, trebleEnergy
+            )
+            var brightestPanel = -1
+            var brightestValue = 0f
+            for (i in 0 until 5) {
+                if (toneEnergies[i] > brightestValue) {
+                    brightestValue = toneEnergies[i]; brightestPanel = i
+                }
+            }
+
+            // Rotation speed scales with overall energy
+            val rimCount = 40
+            val rimRotation = t * (0.35f + avgLevel * 0.9f)
+            val rimCx = shipCx
+            val rimCy = shipCy + shipH * 0.40f
+            val rimRx = shipW * 0.44f
+            val rimRy = shipH * 0.22f
+            paint.style = Paint.Style.FILL
+            for (i in 0 until rimCount) {
+                val ang = (i.toFloat() / rimCount) * 6.2832f + rimRotation
+                val px = rimCx + kotlin.math.cos(ang.toDouble()).toFloat() * rimRx
+                val py = rimCy + kotlin.math.sin(ang.toDouble()).toFloat() * rimRy
+                // Only draw the front half (bottom arc facing us)
+                if (kotlin.math.sin(ang.toDouble()).toFloat() < -0.05f) continue
+
+                // Which tone owns this lamp at this moment? Cycles through
+                // the 5 tones as the ring rotates.
+                val slotPhase = ((i.toFloat() / rimCount) + t * 0.18f) % 1f
+                val toneIdx = (slotPhase * 5f).toInt() % 5
+                val en = toneEnergies[toneIdx]
+                val col = toneColors[toneIdx]
+
+                // Depth-based fade (lamps near the back are dimmer)
+                val depth = (kotlin.math.sin(ang.toDouble()).toFloat() + 0.3f).coerceIn(0f, 1f)
+                val r = 2.4f + depth * 2.0f + en * 2.0f
+                paint.color = col
+                paint.alpha = (130 + depth * 100 + en * 35).toInt().coerceIn(130, 255)
+                paint.setShadowLayer(5f + en * 9f, 0f, 0f, col)
+                canvas.drawCircle(px, py, r, paint)
+                // White-hot center when the mapped tone fires
+                if (en > 0.20f) {
+                    paint.color = Color.WHITE
+                    paint.alpha = (en * 255).toInt().coerceIn(0, 255)
+                    paint.setShadowLayer(4f, 0f, 0f, col)
+                    canvas.drawCircle(px, py, r * 0.45f, paint)
+                }
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // Bright rim-line arc under the ship — gets brighter with any tone firing
+            paint.style = Paint.Style.STROKE
+            paint.strokeCap = Paint.Cap.ROUND
+            paint.strokeWidth = 1.6f + brightestValue * 2.5f
+            paint.color = Color.parseColor("#FFE0A0")
+            paint.alpha = (120 + avgLevel * 120).toInt().coerceIn(120, 240)
+            paint.setShadowLayer(8f + avgLevel * 8f, 0f, 0f, Color.parseColor("#FF9050"))
+            canvas.drawArc(
+                android.graphics.RectF(
+                    rimCx - rimRx, rimCy - rimRy,
+                    rimCx + rimRx, rimCy + rimRy
+                ),
+                10f, 160f, false, paint
+            )
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── Oil-refinery tiny twinkle lights peppered on the underside ──
+            paint.style = Paint.Style.FILL
+            for (i in 0 until 60) {
+                val ang = (i * 137.508f + t * 3f) * (Math.PI.toFloat() / 180f)
+                val rr = 0.35f + ((i * 17) % 5) / 5f * 0.55f
+                val px = shipCx + kotlin.math.cos(ang.toDouble()).toFloat() * shipW * 0.38f * rr
+                val py = shipCy + shipH * 0.25f + kotlin.math.sin(ang.toDouble()).toFloat() * shipH * 0.10f * rr
+                val spd = cePanelSpeeds[i]
+                val ph  = cePanelPhases[i]
+                val tw  = (0.3f + 0.7f * ((kotlin.math.sin((t * spd * 3.3f + ph * 6.28f).toDouble()).toFloat() + 1f) / 2f))
+                paint.color = if (i % 5 == 0) Color.parseColor("#FFE8A0") else Color.parseColor("#FFF4D0")
+                paint.alpha = (40 + tw * 160 + avgLevel * 30).toInt().coerceIn(40, 230)
+                paint.setShadowLayer(2f + tw * 2f, 0f, 0f, paint.color)
+                canvas.drawCircle(px, py, 0.7f + tw * 0.8f, paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── Ground: converging landing-strip lights ──────────────────
+            // Thin perspective-converging stripes on the pad, plus strips
+            // of inlaid lights along each side.
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 2.2f
+            paint.color = Color.parseColor("#C0D0FF")
+            paint.alpha = 150
+            paint.setShadowLayer(6f, 0f, 0f, Color.parseColor("#90B0FF"))
+            // Two converging strips
+            canvas.drawLine(w * 0.20f, h, w * 0.44f, groundY + h * 0.04f, paint)
+            canvas.drawLine(w * 0.80f, h, w * 0.56f, groundY + h * 0.04f, paint)
+            // Central strip
+            paint.color = Color.parseColor("#FFE0A0")
+            paint.alpha = (120 + avgLevel * 110).toInt().coerceIn(120, 240)
+            paint.setShadowLayer(8f + avgLevel * 6f, 0f, 0f, Color.parseColor("#FF9050"))
+            canvas.drawLine(cx, h, cx, groundY + h * 0.04f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // Ground puddle of warm light directly under the ship
+            paint.style = Paint.Style.FILL
+            paint.shader = android.graphics.RadialGradient(
+                cx, groundY + h * 0.01f, w * 0.45f,
+                intArrayOf(
+                    Color.argb((140 + avgLevel * 70).toInt().coerceAtMost(220), 255, 150, 60),
+                    Color.argb(60, 200, 80, 30),
+                    Color.TRANSPARENT
+                ),
+                floatArrayOf(0f, 0.45f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, groundY - h * 0.02f, w, h, paint)
+            paint.shader = null
+
+            // ── Flood light towers on each side ──────────────────────────
+            fun drawFloodTower(tx: Float) {
+                val topY = groundY - h * 0.18f
+                val botY = h
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 1.4f
+                paint.color = Color.parseColor("#1C1E28")
+                paint.alpha = 220
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+                canvas.drawLine(tx, botY, tx, topY, paint)
+                // Cross brace
+                canvas.drawLine(tx - w * 0.02f, groundY - h * 0.06f, tx + w * 0.02f, groundY - h * 0.10f, paint)
+                canvas.drawLine(tx - w * 0.02f, groundY - h * 0.10f, tx + w * 0.02f, groundY - h * 0.06f, paint)
+                // Top lamp bar — multiple lights
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#EEF4FF")
+                paint.alpha = (180 + avgLevel * 75).toInt().coerceAtMost(255)
+                paint.setShadowLayer(10f + avgLevel * 8f, 0f, 0f, Color.parseColor("#FFFFFF"))
+                for (l in 0 until 4) {
+                    val lx = tx - w * 0.018f + l * w * 0.012f
+                    canvas.drawCircle(lx, topY, 2.0f + avgLevel * 1.2f, paint)
+                }
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+            }
+            drawFloodTower(w * 0.08f)
+            drawFloodTower(w * 0.92f)
+
+            // ── Crowd of silhouetted scientists watching from the pad ────
+            // Simple head+shoulders shapes spread along the ground line.
+            val crowdY = h * 0.88f
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#020204")
+            paint.alpha = 255
+            val crowdPath = android.graphics.Path()
+            for (p in 0 until 28) {
+                val px = w * 0.12f + (p.toFloat() / 27f) * w * 0.76f + ((p * 31) % 7 - 3) * 2.5f
+                val py = crowdY + ((p * 13) % 5) * 2f
+                val bodyH = h * 0.08f + ((p * 19) % 6) * h * 0.005f
+                val headR = h * 0.014f
+                // Body as rounded rectangle
+                crowdPath.addRoundRect(
+                    android.graphics.RectF(
+                        px - headR * 1.4f, py - bodyH,
+                        px + headR * 1.4f, h
+                    ),
+                    headR * 0.6f, headR * 0.6f,
+                    android.graphics.Path.Direction.CW
+                )
+                crowdPath.addCircle(px, py - bodyH - headR * 0.4f, headR, android.graphics.Path.Direction.CW)
+            }
+            canvas.drawPath(crowdPath, paint)
+
+            // Edge light rimming silhouettes (backlight from the ship)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1f
+            paint.color = Color.parseColor("#FF9040")
+            paint.alpha = (90 + avgLevel * 110).toInt().coerceIn(90, 220)
+            paint.setShadowLayer(3f, 0f, 0f, Color.parseColor("#FF6020"))
+            canvas.drawPath(crowdPath, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── Rotating beacon scanning from ship center ───────────────
+            val scanAngle = (t * 1.8f * 57.2958f)   // degrees
+            paint.style = Paint.Style.STROKE
+            paint.strokeCap = Paint.Cap.ROUND
+            paint.strokeWidth = 2.2f + bassEnergy * 2.5f
+            val scanRect = android.graphics.RectF(
+                coreX - coreR * 0.45f, coreY - coreR * 0.45f,
+                coreX + coreR * 0.45f, coreY + coreR * 0.45f
+            )
+            for (beam in 0 until 4) {
+                val ba = scanAngle * (if (beam % 2 == 0) 1f else -1f) + beam * 90f
+                paint.color = Color.WHITE
+                paint.alpha = (70 + avgLevel * 110).toInt().coerceIn(70, 210)
+                paint.setShadowLayer(10f, 0f, 0f, Color.parseColor("#FFFFDD"))
+                canvas.drawArc(scanRect, ba, 30f, false, paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── Tone callout ─────────────────────────────────────────────
+            if (brightestPanel >= 0 && brightestValue > 0.25f) {
+                val name = toneNames[brightestPanel]
+                val col  = toneColors[brightestPanel]
+                paint.style = Paint.Style.FILL
+                paint.typeface = android.graphics.Typeface.MONOSPACE
+                paint.textSize = h * 0.058f
+                paint.textAlign = Paint.Align.CENTER
+                paint.color = col
+                paint.alpha = (100 + brightestValue * 155).toInt().coerceIn(100, 255)
+                paint.setShadowLayer(10f, 0f, 0f, col)
+                canvas.drawText(name, shipCx, h * 0.66f, paint)
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+                paint.textAlign = Paint.Align.LEFT
+                paint.typeface = android.graphics.Typeface.DEFAULT
+            }
+
+            // ── HUD text ─────────────────────────────────────────────────
+            paint.style = Paint.Style.FILL
+            paint.typeface = android.graphics.Typeface.MONOSPACE
+            paint.textSize = h * 0.030f
+            paint.textAlign = Paint.Align.LEFT
+            paint.color = Color.parseColor("#FFB040")
+            paint.alpha = (75 + avgLevel * 60).toInt().coerceIn(75, 170)
+            paint.setShadowLayer(4f, 0f, 0f, Color.parseColor("#FF7020"))
+            canvas.drawText("CE3K  ·  TONE LINK", 6f, h * 0.045f, paint)
+            paint.textAlign = Paint.Align.RIGHT
+            paint.color = Color.parseColor("#FFD860")
+            canvas.drawText("SEQ %05d".format(frameCount % 100000), w - 6f, h * 0.045f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            paint.typeface = android.graphics.Typeface.DEFAULT
+            paint.textAlign = Paint.Align.LEFT
+
+            // Suppress unused-variable warning in release builds
+            if (active && brightestPanel < -1) { }
+            // Touch variables to keep the compiler quiet if sections are trimmed
+            @Suppress("UNUSED_VARIABLE") val _sb = shipBob + shipBottom
+        }
+
+        /**
+         * 3D Fractal Core — RayNeo-inspired holographic fractal visualizer.
+         *
+         * Inspired by the RayNeo X3 AR developer showcase aesthetic: deep-space
+         * backdrop, crisp cyan/magenta/gold accents, and volumetric particles
+         * that give the illusion of stereoscopic depth on the glasses.
+         *
+         * Composition:
+         *   • Deep-space radial backdrop with 128 twinkling stars.
+         *   • A rotating 3D Menger-sponge-style cube rendered via simple
+         *     perspective projection of 8 vertices; edges glow with bass.
+         *   • Inner "sub-cube" spins the opposite direction on mid energy.
+         *   • 6-fold kaleidoscopic chaos-game IFS particle swarm feeds from
+         *     `fractalIfsPts`; treble drives spray velocity.
+         *   • 32-band radial spectrum ring orbits the cube.
+         *   • AR-style scanlines + corner vignette finish the look.
+         *
+         * Audio mapping:
+         *   - bass    → cube pulse / scale / edge glow brightness
+         *   - lowMid  → outer frequency ring amplitude
+         *   - mid     → cube rotation speed, sub-cube counter-rotation
+         *   - highMid → kaleidoscope arm density
+         *   - treble  → particle spray velocity + starfield twinkle
+         */
+        private fun drawFractal(canvas: Canvas, w: Float, h: Float) {
+            val cx = w / 2f
+            val cy = h / 2f
+            val t = frameCount * 0.018f
+            val bass       = bandEnergy(0, 5)
+            val lowMid     = bandEnergy(6, 12)
+            val mid        = bandEnergy(13, 20)
+            val highMid    = bandEnergy(21, 26)
+            val treble     = bandEnergy(27, 31)
+            val avgLevel   = bandEnergy(0, barCount - 1)
+            val active     = avgLevel > 0.03f
+
+            // RayNeo palette.
+            val colCyan     = Color.parseColor("#00DFFF")
+            val colMagenta  = Color.parseColor("#FF40CC")
+            val colGold     = Color.parseColor("#FFD860")
+            val colLavender = Color.parseColor("#C8A2FF")
+
+            // ── 1. Deep-space backdrop ───────────────────────────────────
+            paint.reset()
+            paint.isAntiAlias = true
+            paint.shader = android.graphics.RadialGradient(
+                cx, cy, kotlin.math.max(w, h) * 0.75f,
+                intArrayOf(
+                    Color.parseColor("#141030"),
+                    Color.parseColor("#080620"),
+                    Color.parseColor("#01000A")
+                ),
+                floatArrayOf(0f, 0.55f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, w, h, paint)
+            paint.shader = null
+
+            // ── 2. Twinkling star field ─────────────────────────────────
+            paint.style = Paint.Style.FILL
+            for (i in 0 until 128) {
+                val seed = fractalStarField[i]
+                val sx = ((seed * 10007f) % 1f) * w
+                val sy = ((seed * 2729f + i * 37.1f) % 1f) * h
+                val phase = (t * (0.4f + seed * 1.3f) + seed * 6.28f) % 6.28318f
+                val twinkle = 0.35f + 0.65f * (0.5f + 0.5f * Math.sin(phase.toDouble()).toFloat())
+                val r = 0.45f + seed * 1.4f + treble * 1.1f
+                val a = (60 + twinkle * 180 + treble * 40).toInt().coerceIn(0, 255)
+                paint.color = when (i % 5) {
+                    0 -> colCyan
+                    1 -> colLavender
+                    2 -> colGold
+                    3 -> Color.WHITE
+                    else -> colMagenta
+                }
+                paint.alpha = a
+                canvas.drawCircle(sx, sy, r, paint)
+            }
+            paint.alpha = 255
+
+            // Occasional streak across the field driven by a sharp treble spike.
+            if (treble > 0.55f && (frameCount % 3L) == 0L) {
+                paint.color = Color.argb((180 * treble).toInt().coerceAtMost(220), 255, 255, 255)
+                paint.strokeWidth = 1.3f
+                val sx = (fractalStarField[(frameCount.toInt() % 128)]) * w
+                val sy = (fractalStarField[((frameCount.toInt() + 41) % 128)]) * h * 0.6f
+                canvas.drawLine(sx, sy, sx + 70f, sy + 18f, paint)
+            }
+
+            // ── 3. Central 3D rotating Menger-style cube ────────────────
+            // Audio-reactive scale pulse
+            val pulse = 1f + bass * 0.18f + lowMid * 0.05f
+            val baseScale = (kotlin.math.min(w, h) * 0.17f) * pulse
+            val rotX = (t * (0.45f + mid * 0.6f) + fractalRotSeed[0] * 0.2f).toDouble()
+            val rotY = (t * (0.63f + mid * 0.4f) + fractalRotSeed[1] * 0.2f).toDouble()
+            val rotZ = (t * 0.20f).toDouble()
+
+            val cosX = Math.cos(rotX).toFloat(); val sinX = Math.sin(rotX).toFloat()
+            val cosY = Math.cos(rotY).toFloat(); val sinY = Math.sin(rotY).toFloat()
+            val cosZ = Math.cos(rotZ).toFloat(); val sinZ = Math.sin(rotZ).toFloat()
+
+            // Project a 3D point (x,y,z ∈ [-1,1]) to 2D screen space.
+            // Returns a FloatArray of [sx, sy, depth] — depth used for z-sort fade.
+            fun project(x: Float, y: Float, z: Float, scale: Float): FloatArray {
+                // Rotate around X
+                var yy = y * cosX - z * sinX
+                var zz = y * sinX + z * cosX
+                // Rotate around Y
+                var xx = x * cosY + zz * sinY
+                zz = -x * sinY + zz * cosY
+                // Rotate around Z
+                val xr = xx * cosZ - yy * sinZ
+                val yr = xx * sinZ + yy * cosZ
+                // Simple perspective
+                val persp = 2.2f / (2.2f + zz)
+                return floatArrayOf(cx + xr * scale * persp, cy + yr * scale * persp, zz)
+            }
+
+            // Cube vertices
+            val verts = arrayOf(
+                floatArrayOf(-1f, -1f, -1f), floatArrayOf( 1f, -1f, -1f),
+                floatArrayOf( 1f,  1f, -1f), floatArrayOf(-1f,  1f, -1f),
+                floatArrayOf(-1f, -1f,  1f), floatArrayOf( 1f, -1f,  1f),
+                floatArrayOf( 1f,  1f,  1f), floatArrayOf(-1f,  1f,  1f)
+            )
+            // 12 cube edges (as vertex index pairs)
+            val edges = arrayOf(
+                intArrayOf(0,1), intArrayOf(1,2), intArrayOf(2,3), intArrayOf(3,0),
+                intArrayOf(4,5), intArrayOf(5,6), intArrayOf(6,7), intArrayOf(7,4),
+                intArrayOf(0,4), intArrayOf(1,5), intArrayOf(2,6), intArrayOf(3,7)
+            )
+
+            val projected = Array(8) { project(verts[it][0], verts[it][1], verts[it][2], baseScale) }
+
+            // Outer cube edges — cyan glow (depth-faded)
+            paint.style = Paint.Style.STROKE
+            paint.strokeCap = Paint.Cap.ROUND
+            paint.strokeWidth = 2.2f + bass * 3.5f
+            for (e in edges) {
+                val a = projected[e[0]]
+                val b = projected[e[1]]
+                val avgZ = (a[2] + b[2]) * 0.5f
+                // avgZ in roughly [-1..1] — closer (negative) edges are brighter
+                val depthT = (1f - (avgZ + 1f) * 0.5f).coerceIn(0f, 1f)
+                val alpha = (90 + depthT * 140 + bass * 40).toInt().coerceIn(0, 255)
+                paint.color = colCyan
+                paint.alpha = alpha
+                paint.setShadowLayer(8f + bass * 10f, 0f, 0f, colCyan)
+                canvas.drawLine(a[0], a[1], b[0], b[1], paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // Vertex pips — magenta
+            paint.style = Paint.Style.FILL
+            for (p in projected) {
+                val depthT = (1f - (p[2] + 1f) * 0.5f).coerceIn(0f, 1f)
+                val r = 2.5f + depthT * 2.5f + bass * 3f
+                paint.color = colMagenta
+                paint.alpha = (140 + depthT * 115).toInt().coerceIn(0, 255)
+                paint.setShadowLayer(6f, 0f, 0f, colMagenta)
+                canvas.drawCircle(p[0], p[1], r, paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── 4. Inner counter-rotating sub-cube (Menger recursion hint) ─
+            val subCos = Math.cos(-rotX * 1.7).toFloat()
+            val subSin = Math.sin(-rotX * 1.7).toFloat()
+            val subCos2 = Math.cos(-rotY * 1.3).toFloat()
+            val subSin2 = Math.sin(-rotY * 1.3).toFloat()
+            val subScale = baseScale * (0.42f + mid * 0.10f)
+            val subProj = Array(8) { i ->
+                val x = verts[i][0]; val y = verts[i][1]; val z = verts[i][2]
+                // Separate transform for counter-rotation
+                var yy = y * subCos - z * subSin
+                var zz = y * subSin + z * subCos
+                var xx = x * subCos2 + zz * subSin2
+                zz = -x * subSin2 + zz * subCos2
+                val persp = 2.2f / (2.2f + zz)
+                floatArrayOf(cx + xx * subScale * persp, cy + yy * subScale * persp, zz)
+            }
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.6f + mid * 2.4f
+            for (e in edges) {
+                val a = subProj[e[0]]; val b = subProj[e[1]]
+                val depthT = (1f - ((a[2] + b[2]) * 0.5f + 1f) * 0.5f).coerceIn(0f, 1f)
+                paint.color = colGold
+                paint.alpha = (80 + depthT * 130 + mid * 30).toInt().coerceIn(0, 255)
+                paint.setShadowLayer(5f, 0f, 0f, colGold)
+                canvas.drawLine(a[0], a[1], b[0], b[1], paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // ── 5. Kaleidoscopic chaos-game IFS particle swarm ──────────
+            // Lazily seed the chaos game trail on the first active frame.
+            if (!fractalIfsInit) {
+                for (i in fractalIfsPts.indices step 2) {
+                    fractalIfsPts[i] = 0f
+                    fractalIfsPts[i + 1] = 0f
+                }
+                fractalIfsInit = true
+            }
+
+            // Advance chaos-game points toward randomly chosen attractors,
+            // modulated by audio. Each step: p = 0.5 * (p + attractor).
+            val attractorCount = 5
+            val attractorR = 0.82f + highMid * 0.35f
+            val iterations = 22 + (treble * 40f).toInt()
+            val ifsRotSpeed = t * (0.35f + treble * 0.9f)
+            repeat(iterations) {
+                val idx = (random.nextInt(fractalIfsPts.size / 2)) * 2
+                val a = (random.nextInt(attractorCount)).toFloat() * (6.28318f / attractorCount) + ifsRotSpeed
+                val ax = Math.cos(a.toDouble()).toFloat() * attractorR
+                val ay = Math.sin(a.toDouble()).toFloat() * attractorR
+                fractalIfsPts[idx]     = (fractalIfsPts[idx] + ax) * 0.5f
+                fractalIfsPts[idx + 1] = (fractalIfsPts[idx + 1] + ay) * 0.5f
+            }
+
+            // Render with 6-fold kaleidoscopic symmetry
+            val kaleidoArms = 6
+            val swarmScale = baseScale * 2.4f
+            paint.style = Paint.Style.FILL
+            for (arm in 0 until kaleidoArms) {
+                val rot = (arm * (6.28318f / kaleidoArms) + t * 0.22f).toDouble()
+                val kCos = Math.cos(rot).toFloat()
+                val kSin = Math.sin(rot).toFloat()
+                for (i in fractalIfsPts.indices step 2) {
+                    val px = fractalIfsPts[i]
+                    val py = fractalIfsPts[i + 1]
+                    val sx = cx + (px * kCos - py * kSin) * swarmScale
+                    val sy = cy + (px * kSin + py * kCos) * swarmScale
+                    val dist = kotlin.math.sqrt((px * px + py * py).toDouble()).toFloat()
+                    // Color drift with distance
+                    val c = when ((i / 2 + arm) % 4) {
+                        0 -> colCyan
+                        1 -> colMagenta
+                        2 -> colGold
+                        else -> colLavender
+                    }
+                    paint.color = c
+                    paint.alpha = (90 + highMid * 100 + dist * 60).toInt().coerceIn(40, 230)
+                    val pr = 1.2f + highMid * 1.8f + bass * 1.4f
+                    canvas.drawCircle(sx, sy, pr, paint)
+                }
+            }
+
+            // ── 6. Radial 32-band spectrum ring around the cube ─────────
+            val ringInnerR = baseScale * 1.55f
+            val ringOuterBase = baseScale * 1.70f
+            val ringOuterAmp = baseScale * 0.95f
+            paint.style = Paint.Style.STROKE
+            paint.strokeCap = Paint.Cap.ROUND
+            for (i in 0 until barCount) {
+                val fraction = i.toFloat() / (barCount - 1).coerceAtLeast(1).toFloat()
+                val ang = (fraction * 6.28318f + t * 0.12f).toDouble()
+                val level = barHeights[i]
+                val outerR = ringOuterBase + level * ringOuterAmp * (0.6f + lowMid * 0.8f)
+                val x0 = cx + Math.cos(ang).toFloat() * ringInnerR
+                val y0 = cy + Math.sin(ang).toFloat() * ringInnerR
+                val x1 = cx + Math.cos(ang).toFloat() * outerR
+                val y1 = cy + Math.sin(ang).toFloat() * outerR
+                // Color ramp across the ring
+                paint.color = when {
+                    fraction < 0.25f -> colMagenta
+                    fraction < 0.5f  -> colCyan
+                    fraction < 0.75f -> colLavender
+                    else             -> colGold
+                }
+                paint.alpha = (140 + level * 110).toInt().coerceIn(0, 255)
+                paint.strokeWidth = 2.0f + level * 3.2f
+                paint.setShadowLayer(4f + level * 6f, 0f, 0f, paint.color)
+                canvas.drawLine(x0, y0, x1, y1, paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // Outer ring stroke — thin circle guide
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.0f
+            paint.color = colCyan
+            paint.alpha = (40 + avgLevel * 70).toInt().coerceIn(0, 180)
+            canvas.drawCircle(cx, cy, ringInnerR, paint)
+            paint.alpha = (25 + avgLevel * 50).toInt().coerceIn(0, 140)
+            canvas.drawCircle(cx, cy, ringOuterBase + ringOuterAmp * 0.6f, paint)
+
+            // ── 7. Central beating core (bass-driven) ───────────────────
+            paint.style = Paint.Style.FILL
+            val coreR = baseScale * 0.14f + bass * baseScale * 0.22f
+            paint.shader = android.graphics.RadialGradient(
+                cx, cy, coreR * 2.2f,
+                intArrayOf(
+                    Color.argb((220 + bass * 35).toInt().coerceAtMost(255), 255, 255, 255),
+                    colCyan,
+                    Color.argb(0, 0, 223, 255)
+                ),
+                floatArrayOf(0f, 0.45f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawCircle(cx, cy, coreR * 2.2f, paint)
+            paint.shader = null
+
+            // ── 8. AR scanline overlay ──────────────────────────────────
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1f
+            val scanAlpha = (14 + avgLevel * 22).toInt().coerceIn(0, 60)
+            paint.color = Color.argb(scanAlpha, 180, 220, 255)
+            var y = 0f
+            while (y < h) {
+                canvas.drawLine(0f, y, w, y, paint)
+                y += 3f
+            }
+
+            // Corner vignette
+            paint.shader = android.graphics.RadialGradient(
+                cx, cy, kotlin.math.max(w, h) * 0.55f,
+                intArrayOf(Color.TRANSPARENT, Color.argb(140, 0, 0, 0)),
+                floatArrayOf(0.65f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            paint.style = Paint.Style.FILL
+            canvas.drawRect(0f, 0f, w, h, paint)
+            paint.shader = null
+
+            // ── 9. HUD text ─────────────────────────────────────────────
+            paint.style = Paint.Style.FILL
+            paint.typeface = android.graphics.Typeface.MONOSPACE
+            paint.textSize = h * 0.030f
+            paint.textAlign = Paint.Align.LEFT
+            paint.color = colCyan
+            paint.alpha = (90 + avgLevel * 90).toInt().coerceIn(90, 220)
+            paint.setShadowLayer(4f, 0f, 0f, colCyan)
+            canvas.drawText("RAYNEO  ·  FRACTAL CORE", 6f, h * 0.045f, paint)
+            paint.textAlign = Paint.Align.RIGHT
+            paint.color = colGold
+            canvas.drawText("ψ %04d".format(frameCount % 10000), w - 6f, h * 0.045f, paint)
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            paint.typeface = android.graphics.Typeface.DEFAULT
+            paint.textAlign = Paint.Align.LEFT
+
+            // Suppress unused-variable warning in release builds
+            if (active && kaleidoArms < -1) { }
+        }
+
+        private fun blendColors(c1: Int, c2: Int, ratio: Float): Int {
+            val inv = 1f - ratio
+            val r = (Color.red(c1) * inv + Color.red(c2) * ratio).toInt()
+            val g = (Color.green(c1) * inv + Color.green(c2) * ratio).toInt()
+            val b = (Color.blue(c1) * inv + Color.blue(c2) * ratio).toInt()
+            return Color.rgb(r, g, b)
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // Winamp Classic — bar-spectrum visualizer
+        //
+        // Inspired by Winamp 2's default bar spectrum analyzer: discrete
+        // LED-style cells stacked vertically, each bar coloured by height
+        // (green at the bottom → yellow in the middle → red at the top),
+        // with a white peak cap that drops slowly after a short hold.
+        // ════════════════════════════════════════════════════════════════════
+        private fun drawWinampBars(canvas: Canvas, w: Float, h: Float) {
+            // Black backdrop — authentic Winamp look.
+            paint.shader = null
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#050505")
+            canvas.drawRect(0f, 0f, w, h, paint)
+
+            val cols = barCount                           // 32 bars
+            val cellsPerCol = 22                          // vertical LED count
+            val cellGap = 1.0f
+            val padX = w * 0.04f
+            val padTop = h * 0.06f
+            val padBot = h * 0.08f
+            val areaW = w - padX * 2f
+            val areaH = h - padTop - padBot
+            val colGap = 2f
+            val barW = (areaW - colGap * (cols - 1)) / cols
+            val cellH = (areaH - cellGap * (cellsPerCol - 1)) / cellsPerCol
+
+            // Colour ramp: green → chartreuse → yellow → orange → red.
+            val cellColor = IntArray(cellsPerCol) { idx ->
+                val t = idx.toFloat() / (cellsPerCol - 1)
+                when {
+                    t < 0.35f -> blendColors(
+                        Color.parseColor("#00E24A"),
+                        Color.parseColor("#B8F000"),
+                        t / 0.35f
+                    )
+                    t < 0.70f -> blendColors(
+                        Color.parseColor("#B8F000"),
+                        Color.parseColor("#FFA200"),
+                        (t - 0.35f) / 0.35f
+                    )
+                    else -> blendColors(
+                        Color.parseColor("#FFA200"),
+                        Color.parseColor("#FF2B2B"),
+                        (t - 0.70f) / 0.30f
+                    )
+                }
+            }
+
+            for (c in 0 until cols) {
+                val energy = barHeights[c].coerceIn(0f, 1f)
+                val litCount = (energy * cellsPerCol).toInt().coerceIn(0, cellsPerCol)
+
+                // Bar column x range
+                val x0 = padX + c * (barW + colGap)
+                val x1 = x0 + barW
+
+                // Draw each LED cell bottom-up
+                for (cell in 0 until litCount) {
+                    val y1 = h - padBot - cell * (cellH + cellGap)
+                    val y0 = y1 - cellH
+                    // Flip index so bright red is on top regardless of draw order
+                    paint.color = cellColor[cell]
+                    canvas.drawRect(x0, y0, x1, y1, paint)
+                }
+
+                // Update / draw peak-hold cap
+                val peak = winampBarPeak[c]
+                val held = winampBarHold[c]
+                val targetPeak = energy
+                if (targetPeak > peak) {
+                    winampBarPeak[c] = targetPeak
+                    winampBarHold[c] = 12
+                } else if (held > 0) {
+                    winampBarHold[c] = held - 1
+                } else {
+                    winampBarPeak[c] = (peak - 0.012f).coerceAtLeast(0f)
+                }
+                val peakIdx = (winampBarPeak[c] * cellsPerCol).toInt().coerceIn(0, cellsPerCol - 1)
+                if (winampBarPeak[c] > 0.04f && peakIdx >= litCount) {
+                    val py1 = h - padBot - peakIdx * (cellH + cellGap)
+                    val py0 = py1 - cellH
+                    paint.color = Color.parseColor("#FFFFFF")
+                    canvas.drawRect(x0, py0, x1, py1, paint)
+                }
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // Winamp Classic — oscilloscope visualizer
+        //
+        // The classic thin green scope line. A rolling buffer captures the
+        // mid-frequency FFT energy frame by frame and the waveform is drawn
+        // across the viewport, with a subtle glow beneath.
+        // ════════════════════════════════════════════════════════════════════
+        private fun drawWinampScope(canvas: Canvas, w: Float, h: Float) {
+            // Pure black backdrop
+            paint.shader = null
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#030303")
+            canvas.drawRect(0f, 0f, w, h, paint)
+
+            // Build a pseudo-waveform sample from the current FFT: low
+            // bands push the line up, high bands give it detail.
+            val mid = bandEnergy(0, barCount - 1)
+            val treble = bandEnergy(20, barCount - 1)
+            val t = frameCount * 0.25f
+            val jitter = (kotlin.math.sin(t.toDouble()) + 0.4 *
+                kotlin.math.sin((t * 2.3).toDouble())).toFloat()
+            val sample = ((mid * 1.3f - 0.35f) +
+                (treble * 0.6f) * jitter).coerceIn(-1f, 1f)
+            winampScope[winampScopeHead] = sample
+            winampScopeHead = (winampScopeHead + 1) % winampScopeLen
+
+            // Faint horizontal centerline
+            paint.color = Color.argb(40, 0, 255, 80)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1f
+            canvas.drawLine(0f, h * 0.5f, w, h * 0.5f, paint)
+
+            // Waveform path
+            val centerY = h * 0.5f
+            val amp = h * 0.38f
+            val path = android.graphics.Path()
+            for (i in 0 until winampScopeLen) {
+                val readIdx = (winampScopeHead + i) % winampScopeLen
+                val s = winampScope[readIdx]
+                val x = w * i.toFloat() / (winampScopeLen - 1)
+                val y = centerY - s * amp
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+
+            // Soft glow beneath the line
+            paint.style = Paint.Style.STROKE
+            paint.strokeCap = Paint.Cap.ROUND
+            paint.strokeJoin = Paint.Join.ROUND
+            paint.color = Color.argb(90, 0, 255, 80)
+            paint.strokeWidth = 6f
+            paint.setShadowLayer(10f, 0f, 0f, Color.argb(200, 0, 255, 80))
+            canvas.drawPath(path, paint)
+
+            // Crisp main line
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+            paint.color = Color.parseColor("#00FF55")
+            paint.strokeWidth = 2.2f
+            canvas.drawPath(path, paint)
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // Winamp Classic — starfield visualizer (vis_nsfs vibe)
+        //
+        // A warp-speed starfield in 3D: each star has persistent (x, y, z)
+        // and flies toward the camera each frame. Bass energy accelerates
+        // the warp and pushes new stars to a farther depth on respawn,
+        // giving the iconic "punch-through" pulse on beats.
+        // ════════════════════════════════════════════════════════════════════
+        private fun drawWinampStarfield(canvas: Canvas, w: Float, h: Float) {
+            if (!winampStarsInit) {
+                for (i in 0 until winampStarN) {
+                    winampStarX[i] = (winampRand.nextFloat() * 2f - 1f) * 1.6f
+                    winampStarY[i] = (winampRand.nextFloat() * 2f - 1f) * 1.6f
+                    winampStarZ[i] = 0.05f + winampRand.nextFloat() * 1.95f
+                }
+                winampStarsInit = true
+            }
+
+            // Black space
+            paint.shader = null
+            paint.style = Paint.Style.FILL
+            paint.color = Color.parseColor("#000000")
+            canvas.drawRect(0f, 0f, w, h, paint)
+
+            val bass = bandEnergy(0, 5)
+            val mid = bandEnergy(6, 18)
+            val speed = 0.008f + bass * 0.060f + mid * 0.012f
+            val cx = w * 0.5f
+            val cy = h * 0.5f
+            val focal = (kotlin.math.min(w, h) * 0.75f)
+
+            paint.style = Paint.Style.STROKE
+            paint.strokeCap = Paint.Cap.ROUND
+            for (i in 0 until winampStarN) {
+                val oldZ = winampStarZ[i]
+                var newZ = oldZ - speed
+                if (newZ <= 0.01f) {
+                    // Respawn far behind the camera
+                    winampStarX[i] = (winampRand.nextFloat() * 2f - 1f) * 1.6f
+                    winampStarY[i] = (winampRand.nextFloat() * 2f - 1f) * 1.6f
+                    newZ = 2.0f
+                }
+                winampStarZ[i] = newZ
+
+                val x = winampStarX[i]
+                val y = winampStarY[i]
+
+                // Screen projection
+                val sxOld = cx + (x / oldZ) * focal
+                val syOld = cy + (y / oldZ) * focal
+                val sxNew = cx + (x / newZ) * focal
+                val syNew = cy + (y / newZ) * focal
+
+                if (sxNew < -4f || sxNew > w + 4f || syNew < -4f || syNew > h + 4f) continue
+
+                val depth = (1f - (newZ / 2f)).coerceIn(0f, 1f)
+                val brightness = (120 + (135 * depth)).toInt().coerceIn(0, 255)
+                val thickness = (0.8f + depth * 2.8f)
+
+                // Trail line from old to new position
+                paint.strokeWidth = thickness
+                paint.color = Color.argb(brightness, 255, 255, 255)
+                canvas.drawLine(sxOld, syOld, sxNew, syNew, paint)
+
+                // Bright point at the front of the streak
+                if (depth > 0.55f) {
+                    paint.style = Paint.Style.FILL
+                    paint.color = Color.argb(255, 255, 255, 255)
+                    canvas.drawCircle(sxNew, syNew, thickness * 0.5f, paint)
+                    paint.style = Paint.Style.STROKE
+                }
+            }
+
+            // Bass-driven radial flash when a beat hits
+            if (bass > 0.55f) {
+                paint.style = Paint.Style.FILL
+                paint.shader = android.graphics.RadialGradient(
+                    cx, cy, kotlin.math.min(w, h) * 0.45f,
+                    intArrayOf(
+                        Color.argb(((bass - 0.55f) * 300f).toInt().coerceIn(0, 200), 110, 180, 255),
+                        Color.argb(0, 0, 0, 0)
+                    ),
+                    floatArrayOf(0f, 1f),
+                    android.graphics.Shader.TileMode.CLAMP
+                )
+                canvas.drawRect(0f, 0f, w, h, paint)
+                paint.shader = null
+            }
+        }
     }
 
     private fun setupFullScreenControlsUI() {
@@ -7789,9 +12006,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // Create Media Buttons (reusing logic from mask controls)
         btnFsPrevTrack =
                 createMediaButton(R.string.fa_backward_step) {
-                    getMediaControlWebView()
-                            .evaluateJavascript(
-                                    """
+                    val targetWebView = getMediaControlWebView()
+                    evaluateMediaControlCommand(
+                            targetWebView,
+                            """
                 (function() {
                     var prevBtn = document.querySelector('.ytp-prev-button') ||
                                   document.querySelector('[aria-label*="previous" i]') ||
@@ -7802,17 +12020,18 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     if (media) media.currentTime = 0;
                 })();
                 """.trimIndent(),
-                                    null
-                            )
+                            "(function(){ if(window.prevStation){ window.prevStation(); } })();"
+                    )
                 }
 
         btnFsPrev =
                 createMediaButton(R.string.fa_backward) {
-                    getMediaControlWebView()
-                            .evaluateJavascript(
-                                    "document.querySelector('video, audio').currentTime -= 10;",
-                                    null
-                            )
+                    val targetWebView = getMediaControlWebView()
+                    evaluateMediaControlCommand(
+                            targetWebView,
+                            "document.querySelector('video, audio').currentTime -= 10;",
+                            "(function(){ if(window.prevStation){ window.prevStation(); } })();"
+                    )
                 }
 
         // Single Play/Pause toggle button
@@ -7821,21 +12040,23 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     if (isFsPlaying) {
                         // Currently playing, so pause
                         DebugLog.d("FullscreenTouch", "Pause clicked, switching to play icon")
-                        getMediaControlWebView()
-                                .evaluateJavascript(
-                                        "document.querySelector('video, audio').pause();",
-                                        null
-                                )
+                        val targetWebView = getMediaControlWebView()
+                        evaluateMediaControlCommand(
+                                targetWebView,
+                                "document.querySelector('video, audio').pause();",
+                                "(function(){ if(window.tapRadioNativePausePlayback){ window.tapRadioNativePausePlayback(); return; } if(window.togglePlay){ window.togglePlay(); } })();"
+                        )
                         btnFsPlayPause.setText(R.string.fa_play)
                         isFsPlaying = false
                     } else {
                         // Currently paused, so play
                         DebugLog.d("FullscreenTouch", "Play clicked, switching to pause icon")
-                        getMediaControlWebView()
-                                .evaluateJavascript(
-                                        "document.querySelector('video, audio').play();",
-                                        null
-                                )
+                        val targetWebView = getMediaControlWebView()
+                        evaluateMediaControlCommand(
+                                targetWebView,
+                                "document.querySelector('video, audio').play();",
+                                "(function(){ if(window.tapRadioNativeResumePlayback){ window.tapRadioNativeResumePlayback(); return; } if(window.togglePlay){ window.togglePlay(); } })();"
+                        )
                         btnFsPlayPause.setText(R.string.fa_pause)
                         isFsPlaying = true
                     }
@@ -7849,30 +12070,79 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
         btnFsNext =
                 createMediaButton(R.string.fa_forward) {
-                    getMediaControlWebView()
-                            .evaluateJavascript(
-                                    "document.querySelector('video, audio').currentTime += 10;",
-                                    null
-                            )
+                    val targetWebView = getMediaControlWebView()
+                    evaluateMediaControlCommand(
+                            targetWebView,
+                            "document.querySelector('video, audio').currentTime += 10;",
+                            "(function(){ if(window.nextStation){ window.nextStation(); } })();"
+                    )
                 }
 
         btnFsNextTrack =
                 createMediaButton(R.string.fa_forward_step) {
-                    getMediaControlWebView()
-                            .evaluateJavascript(
-                                    """
+                    val targetWebView = getMediaControlWebView()
+                    evaluateMediaControlCommand(
+                            targetWebView,
+                            """
                 (function() {
-                    var nextBtn = document.querySelector('.ytp-next-button') ||
-                                  document.querySelector('[aria-label*="next" i]') ||
-                                  document.querySelector('[title*="next" i]') ||
-                                  document.querySelector('button[data-testid="control-button-skip-forward"]');
-                    if (nextBtn) { nextBtn.click(); return; }
+                    var beforeUrl = window.location.href;
+                    var forceReloadIfUrlAdvanced = function(delayMs) {
+                        setTimeout(function() {
+                            try {
+                                var now = window.location.href;
+                                if (now !== beforeUrl) {
+                                    window.location.replace(now);
+                                }
+                            } catch(e) {}
+                        }, delayMs);
+                    };
+
+                    // ── Strategy 1: Direct SPA navigation to Up Next video ──
+                    var upLink =
+                        document.querySelector('ytd-compact-autoplay-renderer a#thumbnail[href*="/watch"]') ||
+                        document.querySelector('ytd-playlist-panel-video-renderer[selected] + ytd-playlist-panel-video-renderer a[href*="/watch"]') ||
+                        document.querySelector('ytd-playlist-panel-video-renderer[selected] ~ ytd-playlist-panel-video-renderer a[href*="/watch"]') ||
+                        document.querySelector('#related ytd-compact-video-renderer a#thumbnail[href*="/watch"]') ||
+                        document.querySelector('ytd-compact-video-renderer a#thumbnail[href*="/watch"]') ||
+                        document.querySelector('ytm-compact-autoplay-renderer a[href*="/watch"]');
+                    if (upLink && upLink.href) {
+                        window.location.href = upLink.href;
+                        return;
+                    }
+
+                    // ── Strategy 2: Dispatch a real MouseEvent on .ytp-next-button ──
+                    var nextBtn =
+                        document.querySelector('.ytp-next-button:not([aria-disabled="true"])') ||
+                        document.querySelector('.ytp-next-button') ||
+                        document.querySelector('button[aria-label^="Next" i]') ||
+                        document.querySelector('button[data-testid="control-button-skip-forward"]');
+                    if (nextBtn) {
+                        try {
+                            nextBtn.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
+                        } catch(e) {
+                            nextBtn.click();
+                        }
+                        forceReloadIfUrlAdvanced(1500);
+                        return;
+                    }
+
+                    // ── Strategy 3: Fire 'ended' so YouTube's autoplay takes over ──
                     var media = document.querySelector('video, audio');
-                    if (media) media.currentTime = media.duration;
+                    if (media && isFinite(media.duration)) {
+                        try {
+                            media.currentTime = Math.max(0, media.duration - 0.05);
+                            media.dispatchEvent(new Event('ended', {bubbles:true}));
+                        } catch(e) {}
+                        forceReloadIfUrlAdvanced(2500);
+                    }
                 })();
                 """.trimIndent(),
-                                    null
-                            )
+                            "(function(){ if(window.nextStation){ window.nextStation(); } })();"
+                    )
+                    // Same aggressive refresh schedule used by the masked-mode
+                    // next-track button so the overlay title keeps pace with
+                    // the YouTube SPA navigation.
+                    scheduleTrackChangeRefresh()
                 }
 
         fullScreenMediaControls.addView(btnFsPrevTrack)
@@ -7887,6 +12157,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             setText(iconRes)
             setBackgroundResource(R.drawable.nav_button_background)
             setTextColor(Color.WHITE)
+            alpha = 0.5f
             textSize = 18f
             gravity = Gravity.CENTER
             setPadding(8, 8, 8, 8)
@@ -7897,7 +12168,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     }
             isClickable = true
             isFocusable = true
-            setOnClickListener { onClick() }
+            setOnClickListener {
+                onClick()
+                scheduleMaskedNowPlayingRefresh()
+            }
         }
     }
 
@@ -7914,6 +12188,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         if (isPlaying) {
             lastMediaPlayingAt = SystemClock.uptimeMillis()
         }
+        updatePlaybackWakeLocks()
         post {
             if (isPlaying) {
                 // DebugLog.d("MediaControls", "Setting to playing state")
@@ -7932,6 +12207,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 // DebugLog.d("MediaControls", "Controls container visibility:
                 // ${maskMediaControlsContainer.visibility}")
             }
+
+            refreshMaskedNowPlaying()
 
             // Update full screen controls as well
             if (::btnFsPlayPause.isInitialized && !suppressFullscreenMediaControls) {
@@ -7958,22 +12235,91 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
-    fun playMedia() {
-        val webView = getMediaControlWebView()
-        webView.evaluateJavascript(
+    private fun isTapRadioWebView(targetWebView: WebView): Boolean {
+        val url = targetWebView.url.orEmpty()
+        return url.contains("radio.html", ignoreCase = true) ||
+            url.contains("podcasts.html", ignoreCase = true)
+    }
+
+    private fun anyTrackedMediaPlaying(): Boolean {
+        return nativeTapRadioPlaying || mediaStateByWindowId.values.any { it }
+    }
+
+    fun setMediaStateForWebView(sourceWebView: WebView, isPlaying: Boolean) {
+        handleMediaStateChanged(sourceWebView, isPlaying)
+    }
+
+    fun setNativeTapRadioPlaybackActive(isPlaying: Boolean) {
+        nativeTapRadioPlaying = isPlaying
+        if (isPlaying) {
+            nativeTapRadioLastActiveAt = SystemClock.uptimeMillis()
+            lastMediaPlayingAt = SystemClock.uptimeMillis()
+        }
+        updateMediaState(anyTrackedMediaPlaying())
+        refreshMaskedNowPlaying()
+    }
+
+    private fun resolveHostingActivity(): MainActivity? {
+        var current: Context? = context
+        while (current is ContextWrapper) {
+            if (current is MainActivity) return current
+            current = current.baseContext
+        }
+        return current as? MainActivity
+    }
+
+    private fun hasNativeTapRadioSession(): Boolean {
+        return resolveHostingActivity()?.hasNativeRadioSession() == true
+    }
+
+    private fun shouldRouteMediaControlsToNativeTapRadio(): Boolean {
+        if (!hasNativeTapRadioSession()) return false
+        if (nativeTapRadioPlaying) return true
+        val latestWebMediaAt = mediaLastPlayedAtByWindowId.values.maxOrNull() ?: 0L
+        return nativeTapRadioLastActiveAt >= latestWebMediaAt
+    }
+
+    private fun dispatchPlayMediaCommand() {
+        if (!mediaStateByWindowId.values.any { it } && shouldRouteMediaControlsToNativeTapRadio()) {
+            resolveHostingActivity()?.resumeNativeRadioFromToolbar()
+            updateMediaState(true)
+            return
+        }
+        val targetWebView = getMediaControlWebView()
+        evaluateMediaControlCommand(
+                targetWebView,
                 "var m = document.querySelector('video, audio'); if (m) m.play();",
-                null
+                "(function(){ if(window.tapRadioNativeResumePlayback){ window.tapRadioNativeResumePlayback(); return; } if(window.togglePlay){ window.togglePlay(); } })();"
         )
         updateMediaState(true)
     }
 
-    fun pauseMedia() {
-        val webView = getMediaControlWebView()
-        webView.evaluateJavascript(
+    private fun dispatchPauseMediaCommand() {
+        if (nativeTapRadioPlaying) {
+            resolveHostingActivity()?.pauseNativeRadioFromToolbar()
+            updateMediaState(false)
+            return
+        }
+        val targetWebView = getMediaControlWebView()
+        evaluateMediaControlCommand(
+                targetWebView,
                 "var m = document.querySelector('video, audio'); if (m) m.pause();",
-                null
+                "(function(){ if(window.tapRadioNativePausePlayback){ window.tapRadioNativePausePlayback(); return; } if(window.togglePlay){ window.togglePlay(); } })();"
         )
         updateMediaState(false)
+    }
+
+    private fun evaluateMediaControlCommand(targetWebView: WebView, fallbackJs: String, tapRadioJs: String? = null) {
+        val script = if (tapRadioJs != null && isTapRadioWebView(targetWebView)) tapRadioJs else fallbackJs
+        targetWebView.evaluateJavascript(script, null)
+    }
+
+    fun playMedia() {
+        dispatchPlayMediaCommand()
+    }
+
+    fun pauseMedia() {
+        dispatchPauseMediaCommand()
     }
 
     fun hideMediaControls() {
@@ -7992,7 +12338,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private fun handleMediaStateChanged(sourceWebView: WebView, isPlaying: Boolean) {
         val windowId = windows.firstOrNull { it.webView == sourceWebView }?.id
         if (windowId == null) {
-            updateMediaState(isPlaying)
+            if (isPlaying) {
+                lastMediaPlayingAt = SystemClock.uptimeMillis()
+            }
+            updateMediaState(isPlaying || nativeTapRadioPlaying)
             return
         }
 
@@ -8001,8 +12350,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             mediaLastPlayedAtByWindowId[windowId] = SystemClock.uptimeMillis()
         }
 
-        val anyPlaying = mediaStateByWindowId.values.any { it }
+        val anyPlaying = anyTrackedMediaPlaying()
         updateMediaState(anyPlaying)
+        refreshMaskedNowPlaying()
     }
 
     private fun getMediaControlWebView(): WebView {
@@ -8017,6 +12367,157 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 }
 
         return windows.firstOrNull { it.id == targetId }?.webView ?: webView
+    }
+
+    fun refreshMaskedNowPlaying() {
+        if (!::maskNowPlayingText.isInitialized) return
+        post {
+            val label = resolveMaskedNowPlayingLabel()
+            if (!isScreenMasked || label.isNullOrBlank()) {
+                maskNowPlayingText.visibility = View.GONE
+            } else {
+                maskNowPlayingText.text = label
+                maskNowPlayingText.visibility = View.VISIBLE
+                maskNowPlayingText.bringToFront()
+            }
+        }
+    }
+
+    private fun scheduleMaskedNowPlayingRefresh() {
+        val delays = longArrayOf(120L, 500L, 1200L)
+        refreshMaskedNowPlaying()
+        delays.forEach { delayMs ->
+            postDelayed({ refreshMaskedNowPlaying() }, delayMs)
+        }
+    }
+
+    /**
+     * After a track skip (next/prev), YouTube SPA navigations take several
+     * seconds to update document.title.  We probe at multiple intervals and
+     * also pull the title directly from the DOM which updates faster.
+     *
+     * The cached DOM title is invalidated immediately so the overlay stops
+     * showing the OLD video's name while the new page is loading — otherwise
+     * getFreshMaskedDomTitle would keep returning the stale cache value for
+     * up to maskedDomTitleFreshMs.
+     */
+    private fun scheduleTrackChangeRefresh() {
+        // Immediately drop the cached title so the overlay can't keep
+        // displaying the previous video's name during the SPA transition.
+        lastMaskedDomTitle = null
+        lastMaskedDomTitleUrl = null
+        lastMaskedDomTitleAt = 0L
+        refreshMaskedNowPlaying()
+
+        val delays = longArrayOf(300L, 800L, 1500L, 2500L, 4000L, 6000L, 8500L, 12000L)
+        delays.forEach { delayMs ->
+            postDelayed({
+                refreshMaskedNowPlayingFromJs()
+                refreshMaskedNowPlaying()
+            }, delayMs)
+        }
+    }
+
+    fun scheduleMaskedTrackChangeRefresh() {
+        scheduleTrackChangeRefresh()
+    }
+
+
+    private fun getFreshMaskedDomTitle(currentUrl: String? = null): String? {
+        val title = lastMaskedDomTitle?.trim().orEmpty()
+        if (title.isBlank()) return null
+        if (SystemClock.uptimeMillis() - lastMaskedDomTitleAt > maskedDomTitleFreshMs) return null
+        if (!currentUrl.isNullOrBlank()) {
+            val cachedUrl = lastMaskedDomTitleUrl.orEmpty()
+            val sameYoutubeFamily =
+                (currentUrl.contains("youtube.com", ignoreCase = true) || currentUrl.contains("youtu.be", ignoreCase = true)) &&
+                (cachedUrl.contains("youtube.com", ignoreCase = true) || cachedUrl.contains("youtu.be", ignoreCase = true))
+            if (!sameYoutubeFamily) return null
+        }
+        return title
+    }
+
+    /**
+     * Use JS to extract the video title directly from the DOM.  On YouTube
+     * the element `yt-formatted-string.ytd-watch-metadata` or the
+     * `<title>` tag updates before `WebView.getTitle()` reflects it.
+     */
+    private fun refreshMaskedNowPlayingFromJs() {
+        if (!isScreenMasked || !::maskNowPlayingText.isInitialized) return
+        val webView = try { getMediaControlWebView() } catch (_: Exception) { return }
+        val url = webView.url.orEmpty()
+        if (!url.contains("youtube.com", true) && !url.contains("youtu.be", true)) return
+        webView.evaluateJavascript(
+            """
+            (function() {
+                var el = document.querySelector('yt-formatted-string.style-scope.ytd-watch-metadata') ||
+                         document.querySelector('#info-contents yt-formatted-string') ||
+                         document.querySelector('h1.title yt-formatted-string') ||
+                         document.querySelector('title');
+                if (!el) return '';
+                var t = (el.textContent || el.innerText || '').trim();
+                t = t.replace(/ - YouTube${'$'}/, '').replace(/ - YouTube Music${'$'}/, '').trim();
+                if (!t || /^youtube$/i.test(t) || /^youtube music$/i.test(t)) return '';
+                return t;
+            })();
+            """.trimIndent()
+        ) { result ->
+            val title = result?.trim('"', ' ') ?: return@evaluateJavascript
+            if (title.isNotBlank() && title != "null") {
+                post {
+                    if (isScreenMasked) {
+                        lastMaskedDomTitle = title
+                        lastMaskedDomTitleUrl = url
+                        lastMaskedDomTitleAt = SystemClock.uptimeMillis()
+                        maskNowPlayingText.text = title
+                        maskNowPlayingText.visibility = View.VISIBLE
+                        maskNowPlayingText.bringToFront()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun resolveMaskedNowPlayingLabel(): String? {
+        val prefs = context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
+        val radioPlaying = prefs.getBoolean("tapradio_now_playing_active", false)
+        val stationName = prefs.getString("tapradio_now_playing_name", "")?.trim().orEmpty()
+
+        // During track transitions isMediaPlaying can briefly be false;
+        // also check recency of last playback so we don't blank the label.
+        val recentlyPlaying = isMediaPlaying ||
+            (SystemClock.uptimeMillis() - lastMediaPlayingAt < 8000)
+        val mediaWebView = try { getMediaControlWebView() } catch (_: Exception) { null }
+        val currentUrl = mediaWebView?.url.orEmpty()
+        val isYoutube = currentUrl.contains("youtube.com", ignoreCase = true) ||
+            currentUrl.contains("youtu.be", ignoreCase = true)
+        if (isYoutube) {
+            getFreshMaskedDomTitle(currentUrl)?.let { return it }
+        }
+        val shouldPreferTapRadioLabel =
+            stationName.isNotBlank() &&
+                !isYoutube &&
+                (radioPlaying || hasNativeTapRadioSession())
+        if (shouldPreferTapRadioLabel) {
+            return stationName
+        }
+        if (!recentlyPlaying || mediaWebView == null) return null
+        if (isYoutube) {
+            val rawTitle = mediaWebView.title?.trim().orEmpty()
+            val cleaned = rawTitle
+                .removeSuffix(" - YouTube")
+                .removeSuffix(" - YouTube Music")
+                .trim()
+            return cleaned.takeIf {
+                it.isNotBlank() &&
+                    !it.equals("YouTube", ignoreCase = true) &&
+                    !it.equals("YouTube Music", ignoreCase = true)
+            }
+        }
+        if (shouldPreferTapRadioLabel) {
+            return stationName
+        }
+        return getFreshMaskedDomTitle(currentUrl)
     }
 
     fun injectLocation(latitude: Double, longitude: Double) {
@@ -8036,7 +12537,28 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     },
                     timestamp: new Date().getTime()
                 };
-                
+
+                // Initialize watcher registry if not present
+                if (!window.__geoWatchers) window.__geoWatchers = {};
+                if (!window.__geoNextWatchId) window.__geoNextWatchId = 1;
+
+                // Notify all registered watchPosition callbacks with updated position
+                var watchers = window.__geoWatchers;
+                for (var id in watchers) {
+                    if (watchers.hasOwnProperty(id) && typeof watchers[id] === 'function') {
+                        try { watchers[id](window.__injectedPosition); } catch(e) {
+                            console.warn('[TapLink] watcher ' + id + ' error:', e);
+                        }
+                    }
+                }
+
+                // Only set up the mock geolocation API once
+                if (window.__geoMockInstalled) {
+                    console.log("[TapLink] Location updated: " + $latitude + ", " + $longitude + " (watchers: " + Object.keys(watchers).length + ")");
+                    return;
+                }
+                window.__geoMockInstalled = true;
+
                 // 1. Mock Permissions API to always return 'granted'
                 if (navigator.permissions) {
                     var originalQuery = navigator.permissions.query.bind(navigator.permissions);
@@ -8047,26 +12569,34 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         return originalQuery(parameters);
                     };
                 }
-                
+
                 // 2. Override Geolocation API using defineProperty for robustness
                 var mockGeolocation = {
                     getCurrentPosition: function(success, error, options) {
                         setTimeout(function() {
-                            success(window.__injectedPosition);
+                            if (window.__injectedPosition) {
+                                success(window.__injectedPosition);
+                            } else if (error) {
+                                error({code: 2, message: 'Position unavailable'});
+                            }
                         }, 10);
                     },
                     watchPosition: function(success, error, options) {
-                        var watchId = Math.floor(Math.random() * 10000);
+                        var watchId = window.__geoNextWatchId++;
+                        window.__geoWatchers[watchId] = success;
+                        // Fire immediately with current position
                         setTimeout(function() {
-                            success(window.__injectedPosition);
+                            if (window.__injectedPosition) {
+                                success(window.__injectedPosition);
+                            }
                         }, 10);
                         return watchId;
                     },
                     clearWatch: function(id) {
-                        // Do nothing
+                        delete window.__geoWatchers[id];
                     }
                 };
-                
+
                 try {
                     Object.defineProperty(navigator, 'geolocation', {
                         value: mockGeolocation,
@@ -8079,8 +12609,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     navigator.geolocation.watchPosition = mockGeolocation.watchPosition;
                     navigator.geolocation.clearWatch = mockGeolocation.clearWatch;
                 }
-                
-                console.log("[TapLink] Location injected: " + $latitude + ", " + $longitude);
+
+                console.log("[TapLink] Location mock installed + injected: " + $latitude + ", " + $longitude);
             })();
         """.trimIndent()
 
@@ -8384,6 +12914,59 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         targetWebView.evaluateJavascript(script, null)
     }
 
+    // ── Media file interception for TapInsight media player ──
+    companion object {
+        private val MEDIA_TEXT_EXTS = setOf("txt","md","log","csv","json","xml","html","htm","rtf","ini","cfg","conf","yaml","yml","toml")
+        private val MEDIA_AUDIO_EXTS = setOf("mp3","wav","ogg","m4a","aac","flac","wma","opus")
+        private val MEDIA_VIDEO_EXTS = setOf("mp4","webm","mkv","avi","mov","m4v","ogv","3gp")
+    }
+
+    private fun interceptMediaUrl(view: android.webkit.WebView, url: String): Boolean {
+        // Never treat our own asset pages as "media" — they ARE the media
+        // player UI. Navigating to /assets/library_local.html should load
+        // the page, not open it in a text reader just because the URL ends
+        // in .html.
+        val lower = url.lowercase()
+        if (lower.startsWith("file:///android_asset/") ||
+            lower.startsWith("https://appassets.androidplatform.net/assets/") ||
+            lower.startsWith("http://appassets.androidplatform.net/assets/")
+        ) return false
+
+        val path = url.split("?")[0].split("#")[0]
+        val ext = path.substringAfterLast('.', "").lowercase()
+        val mediaType = when {
+            MEDIA_TEXT_EXTS.contains(ext) -> "text"
+            MEDIA_AUDIO_EXTS.contains(ext) -> "audio"
+            MEDIA_VIDEO_EXTS.contains(ext) -> "video"
+            else -> return false
+        }
+        val title = try {
+            java.net.URLDecoder.decode(path.substringAfterLast('/'), "UTF-8")
+        } catch (_: Exception) { path.substringAfterLast('/') }
+        val encodedUrl = java.net.URLEncoder.encode(url, "UTF-8")
+        val encodedTitle = java.net.URLEncoder.encode(title, "UTF-8")
+        val srtUrl = if (mediaType == "video") {
+            java.net.URLEncoder.encode(path.substringBeforeLast('.') + ".srt", "UTF-8")
+        } else ""
+
+        // Read media player preferences from companion app settings
+        val vcPrefs = context.getSharedPreferences("visionclaw_prefs", android.content.Context.MODE_PRIVATE)
+        val voiceName = vcPrefs.getString("media_tts_voice", "") ?: ""
+        val underline = vcPrefs.getBoolean("media_tts_underline", true)
+        val mediaParams = buildString {
+            if (voiceName.isNotBlank()) append("&voice=${java.net.URLEncoder.encode(voiceName, "UTF-8")}")
+            if (!underline) append("&underline=false")
+        }
+
+        val playerUrl = "file:///android_asset/media_player.html" +
+            "?url=$encodedUrl&type=$mediaType&title=$encodedTitle" +
+            (if (srtUrl.isNotBlank()) "&srt=$srtUrl" else "") +
+            mediaParams
+        DebugLog.d("MediaPlayer", "DualWebView intercepted $mediaType ($ext): $url")
+        view.loadUrl(playerUrl)
+        return true
+    }
+
     private class MediaInterface(
             private val parent: DualWebViewGroup,
             private val sourceWebView: WebView
@@ -8412,6 +12995,35 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         extentY,
                         offsetY
                 )
+            }
+        }
+
+        // ── Pending text for the pull-based media player approach ──
+        @Volatile private var pendingReaderText: String? = null
+
+        @android.webkit.JavascriptInterface
+        fun getPendingText(): String {
+            val text = pendingReaderText ?: ""
+            pendingReaderText = null
+            return text
+        }
+
+        @android.webkit.JavascriptInterface
+        fun openTextReader(text: String, title: String) {
+            android.util.Log.d("MediaInterface", "openTextReader: ${text.length} chars, title=$title")
+            if (text.isBlank()) return
+            pendingReaderText = text
+            parent.post {
+                val vcPrefs = parent.context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
+                val voiceName = vcPrefs.getString("media_tts_voice", "") ?: ""
+                val underline = vcPrefs.getBoolean("media_tts_underline", true)
+                val encodedTitle = java.net.URLEncoder.encode(title.take(200), "UTF-8")
+                val mediaParams = buildString {
+                    if (voiceName.isNotBlank()) append("&voice=${java.net.URLEncoder.encode(voiceName, "UTF-8")}")
+                    if (!underline) append("&underline=false")
+                }
+                val playerUrl = "file:///android_asset/media_player.html?type=text&title=$encodedTitle$mediaParams"
+                sourceWebView.loadUrl(playerUrl)
             }
         }
     }

@@ -11,6 +11,7 @@ import android.speech.tts.TextToSpeech
 import android.util.Log
 import com.rayneo.visionclaw.core.storage.AppPreferences
 import java.util.Locale
+import java.util.concurrent.Executors
 
 class TtsController(
     context: Context,
@@ -29,6 +30,13 @@ class TtsController(
     private var pendingUtterance: String? = null
     private var hasAudioFocus = false
     private var focusRequest: AudioFocusRequest? = null
+    private val controlExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "TtsController").apply { isDaemon = true }
+    }
+    @Volatile
+    private var activeSpeechGeneration: Long = 0L
+    @Volatile
+    private var remainingUtteranceCount: Int = 0
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { change ->
         if (change <= AudioManager.AUDIOFOCUS_LOSS) {
             stop()
@@ -40,8 +48,18 @@ class TtsController(
         initTts()
     }
 
-    fun speak(text: String) {
-        if (preferences.ttsMuted || text.isBlank()) return
+    /**
+     * Speak text aloud. Set [force] to true for voice-session audio that should
+     * always play regardless of the auto-read preference. Set [ignoreMute] to
+     * true to also bypass the global `ttsMuted` preference — use this only for
+     * readouts the user explicitly requested (e.g., "read the research report"),
+     * since silently obeying the mute flag is indistinguishable from the app
+     * hanging.
+     */
+    fun speak(text: String, force: Boolean = false, ignoreMute: Boolean = false) {
+        if (text.isBlank()) return
+        if (!ignoreMute && preferences.ttsMuted) return
+        if (!force && !preferences.ttsAutoRead) return
         if (!requestAudioFocus()) {
             Log.w(TAG, "Audio focus not granted for TTS")
             return
@@ -55,33 +73,74 @@ class TtsController(
     }
 
     private fun speakInternal(text: String) {
+        // Apply user-configured speech rate (0 or negative = default 1.0)
+        val rate = preferences.ttsSpeechRate
+        tts?.setSpeechRate(if (rate > 0f) rate else 1.0f)
+
         val params = Bundle().apply {
             putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, preferences.ttsVolume)
             putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
         }
+        val generation = activeSpeechGeneration + 1L
+        activeSpeechGeneration = generation
+        val chunks = splitTextForSpeech(text)
+        remainingUtteranceCount = chunks.size
 
-        val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, "panel_readout")
-        if (result != TextToSpeech.SUCCESS) {
+        var hadFailure = false
+        chunks.forEachIndexed { index, chunk ->
+            val utteranceId = "panel_readout_${generation}_$index"
+            val queueMode = if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            val result = tts?.speak(chunk, queueMode, params, utteranceId)
+            if (result != TextToSpeech.SUCCESS) {
+                hadFailure = true
+            }
+        }
+        if (hadFailure) {
             Log.w(TAG, "tts.speak failed; reinitializing")
             pendingUtterance = text
+            remainingUtteranceCount = 0
             initTts(force = true)
         }
     }
 
     fun stop() {
-        tts?.stop()
+        activeSpeechGeneration += 1L
+        remainingUtteranceCount = 0
+        val engine = tts
+        runCatching {
+            controlExecutor.execute {
+                runCatching { engine?.stop() }
+                abandonAudioFocus()
+            }
+        }.onFailure {
+            runCatching { engine?.stop() }
+            abandonAudioFocus()
+        }
     }
 
     fun isSpeaking(): Boolean = tts?.isSpeaking == true
 
     fun shutdown() {
-        tts?.stop()
-        tts?.shutdown()
+        val engine = tts
         tts = null
         ready = false
         pendingUtterance = null
         initializing = false
-        abandonAudioFocus()
+        activeSpeechGeneration += 1L
+        remainingUtteranceCount = 0
+        runCatching {
+            controlExecutor.execute {
+                runCatching { engine?.stop() }
+                runCatching { engine?.shutdown() }
+                abandonAudioFocus()
+                controlExecutor.shutdown()
+            }
+        }.onFailure {
+            runCatching { engine?.stop() }
+            runCatching { engine?.shutdown() }
+            abandonAudioFocus()
+            controlExecutor.shutdown()
+        }
     }
 
     private fun initTts(force: Boolean = false) {
@@ -107,10 +166,10 @@ class TtsController(
                 object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) = Unit
                     override fun onDone(utteranceId: String?) {
-                        abandonAudioFocus()
+                        maybeFinishSpeech(utteranceId)
                     }
                     override fun onError(utteranceId: String?) {
-                        abandonAudioFocus()
+                        maybeFinishSpeech(utteranceId)
                     }
                 }
             )
@@ -148,6 +207,45 @@ class TtsController(
             }
         hasAudioFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         return hasAudioFocus
+    }
+
+    private fun maybeFinishSpeech(utteranceId: String?) {
+        val generation = activeSpeechGeneration
+        val prefix = "panel_readout_${generation}_"
+        if (utteranceId == null || !utteranceId.startsWith(prefix)) return
+        val remaining = (remainingUtteranceCount - 1).coerceAtLeast(0)
+        remainingUtteranceCount = remaining
+        if (remaining == 0) {
+            abandonAudioFocus()
+        }
+    }
+
+    private fun splitTextForSpeech(text: String): List<String> {
+        val normalized = text.trim()
+        if (normalized.isBlank()) return emptyList()
+        val maxLen = TextToSpeech.getMaxSpeechInputLength().coerceAtLeast(1000)
+        if (normalized.length <= maxLen) return listOf(normalized)
+
+        val chunks = mutableListOf<String>()
+        var remaining = normalized
+        while (remaining.isNotBlank()) {
+            if (remaining.length <= maxLen) {
+                chunks.add(remaining.trim())
+                break
+            }
+            var splitAt = remaining.lastIndexOf('\n', maxLen)
+            if (splitAt < maxLen / 2) {
+                splitAt = remaining.lastIndexOf(". ", maxLen)
+                if (splitAt >= 0) splitAt += 1
+            }
+            if (splitAt < maxLen / 2) {
+                splitAt = remaining.lastIndexOf(' ', maxLen)
+            }
+            if (splitAt <= 0) splitAt = maxLen
+            chunks.add(remaining.substring(0, splitAt).trim())
+            remaining = remaining.substring(splitAt).trimStart()
+        }
+        return chunks.filter { it.isNotBlank() }
     }
 
     private fun abandonAudioFocus() {
