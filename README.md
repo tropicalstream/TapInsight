@@ -1,143 +1,142 @@
-# TapInsight — AI-Powered AR Companion for RayNeo X3 Pro
-
 <p align="center">
-  <img src="assets/github/tapinsight-github-logo.png" alt="TapInsight logo" width="280">
+  <img src="docs/assets/tapinsight-logo-512.png" width="120" alt="TapInsight logo">
 </p>
 
+<h1 align="center">TapInsight</h1>
 
-> **ALPHA SOFTWARE — Use at your own risk.** This project is under active development. Features may be incomplete, unstable, or change without notice. No warranty is provided.
+<p align="center">
+  <strong>AI-powered AR companion for RayNeo X3 Pro</strong><br>
+  Voice, vision, web, radio, and OpenClaw/TapClaw on your glasses.
+</p>
 
-TapInsight transforms your RayNeo X3 Pro AR glasses into an AI-powered smart assistant with voice and vision capabilities, hands-free navigation, internet radio, and a full web browser — all controlled by simple gestures.
+<p align="center">
+  <a href="https://tropicalstream.github.io/TapInsight/">Website</a> |
+  <a href="https://github.com/tropicalstream/TapInsight/releases/download/tapinsight-alpha-oc.2/tapinsight-alpha-oc.2.apk">Download Alpha OC.2 APK</a> |
+  <a href="https://github.com/tropicalstream/TapInsight/releases">All Releases</a> |
+  <a href="https://youtu.be/42DV0rl1NOo">Overview Video</a> |
+  <a href="TapInsight-User-Guide.html">User Guide</a>
+</p>
 
----
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=42DV0rl1NOo">
+    <img src="https://img.youtube.com/vi/42DV0rl1NOo/hqdefault.jpg" alt="TapInsight overview video">
+  </a>
+</p>
+
+> Alpha software. Use at your own risk.
+
+TapInsight turns the RayNeo X3 Pro into a wearable AI workstation: a live Gemini assistant, a full AR browser, an internet radio player, and a bridge to an OpenClaw agent running on your host machine.
 
 ## What It Does
 
-**TapInsight** is a companion layer that runs on the RayNeo X3 Pro, adding AI capabilities on top of the existing glasses experience. At its core, it uses Google's Gemini API for both text/vision and live voice conversations, letting you interact with an AI assistant that can see what you see through the glasses camera.
+| Capability | What it gives you |
+| --- | --- |
+| Gemini assistant | Live voice plus camera-aware Q&A directly from the glasses |
+| TapBrowser | A full browser with dashboard shortcuts, media views, and companion-linked pages |
+| TapRadio | Gesture-friendly internet radio with favorites, categories, and companion sync |
+| TapClaw / OpenClaw | Voice access to a tool-using host agent with heartbeat updates and media handoff |
+| Companion app | Browser-based setup for API keys, OAuth, dashboard links, radio, HUD settings, and OpenClaw |
+| HUD workflows | Compact AR-friendly status cards, heartbeats, notifications, and assistant output |
 
-### AI Assistant (Gemini-Powered)
+## Watch
 
-The AI assistant runs through Gemini's models and supports two modes. Standard mode handles text and vision queries — point the camera at something and ask about it. Live mode enables real-time voice conversation with the assistant, which can respond naturally while seeing through your camera. The assistant can look up nearby places, get directions with traffic, identify objects, read text, and answer questions about what's in view.
+- Main walkthrough: [youtube.com/watch?v=42DV0rl1NOo](https://www.youtube.com/watch?v=42DV0rl1NOo)
+- Short link: [youtu.be/42DV0rl1NOo](https://youtu.be/42DV0rl1NOo)
+- Project site: [tropicalstream.github.io/TapInsight](https://tropicalstream.github.io/TapInsight/)
 
-The key here is simplicity: the Gemini API currently offers generous free tiers, so you can get started without any cost. And if you want to swap in a different model later, you can do that right from the companion app — no code changes needed.
+## Latest Build
 
-### Gesture Controls
+- Recommended build: [TapInsight Alpha OC.2 APK](https://github.com/tropicalstream/TapInsight/releases/download/tapinsight-alpha-oc.2/tapinsight-alpha-oc.2.apk)
+- Release hub: [GitHub Releases](https://github.com/tropicalstream/TapInsight/releases)
+- Manual: [TapInsight-User-Guide.html](TapInsight-User-Guide.html)
+- Quick companion launcher: [companion.html](companion.html)
 
-Everything is designed for hands-free use on AR glasses. The X3 Pro's touchpad on the temple handles all navigation:
+## Quick Start
 
-- **Single Tap** — Select, click links, focus inputs, interact with UI elements
-- **Double Tap** — Go back (browser history, close dialogs, return to list view)
-- **Swipe Left/Right** — Scroll horizontally, switch tabs
-- **Swipe Up/Down** — Scroll through content
+1. Install the latest APK from the release page.
+2. Launch TapInsight on the glasses.
+3. Connect to the companion app.
 
-No phone needed once you're set up.
-
-### TapRadio — Internet Radio Player
-
-TapRadio is a built-in internet radio player optimized for the glasses' 960x480 display. It comes preloaded with 18 stations across genres like Chill, Jazz, Electronic, Rock, Classical, News, and more (SomaFM, Radio Paradise, NPR, BBC World Service, NASA Third Rock Radio).
-
-Features:
-- Favorites system — star any station for quick access, Favorites tab is always first
-- Genre filtering — tap genre tabs to browse by category
-- Play/pause, next/previous, volume control — all gesture-friendly
-- Add/edit/delete stations directly on the glasses
-- Search 30,000+ stations from the companion app using the Radio Browser API
-- Stations sync between the companion app and glasses automatically
-
-### TapBrowser — Full Web Browser
-
-Built on [TapLinkX3](https://github.com/informalTechCode/TAPLINKX3) (see acknowledgments), TapBrowser provides a full web browsing experience on the glasses with a customizable dashboard of quick-launch links organized by category (AI/Chatbots, Music/Streaming, Social, Productivity, and more). It includes bookmarks, desktop/mobile mode switching, and a QR code scanner for quick URL entry.
-
-### Companion App (Phone/Laptop WiFi Configuration)
-
-The companion app is a web interface served from the glasses over WiFi. Open it on your phone or laptop by navigating to the glasses' IP address on port 19110. From here you can:
-
-- **Setup** — Enter your Gemini API key, configure OAuth for Google services (Maps, Calendar, etc.), set Spotify credentials, adjust the AI model and system prompt, and configure HUD display settings
-- **Browser** — Manage bookmarks and browser settings remotely
-- **Dashboard** — Customize the TapBrowser homepage links and layout
-- **TapRadio** — Search for stations online, manage your station list, toggle favorites, and sync everything to the glasses with one button
-
-There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (verify directions API).
-
----
-
-## Download
-
-**[`TapInsight.apk`](TapInsight.apk)** — Pre-built debug APK, ready to sideload onto your RayNeo X3 Pro via ADB. No Android Studio required.
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- RayNeo X3 Pro AR glasses
-- A Google Gemini API key ([get one free at Google AI Studio](https://aistudio.google.com/apikey))
-- A phone or laptop on the same WiFi network as the glasses
-- Android Studio only needed if building from source — otherwise just grab the APK above
-
-### Quick Setup
-
-1. **Download [`TapInsight.apk`](TapInsight.apk)** from this repo
-2. Sideload it onto your RayNeo X3 Pro via ADB: `adb install TapInsight.apk`
-3. Launch TapInsight on the glasses
-4. **Open [`companion.html`](companion.html)** in any browser on your phone or laptop — it's a one-page setup wizard that connects to the glasses over WiFi
-5. Enter your glasses' IP address (default: `192.168.1.217`) and click **Connect**
-6. In the Setup tab, enter your Gemini API key
-7. Start talking — tap the glasses touchpad to activate the AI
-
-The companion app runs entirely over WiFi at `http://192.168.1.217:19110` (adjust the IP to match your glasses — check Settings → WiFi on the glasses to find it). From there you can configure everything: API keys, AI model, OAuth, TapRadio stations, and more.
-
-### Connecting Without WiFi (ADB Port Forwarding)
-
-If you're on a mobile hotspot or don't have a shared WiFi network between your computer and the glasses, you can use **ADB port forwarding over USB** to access the companion app:
+USB setup:
 
 ```bash
 adb forward tcp:19110 tcp:19110
 ```
 
-Then open **http://localhost:19110** in any browser on your computer. This tunnels the connection through the USB cable — no WiFi required. Keep the USB cable connected while configuring.
+Then open:
 
-### Optional Configuration
+```text
+https://localhost:19110/
+```
 
-- **Google OAuth** — Enable Google Maps, Places, and Calendar integration by setting up OAuth credentials in the companion app's Setup tab
-- **Spotify** — Connect your Spotify account for music control
-- **Custom AI Prompt** — Modify the system prompt to customize the AI's personality and behavior
-- **HUD Settings** — Adjust font size, display duration, and formatting for the heads-up display
+Accept the local certificate warning on first use.
 
----
+Wi-Fi setup:
 
-## Architecture
+```text
+https://<glasses-ip>:19110/
+```
 
-The project has two main modules:
+If the device falls back to non-TLS mode, try `http://<glasses-ip>:19110/`.
 
-- **`app`** — The main TapInsight application (AI assistant, companion server, tool system)
-- **`tapbrowser`** — The web browser module (based on TapLinkX3)
+## Companion App
 
-Key technical details:
+The companion app runs on the glasses and is reached from your phone or laptop browser.
 
-- **AI Models**: Gemini 3 Flash (text/vision) and Gemini 2.5 Flash Native Audio (live voice) — configurable via companion app, no cost on free tier
-- **Tool System**: Google Places, Routes/Directions with traffic, Location, Weather, Calendar, Spotify, and Web Search — all accessible to the AI through natural conversation
-- **ToolAssist Engine**: Client-side tool execution that proactively detects when you're asking about places, directions, or location and injects results into the conversation
-- **Companion Server**: NanoHTTPD server on port 19110 serving HTML configuration and management pages
-- **HUD**: Real-time heads-up display showing AI responses formatted for the glasses' compact viewport
+You can configure:
 
----
+- Gemini API keys and model selection
+- Google OAuth, Maps, Calendar, Tasks, and Places
+- TapBrowser dashboard links and browser settings
+- TapRadio station sync and favorites
+- OpenClaw endpoint, token, heartbeat behavior, and relay tooling
+- HUD display, voice, brightness, and assistant behavior settings
+
+## Why HTTPS
+
+The companion server prefers HTTPS because the Phone GPS bridge needs a browser secure context. Over `https://localhost:19110/` or `https://<glasses-ip>:19110/`, browsers allow the Geolocation API and the companion app can receive phone GPS updates correctly.
+
+## OpenClaw / TapClaw
+
+TapInsight can connect to an OpenClaw agent on your Mac, Linux, or Windows host.
+
+That gives you:
+
+- voice-triggered host automation
+- camera frame relay to the host workspace
+- readable heartbeat updates on the glasses HUD
+- media and page handoff back into TapBrowser
+
+If you want to explore that path, start here:
+
+- [OpenClaw](https://openclaw.ai)
+- [TapInsight User Guide](TapInsight-User-Guide.html)
+- [Companion launcher](companion.html)
+
+## Repository Guide
+
+| Path | Purpose |
+| --- | --- |
+| `app/` | Main TapInsight Android app |
+| `tapbrowser/` | Browser module and AR web runtime |
+| `docs/` | GitHub Pages site |
+| `companion.html` | Offline quick-launch setup page |
+| `TapInsight-User-Guide.html` | Main visual manual |
+| `tools/` | Helper scripts such as the image relay installer |
+
+## More Links
+
+- Website: [tropicalstream.github.io/TapInsight](https://tropicalstream.github.io/TapInsight/)
+- Releases: [github.com/tropicalstream/TapInsight/releases](https://github.com/tropicalstream/TapInsight/releases)
+- Issues: [github.com/tropicalstream/TapInsight/issues](https://github.com/tropicalstream/TapInsight/issues)
+- License: [LICENSE](LICENSE)
 
 ## Acknowledgments
 
-Special thanks to **InformalTech** and **glxblt76**, the developers of [TapLinkX3](https://github.com/informalTechCode/TAPLINKX3), for creating the browser foundation and for allowing integration of their work into this project. The `tapbrowser` module is built on their excellent AR-optimized web browser for the RayNeo X3 Pro.
+TapInsight builds on the work of the TapLinkX3 browser project and the broader open-source and AR tooling community.
 
----
+Special thanks:
 
-## Disclaimer
-
-This is alpha software provided as-is. The developers are not responsible for any issues arising from its use. API keys and credentials are stored locally on your device and are never transmitted to third parties beyond the configured API providers (Google, Spotify, etc.).
-
-**Security note**: This repository has been scrubbed of all personal information, API keys, and credentials. All sensitive values use placeholders. You must supply your own API keys via the companion app or `local.properties`.
-
----
-
-## License
-
-Distributed under the GNU General Public License v3.0 — see the [LICENSE](LICENSE) file for details.
+- [InformalTechCode / TAPLINKX3](https://github.com/informalTechCode/TAPLINKX3)
+- [informalTechCode](https://github.com/informalTechCode)
+- [glxblt76](https://github.com/glxblt76)
