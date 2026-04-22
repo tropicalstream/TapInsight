@@ -14,7 +14,7 @@
   <a href="https://github.com/tropicalstream/TapInsight/releases/download/tapinsight-alpha-oc.2/tapinsight-alpha-oc.2.apk">Download Alpha OC.2 APK</a> |
   <a href="https://github.com/tropicalstream/TapInsight/releases">All Releases</a> |
   <a href="https://youtu.be/42DV0rl1NOo">Overview Video</a> |
-  <a href="TapInsight-User-Guide.html">User Guide</a>
+  <a href="https://tropicalstream.github.io/TapInsight/user-guide.html">User Guide</a>
 </p>
 
 <p align="center">
@@ -48,7 +48,7 @@ TapInsight turns the RayNeo X3 Pro into a wearable AI workstation: a live Gemini
 
 - Recommended build: [TapInsight Alpha OC.2 APK](https://github.com/tropicalstream/TapInsight/releases/download/tapinsight-alpha-oc.2/tapinsight-alpha-oc.2.apk)
 - Release hub: [GitHub Releases](https://github.com/tropicalstream/TapInsight/releases)
-- Manual: [TapInsight-User-Guide.html](TapInsight-User-Guide.html)
+- Manual: [Rendered User Guide](https://tropicalstream.github.io/TapInsight/user-guide.html)
 - Quick companion launcher: [companion.html](companion.html)
 
 ## Quick Start
@@ -110,7 +110,7 @@ That gives you:
 If you want to explore that path, start here:
 
 - [OpenClaw](https://openclaw.ai)
-- [TapInsight User Guide](TapInsight-User-Guide.html)
+- [TapInsight User Guide](https://tropicalstream.github.io/TapInsight/user-guide.html)
 - [Companion launcher](companion.html)
 
 ## Repository Guide
