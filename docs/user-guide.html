@@ -603,7 +603,7 @@ footer {
     <li><a href="#calendar">Calendar</a></li>
     <li><a href="#tasks">Tasks &amp; Reminders</a></li>
     <li><a href="#keep">Notes (Keep)</a></li>
-    <li><a href="#contacts">Contacts &amp; Communication</a></li>
+    <li><a href="#contacts">Contacts Lookup</a></li>
     <li><a href="#spotify">Spotify</a></li>
     <li><a href="#sonos">Sonos</a></li>
     <li><a href="#weather">Weather &amp; Air Quality</a></li>
@@ -1564,20 +1564,18 @@ coffee.mp3
 </section>
 
 <section id="contacts">
-<h2><span class="part-tag">§ 4.15</span>Contacts &amp; Communication</h2>
+<h2><span class="part-tag">§ 4.15</span>Contacts Lookup</h2>
 
-<p>Tools: <code>google_contacts</code> (lookup), <code>send_message</code> (text), <code>place_call</code> (call).</p>
+<p>Tool: <code>google_contacts</code>. Use it to retrieve saved phone numbers and email addresses from your Google contacts. TapInsight does not place calls or send texts directly.</p>
 
 <div class="sayrow">
   <div>
-    <span class="say">Call John<span class="tag">call</span></span>
-    <span class="say">Text Sarah I'm running 10 late<span class="tag">message</span></span>
     <span class="say">What's John's number?<span class="tag">contacts</span></span>
+    <span class="say">What's Sarah's email?<span class="tag">contacts</span></span>
   </div>
   <div>
-    <span class="say">Call mom<span class="tag">call</span></span>
-    <span class="say">Text the group chat good morning<span class="tag">message</span></span>
     <span class="say">Look up Jane Doe's email<span class="tag">contacts</span></span>
+    <span class="say">Find Alex in my contacts<span class="tag">contacts</span></span>
   </div>
 </div>
 </section>
@@ -1889,7 +1887,6 @@ coffee.mp3
     <tr><td>Podcasts</td><td>any sentence with "podcast"</td><td>tapradio (highest priority)</td></tr>
     <tr><td>YouTube</td><td>"play on YouTube" / "watch X" / "send list"</td><td>Gemini Phase A/B flow</td></tr>
     <tr><td>Camera</td><td>"save photo" / "read QR" / "record audio"</td><td>camera_action</td></tr>
-    <tr><td>Communication</td><td>"call X" / "text Y"</td><td>place_call / send_message</td></tr>
     <tr><td>Contacts</td><td>"look up X's number"</td><td>google_contacts</td></tr>
     <tr><td>Quick actions</td><td>"good morning" / "leaving work" / custom</td><td>quick_action</td></tr>
   </tbody>
@@ -1923,8 +1920,6 @@ coffee.mp3
 <div class="tool"><div class="name">battery_saver</div><div class="body"><p>Toggle power-saving mode.</p><p class="ex">"Save battery"</p></div></div>
 <div class="tool"><div class="name">quick_action</div><div class="body"><p>Pre-built and custom JSON macros.</p><p class="ex">"Leaving work" · "Gym time"</p></div></div>
 <div class="tool"><div class="name">tapclaw_agent</div><div class="body"><p>Routes to your remote OpenClaw agent with optional camera frame.</p><p class="ex">"tapclaw what do you see"</p></div></div>
-<div class="tool"><div class="name">send_message</div><div class="body"><p>Send SMS/iMessage.</p><p class="ex">"Text Sarah I'm late"</p></div></div>
-<div class="tool"><div class="name">place_call</div><div class="body"><p>Place a phone call.</p><p class="ex">"Call John"</p></div></div>
 <div class="tool"><div class="name">get_context</div><div class="body"><p>Recall from the recent-cards context cache.</p><p class="ex">Used internally by Gemini for follow-ups.</p></div></div>
 </section>
 
