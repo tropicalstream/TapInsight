@@ -590,6 +590,7 @@ footer {
   <ul>
     <li><a href="#hud">HUD (Heads-Up Display)</a></li>
     <li><a href="#tapbrowser">TapBrowser</a></li>
+    <li><a href="#library">Library &amp; Local Media</a></li>
     <li><a href="#visualizers">Audio Visualizers</a></li>
     <li><a href="#tapradio">TapRadio &amp; Podcasts</a></li>
     <li><a href="#youtube">YouTube Workflow</a></li>
@@ -819,6 +820,7 @@ footer {
   <div class="card"><h4>Setup</h4><p>API keys, OAuth, calendars, Spotify, Gemini Live voice &amp; behavior, accessibility, HUD widgets, quick actions.</p></div>
   <div class="card"><h4>Browser</h4><p>Desktop / mobile mode, dark mode, pointer sensitivity, cookie-import to log sites in.</p></div>
   <div class="card"><h4>Dashboard</h4><p>Manage the TapBrowser homepage — grouped quick-launch links (YouTube, Reddit, Hacker News, etc).</p></div>
+  <div class="card"><h4>Library</h4><p>Upload local audio, video, text, and <code>.m3u</code> playlists; auto-generate playlists; add the Media Library tile to the glasses dashboard.</p></div>
   <div class="card"><h4>Radio</h4><p>Search 30,000+ internet radio stations and sync favorites to the glasses.</p></div>
   <div class="card"><h4>OpenClaw</h4><p>Pair a remote TapClaw/OpenClaw agent so Gemini can reach beyond the glasses.</p></div>
 </div>
@@ -1203,6 +1205,62 @@ footer {
     <span class="say">Read this article to me<span class="tag">tts</span></span>
     <span class="say">Open my dashboard<span class="tag">browser</span></span>
   </div>
+</div>
+</section>
+
+<section id="library">
+<h2><span class="part-tag">§ 4.2A</span>Library — Local Media &amp; Playlists</h2>
+
+<p>The Library is TapInsight's on-device shelf for media you own: local music, videos, text files, and playlists stored directly on the glasses. It is designed for offline or low-friction playback when you do not want to depend on YouTube, Spotify, or a network connection.</p>
+
+<div class="cards">
+  <div class="card"><h4>Local files</h4><p>Drop audio or video into the glasses and browse it later from the Media Library tile in TapBrowser.</p></div>
+  <div class="card"><h4>Playlist aware</h4><p>Each folder can contain its own <code>.m3u</code> or <code>.m3u8</code> playlist, with paths resolved relative to that playlist file.</p></div>
+  <div class="card"><h4>Text + TTS</h4><p>Text files open in the media viewer and can be read aloud through Gemini TTS, so notes and transcripts live alongside your media.</p></div>
+</div>
+
+<h3>Where the files live</h3>
+<p>TapInsight creates an app-private media folder on first run:</p>
+<pre><code>/storage/emulated/0/Android/data/com.rayneo.visionclaw/files/Media/</code></pre>
+
+<ul>
+  <li><strong>Music/</strong> — default audio folder.</li>
+  <li><strong>Videos/</strong> — default video folder.</li>
+  <li><strong>README.txt</strong> — a built-in reminder of the folder rules and supported formats.</li>
+  <li><strong>Nested folders</strong> — fully supported, so you can organize by artist, album, topic, course, project, or anything else.</li>
+</ul>
+
+<p>This storage is visible over USB / MTP, requires no runtime permission prompts, survives reboot, and is normally wiped only if you fully uninstall the app.</p>
+
+<h3>Supported formats</h3>
+<ul>
+  <li><strong>Audio</strong> — <code>mp3</code>, <code>m4a</code>, <code>aac</code>, <code>ogg</code>, <code>opus</code>, <code>wav</code>, <code>flac</code>, <code>weba</code></li>
+  <li><strong>Video</strong> — <code>mp4</code>, <code>webm</code>, <code>mkv</code>, <code>mov</code>, <code>m4v</code>, <code>3gp</code>, <code>avi</code></li>
+  <li><strong>Text / TTS</strong> — <code>txt</code>, <code>md</code>, <code>markdown</code>, <code>log</code>, <code>csv</code>, <code>json</code>, <code>xml</code>, <code>html</code>, <code>rtf</code>, <code>ini</code>, <code>cfg</code>, <code>conf</code>, <code>yaml</code>, <code>yml</code>, <code>toml</code></li>
+  <li><strong>Playlists</strong> — <code>m3u</code>, <code>m3u8</code></li>
+</ul>
+
+<h3>How <code>.m3u</code> playlists behave</h3>
+<p>Playlist paths are resolved relative to the playlist file's own directory. That means a playlist can reference files next to it, in child folders, or in sibling folders using standard relative paths such as <code>../Videos/clip.mp4</code>.</p>
+
+<pre><code>#EXTM3U
+#EXTINF:180,Morning Coffee
+coffee.mp3
+#EXTINF:240,Subway Ride
+../Videos/commute.mp4</code></pre>
+
+<p>The companion Library page can also auto-generate a playlist for the current folder and open a visual editor so you can add, remove, and reorder entries without hand-editing the file.</p>
+
+<h3>How to use it</h3>
+<ul>
+  <li><strong>From the companion app</strong> — open the <strong>Library</strong> tab to upload media, browse folders, generate playlists, or edit existing <code>.m3u</code> files.</li>
+  <li><strong>On the glasses</strong> — open the <strong>Media Library</strong> tile from the TapLink Dashboard. If it is missing, the companion Library page can add it back for you.</li>
+  <li><strong>For reading</strong> — open a text file in the library and let Gemini TTS read it back like a local audiobook or spoken note.</li>
+</ul>
+
+<div class="callout example">
+  <div class="title">A practical setup</div>
+  <p>Create <code>Media/Music/Focus/</code> for instrumental tracks, <code>Media/Videos/Tutorials/</code> for saved walkthroughs, and keep a <code>Focus.m3u</code> playlist next to them. The playlist can pull from both folders, and the glasses can play it without touching a streaming service.</p>
 </div>
 </section>
 

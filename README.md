@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>AI-powered AR companion for RayNeo X3 Pro</strong><br>
-  Voice, vision, web, radio, and OpenClaw/TapClaw on your glasses.
+  Voice, vision, web, local media, radio, and OpenClaw/TapClaw on your glasses.
 </p>
 
 <p align="center">
@@ -33,6 +33,7 @@ TapInsight turns the RayNeo X3 Pro into a wearable AI workstation: a live Gemini
 | --- | --- |
 | Gemini assistant | Live voice plus camera-aware Q&A directly from the glasses |
 | TapBrowser | A full browser with dashboard shortcuts, media views, and companion-linked pages |
+| Library | Local audio, video, text, and `.m3u` / `.m3u8` playlists with on-glasses playback and companion-side management |
 | TapRadio | Gesture-friendly internet radio with favorites, categories, and companion sync |
 | TapClaw / OpenClaw | Voice access to a tool-using host agent with heartbeat updates and media handoff |
 | Companion app | Browser-based setup for API keys, OAuth, dashboard links, radio, HUD settings, and OpenClaw |
@@ -88,6 +89,7 @@ You can configure:
 - Gemini API keys and model selection
 - Google OAuth, Maps, Calendar, Tasks, and Places
 - TapBrowser dashboard links and browser settings
+- Media Library uploads, local file browsing, and `.m3u` playlist editing
 - TapRadio station sync and favorites
 - OpenClaw endpoint, token, heartbeat behavior, and relay tooling
 - HUD display, voice, brightness, and assistant behavior settings
