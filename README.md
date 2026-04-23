@@ -41,8 +41,12 @@ TapInsight turns the RayNeo X3 Pro into a wearable AI workstation: a live Gemini
 
 ## Watch
 
-- Main walkthrough: [youtube.com/watch?v=42DV0rl1NOo](https://www.youtube.com/watch?v=42DV0rl1NOo)
-- Short link: [youtu.be/42DV0rl1NOo](https://youtu.be/42DV0rl1NOo)
+- Main walkthrough: [youtube.com/watch?v=42DV0rl1NOo](https://www.youtube.com/watch?v=42DV0rl1NOo) or [youtu.be/42DV0rl1NOo](https://youtu.be/42DV0rl1NOo)
+  Summary: the current alpha running live on the glasses, including voice, vision, and companion workflow.
+- Learning Partner: [youtube.com/watch?v=nUUxjQn-ZgU](https://www.youtube.com/watch?v=nUUxjQn-ZgU) or [youtu.be/nUUxjQn-ZgU](https://youtu.be/nUUxjQn-ZgU)
+  Summary: based on the creator description, this shows TapInsight acting as a thoughtful learning partner and points back to the earlier camera-learning demos.
+- Setup Overview: [youtube.com/watch?v=shRHLzmlQOk](https://www.youtube.com/watch?v=shRHLzmlQOk) or [youtu.be/shRHLzmlQOk](https://youtu.be/shRHLzmlQOk)
+  Summary: based on the creator description, this is a setup overview that also covers the media-files workflow.
 - Project site: [tropicalstream.github.io/TapInsight](https://tropicalstream.github.io/TapInsight/)
 
 ## Latest Build
