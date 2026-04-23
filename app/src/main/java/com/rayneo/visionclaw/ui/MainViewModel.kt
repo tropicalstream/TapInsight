@@ -1,6 +1,7 @@
 package com.rayneo.visionclaw.ui
 
 import android.app.Application
+import android.location.Location
 import android.util.Log
 import android.util.Patterns
 import androidx.lifecycle.AndroidViewModel
@@ -8,12 +9,18 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.rayneo.visionclaw.BuildConfig
+import com.rayneo.visionclaw.core.assistant.AssistantIntent
+import com.rayneo.visionclaw.core.assistant.AssistantIntentParser
 import com.rayneo.visionclaw.core.config.AppConfig
+import com.rayneo.visionclaw.core.location.DeviceLocationResolver
 import com.rayneo.visionclaw.core.model.ChatMessage
-import com.rayneo.visionclaw.core.network.GeminiRouter
+import com.rayneo.visionclaw.core.network.GoogleAirQualityClient
 import com.rayneo.visionclaw.core.network.GoogleCalendarClient
 import com.rayneo.visionclaw.core.network.GoogleNewsClient
 import com.rayneo.visionclaw.core.network.GoogleTasksClient
+import com.rayneo.visionclaw.core.network.GeminiRouter
+import com.rayneo.visionclaw.core.network.LearnLmRouter
+import com.rayneo.visionclaw.core.network.ResearchRouter
 import com.rayneo.visionclaw.core.model.DeviceLocationContext
 import com.rayneo.visionclaw.core.storage.AppPreferences
 import com.rayneo.visionclaw.core.storage.db.ChatDatabase
@@ -29,6 +36,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -49,7 +57,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val TAG = "MainViewModel"
         private const val MAX_ASSISTANT_CHAT_CARDS = 20
         private const val SESSION_ONLY_CHAT_LOG = true
+        private const val KEY_PREVIOUS_CHAT = "previous_chat_summary"
+        private const val MAX_PREVIOUS_CONTEXT_CHARS = 12000  // large enough for research reports
         private const val HUD_CALENDAR_REFRESH_MIN_INTERVAL_MS = 60_000L
+        private const val VISION_LOCATION_PRECISE_MAX_AGE_MS = 2 * 60 * 1000L
+        private const val VISION_LOCATION_PRECISE_MAX_ACCURACY_METERS = 250f
+        private const val VISION_LOCATION_FALLBACK_MAX_AGE_MS = 15 * 60 * 1000L
+        private const val VISION_LOCATION_TIMEOUT_MS = 5_000L
         const val PANEL_CHAT = 0
         const val PANEL_WEB = 1
     }
@@ -58,6 +72,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = AppPreferences(application)
     val preferences: AppPreferences get() = prefs
     val appConfig = AppConfig.load(application)
+    private val deviceLocationResolver = DeviceLocationResolver(application)
     private val chatMessageDao: ChatMessageDao =
         ChatDatabase.getInstance(application).chatMessageDao()
     private val chatHistoryMutex = Mutex()
@@ -99,21 +114,120 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             latestDeviceLocationContext?.let { loc ->
                 val ageSeconds = (System.currentTimeMillis() - loc.timestampMs) / 1000
                 val fresh = if (ageSeconds < 300) "current" else "${ageSeconds / 60}min ago"
+                val now = Date()
+                val zone = TimeZone.getDefault()
+                val timestamp = SimpleDateFormat("EEEE, MMMM d, yyyy h:mm a", Locale.US).apply {
+                    timeZone = zone
+                }.format(now)
+                val nearbySnapshot = latestNearbyPlaceSnapshot?.takeIf {
+                    val ageOk = System.currentTimeMillis() - it.timestampMs <= 10 * 60 * 1000L
+                    if (!ageOk) return@takeIf false
+                    val distance = FloatArray(1)
+                    Location.distanceBetween(
+                        it.latitude,
+                        it.longitude,
+                        loc.latitude,
+                        loc.longitude,
+                        distance
+                    )
+                    distance[0] <= 750f
+                }
                 buildString {
                     append("The user is at latitude ${loc.latitude}, longitude ${loc.longitude}")
                     append(" (accuracy: ${loc.accuracyMeters?.toInt() ?: "unknown"}m, $fresh).")
+                    append(" Current local date/time: $timestamp (${zone.id}).")
                     append(" Use this for google_places nearby searches and google_routes origin.")
                     append(" When the user asks 'where am I', use these coordinates to describe their location.")
+                    append(" When the user asks about the horizon, sun position, shadows, sunrise, sunset, or direction-dependent outdoor observations,")
+                    append(" use both this location and local time to reason about what they are seeing.")
+                    nearbySnapshot?.summary?.takeIf { it.isNotBlank() }?.let { summary ->
+                        append(" Nearby Google Places snapshot (soft context for storefronts, landmarks, and transit clues): ")
+                        append(summary)
+                    }
                 }
             }
-        }
+        },
+        liveVoiceNameProvider = { prefs.liveVoiceName.takeIf { it.isNotBlank() } },
+        liveThinkingLevelProvider = { prefs.liveThinkingLevel.takeIf { it.isNotBlank() } },
+        liveTemperatureProvider = { prefs.liveTemperature },
+        liveSessionResumptionProvider = { prefs.liveSessionResumption },
+        liveContextCompressionProvider = { prefs.liveContextCompression },
+        liveCompressionTokensProvider = { prefs.liveCompressionTokens },
+        liveProactiveAudioProvider = { prefs.liveProactiveAudio },
+        liveBargeInSensitivityProvider = { prefs.liveBargeInSensitivity },
+        liveDisableInterruptProvider = { prefs.liveDisableInterrupt },
+        liveLanguageCodeProvider = { prefs.liveLanguageCode.takeIf { it.isNotBlank() } },
+        timeoutSecondsProvider = { prefs.timeoutGeminiSeconds },
+        previousChatContextProvider = { getPreviousChatContext() }
     )
-    var calendarClient = GoogleCalendarClient(apiKeyProvider = { prefs.calendarApiKey })
+    private val researchRouter = ResearchRouter(
+        providerProvider = {
+            prefs.researchProvider.trim().takeIf { it.isNotBlank() } ?: "gemini"
+        },
+        apiKeyProvider = {
+            prefs.researchApiKey.trim().takeIf { it.isNotBlank() }
+        },
+        modelProvider = {
+            prefs.researchModel.trim().takeIf { it.isNotBlank() }
+        },
+        geminiFallbackApiKeyProvider = {
+            prefs.geminiApiKey.takeIf { it.isNotBlank() }
+                ?: appConfig.apiKeys.geminiKey.trim().takeIf {
+                    it.isNotBlank() && !it.equals("YOUR_KEY_HERE", ignoreCase = true)
+                }
+                ?: BuildConfig.GEMINI_API_KEY.takeIf { it.isNotBlank() }
+        },
+        context = application,
+        timeoutSecondsProvider = { prefs.timeoutResearchSeconds },
+        customResearchPromptProvider = { prefs.researchPrompt.takeIf { it.isNotBlank() } }
+    )
+    @Volatile
+    private var latestLearnFrameBase64: String? = null
+
+    val learnLmRouter = LearnLmRouter(
+        apiKeyProvider = {
+            prefs.geminiApiKey.takeIf { it.isNotBlank() }
+                ?: appConfig.apiKeys.geminiKey.trim().takeIf {
+                    it.isNotBlank() && !it.equals("YOUR_KEY_HERE", ignoreCase = true)
+                }
+                ?: BuildConfig.GEMINI_API_KEY.takeIf { it.isNotBlank() }
+        },
+        modelProvider = {
+            prefs.learnLmModel.trim().takeIf { it.isNotBlank() }
+        },
+        recentCardsProvider = {
+            getAssistantCardsSnapshot().map { it.text }
+        },
+        context = application,
+        currentImageBase64Provider = {
+            latestLearnFrameBase64
+        },
+        timeoutSecondsProvider = { prefs.timeoutLearnLmSeconds }
+    )
+    var calendarClient = GoogleCalendarClient(
+        apiKeyProvider = { prefs.calendarApiKey },
+        context = application
+    )
+        private set
+    var airQualityClient = GoogleAirQualityClient(
+        apiKeyProvider = { prefs.googleMapsApiKey },
+        context = application
+    )
         private set
 
     /** Replace the default calendar client with one that supports OAuth. */
     fun setCalendarClient(client: GoogleCalendarClient) {
         calendarClient = client
+        refreshHudUpcomingCalendar(force = true)
+    }
+
+    fun setAirQualityClient(client: GoogleAirQualityClient) {
+        airQualityClient = client
+        refreshHudAirQuality(force = true)
+    }
+
+    fun updateLatestLearnFrame(base64: String?) {
+        latestLearnFrameBase64 = base64?.trim()?.takeIf { it.isNotBlank() }
     }
 
     var tasksClient: GoogleTasksClient? = null
@@ -121,6 +235,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setTasksClient(client: GoogleTasksClient) {
         tasksClient = client
+        refreshHudTasks(force = true)
     }
 
     private val newsClient = GoogleNewsClient()
@@ -128,11 +243,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile
     private var latestDeviceLocationContext: DeviceLocationContext? = null
     @Volatile
+    private var latestNearbyPlaceSnapshot: NearbyPlaceSnapshot? = null
+    @Volatile
     private var lastHudCalendarRefreshMs = 0L
     @Volatile
     private var lastHudTasksRefreshMs = 0L
     @Volatile
     private var lastHudNewsRefreshMs = 0L
+    @Volatile
+    private var lastHudAirQualityRefreshMs = 0L
 
     // ── Active panel ─────────────────────────────────────────────────────
     private val _activePanelIndex = MutableLiveData(PANEL_CHAT)
@@ -148,6 +267,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var liveAssistantWorkingTurn: String = ""
     private var liveAssistantWorkingCardIndex = -1
     @Volatile private var historyHydrated = false
+
+    private data class NearbyPlaceSnapshot(
+        val summary: String,
+        val latitude: Double,
+        val longitude: Double,
+        val timestampMs: Long = System.currentTimeMillis()
+    )
 
     init {
         if (SESSION_ONLY_CHAT_LOG) {
@@ -191,6 +317,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
     }
 
+    // ── Previous chat context persistence ────────────────────────────
+    // When a new chat starts or the app closes, the current conversation
+    // is saved to SharedPreferences so Gemini can reference it in the
+    // next session. This survives app restarts.
+
+    private val chatContextPrefs = getApplication<android.app.Application>()
+        .getSharedPreferences("chat_context", android.content.Context.MODE_PRIVATE)
+
+    /**
+     * Persist the current chat cards as "previous conversation" context.
+     * Called when a new chat starts or the app goes to background.
+     */
+    fun saveChatContextForNextSession() {
+        val cards = getAssistantCardsSnapshot()
+        if (cards.isEmpty()) return
+        viewModelScope.launch(Dispatchers.Default) {
+            // Save last N messages. Research reports can be long so allow
+            // up to 4000 chars per card (the overall cap handles total size).
+            val summary = cards.takeLast(10).joinToString("\n---\n") { card ->
+                card.text.take(4000)
+            }.take(MAX_PREVIOUS_CONTEXT_CHARS)
+            chatContextPrefs.edit()
+                .putString(KEY_PREVIOUS_CHAT, summary)
+                .apply()
+            Log.d(TAG, "Saved previous chat context: ${summary.length} chars, ${cards.size} cards")
+        }
+    }
+
+    /**
+     * Get the saved previous conversation context (from the last session).
+     * Returns null if there's no previous context.
+     */
+    fun getPreviousChatContext(): String? {
+        return chatContextPrefs.getString(KEY_PREVIOUS_CHAT, null)
+            ?.takeIf { it.isNotBlank() }
+    }
+
     // ── Calendar summary (StateFlow for HUD display) ─────────────────────
     private val _calendarSummary = MutableStateFlow("")
     val calendarSummary: StateFlow<String> = _calendarSummary.asStateFlow()
@@ -202,6 +365,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ── News summary (StateFlow for HUD display) ──────────────────────────
     private val _newsSummary = MutableStateFlow("")
     val newsSummary: StateFlow<String> = _newsSummary.asStateFlow()
+    data class AirQualityHudState(
+        val text: String,
+        val aqi: Int?
+    )
+    private val _airQualitySummary = MutableStateFlow<AirQualityHudState?>(null)
+    val airQualitySummary: StateFlow<AirQualityHudState?> = _airQualitySummary.asStateFlow()
+
+    data class RadioHudState(
+        val stationName: String,
+        val genre: String? = null,
+        val playing: Boolean
+    )
+    private val _radioSummary = MutableStateFlow<RadioHudState?>(null)
+    val radioSummary: StateFlow<RadioHudState?> = _radioSummary.asStateFlow()
 
     // ── API Key Required notification ────────────────────────────────────
     private val _apiKeyRequired = MutableLiveData<String?>()
@@ -235,16 +412,248 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         navigateWeb(url)
     }
 
+    // ── YouTube playlist playback (routed to TapBrowser) ────────────────
+    data class YouTubePlaybackEvent(
+        val query: String,
+        val mode: String,
+        val searchUrl: String,
+        val responseText: String
+    )
+
+    private val _youtubePlaybackEvent = MutableLiveData<YouTubePlaybackEvent?>()
+    val youtubePlaybackEvent: LiveData<YouTubePlaybackEvent?> = _youtubePlaybackEvent
+
+    fun clearYoutubePlaybackEvent() {
+        _youtubePlaybackEvent.value = null
+    }
+
+    /**
+     * Checks if [text] is a YouTube playback command (e.g. "play youtube drake",
+     * "play youtube music by Taylor Swift"). If matched, emits a
+     * [YouTubePlaybackEvent] for MainActivity to launch TapBrowser with the
+     * proper autoplay extras, and returns true to short-circuit Gemini.
+     */
+    private fun maybeHandleYouTubePlayback(text: String): Boolean {
+        val trimmed = text.trim().trimEnd('.', '!', '?')
+        if (trimmed.isBlank()) return false
+        if (AssistantIntentParser.isYouTubeLookupRequest(text)) return false
+
+        val lower = trimmed.lowercase(Locale.US)
+        val explicitPlayback = AssistantIntentParser.hasExplicitYouTubePlaybackVerb(trimmed)
+        val terseYouTubeCommand =
+            lower.startsWith("youtube music ") ||
+                lower.startsWith("youtube songs ") ||
+                lower.startsWith("youtube videos ")
+
+        // "play/open" is optional — Gemini Live often drops it in transcription
+        // Music-specific patterns (highest priority)
+        if (explicitPlayback || terseYouTubeCommand) {
+            val musicPatterns = listOf(
+                Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+music\\s+(?:by|from|about)\\s+(.+?)\\s*$"),
+                Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+songs?\\s+(?:by|from|about)\\s+(.+?)\\s*$"),
+                Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+music\\s+(.+?)\\s*$"),
+                Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+songs?\\s+(.+?)\\s*$")
+            )
+            val musicTopic = musicPatterns.firstNotNullOfOrNull { it.find(trimmed)?.groupValues?.getOrNull(1) }
+                ?.trim()?.takeIf { it.isNotBlank() }
+            if (!musicTopic.isNullOrBlank()) {
+                val encoded = URLEncoder.encode("$musicTopic music", "UTF-8")
+                val searchUrl = "https://www.youtube.com/results?search_query=$encoded&taplink_autoplay=music"
+                val msg = "Playing the newest YouTube music for $musicTopic with captions enabled."
+                appendAssistantInteraction(msg)
+                _chatResponse.postValue(msg)
+                _youtubePlaybackEvent.postValue(YouTubePlaybackEvent(musicTopic, "music", searchUrl, msg))
+                return true
+            }
+        }
+
+        // Video-specific patterns
+        if (explicitPlayback || terseYouTubeCommand) {
+            val videoPatterns = listOf(
+                Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+videos?\\s+(?:by|from|about|on)\\s+(.+?)\\s*$"),
+                Regex("(?i)^\\s*(?:play|open)?\\s*youtube\\s+videos?\\s+(.+?)\\s*$")
+            )
+            val videoTopic = videoPatterns.firstNotNullOfOrNull { it.find(trimmed)?.groupValues?.getOrNull(1) }
+                ?.trim()?.takeIf { it.isNotBlank() }
+            if (!videoTopic.isNullOrBlank()) {
+                val encoded = URLEncoder.encode(videoTopic, "UTF-8")
+                val searchUrl = "https://www.youtube.com/results?search_query=$encoded&taplink_autoplay=video"
+                val msg = "Playing the newest YouTube videos for $videoTopic with captions enabled."
+                appendAssistantInteraction(msg)
+                _chatResponse.postValue(msg)
+                _youtubePlaybackEvent.postValue(YouTubePlaybackEvent(videoTopic, "video", searchUrl, msg))
+                return true
+            }
+        }
+
+        // Subscriptions patterns
+        val subscriptionsPatterns = listOf(
+            Regex("""(?i)^\s*(?:play|open|start)?\s*(?:my\s+)?(?:youtube\s+)?subscribed\s+channels\s*$"""),
+            Regex("""(?i)^\s*(?:play|open|start)?\s*(?:my\s+)?youtube\s+subscriptions?\s*$"""),
+            Regex("""(?i)^\s*(?:play|open|start)?\s*(?:my\s+)?subscriptions?\s*$""")
+        )
+        if (subscriptionsPatterns.any { it.matches(trimmed) }) {
+            val url = "https://www.youtube.com/feed/subscriptions?taplink_autoplay=subscriptions"
+            val msg = "Playing the newest videos from your subscribed channels with captions enabled."
+            appendAssistantInteraction(msg)
+            _chatResponse.postValue(msg)
+            _youtubePlaybackEvent.postValue(YouTubePlaybackEvent("subscriptions", "subscriptions", url, msg))
+            return true
+        }
+
+        // History patterns — ANCHORED. The prior version used loose
+        // `contains("youtube") && contains("history")` which falsely fired on
+        // any conversation about the "history of X" that also happened to
+        // mention YouTube (e.g. "are there YouTube videos about the history
+        // of Pixar?" would hijack the turn and open the user's watch history
+        // feed). Require "history" to be the actual object of a play/open
+        // command, not just a co-occurring word.
+        val historyPatterns = listOf(
+            // "my youtube history", "open my youtube history", "play my youtube history"
+            Regex("""(?i)^\s*(?:play|open|start|show|pull\s+up)?\s*(?:my\s+)?youtube\s+history\s*$"""),
+            // "youtube watch history", "youtube viewing history"
+            Regex("""(?i)^\s*(?:play|open|start|show|pull\s+up)?\s*(?:my\s+)?youtube\s+(?:watch|viewing)\s+history\s*$"""),
+            // "watch history", "viewing history" (standalone command)
+            Regex("""(?i)^\s*(?:play|open|start|show|pull\s+up)?\s*(?:my\s+)?(?:watch|viewing)\s+history\s*$"""),
+            // "play my history", "open my history" — must have "my" so random
+            // sentences containing "play" and "history" don't match.
+            Regex("""(?i)^\s*(?:play|open|start|show|pull\s+up)\s+my\s+history\s*$""")
+        )
+        if (historyPatterns.any { it.matches(trimmed) }) {
+            val url = "https://www.youtube.com/feed/history?taplink_autoplay=history"
+            val msg = "Playing videos from your YouTube watch history with captions enabled."
+            appendAssistantInteraction(msg)
+            _chatResponse.postValue(msg)
+            _youtubePlaybackEvent.postValue(YouTubePlaybackEvent("history", "history", url, msg))
+            return true
+        }
+
+        // Catch-all: "[play] youtube <topic>" — must START with a play/open
+        // verb to avoid hijacking lookup questions like "are there any YouTube
+        // videos about X?" or statements like "youtube is a Google company".
+        // Make the play/open verb MANDATORY for this catch-all (the earlier
+        // topic-specific patterns above already handle "youtube videos about
+        // X" without a verb). Also exclude question-shaped inputs and common
+        // lookup prefixes.
+        val looksLikeQuestion = trimmed.endsWith("?") ||
+            Regex("""(?i)^\s*(?:are|is|do|does|did|can|could|what|who|when|where|why|how|any)\b""")
+                .containsMatchIn(trimmed)
+        val catchAll = Regex("""(?i)^\s*(?:play|open|start|pull\s+up|put\s+on)\s+youtube\s+(.+?)\s*$""")
+        val catchTopic = catchAll.find(trimmed)?.groupValues?.getOrNull(1)
+            ?.trim()?.takeIf { it.isNotBlank() }
+        if (!catchTopic.isNullOrBlank() && !looksLikeQuestion) {
+            val encoded = URLEncoder.encode(catchTopic, "UTF-8")
+            val searchUrl = "https://www.youtube.com/results?search_query=$encoded&taplink_autoplay=video"
+            val msg = "Playing the newest YouTube videos for $catchTopic with captions enabled."
+            appendAssistantInteraction(msg)
+            _chatResponse.postValue(msg)
+            _youtubePlaybackEvent.postValue(YouTubePlaybackEvent(catchTopic, "video", searchUrl, msg))
+            return true
+        }
+
+        return false
+    }
+
     fun updateDeviceLocationContext(context: DeviceLocationContext) {
+        latestNearbyPlaceSnapshot?.let { snapshot ->
+            val distance = FloatArray(1)
+            Location.distanceBetween(
+                snapshot.latitude,
+                snapshot.longitude,
+                context.latitude,
+                context.longitude,
+                distance
+            )
+            if (distance[0] > 250f) {
+                latestNearbyPlaceSnapshot = null
+            }
+        }
         latestDeviceLocationContext = context
+        refreshHudAirQuality(force = true)
     }
 
     fun clearDeviceLocationContext() {
         latestDeviceLocationContext = null
+        latestNearbyPlaceSnapshot = null
+        _airQualitySummary.value = null
+    }
+
+    fun updateNearbyPlaceSnapshot(
+        latitude: Double,
+        longitude: Double,
+        summary: String?
+    ) {
+        latestNearbyPlaceSnapshot = summary
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let {
+                NearbyPlaceSnapshot(
+                    summary = it,
+                    latitude = latitude,
+                    longitude = longitude
+                )
+            }
+    }
+
+    fun clearNearbyPlaceSnapshot() {
+        latestNearbyPlaceSnapshot = null
+    }
+
+    fun updateRadioHudState(stationName: String?, genre: String?, playing: Boolean) {
+        val cleanName = stationName?.trim().orEmpty()
+        _radioSummary.value =
+            if (playing && cleanName.isNotBlank()) {
+                RadioHudState(
+                    stationName = cleanName,
+                    genre = genre?.trim()?.takeIf { it.isNotBlank() },
+                    playing = true
+                )
+            } else {
+                null
+            }
     }
 
     fun getDeviceLocationContext(): DeviceLocationContext? {
         return latestDeviceLocationContext
+    }
+
+    private fun hasFreshVisionLocationContext(context: DeviceLocationContext?): Boolean {
+        if (context == null) return false
+        val ageMs = System.currentTimeMillis() - context.timestampMs
+        val accuracy = context.accuracyMeters ?: Float.MAX_VALUE
+        return ageMs <= VISION_LOCATION_PRECISE_MAX_AGE_MS &&
+            accuracy <= VISION_LOCATION_PRECISE_MAX_ACCURACY_METERS &&
+            context.provider != "ip_geolocation"
+    }
+
+    private suspend fun ensureVisionLocationContext() {
+        if (hasFreshVisionLocationContext(latestDeviceLocationContext)) {
+            return
+        }
+
+        val resolved = withContext(Dispatchers.IO) {
+            deviceLocationResolver.peekCached(
+                maxAgeMs = VISION_LOCATION_PRECISE_MAX_AGE_MS,
+                maxAccuracyMeters = VISION_LOCATION_PRECISE_MAX_ACCURACY_METERS,
+                allowApproximate = false
+            ) ?: deviceLocationResolver.resolveNavigationBlocking(timeoutMs = VISION_LOCATION_TIMEOUT_MS)
+                ?: deviceLocationResolver.resolve(
+                    maxAgeMs = VISION_LOCATION_FALLBACK_MAX_AGE_MS,
+                    timeoutMs = VISION_LOCATION_TIMEOUT_MS,
+                    requirePrecise = false,
+                    allowApproximateFallback = true
+                )
+        }
+
+        if (resolved != null) {
+            updateDeviceLocationContext(resolved)
+            Log.d(
+                TAG,
+                "Vision request location ready provider=${resolved.provider} lat=${resolved.latitude} lon=${resolved.longitude} acc=${resolved.accuracyMeters}"
+            )
+        } else {
+            Log.w(TAG, "Vision request continuing without a fresh location context")
+        }
     }
 
     // ── Chat / Gemini ────────────────────────────────────────────────────
@@ -261,6 +670,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun submitChatInput(text: String) {
         viewModelScope.launch {
+            if (maybeHandleYouTubePlayback(text)) return@launch
+            if (maybeHandleDirectAssistantIntent(text)) {
+                return@launch
+            }
             _isLoading.value = true
             when (val result = geminiRouter.sendPrompt(text)) {
                 is GeminiRouter.GeminiResult.Success -> {
@@ -283,6 +696,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendChatMessage(message: String, systemPrompt: String? = null) {
         viewModelScope.launch {
+            if (maybeHandleYouTubePlayback(message)) return@launch
+            if (maybeHandleDirectAssistantIntent(message)) {
+                return@launch
+            }
             _isLoading.value = true
             when (val result = geminiRouter.sendPrompt(message, systemInstruction = systemPrompt)) {
                 is GeminiRouter.GeminiResult.Success -> {
@@ -330,6 +747,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val safe = sanitizeAssistantDisplayText(text)
         if (safe.isBlank()) return
         val fullLog = appendLiveAssistantWorkingChunk(safe)
+        _chatResponse.postValue(fullLog)
+    }
+
+    fun appendDirectAssistantResponse(text: String) {
+        val safe = sanitizeAssistantDisplayText(text)
+        if (safe.isBlank()) return
+        val rendered = ensureBottomRawUrls(safe)
+        val fullLog = appendAssistantInteraction(rendered)
         _chatResponse.postValue(fullLog)
     }
 
@@ -421,6 +846,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun sendVisionQuery(prompt: String, imageBase64: String) {
         viewModelScope.launch {
             _isLoading.value = true
+            ensureVisionLocationContext()
             when (val result = geminiRouter.sendVisionPrompt(prompt, imageBase64)) {
                 is GeminiRouter.GeminiResult.Success -> {
                     val rendered = ensureBottomRawUrls(sanitizeAssistantDisplayText(result.text))
@@ -450,9 +876,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun routeWithToolCalls(text: String, frameBase64: String? = null) {
         viewModelScope.launch {
+            if (maybeHandleYouTubePlayback(text)) return@launch
+            if (maybeHandleDirectAssistantIntent(text)) {
+                return@launch
+            }
             _isLoading.value = true
             try {
                 val geminiResult = if (frameBase64 != null) {
+                    ensureVisionLocationContext()
                     geminiRouter.sendVisionPrompt(text, frameBase64)
                 } else {
                     geminiRouter.sendPrompt(text)
@@ -471,6 +902,98 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val fullLog = appendAssistantInteraction("Error: ${geminiResult.message}")
                         _chatResponse.postValue(fullLog)
                         Log.e(TAG, "Gemini error: ${geminiResult.message}")
+                    }
+                }
+            } finally {
+                _isLoading.postValue(false)
+            }
+        }
+    }
+
+    fun maybeHandleDirectAssistantIntent(text: String): Boolean {
+        val intent = AssistantIntentParser.parse(text) ?: return false
+        handleDirectAssistantIntent(intent)
+        return true
+    }
+
+    fun handleDirectAssistantIntent(intent: AssistantIntent) {
+        when (intent) {
+            is AssistantIntent.OpenWeb -> {
+                openUrl(intent.url)
+                val fullLog = appendAssistantInteraction("Opening ${intent.displayLabel}.\n${intent.url}")
+                _chatResponse.postValue(fullLog)
+            }
+            is AssistantIntent.Research -> {
+                executeResearchIntent(intent.topic)
+            }
+            is AssistantIntent.Learn -> {
+                executeLearnIntent(intent.prompt, intent.topicHint)
+            }
+        }
+    }
+
+    private fun executeResearchIntent(topic: String) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            try {
+                when (val result = researchRouter.research(topic)) {
+                    is ResearchRouter.ResearchResult.Success -> {
+                        val rendered = ensureBottomRawUrls(
+                            sanitizeAssistantDisplayText(
+                                ResearchRouter.formatForDisplay(result)
+                            )
+                        )
+                        val fullLog = appendAssistantInteraction(rendered)
+                        _chatResponse.postValue(fullLog)
+                    }
+                    is ResearchRouter.ResearchResult.ApiKeyMissing -> {
+                        onApiKeyMissing(
+                            if (prefs.researchProvider.trim().equals("openai_codex", ignoreCase = true)) {
+                                "OpenAI Codex Research"
+                            } else {
+                                "Gemini Research"
+                            }
+                        )
+                    }
+                    is ResearchRouter.ResearchResult.Error -> {
+                        val fullLog = appendAssistantInteraction("Research unavailable right now.")
+                        _chatResponse.postValue(fullLog)
+                        Log.e(TAG, "Research error: ${result.message}")
+                    }
+                }
+            } finally {
+                _isLoading.postValue(false)
+            }
+        }
+    }
+
+
+    private fun executeLearnIntent(prompt: String, topicHint: String) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            try {
+                when (val result = learnLmRouter.teach(prompt)) {
+                    is LearnLmRouter.LearnResult.Success -> {
+                        val rendered = ensureBottomRawUrls(
+                            sanitizeAssistantDisplayText(
+                                LearnLmRouter.formatForDisplay(result)
+                            )
+                        )
+                        val fullLog = appendAssistantInteraction(rendered)
+                        _chatResponse.postValue(fullLog)
+                    }
+                    is LearnLmRouter.LearnResult.ApiKeyMissing -> {
+                        onApiKeyMissing("LearnLM Tutor")
+                    }
+                    is LearnLmRouter.LearnResult.Error -> {
+                        val fallback = if (topicHint.isNotBlank()) {
+                            "Tutor mode is unavailable right now for $topicHint."
+                        } else {
+                            "Tutor mode is unavailable right now."
+                        }
+                        val fullLog = appendAssistantInteraction(fallback)
+                        _chatResponse.postValue(fullLog)
+                        Log.e(TAG, "LearnLM error: ${result.message}")
                     }
                 }
             } finally {
@@ -824,6 +1347,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         fetchHudNews()
     }
 
+    fun refreshHudAirQuality(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        val intervalMs = prefs.hudRefreshIntervalSeconds * 1000L
+        if (!force && (now - lastHudAirQualityRefreshMs) < intervalMs) return
+        lastHudAirQualityRefreshMs = now
+        fetchHudAirQuality()
+    }
+
     private fun fetchHudNews() {
         viewModelScope.launch {
             val maxItems = prefs.newsItemCount
@@ -838,6 +1369,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 is GoogleNewsClient.NewsResult.Error -> {
                     Log.e(TAG, "News error: ${result.message}")
+                }
+            }
+        }
+    }
+
+    private fun fetchHudAirQuality() {
+        val location = latestDeviceLocationContext ?: run {
+            _airQualitySummary.value = null
+            return
+        }
+        if (prefs.googleMapsApiKey.isBlank()) {
+            _airQualitySummary.value = null
+            return
+        }
+
+        viewModelScope.launch {
+            when (
+                val result = airQualityClient.fetchCurrentConditions(
+                    latitude = location.latitude,
+                    longitude = location.longitude
+                )
+            ) {
+                is GoogleAirQualityClient.AirQualityResult.Success -> {
+                    _airQualitySummary.value = AirQualityHudState(
+                        text = result.index.label,
+                        aqi = result.index.aqi
+                    )
+                }
+                is GoogleAirQualityClient.AirQualityResult.ApiKeyMissing -> {
+                    _airQualitySummary.value = null
+                }
+                is GoogleAirQualityClient.AirQualityResult.Error -> {
+                    Log.w(TAG, "Air quality error: ${result.message}")
+                    _airQualitySummary.value = null
                 }
             }
         }

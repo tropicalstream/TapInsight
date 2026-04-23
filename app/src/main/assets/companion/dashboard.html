@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AITap Dashboard Editor</title>
+<title>TapInsight Dashboard Editor</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;padding:16px;max-width:720px;margin:0 auto}
@@ -67,7 +67,7 @@
 </head>
 <body>
 
-<h1>AITap Dashboard</h1>
+<h1>TapInsight Dashboard</h1>
 <p class="sub">Edit categories &amp; links synced to TapBrowser</p>
 
 <div class="nav">
@@ -75,6 +75,8 @@
   <a href="/browser">Browser</a>
   <a href="/dashboard" class="active">Dashboard</a>
   <a href="/radio">TapRadio</a>
+  <a href="/library">Library</a>
+  <a href="/openclaw">OpenClaw</a>
 </div>
 
 <div id="statusBar" class="status"></div>
@@ -139,10 +141,12 @@ const defaultApps = {
   reddit:{name:'Reddit',url:'https://www.reddit.com'},
   telegram:{name:'Telegram',url:'https://web.telegram.org'},
   tiktok:{name:'TikTok',url:'https://www.tiktok.com'},
+  medialibrary:{name:'Media Library',url:'file:///android_asset/library_local.html'},
   youtube:{name:'YouTube',url:'https://www.youtube.com'},
   informaltech:{name:'Informal Tech',url:'https://www.youtube.com/@informal-tech'},
   gmaps:{name:'Google Maps',url:'https://www.google.com/maps'},
   minijuegos:{name:'Minijuegos',url:'https://www.minijuegos.com'},
+  tapradio:{name:'TapRadio',url:'file:///android_asset/radio.html'},
   ytmusic:{name:'YouTube Music',url:'https://music.youtube.com'},
   spotify:{name:'Spotify',url:'https://open.spotify.com'},
   applemusic:{name:'Apple Music',url:'https://music.apple.com'},
@@ -150,6 +154,7 @@ const defaultApps = {
   deezer:{name:'Deezer',url:'https://www.deezer.com'},
   audiomack:{name:'Audiomack',url:'https://audiomack.com'},
   soundcloud:{name:'SoundCloud',url:'https://soundcloud.com'},
+  jamendo:{name:'Jamendo Music',url:'https://www.jamendo.com/radios'},
   photopea:{name:'Photopea (Photo)',url:'https://www.photopea.com'},
   clipchamp:{name:'Clipchamp (Video)',url:'https://clipchamp.com/en/video-editor/'},
   bandlab:{name:'BandLab (DAW)',url:'https://www.bandlab.com'},
@@ -180,10 +185,10 @@ const defaultApps = {
 };
 
 const defaultGroups = [
-  {title:'Navigation / Entertainment',cls:'sec-nav',keys:['youtube','informaltech','gmaps','minijuegos','tiktok']},
+  {title:'Navigation / Entertainment',cls:'sec-nav',keys:['medialibrary','youtube','informaltech','gmaps','minijuegos','tiktok']},
   {title:'AI / Chatbots',cls:'sec-llm',keys:['gemini','googleaistudio','jules','perplexity','chatgpt','claude','deepseek','grok']},
   {title:'Social / Communication',cls:'sec-social',keys:['gmessages','discord','whatsapp','instagram','reddit','telegram']},
-  {title:'Music / Streaming',cls:'sec-music',keys:['ytmusic','spotify','applemusic','tidal','deezer','audiomack','soundcloud']},
+  {title:'Music / Streaming',cls:'sec-music',keys:['tapradio','ytmusic','spotify','applemusic','tidal','deezer','audiomack','soundcloud','jamendo']},
   {title:'Creativity / Multimedia',cls:'sec-creative',keys:['photopea','clipchamp','bandlab','wireframe','kleki']},
   {title:'Productivity / Documents',cls:'sec-prod',keys:['todoist','stackedit','sejda']},
   {title:'Utilities / Reference',cls:'sec-util',keys:['wikipedia','translate','wolfram']},
@@ -192,6 +197,96 @@ const defaultGroups = [
   {title:'AI Voice',cls:'sec-voice',keys:['elevenlabs','playht']},
   {title:'Custom Links',cls:'sec-custom',keys:[]}
 ];
+
+const specialIcons = {
+  tapradio: 'data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22 width=%2220%22 height=%2220%22><circle cx=%2232%22 cy=%2232%22 r=%2230%22 fill=%22%231a1a2e%22 stroke=%22%2300e5ff%22 stroke-width=%222%22/><path d=%22M32 18v28%22 stroke=%22%2300e5ff%22 stroke-width=%223%22 stroke-linecap=%22round%22/><path d=%22M24 22c-5 5-5 15 0 20%22 stroke=%22%2300e5ff%22 stroke-width=%222%22 fill=%22none%22 stroke-linecap=%22round%22/><path d=%22M40 22c5 5 5 15 0 20%22 stroke=%22%2300e5ff%22 stroke-width=%222%22 fill=%22none%22 stroke-linecap=%22round%22/><path d=%22M18 16c-9 9-9 23 0 32%22 stroke=%22%2300e5ff%22 stroke-width=%222%22 fill=%22none%22 stroke-linecap=%22round%22 opacity=%22.5%22/><path d=%22M46 16c9 9 9 23 0 32%22 stroke=%22%2300e5ff%22 stroke-width=%222%22 fill=%22none%22 stroke-linecap=%22round%22 opacity=%22.5%22/><circle cx=%2232%22 cy=%2246%22 r=%223%22 fill=%22%2300e5ff%22/></svg>',
+  medialibrary: 'data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22 width=%2220%22 height=%2220%22><defs><linearGradient id=%22mlg%22 x1=%220%22 y1=%220%22 x2=%221%22 y2=%221%22><stop offset=%220%22 stop-color=%22%23112233%22/><stop offset=%221%22 stop-color=%22%23061018%22/></linearGradient></defs><rect x=%222%22 y=%222%22 width=%2260%22 height=%2260%22 rx=%2212%22 ry=%2212%22 fill=%22url(%23mlg)%22 stroke=%22%2300e5ff%22 stroke-width=%222%22/><rect x=%2210%22 y=%2216%22 width=%2228%22 height=%224%22 rx=%222%22 fill=%22%2300e5ff%22/><rect x=%2210%22 y=%2228%22 width=%2224%22 height=%224%22 rx=%222%22 fill=%22%2300e5ff%22 opacity=%22.7%22/><rect x=%2210%22 y=%2240%22 width=%2220%22 height=%224%22 rx=%222%22 fill=%22%2300e5ff%22 opacity=%22.45%22/><circle cx=%2247%22 cy=%2243%22 r=%2212%22 fill=%22%2300e5ff%22/><polygon points=%2243,36 43,50 55,43%22 fill=%22%23061018%22/></svg>'
+};
+
+function ensureTapRadioMigration(dashboardState) {
+  let changed = false;
+  if (!dashboardState.apps) dashboardState.apps = {};
+  if (!Array.isArray(dashboardState.groups)) {
+    dashboardState.groups = JSON.parse(JSON.stringify(defaultGroups));
+    changed = true;
+  }
+
+  if (!dashboardState.apps.tapradio) {
+    dashboardState.apps.tapradio = {...defaultApps.tapradio};
+    changed = true;
+  }
+
+  let musicGroup = dashboardState.groups.find(group => String(group.title || '').trim().toLowerCase() === 'music / streaming');
+  if (!musicGroup) {
+    musicGroup = { title: 'Music / Streaming', cls: 'sec-music', keys: ['tapradio'] };
+    dashboardState.groups.push(musicGroup);
+    changed = true;
+  }
+
+  if (!Array.isArray(musicGroup.keys)) {
+    musicGroup.keys = [];
+    changed = true;
+  }
+
+  if (!musicGroup.keys.includes('tapradio')) {
+    musicGroup.keys.unshift('tapradio');
+    changed = true;
+  }
+
+  return changed;
+}
+
+/* Keep the Media Library icon alive in the dashboard data the companion
+ * pushes to the glasses, so the icon reappears automatically even if the
+ * user previously deleted it by accident. */
+function ensureMediaLibraryMigration(dashboardState) {
+  let changed = false;
+  if (!dashboardState.apps) dashboardState.apps = {};
+  if (!Array.isArray(dashboardState.groups)) {
+    dashboardState.groups = JSON.parse(JSON.stringify(defaultGroups));
+    changed = true;
+  }
+
+  // URL paths we own — anything previously pointing at the server-backed
+  // launcher (or the old /library HTTP endpoint) gets repointed to the
+  // glasses-local bridge page. Custom user URLs are left alone.
+  const LIBRARY_OWNED_URLS = new Set([
+    'file:///android_asset/library_launcher.html',
+    'file:///android_asset/library_local.html',
+    'https://127.0.0.1:19110/library',
+    'http://127.0.0.1:19110/library'
+  ]);
+
+  if (!dashboardState.apps.medialibrary) {
+    dashboardState.apps.medialibrary = {...defaultApps.medialibrary};
+    changed = true;
+  } else {
+    const cur = dashboardState.apps.medialibrary.url || '';
+    if (LIBRARY_OWNED_URLS.has(cur) && cur !== defaultApps.medialibrary.url) {
+      dashboardState.apps.medialibrary.url = defaultApps.medialibrary.url;
+      changed = true;
+    }
+  }
+
+  let navGroup = dashboardState.groups.find(group => String(group.title || '').trim().toLowerCase() === 'navigation / entertainment');
+  if (!navGroup) {
+    navGroup = { title: 'Navigation / Entertainment', cls: 'sec-nav', keys: ['medialibrary'] };
+    dashboardState.groups.unshift(navGroup);
+    changed = true;
+  }
+
+  if (!Array.isArray(navGroup.keys)) {
+    navGroup.keys = [];
+    changed = true;
+  }
+
+  if (!navGroup.keys.includes('medialibrary')) {
+    navGroup.keys.unshift('medialibrary');
+    changed = true;
+  }
+
+  return changed;
+}
 
 /* ─── API ─── */
 function showStatus(msg, type) {
@@ -217,6 +312,8 @@ async function loadAll() {
   } catch(e) {
     state = { apps: {...defaultApps}, groups: JSON.parse(JSON.stringify(defaultGroups)) };
   }
+  ensureTapRadioMigration(state);
+  ensureMediaLibraryMigration(state);
   renderAll();
   showStatus('Dashboard loaded.', 'ok');
 }
@@ -229,6 +326,9 @@ async function saveAll() {
       state.groups[idx].title = input.value.trim() || state.groups[idx].title;
     }
   });
+
+  ensureTapRadioMigration(state);
+  ensureMediaLibraryMigration(state);
 
   try {
     const r = await fetch('/api/dashboard', {
@@ -376,7 +476,7 @@ function renderAll() {
 
         const icon = document.createElement('img');
         icon.className = 'link-icon';
-        icon.src = faviconUrl(app.url);
+        icon.src = specialIcons[key] || faviconUrl(app.url);
         icon.onerror = function() { this.style.display='none'; };
 
         const info = document.createElement('div');

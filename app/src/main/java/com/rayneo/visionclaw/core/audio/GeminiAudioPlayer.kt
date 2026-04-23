@@ -7,7 +7,9 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
+import kotlin.math.abs
 import kotlin.math.max
 
 /**
@@ -15,9 +17,19 @@ import kotlin.math.max
  */
 class GeminiAudioPlayer(context: Context) {
 
+    /** Callback invoked on a background thread once the AudioTrack buffer has drained. */
+    var onDrainComplete: (() -> Unit)? = null
+
     companion object {
         private const val TAG = "GeminiAudioPlayer"
         private const val DEFAULT_SAMPLE_RATE = 24_000
+        /**
+         * Slice size used by [playChunk] when feeding the AudioTrack. ~16 KB
+         * is ~170 ms at 24 kHz mono PCM16 — small enough that stopAndFlush()
+         * can break the write loop within ~200 ms, large enough to avoid
+         * per-slice overhead.
+         */
+        private const val SLICE_BYTES = 16 * 1024
     }
 
     private val appContext = context.applicationContext
@@ -28,6 +40,20 @@ class GeminiAudioPlayer(context: Context) {
     private var loggedPlaybackStart = false
     private var hasAudioFocus = false
     private var focusRequest: AudioFocusRequest? = null
+    /** Set to true when the server turn is complete; the drain thread watches this. */
+    @Volatile private var drainPending = false
+    private var drainThread: Thread? = null
+    @Volatile private var lastOutputLevel = 0f
+    @Volatile private var lastOutputAtMs = 0L
+    /**
+     * Monotonically increasing "write generation". Every call to stopAndFlush()
+     * or release() bumps this. A playChunk loop that sees its generation is
+     * stale aborts immediately, so the UI thread's stopAndFlush() can
+     * reliably cut short a long blocking write without waiting for AudioTrack
+     * internals to return from write().
+     */
+    @Volatile private var writeGeneration = 0L
+
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { change ->
         if (change <= AudioManager.AUDIOFOCUS_LOSS) {
             synchronized(lock) {
@@ -46,41 +72,151 @@ class GeminiAudioPlayer(context: Context) {
         if (data.isEmpty() || muted) return
         val sampleRate = parseSampleRate(mimeType) ?: DEFAULT_SAMPLE_RATE
 
+        // Acquire / configure the track under the lock, then RELEASE the lock
+        // before writing. Holding the lock across the write loop would
+        // deadlock stopAndFlush() (and anything else that grabs this lock)
+        // for the entire playback duration — which can be several minutes
+        // for a research report readout.
+        val track: AudioTrack
+        val myGeneration: Long
         synchronized(lock) {
             requestAudioFocusLocked()
-            val track = ensureTrackLocked(sampleRate) ?: return
+            track = ensureTrackLocked(sampleRate) ?: return
             val safeVolume = volume.coerceIn(0f, 1f)
             runCatching { track.setVolume(safeVolume) }
             if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
                 runCatching { track.play() }
             }
-            val written = track.write(data, 0, data.size, AudioTrack.WRITE_BLOCKING)
-            if (!loggedPlaybackStart && written > 0) {
-                loggedPlaybackStart = true
-                Log.d(TAG, "Streaming Gemini audio sampleRate=$sampleRate bytes=$written")
+            myGeneration = writeGeneration
+        }
+
+        // Write in small NON-BLOCKING slices so we can observe stopAndFlush()
+        // (which bumps writeGeneration) and bail out immediately. A single
+        // WRITE_BLOCKING call on several MB of PCM would otherwise keep this
+        // thread inside AudioTrack.write() for the entire playback, and
+        // AudioTrack.pause()/stop() is not guaranteed to interrupt it.
+        val sliceBytes = SLICE_BYTES
+        var offset = 0
+        var totalWritten = 0
+        var aborted = false
+        while (offset < data.size) {
+            // Cancellation check — cheap, just a volatile read.
+            if (writeGeneration != myGeneration) {
+                aborted = true
+                break
             }
-            if (written < 0) {
-                Log.w(TAG, "AudioTrack write failed: $written")
+            val remaining = data.size - offset
+            val toWrite = if (remaining < sliceBytes) remaining else sliceBytes
+            val wrote = runCatching {
+                track.write(data, offset, toWrite, AudioTrack.WRITE_NON_BLOCKING)
+            }.getOrElse { -1 }
+
+            if (wrote < 0) {
+                // Negative return codes: track stopped/released/errored. Exit.
+                break
+            }
+            if (wrote == 0) {
+                // Buffer full — sleep briefly so the device can consume audio.
+                // This tiny sleep is interruptible and keeps us responsive to
+                // generation changes.
+                try {
+                    Thread.sleep(10)
+                } catch (_: InterruptedException) {
+                    aborted = true
+                    break
+                }
+                continue
+            }
+            offset += wrote
+            totalWritten += wrote
+        }
+
+        synchronized(lock) {
+            lastOutputLevel = calculatePcm16Level(data)
+            lastOutputAtMs = SystemClock.uptimeMillis()
+            if (!loggedPlaybackStart && totalWritten > 0) {
+                loggedPlaybackStart = true
+                Log.d(
+                    TAG,
+                    "Streaming Gemini audio sampleRate=$sampleRate bytes=$totalWritten (aborted=$aborted)"
+                )
             }
         }
     }
 
+    /**
+     * Called when the server signals turn-complete.  Starts a background thread
+     * that waits for the AudioTrack to finish playing all buffered audio, then
+     * invokes [onDrainComplete] so the caller can arm the silence watchdog only
+     * after the user has heard every word.
+     */
+    fun notifyTurnComplete() {
+        drainPending = true
+        if (drainThread?.isAlive == true) return  // already watching
+        drainThread = Thread({
+            try {
+                // Poll AudioTrack head position until it stops advancing,
+                // meaning all buffered data has been played.
+                var stallCount = 0
+                var lastHead = -1
+                while (drainPending) {
+                    val head = synchronized(lock) {
+                        audioTrack?.playbackHeadPosition ?: -1
+                    }
+                    if (head < 0) break   // track gone
+                    if (head == lastHead) {
+                        stallCount++
+                        // 6 × 50ms = 300ms of no advancement → drained
+                        if (stallCount >= 6) break
+                    } else {
+                        stallCount = 0
+                        lastHead = head
+                    }
+                    Thread.sleep(50)
+                }
+            } catch (_: InterruptedException) { }
+            drainPending = false
+            Log.d(TAG, "Audio drain complete — invoking callback")
+            onDrainComplete?.invoke()
+        }, "GeminiAudioDrain").also { it.isDaemon = true; it.start() }
+    }
+
+    /** Cancel any pending drain watcher (e.g. when a new turn starts). */
+    fun cancelDrain() {
+        drainPending = false
+    }
+
+    fun currentOutputLevel(): Float = lastOutputLevel
+
+    fun isActivelySpeaking(windowMs: Long = 350L): Boolean {
+        return SystemClock.uptimeMillis() - lastOutputAtMs <= windowMs && lastOutputLevel > 0.01f
+    }
+
     fun stopAndFlush() {
+        drainPending = false
+        // Bump the generation OUTSIDE the lock so any playChunk loop still
+        // holding a generation snapshot will see it change and exit on its
+        // next slice check, without waiting for the lock.
+        writeGeneration++
         synchronized(lock) {
             val track = audioTrack ?: return
             runCatching { track.pause() }
             runCatching { track.flush() }
             loggedPlaybackStart = false
+            lastOutputLevel = 0f
             abandonAudioFocusLocked()
         }
     }
 
     fun release() {
+        drainPending = false
+        writeGeneration++
         synchronized(lock) {
             val track = audioTrack
             audioTrack = null
             trackSampleRate = 0
             loggedPlaybackStart = false
+            lastOutputLevel = 0f
             runCatching { track?.pause() }
             runCatching { track?.flush() }
             runCatching { track?.release() }
@@ -153,6 +289,18 @@ class GeminiAudioPlayer(context: Context) {
     private fun parseSampleRate(mimeType: String): Int? {
         val match = Regex("""rate=(\d+)""").find(mimeType)
         return match?.groupValues?.getOrNull(1)?.toIntOrNull()
+    }
+
+    private fun calculatePcm16Level(data: ByteArray): Float {
+        if (data.size < 2) return 0f
+        var peak = 0
+        var i = 0
+        while (i + 1 < data.size) {
+            val sample = ((data[i + 1].toInt() shl 8) or (data[i].toInt() and 0xFF)).toShort().toInt()
+            peak = max(peak, abs(sample))
+            i += 2
+        }
+        return (peak / 32767f).coerceIn(0f, 1f)
     }
 
     private fun requestAudioFocusLocked() {

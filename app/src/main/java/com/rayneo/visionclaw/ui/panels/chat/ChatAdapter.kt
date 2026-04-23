@@ -11,6 +11,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 import com.rayneo.visionclaw.R
@@ -23,7 +24,9 @@ class ChatAdapter(
 
     companion object {
         private const val MAX_HISTORY_CARDS = 20
-        private const val CARD_HEIGHT_DP = 220f
+        // Must mirror ChatPanelFragment.CARD_HEIGHT_DP — the fragment
+        // uses this height when computing the focus-snap offset.
+        private const val CARD_HEIGHT_DP = 72f
 
         const val VIEW_TYPE_CHAT_CARD = 1
         const val VIEW_TYPE_SENTINEL_CARD = 2
@@ -116,13 +119,14 @@ class ChatAdapter(
                 // Apply initial focused / unfocused alpha so that every card
                 // — including the New Chat sentinel — is correctly dimmed the
                 // instant it appears, before the fragment's applyFocusVisuals
-                // can run its post-layout pass.
+                // can run its post-layout pass.  These values mirror the
+                // CARD_FOCUS_* constants in ChatPanelFragment.
                 val focused = position == focusedPosition
                 val bubble = holder.itemView.findViewById<View>(R.id.messageBubble)
                 if (bubble != null) {
-                    bubble.alpha = if (focused) 1.0f else 0.15f
-                    bubble.scaleX = if (focused) 1.15f else 0.75f
-                    bubble.scaleY = if (focused) 1.15f else 0.75f
+                    bubble.alpha = if (focused) 1.0f else 0.45f
+                    bubble.scaleX = if (focused) 1.04f else 0.96f
+                    bubble.scaleY = if (focused) 1.04f else 0.96f
                 }
             }
         }
@@ -132,6 +136,7 @@ class ChatAdapter(
         private val rowRoot: LinearLayout = itemView.findViewById(R.id.messageRow)
         private val bubble: LinearLayout = itemView.findViewById(R.id.messageBubble)
         private val messageText: TextView = itemView.findViewById(R.id.messageText)
+        private val messageScrollView: ScrollView = itemView.findViewById(R.id.messageScrollView)
         private val launchCard: LinearLayout = itemView.findViewById(R.id.launchCard)
         private val launchCardUrl: TextView = itemView.findViewById(R.id.launchCardUrl)
 
@@ -143,16 +148,19 @@ class ChatAdapter(
         }
 
         private fun bindNewChatCard() {
-            rowRoot.gravity = Gravity.CENTER_HORIZONTAL
-            centerBubble()
+            // Full-width bubble, vertically centred text.  Same height
+            // as regular chat cards so the column reads as a uniform
+            // stack.
+            rowRoot.gravity = Gravity.FILL
+            stretchBubble()
 
             setUniformCardHeight()
             bubble.minimumHeight = 0
-            bubble.gravity = Gravity.CENTER
+            bubble.gravity = Gravity.CENTER_VERTICAL or Gravity.START
             bubble.setBackgroundResource(R.drawable.bg_chat_bubble_assistant)
 
             messageText.movementMethod = null
-            messageText.gravity = Gravity.CENTER
+            messageText.gravity = Gravity.CENTER_VERTICAL or Gravity.START
             messageText.text = "New Chat"
             messageText.setTextColor(Color.parseColor("#FFFFFFFF"))
 
@@ -163,12 +171,12 @@ class ChatAdapter(
 
         private fun bindMessageCard(message: ChatMessage, onUrlTapped: (String) -> Unit) {
             val isUser = message.fromUser
-            rowRoot.gravity = Gravity.CENTER_HORIZONTAL
-            centerBubble()
+            rowRoot.gravity = Gravity.FILL
+            stretchBubble()
 
             setUniformCardHeight()
             bubble.minimumHeight = 0
-            bubble.gravity = Gravity.NO_GRAVITY
+            bubble.gravity = Gravity.CENTER_VERTICAL or Gravity.START
             bubble.setBackgroundResource(
                 if (isUser) R.drawable.bg_chat_bubble_user else R.drawable.bg_chat_bubble_assistant
             )
@@ -194,11 +202,24 @@ class ChatAdapter(
             }
         }
 
-        private fun centerBubble() {
+        /**
+         * Ensure the bubble fills the card's width instead of wrapping
+         * around its content.  The old behaviour centred a narrow pill;
+         * the redesign wants each card to stretch from the recycler's
+         * left gutter to its right edge.
+         */
+        private fun stretchBubble() {
             val params = bubble.layoutParams as? LinearLayout.LayoutParams ?: return
-            if (params.gravity == Gravity.CENTER_HORIZONTAL) return
-            params.gravity = Gravity.CENTER_HORIZONTAL
-            bubble.layoutParams = params
+            var changed = false
+            if (params.width != LinearLayout.LayoutParams.MATCH_PARENT) {
+                params.width = LinearLayout.LayoutParams.MATCH_PARENT
+                changed = true
+            }
+            if (params.gravity != Gravity.FILL) {
+                params.gravity = Gravity.FILL
+                changed = true
+            }
+            if (changed) bubble.layoutParams = params
         }
 
         private fun dpToPx(dp: Float): Int {

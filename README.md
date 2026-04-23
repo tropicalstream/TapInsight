@@ -1,148 +1,447 @@
-<p align="center">
-  <img src="docs/assets/tapinsight-logo-512.png" width="120" alt="TapInsight logo">
-</p>
+# TapInsight — AI-Powered AR Companion for RayNeo X3 Pro
 
-<h1 align="center">TapInsight</h1>
+> **ALPHA SOFTWARE — Use at your own risk.** This project is under active development. Features may be incomplete, unstable, or change without notice. No warranty is provided.
 
-<p align="center">
-  <strong>AI-powered AR companion for RayNeo X3 Pro</strong><br>
-  Voice, vision, web, local media, radio, and OpenClaw/TapClaw on your glasses.
-</p>
+TapInsight transforms your RayNeo X3 Pro AR glasses into an AI-powered smart assistant with voice and vision capabilities, hands-free navigation, internet radio, and a full web browser — all controlled by simple gestures.
 
-<p align="center">
-  <a href="https://tropicalstream.github.io/TapInsight/">Website</a> |
-  <a href="https://github.com/tropicalstream/TapInsight/releases/download/tapinsight-alpha-oc.2/tapinsight-alpha-oc.2.apk">Download Alpha OC.2 APK</a> |
-  <a href="https://github.com/tropicalstream/TapInsight/releases">All Releases</a> |
-  <a href="https://youtu.be/42DV0rl1NOo">Overview Video</a> |
-  <a href="https://tropicalstream.github.io/TapInsight/user-guide.html">User Guide</a>
-</p>
-
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=42DV0rl1NOo">
-    <img src="https://img.youtube.com/vi/42DV0rl1NOo/hqdefault.jpg" alt="TapInsight overview video">
-  </a>
-</p>
-
-> Alpha software. Use at your own risk.
-
-TapInsight turns the RayNeo X3 Pro into a wearable AI workstation: a live Gemini assistant, a full AR browser, an internet radio player, and a bridge to an OpenClaw agent running on your host machine.
+---
 
 ## What It Does
 
-| Capability | What it gives you |
-| --- | --- |
-| Gemini assistant | Live voice plus camera-aware Q&A directly from the glasses |
-| TapBrowser | A full browser with dashboard shortcuts, media views, and companion-linked pages |
-| Library | Local audio, video, text, and `.m3u` / `.m3u8` playlists with on-glasses playback and companion-side management |
-| TapRadio | Gesture-friendly internet radio with favorites, categories, and companion sync |
-| TapClaw / OpenClaw | Voice access to a tool-using host agent with heartbeat updates and media handoff |
-| Companion app | Browser-based setup for API keys, OAuth, dashboard links, radio, HUD settings, and OpenClaw |
-| HUD workflows | Compact AR-friendly status cards, heartbeats, notifications, and assistant output |
+**TapInsight** is a companion layer that runs on the RayNeo X3 Pro, adding AI capabilities on top of the existing glasses experience. At its core, it uses Google's Gemini API for both text/vision and live voice conversations, letting you interact with an AI assistant that can see what you see through the glasses camera.
 
-## Watch
+### AI Assistant (Gemini-Powered)
 
-- Main walkthrough: [youtube.com/watch?v=42DV0rl1NOo](https://www.youtube.com/watch?v=42DV0rl1NOo) or [youtu.be/42DV0rl1NOo](https://youtu.be/42DV0rl1NOo)
-  Summary: the current alpha running live on the glasses, including voice, vision, and companion workflow.
-- Learning Partner: [youtube.com/watch?v=nUUxjQn-ZgU](https://www.youtube.com/watch?v=nUUxjQn-ZgU) or [youtu.be/nUUxjQn-ZgU](https://youtu.be/nUUxjQn-ZgU)
-  Summary: based on the creator description, this shows TapInsight acting as a thoughtful learning partner and points back to the earlier camera-learning demos.
-- Setup Overview: [youtube.com/watch?v=shRHLzmlQOk](https://www.youtube.com/watch?v=shRHLzmlQOk) or [youtu.be/shRHLzmlQOk](https://youtu.be/shRHLzmlQOk)
-  Summary: based on the creator description, this is a setup overview that also covers the media-files workflow.
-- Project site: [tropicalstream.github.io/TapInsight](https://tropicalstream.github.io/TapInsight/)
+The AI assistant runs through Gemini's models and supports two modes. Standard mode handles text and vision queries — point the camera at something and ask about it. Live mode enables real-time voice conversation with the assistant, which can respond naturally while seeing through your camera. The assistant can look up nearby places, get directions with traffic, identify objects, read text, and answer questions about what's in view.
 
-## Latest Build
+The key here is simplicity: the Gemini API currently offers generous free tiers, so you can get started without any cost. And if you want to swap in a different model later, you can do that right from the companion app — no code changes needed.
 
-- Recommended build: [TapInsight Alpha OC.2 APK](https://github.com/tropicalstream/TapInsight/releases/download/tapinsight-alpha-oc.2/tapinsight-alpha-oc.2.apk)
-- Release hub: [GitHub Releases](https://github.com/tropicalstream/TapInsight/releases)
-- Manual: [Rendered User Guide](https://tropicalstream.github.io/TapInsight/user-guide.html)
-- Quick companion launcher: [companion.html](companion.html)
+### Gesture Controls
 
-## Quick Start
+Everything is designed for hands-free use on AR glasses. The X3 Pro's touchpad on the temple handles all navigation:
 
-1. Install the latest APK from the release page.
-2. Launch TapInsight on the glasses.
-3. Connect to the companion app.
+- **Single Tap** — Select, click links, focus inputs, interact with UI elements
+- **Double Tap** — Go back (browser history, close dialogs, return to list view)
+- **Swipe Left/Right** — Scroll horizontally, switch tabs
+- **Swipe Up/Down** — Scroll through content
 
-USB setup:
+No phone needed once you're set up.
+
+### TapRadio — Internet Radio Player
+
+TapRadio is a built-in internet radio player optimized for the glasses' 960x480 display. It comes preloaded with 18 stations across genres like Chill, Jazz, Electronic, Rock, Classical, News, and more (SomaFM, Radio Paradise, NPR, BBC World Service, NASA Third Rock Radio).
+
+Features:
+- Favorites system — star any station for quick access, Favorites tab is always first
+- Genre filtering — tap genre tabs to browse by category
+- Play/pause, next/previous, volume control — all gesture-friendly
+- Add/edit/delete stations directly on the glasses
+- Search 30,000+ stations from the companion app using the Radio Browser API
+- Stations sync between the companion app and glasses automatically
+
+### TapBrowser — Full Web Browser
+
+Built on [TapLinkX3](https://github.com/informalTechCode/TAPLINKX3) (see acknowledgments), TapBrowser provides a full web browsing experience on the glasses with a customizable dashboard of quick-launch links organized by category (AI/Chatbots, Music/Streaming, Social, Productivity, and more). It includes bookmarks, desktop/mobile mode switching, and a QR code scanner for quick URL entry.
+
+### Library — Local Media, Playlists & Read-Aloud
+
+TapInsight also includes a local Media Library for files stored directly on the glasses. Drop audio, video, text files, and `.m3u` / `.m3u8` playlists into the library over USB/MTP or through the companion web app, then browse and play them from the on-glasses Media Library tile.
+
+Features:
+- Default `Music/` and `Videos/` folders, with nested folders supported
+- `.m3u` playlists can live in any folder, and relative paths resolve from the playlist file itself
+- Companion Library tab can upload files, auto-generate playlists for a folder, and edit playlist entries
+- Text files open in the media viewer and can be read aloud with Gemini TTS
+
+### TapClaw — OpenClaw AI Agent Integration
+
+TapClaw connects your glasses to an [OpenClaw](https://openclaw.ai) AI agent running on your host computer. That host can be a Linux machine, a Mac, or a Windows PC. This gives the glasses access to a powerful, tool-equipped agent that can control smart home devices, check emails, run automations, and analyze what you see through the camera — all by voice.
+
+The integration uses a lightweight image relay service that runs on the same host computer as OpenClaw. When you ask the agent to look at something, the glasses capture a camera frame, POST it to the relay over your local network, and the agent reads the saved image from its workspace. This bypasses the OpenClaw gateway's attachment limitations entirely.
+
+Key components:
+- **Image Relay** — A Python HTTP server (port 18790) that receives camera frames and saves them to the OpenClaw workspace. A macOS helper script can install it as a launchd service, and Linux or Windows can run the same relay manually or via a login service.
+- **Remote Access** — Cloudflare Tunnel support for accessing your OpenClaw agent from anywhere, not just your home network.
+- **Image Archival** — Every analyzed camera frame is permanently saved in dated folders (`saved_photos/YYYY-MM-DD/`) with timestamps.
+- **Media Display** — The agent can display images, videos, web pages, and text files on your glasses using the `open_taplink` tool through TapBrowser.
+
+### Companion App (Phone/Laptop WiFi Configuration)
+
+The companion app is a web interface served from the glasses over WiFi. Open it on your phone or laptop by navigating to the glasses' IP address on port 19110. From here you can:
+
+- **Setup** — Enter your Gemini API key, configure OAuth for Google services (Maps, Calendar, etc.), set Spotify credentials, adjust the AI model and system prompt, and configure HUD display settings
+- **Browser** — Manage bookmarks and browser settings, view supported media types for TapBrowser display
+- **Dashboard** — Customize the TapBrowser homepage links and layout
+- **Library** — Upload local audio/video/text files, create or edit `.m3u` playlists, and add the Media Library tile to the on-glasses dashboard
+- **TapRadio** — Search for stations online, manage your station list, toggle favorites, and sync everything to the glasses with one button
+- **TapClaw** — Configure OpenClaw gateway connection, set up Cloudflare Tunnel for remote access, check image relay status, view saved images gallery, and install the relay service
+
+There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (verify directions API).
+
+---
+
+## Download
+
+**[TapInsight OC3 APK](https://github.com/tropicalstream/TapInsight/releases/download/tapinsight-oc3/tapinsight-oc3.apk)** — Latest publishable debug build for RayNeo X3 Pro.
+
+OC3 fixes:
+- Closed captions now display more reliably by default in YouTube video mode.
+- Gemini routing is less likely to auto-play YouTube when the user is asking an informational question.
+- Saying `status` now triggers the intended OpenClaw heartbeat plus current/next Google Calendar briefing.
+
+---
+
+## Videos
+
+- **[TapInsight Overview](https://youtu.be/42DV0rl1NOo)** — The main walkthrough showing the current alpha running on the glasses, including voice, vision, and companion workflow.
+- **[TapInsight - Learning Partner](https://youtu.be/nUUxjQn-ZgU)** — Based on the video description: a demo of TapInsight acting as a thoughtful learning partner, building on the earlier camera-learning examples.
+- **[TapInsight Setup Overview](https://youtu.be/shRHLzmlQOk)** — Based on the video description: a quick setup overview that also shows the media-files workflow.
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- RayNeo X3 Pro AR glasses
+- A Google Gemini API key ([get one free at Google AI Studio](https://aistudio.google.com/apikey))
+- A phone or laptop on the same WiFi network as the glasses
+- Android Studio only needed if building from source — otherwise just grab the APK above
+
+### Quick Setup
+
+1. **Download [`TapInsight.apk`](TapInsight.apk)** from this repo
+2. Sideload it onto your RayNeo X3 Pro via ADB: `adb install TapInsight.apk`
+3. Launch TapInsight on the glasses
+4. **Open [`companion.html`](companion.html)** in any browser on your phone or laptop — it's a one-page setup wizard that connects to the glasses over WiFi
+5. Enter your glasses' IP address (default: `<glasses-ip>`) and click **Connect**
+6. In the Setup tab, enter your Gemini API key
+7. Start talking — tap the glasses touchpad to activate the AI
+
+The companion app runs on the glasses themselves. Over Wi-Fi, open `https://<glasses-ip>:19110` and accept the local certificate warning on first use. If the device falls back to non-TLS mode, use `http://<glasses-ip>:19110` instead. From there you can configure everything: API keys, AI model, OAuth, TapRadio stations, and more.
+
+### Connecting via USB (Recommended)
+
+USB is the fastest and most reliable way to access the companion app. Connect the glasses via USB and run:
 
 ```bash
 adb forward tcp:19110 tcp:19110
 ```
 
-Then open:
+Then open **https://localhost:19110** in any browser and accept the local certificate warning on first use. If the device falls back to non-TLS mode, use **http://localhost:19110** instead. The `companion.html` page defaults to USB mode and now points to the HTTPS URL first.
 
-```text
-https://localhost:19110/
+**The port forward resets** when the glasses disconnect, reboot, or ADB restarts. To fix this permanently, use the included helper script:
+
+```bash
+./setup_usb.sh --watch
 ```
 
-Accept the local certificate warning on first use.
+This runs in the background and automatically re-establishes the port forward whenever the glasses reconnect. You can also run `./setup_usb.sh` (without `--watch`) for a one-shot forward.
 
-Wi-Fi setup:
+### Connecting via WiFi
 
-```text
-https://<glasses-ip>:19110/
+If you prefer wireless, your computer and glasses must be on the same WiFi network. Find the glasses' IP in Settings → WiFi, then open `https://<glasses-ip>:19110` in your browser and accept the local certificate warning on first use. If the device falls back to non-TLS mode, use `http://<glasses-ip>:19110`. The `companion.html` page has a WiFi tab for this.
+
+### Using The Phone GPS Bridge
+
+The phone GPS bridge only works when the phone browser can reach the glasses companion server. In practice, that means the phone and the glasses must be on the **same network** and able to talk to each other directly.
+
+Basic steps:
+
+1. Put the phone and glasses on the same network.
+2. Find the glasses IP in the companion app `Connection Info` block or in the glasses Wi-Fi settings.
+3. On the phone, open `https://<glasses-ip>:19110`.
+4. Accept the local certificate warning once if the browser asks.
+5. In the companion app, turn **Phone GPS Bridge** on.
+6. Tap **Use This Phone's GPS**.
+7. Allow location permission in the phone browser.
+
+Common ways to use it:
+
+- **Home / office Wi-Fi**
+  - Connect both the phone and the glasses to the same Wi-Fi network.
+- **iPhone Personal Hotspot**
+  - Turn on Personal Hotspot on the iPhone and connect the glasses to it.
+  - Open `https://<glasses-ip>:19110` on that iPhone.
+- **Android hotspot**
+  - Turn on the Android hotspot and connect the glasses to it.
+  - Open `https://<glasses-ip>:19110` on that Android phone.
+- **Other same-network arrangements**
+  - Travel router, mobile hotspot device, or any shared LAN where both devices can reach each other.
+
+Important notes:
+
+- If the phone and glasses are **not** on the same network, the bridge will not work.
+- If your router or hotspot uses **client isolation**, the bridge will not work until that is disabled or you switch networks.
+- Prefer the `https://` companion URL for phone GPS bridge use, especially on iPhone.
+
+### Optional Configuration
+
+- **Google OAuth** — Enable Google Maps, Places, and Calendar integration by setting up OAuth credentials in the companion app's Setup tab
+- **Spotify** — Connect your Spotify account for music control
+- **Custom AI Prompt** — Modify the system prompt to customize the AI's personality and behavior
+- **HUD Settings** — Adjust font size, display duration, and formatting for the heads-up display
+
+---
+
+## Architecture
+
+The project has two main modules:
+
+- **`app`** — The main TapInsight application (AI assistant, companion server, tool system)
+- **`tapbrowser`** — The web browser module (based on TapLinkX3)
+
+Key technical details:
+
+- **AI Models**: Gemini Flash (text/vision) and Gemini 2.5 Flash Native Audio (live voice) — configurable via companion app or routed through OpenClaw gateway, no cost on free tier
+- **Tool System**: Google Places, Routes/Directions with traffic, Location, Weather, Calendar, Spotify, Web Search, and media display via `open_taplink` — all accessible to the AI through natural conversation
+- **ToolAssist Engine**: Client-side tool execution that proactively detects when you're asking about places, directions, or location and injects results into the conversation
+- **OpenClaw Client**: WebSocket client that connects to an OpenClaw gateway for agent-based AI, with image relay support for camera frame analysis
+- **Media Library**: App-private media storage under `.../files/Media/` with local audio/video playback, text read-aloud, and `.m3u` / `.m3u8` playlist support
+- **Image Relay**: HTTP relay service (port 18790) bridging camera frames from glasses to the OpenClaw workspace, with automatic rotation and archival
+- **Companion Server**: NanoHTTPD server on port 19110 serving HTML configuration and management pages
+- **HUD**: Real-time heads-up display showing AI responses formatted for the glasses' compact viewport
+
+---
+
+## TapClaw Image Relay Setup
+
+The image relay is required for camera-based AI analysis through OpenClaw. It runs on the same host computer as your OpenClaw instance.
+
+### One-Command Install (macOS)
+
+```bash
+bash tools/install-relay.sh
 ```
 
-If the device falls back to non-TLS mode, try `http://<glasses-ip>:19110/`.
+This installs the relay to `~/.tapclaw/`, creates a macOS launchd service that auto-starts on login, and verifies the relay is running. Frames are saved to `~/.openclaw/workspace/camera_frame.jpg` and archived in dated folders.
 
-## Companion App
+### Manual Start (Linux, macOS, or Windows)
 
-The companion app runs on the glasses and is reached from your phone or laptop browser.
+```bash
+python3 tools/image_relay.py
+```
 
-You can configure:
+Linux:
 
-- Gemini API keys and model selection
-- Google OAuth, Maps, Calendar, Tasks, and Places
-- TapBrowser dashboard links and browser settings
-- Media Library uploads, local file browsing, and `.m3u` playlist editing
-- TapRadio station sync and favorites
-- OpenClaw endpoint, token, heartbeat behavior, and relay tooling
-- HUD display, voice, brightness, and assistant behavior settings
+```bash
+python3 -m pip install Pillow
+python3 tools/image_relay.py
+```
 
-## Why HTTPS
+Windows PowerShell:
 
-The companion server prefers HTTPS because the Phone GPS bridge needs a browser secure context. Over `https://localhost:19110/` or `https://<glasses-ip>:19110/`, browsers allow the Geolocation API and the companion app can receive phone GPS updates correctly.
+```powershell
+py -3 -m pip install Pillow
+py -3 tools\image_relay.py
+```
 
-## OpenClaw / TapClaw
+On Linux, use a `systemd --user` service, `tmux`, `screen`, or desktop autostart if you want the relay to come up automatically after login. On Windows, use Task Scheduler or your Startup folder.
 
-TapInsight can connect to an OpenClaw agent on your Mac, Linux, or Windows host.
+### Uninstall (macOS helper)
 
-That gives you:
+```bash
+bash tools/install-relay.sh --uninstall
+```
 
-- voice-triggered host automation
-- camera frame relay to the host workspace
-- readable heartbeat updates on the glasses HUD
-- media and page handoff back into TapBrowser
+On Linux, remove the `systemd --user` unit or startup command you created for `image_relay.py`. On Windows, remove the Task Scheduler or Startup entry.
 
-If you want to explore that path, start here:
+### Endpoints
 
-- [OpenClaw](https://openclaw.ai)
-- [TapInsight User Guide](https://tropicalstream.github.io/TapInsight/user-guide.html)
-- [Companion launcher](companion.html)
+- `POST /frame` — Receive a JPEG camera frame (raw body), rotate 90° clockwise, save to workspace
+- `GET /latest` — Serve the most recent camera frame as JPEG
+- `GET /status` — JSON health check with frame availability and age
 
-## Repository Guide
+### Remote Access via Cloudflare Tunnel
 
-| Path | Purpose |
-| --- | --- |
-| `app/` | Main TapInsight Android app |
-| `tapbrowser/` | Browser module and AR web runtime |
-| `docs/` | GitHub Pages site |
-| `companion.html` | Offline quick-launch setup page |
-| `TapInsight-User-Guide.html` | Main visual manual |
-| `tools/` | Helper scripts such as the image relay installer |
+To access your OpenClaw agent from outside your home network, set up a Cloudflare named tunnel. This requires a domain on Cloudflare (from ~$2/year).
 
-## More Links
+```bash
+# 1. Install cloudflared
+#    macOS: brew install cloudflared
+#    Linux: install cloudflared from your distro package manager or Cloudflare package repo
 
-- Website: [tropicalstream.github.io/TapInsight](https://tropicalstream.github.io/TapInsight/)
-- Releases: [github.com/tropicalstream/TapInsight/releases](https://github.com/tropicalstream/TapInsight/releases)
-- Issues: [github.com/tropicalstream/TapInsight/issues](https://github.com/tropicalstream/TapInsight/issues)
-- License: [LICENSE](LICENSE)
+# 2. Authenticate with your Cloudflare account
+cloudflared tunnel login
+
+# 3. Create a named tunnel
+cloudflared tunnel create tapclaw
+
+# 4. Route DNS to your domain (gateway + image relay)
+cloudflared tunnel route dns tapclaw tapclaw.yourdomain.com
+cloudflared tunnel route dns tapclaw relay.yourdomain.com
+
+# 5. Create ~/.cloudflared/config.yml:
+#    tunnel: YOUR_TUNNEL_ID
+#    credentials-file: /Users/YOU/.cloudflared/YOUR_TUNNEL_ID.json
+#    ingress:
+#      - hostname: tapclaw.yourdomain.com
+#        service: http://localhost:18789
+#      - hostname: relay.yourdomain.com
+#        service: http://localhost:18790
+#      - service: http_status:404
+
+# 6. Allow the tunnel origin in OpenClaw
+openclaw config set gateway.controlUi.allowedOrigins "https://tapclaw.yourdomain.com"
+
+# 7. Start the tunnel
+cloudflared tunnel run tapclaw
+
+# Auto-start on login:
+#   macOS: brew services start cloudflared
+#   Linux: use your system service manager or `cloudflared service install`
+```
+
+Your gateway is now reachable at `wss://tapclaw.yourdomain.com`. Use this as the Gateway URL in the companion app.
+
+**Note:** The `relay.` subdomain tunnels port 18790 so camera vision works remotely. The app auto-detects remote gateways and routes frames through `https://relay.yourdomain.com` instead of a local IP. Without the relay tunnel entry, camera vision only works on the local network.
+
+**Troubleshooting:**
+- **"origin not allowed"** — Two fixes needed: (1) Add your tunnel URL to the `allowedOrigins` array in `~/.openclaw/openclaw.json` under `gateway.controlUi`, (2) Retrieve your gateway token with `grep '"token"' ~/.openclaw/openclaw.json`, enter it in the dashboard, then approve the device with `openclaw devices list` and `openclaw devices approve <device-id>`. Restart the gateway after.
+- **"503 Service Unavailable"** — Missing `~/.cloudflared/config.yml`. Create it with the ingress rules above.
+- **"Error 1033"** — The tunnel isn't running. Start with `cloudflared tunnel run tapclaw`.
+
+**Alternative:** [Tailscale](https://tailscale.com) provides a free mesh VPN with stable private IPs — no domain needed. Use your Tailscale IP with `ws://` protocol in the companion app.
+
+---
 
 ## Acknowledgments
 
-TapInsight builds on the work of the TapLinkX3 browser project and the broader open-source and AR tooling community.
+Special thanks to **InformalTech** and **glxblt76**, the developers of [TapLinkX3](https://github.com/informalTechCode/TAPLINKX3), for creating the browser foundation and for allowing integration of their work into this project. The `tapbrowser` module is built on their excellent AR-optimized web browser for the RayNeo X3 Pro.
 
-Special thanks:
+---
 
-- [InformalTechCode / TAPLINKX3](https://github.com/informalTechCode/TAPLINKX3)
-- [informalTechCode](https://github.com/informalTechCode)
-- [glxblt76](https://github.com/glxblt76)
+## Disclaimer
+
+This is alpha software provided as-is. The developers are not responsible for any issues arising from its use. API keys and credentials are stored locally on your device and are never transmitted to third parties beyond the configured API providers (Google, Spotify, etc.).
+
+**Security note**: This repository has been scrubbed of all personal information, API keys, and credentials. All sensitive values use placeholders. You must supply your own API keys via the companion app or `local.properties`.
+
+---
+
+## Developer Docs: OpenClaw CDP Browser Control
+
+**Target Platform:** OpenClaw host computer with Chrome or Chromium (Linux, macOS, or Windows)
+**OpenClaw Version:** 2026.4.2
+**Method:** Direct CDP Attachment via Port 9222
+
+### 1. Overview
+
+The CDP method bypasses visual screen-scraping (Peekaboo) and extension relays. It creates a binary WebSocket pipe between the OpenClaw Gateway and the Chrome V8 engine. This allows the agent to read the DOM tree directly, making it immune to UI shifts that break coordinates-based automation.
+
+### 2. Installation & Environment Setup
+
+TapClaw does not require a Mac. The key requirement is that your OpenClaw host can run Chrome or Chromium with `--remote-debugging-port=9222` and is reachable from the glasses.
+
+**Step A: Clean the Configuration**
+
+Ensure no "zombie" browser keys are present in your `openclaw.json`.
+
+```bash
+openclaw config set browser.profiles.user '{
+  "driver": "cdp",
+  "cdpUrl": "http://127.0.0.1:9222",
+  "attachOnly": true,
+  "color": "#4285F4"
+}'
+openclaw config set browser.defaultProfile "user"
+```
+
+**Step B: Launch Chrome with remote debugging**
+
+Chrome will only write the required `DevToolsActivePort` file if started with the explicit debugging flag from the CLI.
+
+macOS:
+
+1. Fully quit Chrome (`Cmd+Q`).
+2. Launch via Terminal:
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --restore-last-session &
+```
+
+Linux:
+
+1. Fully quit Chrome or Chromium.
+2. Launch from a shell:
+
+```bash
+CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser)"
+"$CHROME_BIN" --remote-debugging-port=9222 --restore-last-session >/tmp/tapclaw-chrome.log 2>&1 &
+```
+
+Windows PowerShell:
+
+1. Fully quit Chrome.
+2. Launch from PowerShell:
+
+```powershell
+$chrome = "${Env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
+if (!(Test-Path $chrome)) { $chrome = "${Env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe" }
+Start-Process $chrome -ArgumentList "--remote-debugging-port=9222","--restore-last-session"
+```
+
+### 3. Running the Bridge
+
+**Step 1: Health Check**
+
+Verify Chrome is actually "listening" before starting the Gateway.
+
+```bash
+curl http://127.0.0.1:9222/json/version
+```
+
+If you see a JSON block with `webSocketDebuggerUrl`, you are ready.
+
+**Step 2: Start the Gateway**
+
+```bash
+openclaw gateway restart
+```
+
+**Step 3: Manual Attachment**
+
+Force the profile to "Handshake" with the open Chrome window:
+
+```bash
+openclaw browser start --profile user
+```
+
+### 4. Troubleshooting
+
+**Issue: `Could not find DevToolsActivePort`**
+- Cause: Chrome was opened normally instead of from a shell or PowerShell with the debugging flag.
+- Fix: Quit all Chrome processes and restart using the command in Section 2B.
+
+**Issue: `Error: Unrecognized key: "entries"`**
+- Cause: Attempting to use the old 2025 "nested" config schema.
+- Fix: Use the flat schema: `openclaw config set tools.canvas.enabled false`.
+
+**Issue: Connection Refused (Port 9222)**
+- Cause: Local firewall settings or a conflicting "zombie" instance of Chrome.
+- Fix:
+
+```bash
+lsof -i :9222  # Find what is using the port
+kill -9 <PID>  # Kill the ghost process
+```
+
+Windows PowerShell:
+
+```powershell
+Get-NetTCPConnection -LocalPort 9222
+taskkill /PID <PID> /F
+```
+
+### 5. Optimized Workflow for "Deep Research"
+
+To prevent credit burn, use this specific prompt pattern now that CDP is active:
+
+**Developer Command:**
+"Gort, switch to the `user` browser profile. Locate the Gemini tab. Instead of clicking via coordinates, use a DOM selector to find the 'Deep Research' toggle and execute a `native.click()`. If the selector is missing, log the error and stop."
+
+---
+
+## License
+
+Distributed under the GNU General Public License v3.0 — see the [LICENSE](LICENSE) file for details.
