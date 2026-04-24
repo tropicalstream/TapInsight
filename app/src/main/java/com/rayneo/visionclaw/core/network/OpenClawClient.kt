@@ -775,8 +775,8 @@ class OpenClawClient(
     /**
      * Build the relay URL for uploading camera frames.
      *
-     * If the gateway is a local IP (e.g. ws://<host-ip>:18789), use the
-     * relay on the same host: http://<host-ip>:18790/frame
+     * If the gateway is a local IP (e.g. ws://192.168.1.50:18789), use the
+     * relay on the same host: http://192.168.1.50:18790/frame
      *
      * If the gateway is a remote domain (e.g. wss://tapclaw.example.com),
      * the relay is assumed to be tunneled at relay.<basedomain>/frame.

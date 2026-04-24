@@ -1888,6 +1888,11 @@ class TapRadioTool(private val context: Context) : AiTapTool {
             .putBoolean("tapradio_now_playing_active", false)
             .remove("tapradio_now_playing_name")
             .remove("tapradio_now_playing_genre")
+            .remove("tapradio_now_playing_kind")
+            .remove("tapradio_now_playing_url")
+            .remove("tapradio_now_playing_position_ms")
+            .remove("tapradio_now_playing_duration_ms")
+            .remove("tapradio_now_playing_error")
             .apply()
     }
 

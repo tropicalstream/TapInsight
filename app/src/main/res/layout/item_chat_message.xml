@@ -13,7 +13,7 @@
     android:layout_height="wrap_content"
     android:clipChildren="false"
     android:clipToPadding="false"
-    android:minHeight="64dp"
+    android:minHeight="88dp"
     android:paddingHorizontal="4dp"
     android:paddingVertical="4dp"
     android:gravity="center_vertical">
@@ -27,8 +27,8 @@
         android:clipChildren="true"
         android:clipToPadding="true"
         android:orientation="vertical"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="12dp">
+        android:paddingHorizontal="18dp"
+        android:paddingVertical="14dp">
 
         <ScrollView
             android:id="@+id/messageScrollView"
@@ -45,9 +45,10 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:fontFamily="sans-serif-medium"
+                android:includeFontPadding="false"
                 android:lineSpacingExtra="2dp"
                 android:textColor="@color/text_primary"
-                android:textSize="17sp" />
+                android:textSize="18sp" />
         </ScrollView>
 
         <LinearLayout

@@ -479,6 +479,21 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
+    fun clearTrackedMediaPlayback() {
+        mediaStateByWindowId.keys.forEach { id ->
+            mediaStateByWindowId[id] = false
+        }
+        mediaLastPlayedAtByWindowId.clear()
+        nativeTapRadioPlaying = false
+        lastMediaPlayingAt = 0L
+        lastMaskedDomTitle = null
+        lastMaskedDomTitleUrl = null
+        lastMaskedDomTitleAt = 0L
+        updateMediaState(false)
+        refreshMaskedNowPlaying()
+        hideMediaControls()
+    }
+
     fun pauseYouTubeMediaAcrossAllWindows(resetTracking: Boolean = true) {
         windows.forEach { win ->
             val url = win.webView.url.orEmpty()
@@ -602,32 +617,55 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         applyScrollbarTransform()
     }
 
-    fun recenterViewportForDashboard(targetWebView: WebView? = webView) {
+    private fun normalizeWebViewsContainerAnchor() {
+        (webViewsContainer.layoutParams as? FrameLayout.LayoutParams)?.let { p ->
+            val targetGravity = Gravity.TOP or Gravity.START
+            if (p.gravity != targetGravity) {
+                p.gravity = targetGravity
+                webViewsContainer.layoutParams = p
+                webViewsContainer.requestLayout()
+            }
+        }
+    }
+
+    fun stabilizeWebViewViewportAfterNavigation(
+            targetWebView: WebView? = webView,
+            resetVerticalScroll: Boolean = false
+    ) {
         context.getSharedPreferences("TapLinkPrefs", Context.MODE_PRIVATE)
                 .edit()
                 .putInt("uiTransXProgress", 50)
                 .putInt("uiTransYProgress", 50)
                 .apply()
         updateUiTranslation()
+        normalizeWebViewsContainerAnchor()
 
         targetWebView?.post {
             try {
-                targetWebView.scrollTo(0, 0)
+                val nextY = if (resetVerticalScroll) 0 else targetWebView.scrollY
+                targetWebView.scrollTo(0, nextY)
             } catch (_: Exception) {}
             try {
                 targetWebView.evaluateJavascript(
                         """
                         (function() {
                             try {
-                                window.scrollTo(0, 0);
+                                var resetVertical = $resetVerticalScroll;
+                                window.scrollTo(0, resetVertical ? 0 : window.scrollY);
                                 if (document.documentElement) {
                                     document.documentElement.scrollLeft = 0;
-                                    document.documentElement.scrollTop = 0;
+                                    if (resetVertical) document.documentElement.scrollTop = 0;
                                 }
                                 if (document.body) {
                                     document.body.scrollLeft = 0;
-                                    document.body.scrollTop = 0;
+                                    if (resetVertical) document.body.scrollTop = 0;
                                 }
+                                if (window.__taplinkScrollTarget) {
+                                    window.__taplinkScrollTarget.scrollLeft = 0;
+                                    if (resetVertical) window.__taplinkScrollTarget.scrollTop = 0;
+                                }
+                                if (window.__taplinkReportScroll) window.__taplinkReportScroll();
+                                if (window.__taplinkWarmupScroll) window.__taplinkWarmupScroll();
                             } catch (e) {}
                         })();
                         """.trimIndent(),
@@ -635,6 +673,22 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 )
             } catch (_: Exception) {}
         }
+
+        val delays = longArrayOf(0L, 120L, 350L, 900L, 1600L)
+        delays.forEach { delayMs ->
+            postDelayed({
+                normalizeWebViewsContainerAnchor()
+                targetWebView?.let { injectPageObservers(it) }
+                updateScrollBarsVisibility()
+            }, delayMs)
+        }
+    }
+
+    fun recenterViewportForDashboard(targetWebView: WebView? = webView) {
+        stabilizeWebViewViewportAfterNavigation(
+                targetWebView = targetWebView,
+                resetVerticalScroll = true
+        )
     }
 
     private fun isWebViewScrollEnabled(): Boolean {
@@ -889,9 +943,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 var changed = false
                 if (p.width != targetWidth) changed = true
                 if (p.height != targetHeight) changed = true
+                val targetGravity = Gravity.TOP or Gravity.START
                 if (p.leftMargin != baseLeftMargin) changed = true
                 if (p.rightMargin != 0) changed = true
                 if (p.bottomMargin != baseBottomMargin) changed = true
+                if (p.gravity != targetGravity) changed = true
 
                 if (changed) {
                     p.width = targetWidth
@@ -899,6 +955,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     p.leftMargin = baseLeftMargin
                     p.rightMargin = 0
                     p.bottomMargin = baseBottomMargin
+                    p.gravity = targetGravity
                     webViewsContainer.layoutParams = p
                     webViewsContainer.requestLayout()
                     webViewsContainer.invalidate()
@@ -915,12 +972,20 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             (webViewsContainer.layoutParams as? FrameLayout.LayoutParams)?.let { p ->
                 val targetWidth = if (isScrollModeActive) containerWidth else containerWidth - baseLeftMargin
                 val targetHeight = (480 - baseBottomMargin - keyboardHeight).coerceAtLeast(0)
-                if (p.width != targetWidth || p.height != targetHeight || p.rightMargin != 0) {
+                val targetGravity = Gravity.TOP or Gravity.START
+                if (p.width != targetWidth ||
+                    p.height != targetHeight ||
+                    p.leftMargin != baseLeftMargin ||
+                    p.rightMargin != 0 ||
+                    p.bottomMargin != baseBottomMargin ||
+                    p.gravity != targetGravity
+                ) {
                     p.width = targetWidth
                     p.height = targetHeight
                     p.leftMargin = baseLeftMargin
                     p.rightMargin = 0
                     p.bottomMargin = baseBottomMargin
+                    p.gravity = targetGravity
                     webViewsContainer.layoutParams = p
                     webViewsContainer.requestLayout()
                 }
@@ -1001,9 +1066,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             var changed = false
             if (p.width != targetWidth) changed = true
             if (p.height != targetHeight) changed = true
+            val targetGravity = Gravity.TOP or Gravity.START
             if (p.leftMargin != targetLeftMargin) changed = true
             if (p.rightMargin != targetRightMargin) changed = true
             if (p.bottomMargin != targetBottomMargin) changed = true
+            if (p.gravity != targetGravity) changed = true
 
             if (changed) {
                 p.width = targetWidth
@@ -1011,6 +1078,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 p.leftMargin = targetLeftMargin
                 p.rightMargin = targetRightMargin
                 p.bottomMargin = targetBottomMargin
+                p.gravity = targetGravity
 
                 webViewsContainer.layoutParams = p
                 // Force layout update on WebView itself to ensure it resizes
@@ -2099,8 +2167,28 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     val winObj = windowsArray.getJSONObject(i)
                     val id = winObj.getString("id")
                     val title = winObj.getString("title")
-                    val url = winObj.getString("url")
-                    val stateString = winObj.optString("state", "")
+                    val rawUrl = winObj.getString("url")
+                    val rawStateString = winObj.optString("state", "")
+
+                    // Belt-and-suspenders: if this window was persisted while
+                    // on a TapRadio auto-play URL (radio.html / podcasts.html /
+                    // spotify.html with playurl=/autoplay=1/spotifyqueue=
+                    // query params), the saved state + URL would resurrect
+                    // playback the moment this WebView is restored. Redirect
+                    // it to the default dashboard instead and discard the
+                    // Parcelable state bundle (which holds the nav history
+                    // including that same auto-play URL).
+                    val isAutoplay = try {
+                        MainActivity.isRadioAutoplayUrl(rawUrl)
+                    } catch (_: Throwable) { false }
+                    val url = if (isAutoplay) Constants.DEFAULT_URL else rawUrl
+                    val stateString = if (isAutoplay) "" else rawStateString
+                    if (isAutoplay) {
+                        Log.w(
+                            "Persistence",
+                            "Dropping restored window with radio auto-play URL: $rawUrl"
+                        )
+                    }
 
                     val newWebView = InternalWebView(context)
                     configureWebView(newWebView)
@@ -2303,6 +2391,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         // Tell the JS-bridge trust gate which page we're on.
                         mediaBridgeUrlRef.set(url ?: "")
                         clearExternalScrollMetrics()
+                        stabilizeWebViewViewportAfterNavigation(
+                                targetWebView = view,
+                                resetVerticalScroll = false
+                        )
                     }
 
                     @Deprecated("Deprecated in Java")
@@ -2363,6 +2455,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         mediaBridgeUrlRef.set(url ?: "")
                         try {
                             view?.let { injectPageObservers(it) }
+                            stabilizeWebViewViewportAfterNavigation(
+                                    targetWebView = view,
+                                    resetVerticalScroll = false
+                            )
                             updateScrollBarsVisibility()
 
                             // Record the URL the WebView is actually showing.
@@ -9011,6 +9107,30 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             return (sample - floor) * amplitude
         }
 
+        private fun dominantPitch01(): Float {
+            var weighted = 0f
+            var total = 0f
+            for (i in 0 until barCount) {
+                val e = barHeights[i].coerceAtLeast(0f)
+                val weight = e * e
+                weighted += (i.toFloat() / (barCount - 1).coerceAtLeast(1)) * weight
+                total += weight
+            }
+            return if (total > 0.0001f) (weighted / total).coerceIn(0f, 1f) else 0f
+        }
+
+        private fun heatGelColor(
+            pitch: Float,
+            volume: Float,
+            alpha: Int = 255,
+            hueOffset: Float = 0f
+        ): Int {
+            val hue = (8f + pitch.coerceIn(0f, 1f) * 205f + hueOffset) % 360f
+            val saturation = (0.64f + volume.coerceIn(0f, 1f) * 0.34f).coerceIn(0f, 1f)
+            val value = (0.48f + volume.coerceIn(0f, 1f) * 0.52f).coerceIn(0f, 1f)
+            return Color.HSVToColor(alpha.coerceIn(0, 255), floatArrayOf(hue, saturation, value))
+        }
+
         /**
          * Classical Orchestra Theme — Musicians on a warm concert stage.
          *
@@ -9065,23 +9185,48 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             paint.strokeWidth = 1.2f
             canvas.drawLine(w * 0.02f, stageTop, w * 0.98f, stageTop, paint)
 
-            // Stage spots — spread across full width
+            // Stage spots: each rig is mapped to a band and shifts hue with the
+            // dominant pitch, so crescendos paint the orchestra in moving color.
             paint.style = Paint.Style.FILL
-            val sA = (30 + motion * 40f).toInt().coerceIn(30, 75)
-            paint.color = Color.argb(sA, 255, 225, 160)
-            canvas.drawCircle(w * 0.18f, h * 0.08f, 4f + treble * 2.5f, paint)
-            canvas.drawCircle(w * 0.50f, h * 0.04f, 5f + highMid * 3f, paint)
-            canvas.drawCircle(w * 0.82f, h * 0.08f, 4f + lowMid * 2.5f, paint)
+            val stagePitch = dominantPitch01()
+            val spotXs = floatArrayOf(0.12f, 0.30f, 0.50f, 0.70f, 0.88f)
+            val spotBands = floatArrayOf(bass, lowMid, highMid, treble, avgLevel)
+            for (i in spotXs.indices) {
+                val e = spotBands[i].coerceIn(0f, 1f)
+                val color = heatGelColor(
+                    pitch = ((stagePitch + i * 0.17f) % 1f),
+                    volume = (motion * 0.45f + e * 0.75f).coerceIn(0f, 1f),
+                    alpha = (50 + e * 175f + motion * 35f).toInt().coerceIn(40, 245),
+                    hueOffset = i * 18f
+                )
+                paint.color = color
+                paint.setShadowLayer(7f + e * 18f, 0f, 0f, color)
+                canvas.drawCircle(
+                    w * spotXs[i],
+                    h * (0.055f + (i % 2) * 0.025f),
+                    3.8f + e * 5.4f + motion * 1.5f,
+                    paint
+                )
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
 
-            // Light cones — wider to cover full stage
+            // Light cones — wider to cover full stage, with gel colors and
+            // transparency tied to each band's instantaneous energy.
             if (motion > 0.05f) {
-                paint.color = Color.argb((motion * 18f).toInt().coerceIn(0, 22), 255, 220, 150)
                 val cone = android.graphics.Path()
-                for (spot in floatArrayOf(0.18f, 0.50f, 0.82f)) {
+                for (i in spotXs.indices) {
+                    val spot = spotXs[i]
+                    val e = spotBands[i].coerceIn(0f, 1f)
+                    paint.color = heatGelColor(
+                        pitch = ((stagePitch + i * 0.17f) % 1f),
+                        volume = (e * 0.8f + motion * 0.35f).coerceIn(0f, 1f),
+                        alpha = (12 + e * 34f + motion * 14f).toInt().coerceIn(12, 68),
+                        hueOffset = i * 18f
+                    )
                     cone.reset()
-                    cone.moveTo(w * spot, h * 0.06f)
-                    cone.lineTo(w * (spot - 0.08f), stageTop)
-                    cone.lineTo(w * (spot + 0.08f), stageTop)
+                    cone.moveTo(w * spot, h * (0.055f + (i % 2) * 0.025f))
+                    cone.lineTo(w * (spot - 0.08f - e * 0.035f), stageTop)
+                    cone.lineTo(w * (spot + 0.08f + e * 0.035f), stageTop)
                     cone.close()
                     canvas.drawPath(cone, paint)
                 }
@@ -10893,8 +11038,246 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         private val cePanelHues = FloatArray(72) { (it * 137.508f) % 360f }
         private val cePanelPhases = FloatArray(72) { (it * 73.13f) % 1f }
         private val cePanelSpeeds = FloatArray(72) { 0.4f + (it * 31.37f % 1f) * 1.6f }
+        private val ceHandshakeToneOrder = intArrayOf(0, 1, 2, 3, 4)
+        private var ceHandshakeStep = 0
+        private var ceLastDominantTone = -1
+        private var ceLastDominantToneFrame = 0L
+        private var ceWhiteoutFrames = 0
+        private var cePrevAvgLevel = 0f
 
         private fun drawCloseEncounters(canvas: Canvas, w: Float, h: Float) {
+            val avg = bandEnergy(0, barCount - 1)
+            val bass = bandEnergy(0, 6)
+            val lowMid = bandEnergy(7, 14)
+            val mid = bandEnergy(15, 23)
+            val treble = bandEnergy(24, 31)
+            val pitch = dominantPitch01()
+            val t = frameCount * 0.052f
+            val hueTick = frameCount * (3.6f + avg * 12f)
+            val horizon = h * 0.34f
+            val vanishingX = w * (0.5f + kotlin.math.sin((frameCount * 0.006f).toDouble()).toFloat() * 0.045f)
+
+            paint.reset()
+            paint.isAntiAlias = true
+            paint.style = Paint.Style.FILL
+            paint.shader = android.graphics.LinearGradient(
+                0f, 0f, 0f, h,
+                intArrayOf(
+                    Color.parseColor("#000000"),
+                    Color.parseColor("#01030A"),
+                    Color.parseColor("#000000"),
+                    Color.parseColor("#000000")
+                ),
+                floatArrayOf(0f, 0.24f, 0.42f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, w, h, paint)
+            paint.shader = null
+
+            fun waveY(nx: Float, depth: Float): Float {
+                val centered = nx - 0.5f
+                val perspective = depth * depth
+                val base = horizon + perspective * h * 0.78f
+                val roll = t * (1.1f + bass * 1.5f)
+                val swell =
+                    kotlin.math.sin((centered * 11.5f + depth * 7.0f - roll).toDouble()).toFloat() * (bass * h * 0.085f) +
+                        kotlin.math.sin((centered * 21.0f - depth * 12.0f + roll * 1.35f).toDouble()).toFloat() * (mid * h * 0.048f) +
+                        kotlin.math.sin((centered * 38.0f + depth * 18.0f - roll * 2.15f).toDouble()).toFloat() * (treble * h * 0.020f)
+                val mountain = kotlin.math.exp((-centered * centered * 14f).toDouble()).toFloat() *
+                    kotlin.math.sin((depth * 11.0f - roll * 0.55f).toDouble()).toFloat() *
+                    h * (0.10f + lowMid * 0.13f)
+                return base - swell - mountain * (0.38f + depth * 0.72f)
+            }
+
+            fun gelColor(depth: Float, band: Float, hueShift: Float = 0f, alphaScale: Float = 1f): Int {
+                val hue = (184f + hueTick + pitch * 185f + depth * 70f + hueShift + treble * 115f + band * 80f) % 360f
+                val sat = (0.72f + band * 0.26f).coerceIn(0f, 1f)
+                val value = (0.68f + band * 0.32f + avg * 0.16f).coerceIn(0f, 1f)
+                val alpha = ((72f + depth * 120f + band * 90f + avg * 35f) * alphaScale).toInt().coerceIn(24, 255)
+                return Color.HSVToColor(alpha, floatArrayOf(hue, sat, value))
+            }
+
+            val path = android.graphics.Path()
+            val glowPath = android.graphics.Path()
+            paint.style = Paint.Style.STROKE
+            paint.strokeCap = Paint.Cap.ROUND
+            paint.strokeJoin = Paint.Join.ROUND
+
+            // Rolling horizontal wave bands.
+            val rows = 24
+            val cols = 48
+            for (r in 0 until rows) {
+                val depth = r / (rows - 1f)
+                val band = when {
+                    depth < 0.22f -> treble
+                    depth < 0.48f -> mid
+                    depth < 0.72f -> lowMid
+                    else -> bass
+                }.coerceIn(0f, 1f)
+                path.reset()
+                glowPath.reset()
+                for (c in 0..cols) {
+                    val nx = c / cols.toFloat()
+                    val spread = 0.12f + depth * 1.18f
+                    val x = vanishingX + (nx - 0.5f) * w * spread
+                    val y = waveY(nx, depth)
+                    if (c == 0) {
+                        path.moveTo(x, y)
+                        glowPath.moveTo(x, y)
+                    } else {
+                        path.lineTo(x, y)
+                        glowPath.lineTo(x, y)
+                    }
+                }
+                val color = gelColor(depth, band)
+                paint.strokeWidth = 0.8f + depth * 2.4f + band * 2.1f
+                paint.color = color
+                paint.setShadowLayer(3f + band * 8f + avg * 4f, 0f, 0f, color)
+                canvas.drawPath(glowPath, paint)
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+                paint.strokeWidth = 0.45f + depth * 1.25f
+                paint.color = Color.HSVToColor(
+                    (120 + depth * 110f + band * 50f).toInt().coerceIn(90, 255),
+                    floatArrayOf((170f + hueTick * 1.25f + pitch * 180f + depth * 70f + band * 30f) % 360f, 0.92f, 1f)
+                )
+                canvas.drawPath(path, paint)
+            }
+
+            // Perspective cross-lines to create the triangulated mesh from the reference.
+            for (c in 0..cols step 4) {
+                val nx = c / cols.toFloat()
+                path.reset()
+                for (r in 0 until rows) {
+                    val depth = r / (rows - 1f)
+                    val spread = 0.12f + depth * 1.18f
+                    val x = vanishingX + (nx - 0.5f) * w * spread
+                    val y = waveY(nx, depth)
+                    if (r == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                }
+                val columnBand = measuredAudioAt(nx)
+                val color = gelColor(nx, columnBand, hueShift = 58f, alphaScale = 0.78f)
+                paint.strokeWidth = 0.45f + columnBand * 1.4f
+                paint.color = color
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+                canvas.drawPath(path, paint)
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            // Diagonal facets so the surface reads as a glowing triangular net.
+            paint.strokeWidth = 0.55f + avg * 0.7f
+            for (r in 3 until rows step 5) {
+                val depth0 = r / (rows - 1f)
+                val depth1 = ((r + 3).coerceAtMost(rows - 1)) / (rows - 1f)
+                val lineBand = (bandWindow(depth0, 2) * 0.5f + avg * 0.5f).coerceIn(0f, 1f)
+                paint.color = gelColor(depth0, lineBand, hueShift = 88f, alphaScale = 0.48f)
+                for (c in 0 until cols step 10) {
+                    val nx0 = c / cols.toFloat()
+                    val nx1 = ((c + 5).coerceAtMost(cols)) / cols.toFloat()
+                    val x0 = vanishingX + (nx0 - 0.5f) * w * (0.12f + depth0 * 1.18f)
+                    val y0 = waveY(nx0, depth0)
+                    val x1 = vanishingX + (nx1 - 0.5f) * w * (0.12f + depth1 * 1.18f)
+                    val y1 = waveY(nx1, depth1)
+                    canvas.drawLine(x0, y0, x1, y1, paint)
+                }
+            }
+
+            fun drawEnterpriseModel(shipX: Float, shipY: Float, scale: Float) {
+                val shipGlow = Color.argb((110 + avg * 105f).toInt().coerceIn(110, 220), 150, 220, 255)
+                val shipFill = Color.argb(235, 184, 202, 210)
+                val shadow = Color.argb(245, 24, 34, 48)
+                paint.style = Paint.Style.FILL
+                paint.color = shipGlow
+                paint.setShadowLayer(10f + avg * 14f, 0f, 0f, shipGlow)
+                canvas.drawOval(
+                    shipX - scale * 2.0f,
+                    shipY - scale * 0.50f,
+                    shipX + scale * 2.1f,
+                    shipY + scale * 0.45f,
+                    paint
+                )
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+                paint.color = shipFill
+                canvas.drawOval(
+                    shipX - scale * 1.75f,
+                    shipY - scale * 0.38f,
+                    shipX + scale * 1.8f,
+                    shipY + scale * 0.32f,
+                    paint
+                )
+                paint.color = shadow
+                canvas.drawOval(
+                    shipX - scale * 1.05f,
+                    shipY - scale * 0.13f,
+                    shipX + scale * 1.08f,
+                    shipY + scale * 0.27f,
+                    paint
+                )
+                paint.style = Paint.Style.STROKE
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeWidth = scale * 0.13f
+                paint.color = shipFill
+                val neckX = shipX + scale * 1.15f
+                val neckY = shipY + scale * 0.28f
+                val hullX = shipX + scale * 2.62f
+                val hullY = shipY + scale * 0.82f
+                canvas.drawLine(neckX, neckY, hullX - scale * 0.88f, hullY, paint)
+                paint.style = Paint.Style.FILL
+                canvas.drawOval(
+                    hullX - scale * 1.0f,
+                    hullY - scale * 0.26f,
+                    hullX + scale * 1.15f,
+                    hullY + scale * 0.30f,
+                    paint
+                )
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = scale * 0.11f
+                val nacelleColor = Color.argb(245, 205, 218, 224)
+                paint.color = nacelleColor
+                val nacelleGlow = heatGelColor(pitch, avg, alpha = 210, hueOffset = 18f)
+                paint.setShadowLayer(5f + treble * 8f, 0f, 0f, nacelleGlow)
+                canvas.drawLine(shipX + scale * 1.55f, shipY - scale * 0.42f, shipX + scale * 3.72f, shipY - scale * 0.88f, paint)
+                canvas.drawLine(shipX + scale * 1.72f, shipY + scale * 0.58f, shipX + scale * 3.86f, shipY + scale * 1.10f, paint)
+                paint.strokeWidth = scale * 0.30f
+                canvas.drawLine(shipX + scale * 2.95f, shipY - scale * 0.97f, shipX + scale * 4.28f, shipY - scale * 1.05f, paint)
+                canvas.drawLine(shipX + scale * 3.05f, shipY + scale * 1.18f, shipX + scale * 4.40f, shipY + scale * 1.25f, paint)
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+                paint.style = Paint.Style.FILL
+                paint.textAlign = Paint.Align.CENTER
+                paint.typeface = android.graphics.Typeface.MONOSPACE
+                paint.textSize = scale * 0.42f
+                paint.color = Color.argb(170, 24, 36, 48)
+                canvas.drawText("NCC-1701", shipX - scale * 0.08f, shipY + scale * 0.05f, paint)
+                paint.typeface = android.graphics.Typeface.DEFAULT
+                paint.textAlign = Paint.Align.LEFT
+            }
+
+            val shipDrift = kotlin.math.sin((frameCount * 0.0035f).toDouble()).toFloat()
+            val shipScale = h * (0.070f + avg * 0.030f)
+            drawEnterpriseModel(
+                vanishingX + shipDrift * w * 0.12f,
+                horizon - h * (0.080f + treble * 0.018f),
+                shipScale
+            )
+
+            // Final bloom pass over loud crests while keeping the horizon black.
+            if (avg > 0.08f) {
+                paint.style = Paint.Style.FILL
+                paint.shader = android.graphics.RadialGradient(
+                    vanishingX, horizon + h * 0.34f, w * (0.30f + avg * 0.12f),
+                    intArrayOf(
+                        Color.argb((avg * 46f).toInt().coerceIn(0, 70), 70, 220, 255),
+                        Color.argb((mid * 42f).toInt().coerceIn(0, 64), 240, 70, 255),
+                        Color.TRANSPARENT
+                    ),
+                    floatArrayOf(0f, 0.46f, 1f),
+                    android.graphics.Shader.TileMode.CLAMP
+                )
+                canvas.drawRect(0f, 0f, w, h, paint)
+                paint.shader = null
+            }
+        }
+
+        private fun drawCloseEncountersLegacy(canvas: Canvas, w: Float, h: Float) {
             // ══════════════════════════════════════════════════════════════
             //  Close Encounters of the Third Kind — redesigned to match the
             //  iconic climax frame: massive saucer silhouette filling the
@@ -10920,6 +11303,54 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             val trebleEnergy    = bandEnergy(25, 31)  // → drives ORANGE
             val avgLevel        = bandEnergy(0, barCount - 1)
             val active          = avgLevel > 0.03f
+            val pitch01         = dominantPitch01()
+            val toneColors = intArrayOf(
+                Color.parseColor("#FF2020"),  // RE  — RED
+                Color.parseColor("#FFD60A"),  // MI  — YELLOW
+                Color.parseColor("#A050FF"),  // DO↑ — PURPLE
+                Color.parseColor("#22E655"),  // DO↓ — GREEN
+                Color.parseColor("#FF7A1F")   // SOL — ORANGE
+            )
+            val toneNames = arrayOf("RE", "MI", "DO↑", "DO↓", "SOL")
+            val toneEnergies = floatArrayOf(
+                bassEnergy, lowMidEnergy, midEnergy, highMidEnergy, trebleEnergy
+            )
+            var brightestPanel = -1
+            var brightestValue = 0f
+            for (i in 0 until 5) {
+                if (toneEnergies[i] > brightestValue) {
+                    brightestValue = toneEnergies[i]
+                    brightestPanel = i
+                }
+            }
+
+            val dominantTone = brightestPanel
+            if (active && dominantTone >= 0 && brightestValue > 0.28f &&
+                frameCount - ceLastDominantToneFrame > 6 &&
+                dominantTone != ceLastDominantTone
+            ) {
+                ceLastDominantTone = dominantTone
+                ceLastDominantToneFrame = frameCount
+                ceHandshakeStep = if (dominantTone == ceHandshakeToneOrder[ceHandshakeStep]) {
+                    ceHandshakeStep + 1
+                } else if (dominantTone == ceHandshakeToneOrder[0]) {
+                    1
+                } else {
+                    0
+                }
+                if (ceHandshakeStep >= ceHandshakeToneOrder.size) {
+                    ceHandshakeStep = 0
+                    ceWhiteoutFrames = 26
+                }
+            }
+            if (!active && avgLevel < 0.02f) {
+                ceHandshakeStep = 0
+                ceLastDominantTone = -1
+            }
+            val beatRise = (avgLevel - cePrevAvgLevel).coerceAtLeast(0f)
+            cePrevAvgLevel = avgLevel
+            if (ceWhiteoutFrames > 0) ceWhiteoutFrames--
+            val whiteout = (ceWhiteoutFrames / 26f).coerceIn(0f, 1f)
 
             // ── Sky gradient: deep indigo top, night-canyon browns at bottom ──
             paint.reset()
@@ -11078,6 +11509,90 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             canvas.drawOval(hullRect, paint)
             paint.setShadowLayer(0f, 0f, 0f, 0)
 
+            // Layered hull ribs and portholes: the mothership should feel huge,
+            // mechanical, and dense with little practical-theater light sources.
+            paint.style = Paint.Style.STROKE
+            paint.strokeCap = Paint.Cap.ROUND
+            for (rib in 0 until 5) {
+                val inset = rib * shipH * 0.045f
+                paint.strokeWidth = 0.7f + rib * 0.15f
+                paint.color = Color.argb(
+                    (44 + avgLevel * 80f).toInt().coerceIn(44, 145),
+                    255, 178, 95
+                )
+                val rr = android.graphics.RectF(
+                    hullRect.left + inset * 2.8f,
+                    hullRect.top + inset,
+                    hullRect.right - inset * 2.8f,
+                    hullRect.bottom - inset * 0.45f
+                )
+                canvas.drawOval(rr, paint)
+            }
+
+            // Massive circular light-board on the underside. Radius maps to
+            // frequency, panel brightness maps to volume, hue follows pitch.
+            val gridCx = shipCx
+            val gridCy = shipCy + shipH * 0.305f
+            val gridRx = shipW * 0.355f
+            val gridRy = shipH * 0.185f
+            paint.style = Paint.Style.FILL
+            for (ring in 0 until 7) {
+                val ringFrac = (ring + 1f) / 7f
+                val panelCount = 10 + ring * 8
+                for (p in 0 until panelCount) {
+                    val phase = p.toFloat() / panelCount
+                    val angle = phase * 6.283185f + t * (0.10f + ring * 0.018f)
+                    val toneIdx = ((pitch01 * 4.99f).toInt() + ring + p / 3).coerceAtLeast(0) % 5
+                    val binIdx = ((phase * barCount + ring * 2f).toInt()).coerceIn(0, barCount - 1)
+                    val binEnergy = (barHeights[binIdx] * 0.72f + toneEnergies[toneIdx] * 0.48f).coerceIn(0f, 1f)
+                    val x = gridCx + kotlin.math.cos(angle.toDouble()).toFloat() * gridRx * ringFrac
+                    val y = gridCy + kotlin.math.sin(angle.toDouble()).toFloat() * gridRy * ringFrac
+                    if (y < hullRect.top || y > hullRect.bottom + shipH * 0.08f) continue
+
+                    val depth = (0.35f + kotlin.math.sin(angle.toDouble()).toFloat() * 0.65f).coerceIn(0f, 1f)
+                    val panelW = (shipW * 0.012f + ring * 0.18f + binEnergy * 1.8f) * (0.65f + depth * 0.55f)
+                    val panelH = (shipH * 0.018f + binEnergy * 2.2f) * (0.75f + depth * 0.35f)
+                    val gel = heatGelColor(
+                        pitch = (toneIdx / 4f * 0.82f + pitch01 * 0.18f).coerceIn(0f, 1f),
+                        volume = (binEnergy + avgLevel * 0.25f).coerceIn(0f, 1f),
+                        alpha = (58 + binEnergy * 190f + whiteout * 70f).toInt().coerceIn(40, 255),
+                        hueOffset = ring * 10f
+                    )
+                    paint.color = if (whiteout > 0.55f) Color.WHITE else gel
+                    paint.setShadowLayer(
+                        3.5f + binEnergy * 15f + whiteout * 18f,
+                        0f,
+                        0f,
+                        if (whiteout > 0.4f) Color.WHITE else gel
+                    )
+                    val rect = android.graphics.RectF(
+                        x - panelW,
+                        y - panelH * 0.5f,
+                        x + panelW,
+                        y + panelH * 0.5f
+                    )
+                    canvas.save()
+                    canvas.rotate(angle * 57.2958f + 90f, x, y)
+                    canvas.drawRoundRect(rect, panelH * 0.35f, panelH * 0.35f, paint)
+                    canvas.restore()
+
+                    if (binEnergy > 0.46f || whiteout > 0.25f) {
+                        val rayAlpha = (binEnergy * 34f + whiteout * 90f).toInt().coerceIn(0, 135)
+                        val ray = android.graphics.Path()
+                        val footX = w * (0.33f + phase * 0.34f)
+                        val footY = groundY + h * 0.22f
+                        ray.moveTo(x, y + panelH)
+                        ray.lineTo(footX - w * 0.018f * (1f + binEnergy), footY)
+                        ray.lineTo(footX + w * 0.018f * (1f + binEnergy), footY)
+                        ray.close()
+                        paint.style = Paint.Style.FILL
+                        paint.color = Color.argb(rayAlpha, 235, 245, 255)
+                        canvas.drawPath(ray, paint)
+                    }
+                }
+            }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
+
             // ── Horizontal WINDOW-LIGHT BAND (the bright strip of rectangles) ──
             // This is the signature horizontal band of glowing rectangles
             // across the underside of the ship in the reference image. Each
@@ -11124,25 +11639,6 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             //
             // We identify which tone is currently dominant and make lights
             // at that color burn white-hot.
-            val toneColors = intArrayOf(
-                Color.parseColor("#FF2020"),  // RE  — RED
-                Color.parseColor("#FFD60A"),  // MI  — YELLOW
-                Color.parseColor("#A050FF"),  // DO↑ — PURPLE
-                Color.parseColor("#22E655"),  // DO↓ — GREEN
-                Color.parseColor("#FF7A1F")   // SOL — ORANGE
-            )
-            val toneNames = arrayOf("RE", "MI", "DO↑", "DO↓", "SOL")
-            val toneEnergies = floatArrayOf(
-                bassEnergy, lowMidEnergy, midEnergy, highMidEnergy, trebleEnergy
-            )
-            var brightestPanel = -1
-            var brightestValue = 0f
-            for (i in 0 until 5) {
-                if (toneEnergies[i] > brightestValue) {
-                    brightestValue = toneEnergies[i]; brightestPanel = i
-                }
-            }
-
             // Rotation speed scales with overall energy
             val rimCount = 40
             val rimRotation = t * (0.35f + avgLevel * 0.9f)
@@ -11309,6 +11805,85 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             canvas.drawPath(crowdPath, paint)
             paint.setShadowLayer(0f, 0f, 0f, 0)
 
+            fun drawScientist(px: Float, footY: Float, scale: Float, skin: Int, coatTint: Int, synth: Boolean = false) {
+                val headR = h * 0.018f * scale
+                val bodyH = h * 0.085f * scale
+                val bodyW = h * 0.040f * scale
+                val headY = footY - bodyH - headR * 1.7f
+                val torsoTop = footY - bodyH
+
+                paint.style = Paint.Style.FILL
+                paint.color = coatTint
+                paint.alpha = 245
+                canvas.drawRoundRect(
+                    px - bodyW * 0.55f, torsoTop,
+                    px + bodyW * 0.55f, footY,
+                    bodyW * 0.18f, bodyW * 0.18f,
+                    paint
+                )
+                paint.color = Color.argb(235, 38, 45, 58)
+                canvas.drawRect(px - bodyW * 0.18f, torsoTop + bodyH * 0.06f, px + bodyW * 0.18f, footY, paint)
+                paint.color = skin
+                canvas.drawCircle(px, headY, headR, paint)
+                paint.color = Color.argb(220, 26, 22, 18)
+                canvas.drawArc(
+                    android.graphics.RectF(px - headR, headY - headR, px + headR, headY + headR * 0.25f),
+                    180f, 180f, true, paint
+                )
+                paint.style = Paint.Style.STROKE
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeWidth = h * 0.0055f * scale
+                paint.color = skin
+                if (synth) {
+                    val tableY = footY - bodyH * 0.34f
+                    val tableW = h * 0.105f * scale
+                    val tableH = h * 0.025f * scale
+                    paint.style = Paint.Style.FILL
+                    paint.color = Color.argb(245, 10, 12, 18)
+                    canvas.drawRoundRect(
+                        px - tableW * 0.5f, tableY,
+                        px + tableW * 0.5f, tableY + tableH,
+                        tableH * 0.18f, tableH * 0.18f,
+                        paint
+                    )
+                    for (k in 0 until 9) {
+                        paint.color = if (k % 2 == 0) Color.argb(245, 245, 240, 224) else Color.argb(245, 26, 28, 36)
+                        val keyW = tableW / 11f
+                        val kx = px - tableW * 0.42f + k * keyW
+                        canvas.drawRect(kx, tableY + tableH * 0.18f, kx + keyW * 0.68f, tableY + tableH * 0.88f, paint)
+                    }
+                    paint.style = Paint.Style.STROKE
+                    paint.strokeWidth = h * 0.006f * scale
+                    paint.color = skin
+                    val play = kotlin.math.sin((t * 8.0f).toDouble()).toFloat() * avgLevel * h * 0.018f
+                    canvas.drawLine(px - bodyW * 0.36f, torsoTop + bodyH * 0.34f, px - tableW * 0.28f, tableY + play, paint)
+                    canvas.drawLine(px + bodyW * 0.36f, torsoTop + bodyH * 0.34f, px + tableW * 0.24f, tableY - play, paint)
+                } else {
+                    canvas.drawLine(px - bodyW * 0.42f, torsoTop + bodyH * 0.25f, px - bodyW * 0.85f, torsoTop + bodyH * 0.62f, paint)
+                    canvas.drawLine(px + bodyW * 0.42f, torsoTop + bodyH * 0.25f, px + bodyW * 0.82f, torsoTop + bodyH * 0.58f, paint)
+                    paint.style = Paint.Style.FILL
+                    paint.color = Color.argb(230, 210, 225, 240)
+                    canvas.drawRoundRect(
+                        px + bodyW * 0.58f, torsoTop + bodyH * 0.45f,
+                        px + bodyW * 1.06f, torsoTop + bodyH * 0.82f,
+                        1.5f, 1.5f, paint
+                    )
+                }
+                paint.setShadowLayer(3f + avgLevel * 5f, 0f, 0f, Color.argb(180, 255, 160, 80))
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 0.9f
+                paint.color = Color.argb((85 + avgLevel * 120f).toInt().coerceIn(85, 210), 255, 180, 90)
+                canvas.drawLine(px - bodyW * 0.48f, torsoTop, px + bodyW * 0.48f, torsoTop, paint)
+                paint.setShadowLayer(0f, 0f, 0f, 0)
+            }
+
+            val scientistY = h * 0.91f
+            drawScientist(w * 0.30f, scientistY, 0.94f, Color.parseColor("#E0AC69"), Color.argb(240, 232, 238, 230))
+            drawScientist(w * 0.40f, scientistY + h * 0.01f, 0.86f, Color.parseColor("#8D5524"), Color.argb(238, 218, 230, 232))
+            drawScientist(w * 0.50f, scientistY + h * 0.012f, 1.02f, Color.parseColor("#FCDEC0"), Color.argb(245, 242, 240, 224), synth = true)
+            drawScientist(w * 0.62f, scientistY + h * 0.006f, 0.90f, Color.parseColor("#C68642"), Color.argb(238, 228, 234, 220))
+            drawScientist(w * 0.72f, scientistY, 0.84f, Color.parseColor("#D4A574"), Color.argb(235, 216, 226, 232))
+
             // ── Rotating beacon scanning from ship center ───────────────
             val scanAngle = (t * 1.8f * 57.2958f)   // degrees
             paint.style = Paint.Style.STROKE
@@ -11326,6 +11901,25 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 canvas.drawArc(scanRect, ba, 30f, false, paint)
             }
             paint.setShadowLayer(0f, 0f, 0f, 0)
+
+            if (whiteout > 0f) {
+                paint.style = Paint.Style.FILL
+                paint.shader = android.graphics.RadialGradient(
+                    shipCx, shipCy + shipH * 0.18f, w * (0.36f + whiteout * 0.32f),
+                    intArrayOf(
+                        Color.argb((240 * whiteout).toInt().coerceIn(0, 240), 255, 255, 255),
+                        Color.argb((185 * whiteout).toInt().coerceIn(0, 185), 255, 244, 205),
+                        Color.argb((95 * whiteout).toInt().coerceIn(0, 95), 160, 210, 255),
+                        Color.TRANSPARENT
+                    ),
+                    floatArrayOf(0f, 0.22f, 0.62f, 1f),
+                    android.graphics.Shader.TileMode.CLAMP
+                )
+                canvas.drawRect(0f, 0f, w, h, paint)
+                paint.shader = null
+                paint.color = Color.argb((115 * whiteout).toInt().coerceIn(0, 115), 255, 255, 255)
+                canvas.drawRect(0f, 0f, w, h, paint)
+            }
 
             // ── Tone callout ─────────────────────────────────────────────
             if (brightestPanel >= 0 && brightestValue > 0.25f) {
@@ -11355,7 +11949,12 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             canvas.drawText("CE3K  ·  TONE LINK", 6f, h * 0.045f, paint)
             paint.textAlign = Paint.Align.RIGHT
             paint.color = Color.parseColor("#FFD860")
-            canvas.drawText("SEQ %05d".format(frameCount % 100000), w - 6f, h * 0.045f, paint)
+            canvas.drawText(
+                "SEQ ${ceHandshakeStep}/${ceHandshakeToneOrder.size} · %05d".format(frameCount % 100000),
+                w - 6f,
+                h * 0.045f,
+                paint
+            )
             paint.setShadowLayer(0f, 0f, 0f, 0)
             paint.typeface = android.graphics.Typeface.DEFAULT
             paint.textAlign = Paint.Align.LEFT
@@ -11889,7 +12488,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
             val bass = bandEnergy(0, 5)
             val mid = bandEnergy(6, 18)
-            val speed = 0.008f + bass * 0.060f + mid * 0.012f
+            val treble = bandEnergy(19, 31)
+            val avg = bandEnergy(0, barCount - 1)
+            val pitch = dominantPitch01()
+            val speed = 0.008f + bass * 0.060f + mid * 0.012f + avg * 0.010f
             val cx = w * 0.5f
             val cy = h * 0.5f
             val focal = (kotlin.math.min(w, h) * 0.75f)
@@ -11919,22 +12521,38 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 if (sxNew < -4f || sxNew > w + 4f || syNew < -4f || syNew > h + 4f) continue
 
                 val depth = (1f - (newZ / 2f)).coerceIn(0f, 1f)
-                val brightness = (120 + (135 * depth)).toInt().coerceIn(0, 255)
-                val thickness = (0.8f + depth * 2.8f)
+                val starBand = Math.floorMod(i + (pitch * barCount).toInt(), barCount)
+                val band = barHeights[starBand]
+                val brightness = (75 + 125 * depth + 95 * band + 70 * avg).toInt().coerceIn(0, 255)
+                val thickness = (0.65f + depth * 2.5f + band * 1.6f + bass * 0.55f)
+                val starHue = (pitch * 240f + starBand * 13.5f + treble * 80f) % 360f
+                val starColor = Color.HSVToColor(
+                    brightness,
+                    floatArrayOf(
+                        starHue,
+                        (0.35f + band * 0.55f + avg * 0.20f).coerceIn(0.25f, 1f),
+                        (0.62f + depth * 0.25f + band * 0.30f).coerceIn(0.4f, 1f)
+                    )
+                )
 
                 // Trail line from old to new position
                 paint.strokeWidth = thickness
-                paint.color = Color.argb(brightness, 255, 255, 255)
+                paint.color = starColor
+                paint.setShadowLayer(1.2f + band * 7f + depth * 2f, 0f, 0f, starColor)
                 canvas.drawLine(sxOld, syOld, sxNew, syNew, paint)
 
                 // Bright point at the front of the streak
                 if (depth > 0.55f) {
                     paint.style = Paint.Style.FILL
-                    paint.color = Color.argb(255, 255, 255, 255)
+                    paint.color = Color.HSVToColor(
+                        255,
+                        floatArrayOf(starHue, (0.18f + band * 0.45f).coerceIn(0f, 0.75f), 1f)
+                    )
                     canvas.drawCircle(sxNew, syNew, thickness * 0.5f, paint)
                     paint.style = Paint.Style.STROKE
                 }
             }
+            paint.setShadowLayer(0f, 0f, 0f, 0)
 
             // Bass-driven radial flash when a beat hits
             if (bass > 0.55f) {

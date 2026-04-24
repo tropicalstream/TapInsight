@@ -145,14 +145,166 @@ class MainActivity :
         @Volatile
         private var staticNativeRadioPlayer: ExoPlayer? = null
 
-        /** Stop any orphaned native radio player from a previous Activity instance. */
+        /**
+         * Nuclear stop for any TapRadio playback that may be alive in this process.
+         *
+         * This covers every known resurrection path observed in the field:
+         *   1. The static ExoPlayer slot (orphaned from a prior Activity instance).
+         *   2. The active Activity instance's own ExoPlayer + metadata fields +
+         *      progress ticker + audio focus.
+         *   3. The radio.html / podcasts.html / spotify.html WebView pages that
+         *      can hold a live <audio> element or pending JS timers even after
+         *      the native ExoPlayer is gone — we navigate those to about:blank
+         *      so the DOM is torn down.
+         *   4. The persisted `BrowserPrefs.last_url` + `BrowserPrefs.webview_state`
+         *      that `tryRestoreSession()` reads on cold start. If those still
+         *      point at a radio.html?playUrl=… URL, the next launch auto-plays
+         *      the saved stream — which is the bug the user has complained
+         *      about repeatedly. We scrub those back to the default dashboard.
+         *   5. The `visionclaw_prefs.tapradio_now_playing_*` HUD state.
+         *
+         * Safe to call from any thread. All instance-scoped work is hopped
+         * to the Activity's UI thread internally.
+         *
+         * @param context any Context in this process — used to reach
+         *   SharedPreferences when no active Activity instance is alive.
+         *   Pass `null` to skip prefs sanitization (e.g. from the tapbrowser
+         *   Activity itself during its own onCreate, where the caller will
+         *   load a fresh URL anyway).
+         */
         @JvmStatic
-        fun stopOrphanedNativeRadioPlayer() {
+        @JvmOverloads
+        fun stopOrphanedNativeRadioPlayer(context: android.content.Context? = null) {
+            // 1. Stop the orphaned static ExoPlayer (may be from a dead Activity).
             try {
                 staticNativeRadioPlayer?.stop()
                 staticNativeRadioPlayer?.release()
             } catch (_: Exception) {}
             staticNativeRadioPlayer = null
+
+            // 2. Stop the live Activity instance's player + clear its metadata +
+            //    kill any radio WebView pages (HTML5 <audio> / pending JS timers).
+            val activity = activeInstanceRef?.get()
+            if (activity != null) {
+                try {
+                    activity.runOnUiThread {
+                        try {
+                            val local = activity.nativeRadioPlayer
+                            try {
+                                local?.stop()
+                                local?.release()
+                            } catch (_: Exception) {}
+                            activity.nativeRadioPlayer = null
+                            activity.nativeRadioUrl = null
+                            activity.nativeRadioStationName = null
+                            activity.nativeRadioGenre = null
+                            activity.nativeRadioKind = null
+                            activity.nativeRadioError = null
+                            activity.nativeRadioPreparing = false
+                            activity.nativeRadioBuffering = false
+                            try {
+                                activity.uiHandler.removeCallbacks(activity.nativeRadioProgressTicker)
+                            } catch (_: Exception) {}
+                            try {
+                                activity.audioManager?.abandonAudioFocus(activity.nativeRadioFocusListener)
+                            } catch (_: Exception) {}
+                            // Tear down the radio.html / podcasts.html / spotify.html
+                            // DOM in every WebView tab so no stray <audio> element
+                            // and no pending setTimeout can resurrect playback.
+                            if (activity::dualWebViewGroup.isInitialized) {
+                                activity.dualWebViewGroup.getAllWebViews().forEach { wv ->
+                                    val u = wv.url.orEmpty().lowercase(Locale.US)
+                                    if (u.contains("radio.html") ||
+                                        u.contains("podcasts.html") ||
+                                        u.contains("spotify.html")) {
+                                        try { wv.stopLoading() } catch (_: Exception) {}
+                                        try {
+                                            wv.evaluateJavascript(
+                                                "try{document.querySelectorAll('audio,video').forEach(function(e){try{e.pause();e.muted=true;e.src='';e.removeAttribute('src');e.load();}catch(_){}});}catch(_){}",
+                                                null
+                                            )
+                                        } catch (_: Exception) {}
+                                        try { wv.loadUrl("about:blank") } catch (_: Exception) {}
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // 3. Sanitize the persisted URL / WebView state + HUD prefs so a
+            //    subsequent cold start can't auto-resume the dead stream.
+            val ctx: android.content.Context? = context ?: activity
+            if (ctx != null) {
+                try {
+                    val browserPrefs = ctx.getSharedPreferences(
+                        Constants.BROWSER_PREFS_NAME, android.content.Context.MODE_PRIVATE
+                    )
+                    val savedUrl = browserPrefs.getString(Constants.KEY_LAST_URL, null)
+                    if (savedUrl != null && isRadioAutoplayUrl(savedUrl)) {
+                        // Replace with the default dashboard AND wipe the
+                        // Parcelable webview_state bundle — otherwise restoreState
+                        // will replay the old navigation history including the
+                        // auto-play URL.
+                        browserPrefs.edit()
+                            .putString(Constants.KEY_LAST_URL, Constants.DEFAULT_URL)
+                            .remove(Constants.KEY_WEBVIEW_STATE)
+                            .commit()
+                    }
+                } catch (_: Exception) {}
+                // Also scrub the per-window state ("saved_windows_state" in
+                // TapLinkPrefs). DualWebViewGroup writes a JSON document with
+                // each window's url + base64 WebView bundle; if any window
+                // still points at a radio-autoplay URL, purge the whole
+                // document so restoreState can't replay it.
+                try {
+                    val windowPrefs = ctx.getSharedPreferences(
+                        Constants.PREFS_NAME, android.content.Context.MODE_PRIVATE
+                    )
+                    val saved = windowPrefs.getString("saved_windows_state", null)
+                    if (saved != null && isRadioAutoplayUrl(saved)) {
+                        windowPrefs.edit()
+                            .remove("saved_windows_state")
+                            .commit()
+                    }
+                } catch (_: Exception) {}
+                try {
+                    ctx.getSharedPreferences("visionclaw_prefs", android.content.Context.MODE_PRIVATE)
+                        .edit()
+                        .putBoolean("tapradio_now_playing_active", false)
+                        .putLong("tapradio_now_playing_updated_at", System.currentTimeMillis())
+                        .remove("tapradio_now_playing_name")
+                        .remove("tapradio_now_playing_genre")
+                        .remove("tapradio_now_playing_kind")
+                        .remove("tapradio_now_playing_url")
+                        .remove("tapradio_now_playing_position_ms")
+                        .remove("tapradio_now_playing_duration_ms")
+                        .remove("tapradio_now_playing_error")
+                        .commit()
+                } catch (_: Exception) {}
+            }
+        }
+
+        /**
+         * True when the URL is a TapRadio auto-play URL whose mere presence
+         * in `BrowserPrefs.last_url` would cause `tryRestoreSession()` to
+         * restart playback on next launch.
+         *
+         * Also used by `DualWebViewGroup.restoreState()` to skip per-window
+         * URLs that would otherwise auto-restart playback through the
+         * `saved_windows_state` path.
+         */
+        @JvmStatic
+        internal fun isRadioAutoplayUrl(url: String): Boolean {
+            val lower = url.lowercase(Locale.US)
+            val isRadioPage = lower.contains("radio.html") ||
+                lower.contains("podcasts.html") ||
+                lower.contains("spotify.html")
+            if (!isRadioPage) return false
+            return lower.contains("playurl=") ||
+                lower.contains("autoplay=1") ||
+                lower.contains("spotifyqueue=")
         }
 
         @JvmStatic
@@ -324,6 +476,7 @@ class MainActivity :
     /** Set true during nuclear WebView clearing so onPageStarted's about:blank
      *  recovery doesn't reload the old YouTube page. */
     @Volatile private var nuclearCleanupInProgress = false
+    @Volatile private var webViewsPausedForReturnToChat = false
 
     // User Agent management
     private var defaultUserAgent: String? = null
@@ -1271,6 +1424,24 @@ class MainActivity :
                                             )
                                         }
                                         runCatching { dualWebViewGroup.pauseAllWindowsMedia() }
+                                        runCatching { dualWebViewGroup.clearTrackedMediaPlayback() }
+                                        // The dark visualizer / masked YouTube path can keep audio
+                                        // alive inside iframe-backed players even after the softer
+                                        // pause hooks run. Use the stronger kill path before
+                                        // returning to chat so playback is always silenced.
+                                        runCatching { killAllWebViewAudio(resumeWebViewsAfterKill = false) }
+                                    }
+                                    runCatching { stopNativeRadioStream() }
+                                    runCatching { clearTapRadioPlaybackPrefs() }
+                                    // Nuclear purge: also navigates any radio.html /
+                                    // podcasts.html / spotify.html WebView to
+                                    // about:blank and scrubs `BrowserPrefs.last_url`
+                                    // + `webview_state` so a later cold start (AR
+                                    // glasses can aggressively kill backgrounded
+                                    // Activities to reclaim RAM) cannot resurrect
+                                    // the stream via tryRestoreSession().
+                                    runCatching {
+                                        stopOrphanedNativeRadioPlayer(this@MainActivity)
                                     }
                                     try {
                                         startActivity(
@@ -3063,14 +3234,17 @@ class MainActivity :
             sensorManager.unregisterListener(sensorEventListener)
         }
 
-        // Don't pause media when screen is masked — the user wants audio to keep playing
-        // while the projector is off (power button press triggers onPause on RayNeo X3 Pro)
+        // IMPORTANT: Do NOT pause YouTube/radio media on onPause.
+        //
+        // Pressing the sleep button on the RayNeo X3 Pro triggers onPause here (the OS powers
+        // down the display), but the user is still wearing the glasses and expects audio to
+        // keep playing. The previous isScreenMasked() gate was insufficient — isScreenMasked()
+        // only returns true when the user explicitly taps the mask toggle, NOT when the power
+        // button is pressed, so any sleep-button press was muting audio. Android's audio focus
+        // system will handle cleanup if the user actually leaves the app; we do not need to
+        // proactively kill our own playback here.
         if (::dualWebViewGroup.isInitialized) {
             dualWebViewGroup.setHostPaused(true)
-            if (!dualWebViewGroup.isScreenMasked()) {
-                dualWebViewGroup.pauseYouTubeMediaAcrossAllWindows(resetTracking = false)
-            }
-
             // Keep a lightweight snapshot on pause so projector-off/resume does not block audio.
             dualWebViewGroup.saveWindowMetadataState()
         }
@@ -3081,6 +3255,10 @@ class MainActivity :
 
         if (::dualWebViewGroup.isInitialized) {
             dualWebViewGroup.setHostPaused(false)
+            if (webViewsPausedForReturnToChat) {
+                webViewsPausedForReturnToChat = false
+                dualWebViewGroup.getAllWebViews().forEach { it.onResume() }
+            }
         }
 
         // Register notification receiver
@@ -3616,7 +3794,7 @@ class MainActivity :
      * Aggressively stop all audio/video playback across ALL WebView instances.
      * Pauses and mutes all media elements, clears their src, and stops loading.
      */
-    private fun killAllWebViewAudio() {
+    private fun killAllWebViewAudio(resumeWebViewsAfterKill: Boolean = true) {
         try {
             val killJs = """
                 (function(){
@@ -3640,10 +3818,15 @@ class MainActivity :
                     // Android-level pause stops all timers, JS execution, plugins/media
                     wv.onPause()
                 }
-                // Resume the primary webView shortly since it needs to load ar_nav
-                dualWebViewGroup.getAllWebViews().firstOrNull()?.postDelayed({
-                    dualWebViewGroup.getAllWebViews().forEach { it.onResume() }
-                }, 100)
+                if (resumeWebViewsAfterKill) {
+                    // Map loads need the WebViews live again. Return-to-chat does
+                    // not: resuming here can let autoplay pages recreate audio.
+                    dualWebViewGroup.getAllWebViews().firstOrNull()?.postDelayed({
+                        dualWebViewGroup.getAllWebViews().forEach { it.onResume() }
+                    }, 100)
+                } else {
+                    webViewsPausedForReturnToChat = true
+                }
             }
             // Request transient audio focus to interrupt system-level playback,
             // then abandon after a brief delay so the system properly processes the interruption
@@ -5502,14 +5685,14 @@ class MainActivity :
 
                 return false;
             }
-            
+
             function rememberTapLinkTarget(el) {
                 try {
                     window.__taplinkLastEditable = el;
                     window.__taplinkLastEditableAt = Date.now();
                 } catch (e) {}
             }
-            
+
             function canElementGainFocus(el) {
                 try {
                     if (!el) return false;
@@ -6410,6 +6593,12 @@ class MainActivity :
                             }
 
                             dualWebViewGroup.clearExternalScrollMetrics()
+                            view?.let {
+                                dualWebViewGroup.stabilizeWebViewViewportAfterNavigation(
+                                    targetWebView = it,
+                                    resetVerticalScroll = false
+                                )
+                            }
 
                             // Streaming Fix: Force default User Agent to ensure Widevine CDM works
                             val isStreaming = isStreamingSite(url)
@@ -6497,11 +6686,14 @@ class MainActivity :
                                 view?.visibility = View.VISIBLE
                                 view?.let { syncActiveBrowserChrome(it) }
 
-                                // Reset horizontal scroll to prevent right-offset rendering
+                                // Reset horizontal drift and restart scroll metric warmup. Some SPA/back
+                                // paths leave the WebView scrolled sideways before JS observers report
+                                // metrics, which makes the right scrollbar appear to disappear.
                                 view?.let { wv ->
-                                    if (wv.scrollX > 0) {
-                                        wv.postDelayed({ wv.scrollTo(0, wv.scrollY) }, 100)
-                                    }
+                                    dualWebViewGroup.stabilizeWebViewViewportAfterNavigation(
+                                        targetWebView = wv,
+                                        resetVerticalScroll = false
+                                    )
                                 }
 
                                 // ── Dashboard ↔ SharedPreferences sync ──
@@ -7125,11 +7317,34 @@ class MainActivity :
         try {
             dualWebViewGroup.updateBrowsingMode(dualWebViewGroup.isDesktopMode())
             val prefs = getSharedPreferences(prefsName, MODE_PRIVATE)
-            val savedState = prefs.getString(Constants.KEY_WEBVIEW_STATE, null)
-            val lastUrl = prefs.getString(keyLastUrl, null)
+            var savedState = prefs.getString(Constants.KEY_WEBVIEW_STATE, null)
+            var lastUrl = prefs.getString(keyLastUrl, null)
             DebugLog.d("WebViewDebug", "Last saved URL: $lastUrl")
 
             val defaultDashboardUrl = Constants.DEFAULT_URL
+
+            // Belt-and-suspenders: if the persisted session still points at a
+            // TapRadio auto-play URL (radio.html/podcasts.html/spotify.html
+            // carrying playurl=/autoplay=1/spotifyqueue=), refuse to restore
+            // it — those query params cause radio.html to auto-start playback
+            // on load, which is the exact ghost-station bug the user has
+            // reported repeatedly. Wipe the prefs so we don't keep replaying
+            // this on every launch.
+            if (lastUrl != null && isRadioAutoplayUrl(lastUrl)) {
+                DebugLog.w(
+                    "WebViewDebug",
+                    "Refusing to restore radio auto-play URL, forcing default dashboard"
+                )
+                try {
+                    prefs.edit()
+                        .putString(Constants.KEY_LAST_URL, defaultDashboardUrl)
+                        .remove(Constants.KEY_WEBVIEW_STATE)
+                        .commit()
+                } catch (_: Exception) {}
+                lastUrl = defaultDashboardUrl
+                savedState = null
+            }
+
             var restored = false
 
             if (!savedState.isNullOrBlank()) {
@@ -7197,7 +7412,15 @@ class MainActivity :
             prefs.edit().apply {
                 putBoolean("tapradio_now_playing_active", playing)
                 putLong("tapradio_now_playing_updated_at", System.currentTimeMillis())
-                if (hasIdentity) {
+                if (!playing) {
+                    remove("tapradio_now_playing_name")
+                    remove("tapradio_now_playing_genre")
+                    remove("tapradio_now_playing_kind")
+                    remove("tapradio_now_playing_url")
+                    remove("tapradio_now_playing_position_ms")
+                    remove("tapradio_now_playing_duration_ms")
+                    remove("tapradio_now_playing_error")
+                } else if (hasIdentity) {
                     if (trimmedName != null) putString("tapradio_now_playing_name", trimmedName) else remove("tapradio_now_playing_name")
                     if (trimmedGenre != null) putString("tapradio_now_playing_genre", trimmedGenre) else remove("tapradio_now_playing_genre")
                     if (trimmedKind != null) putString("tapradio_now_playing_kind", trimmedKind) else remove("tapradio_now_playing_kind")
@@ -7219,6 +7442,25 @@ class MainActivity :
         } catch (e: Exception) {
             DebugLog.e("TapRadioNative", "Error saving radio playback state", e)
         }
+    }
+
+    private fun clearTapRadioPlaybackPrefs() {
+        // commit() (synchronous) rather than apply(): the chat Activity's
+        // onResume() reads these prefs via syncTapRadioHudStateFromPrefs().
+        // When a double-tap exit races the async write, the chat screen can
+        // show a ghost "Now Playing" HUD for the station we just stopped.
+        // commit() eliminates the race at the cost of a short blocking write.
+        getSharedPreferences("visionclaw_prefs", MODE_PRIVATE).edit()
+            .putBoolean("tapradio_now_playing_active", false)
+            .putLong("tapradio_now_playing_updated_at", System.currentTimeMillis())
+            .remove("tapradio_now_playing_name")
+            .remove("tapradio_now_playing_genre")
+            .remove("tapradio_now_playing_kind")
+            .remove("tapradio_now_playing_url")
+            .remove("tapradio_now_playing_position_ms")
+            .remove("tapradio_now_playing_duration_ms")
+            .remove("tapradio_now_playing_error")
+            .commit()
     }
 
     private fun buildNativeRadioPlaybackStateJson(): String {
@@ -7300,10 +7542,23 @@ class MainActivity :
 
     private fun releaseNativeRadioPlayer(clearMetadata: Boolean, abandonFocus: Boolean) {
         stopNativeRadioProgressTicker()
+        val local = nativeRadioPlayer
+        val orphan = staticNativeRadioPlayer
         try {
-            nativeRadioPlayer?.stop()
-            nativeRadioPlayer?.release()
+            local?.stop()
+            local?.release()
         } catch (_: Exception) {}
+        // If a different ExoPlayer instance was tracked in the static slot
+        // (e.g. a previous play started in a now-garbage-collected Activity
+        // and never cleaned up), stop/release that too before clearing the
+        // static reference. Without this, double-tapping out of TapRadio can
+        // leave a "zombie" stream playing from an earlier station.
+        if (orphan != null && orphan !== local) {
+            try {
+                orphan.stop()
+                orphan.release()
+            } catch (_: Exception) {}
+        }
         nativeRadioPlayer = null
         staticNativeRadioPlayer = null  // clear static ref to prevent orphaned cleanup from re-releasing
         nativeRadioPreparing = false
@@ -7521,6 +7776,7 @@ class MainActivity :
 
     private fun stopNativeRadioStream(): String {
         releaseNativeRadioPlayer(clearMetadata = true, abandonFocus = true)
+        clearTapRadioPlaybackPrefs()
         applyNativeRadioPlaybackUiState()
         return buildNativeRadioPlaybackStateJson()
     }
@@ -10287,8 +10543,25 @@ class MainActivity :
 
         // Keep JavaScript enabled and go back
         webView.goBack()
+        dualWebViewGroup.clearExternalScrollMetrics()
+        dualWebViewGroup.stabilizeWebViewViewportAfterNavigation(
+            targetWebView = webView,
+            resetVerticalScroll = false
+        )
         uiHandler.postDelayed({ syncNativeRadioToolbarState(scheduleDelayedBroadcasts = false) }, 150L)
         uiHandler.postDelayed({ syncActiveBrowserChrome(webView, includeDelayedPasses = false) }, 200L)
+        uiHandler.postDelayed({
+            dualWebViewGroup.stabilizeWebViewViewportAfterNavigation(
+                targetWebView = webView,
+                resetVerticalScroll = false
+            )
+        }, 550L)
+        uiHandler.postDelayed({
+            dualWebViewGroup.stabilizeWebViewViewportAfterNavigation(
+                targetWebView = webView,
+                resetVerticalScroll = false
+            )
+        }, 1400L)
         uiHandler.postDelayed({ syncTapRadioPlaybackUi() }, 350L)
         uiHandler.postDelayed({ syncTapRadioPlaybackUi() }, 1200L)
         webView.invalidate()

@@ -120,6 +120,7 @@ class MainActivity : AppCompatActivity() {
         private const val HUD_NOTIFICATION_DURATION_MS = 3_000L
         private const val HEARTBEAT_UI_INTERVAL_MS = 20_000L
         private const val OPENCLAW_PROGRESS_UI_MIN_INTERVAL_MS = 1_000L
+        private const val OPENCLAW_PROGRESS_TICKER_DISPLAY_MS = 9_000L
         private const val CHAT_HUD_IDLE_TIMEOUT_MS = 60_000L
         /** Minimum center-movement distance (px) to trigger edge-zone panel switch. */
         private const val EDGE_CENTER_MOVEMENT_THRESHOLD_PX = 48f
@@ -283,6 +284,7 @@ class MainActivity : AppCompatActivity() {
         lastHandledLiveInputTranscript = safe
         lastToolAssistTranscript = safe
         toolAssistRecoveryFired = false
+        mediaPlaybackRecoveryFired = false
 
         // ── LearnLM continuation fast-path ──
         // Intercept before maybeAssist so we never do the slow HTTP call
@@ -798,7 +800,7 @@ class MainActivity : AppCompatActivity() {
             if (labelChanged || now - lastHeartbeatUiUpdateMs >= OPENCLAW_PROGRESS_UI_MIN_INTERVAL_MS) {
                 lastHeartbeatUiUpdateMs = now
                 runOnUiThread {
-                    renderOpenClawTicker(hudLabel, gatewayHealthy = true)
+                    renderOpenClawTicker(hudLabel, gatewayHealthy = true, transient = true)
                     chatFragment.setStreamActiveIndicator(true)
                     // Speak the heartbeat out loud as soon as it arrives so the
                     // user isn't left in silence while OpenClaw is working.
@@ -833,7 +835,10 @@ class MainActivity : AppCompatActivity() {
                 activityUptimeMs = now
             )
             runOnUiThread {
-                renderOpenClawTicker(finalLabel, gatewayHealthy = lastOpenClawGatewayHealthy || success)
+                // Keep the terminal action visible as the stationary ticker
+                // until the next user-requested function completes. Live
+                // heartbeat deltas still appear transiently and scroll over it.
+                recordHudFunctionTicker(finalLabel, gatewayHealthy = lastOpenClawGatewayHealthy || success)
                 chatFragment.setStreamActiveIndicator(false)
                 // Announce completion verbally ONLY if the user actually saw
                 // this run start (i.e. a heartbeat label was already shown).
@@ -844,13 +849,6 @@ class MainActivity : AppCompatActivity() {
                     ttsController?.speak(spoken)
                 }
             }
-            // After a short delay, clear the terminal task label so the ticker
-            // falls back to the idle gateway-connection label (e.g. "OpenClaw
-            // connected") on the next ping tick.
-            uiHandler.postDelayed({
-                clearOpenClawTaskHeartbeat()
-                restoreOpenClawTicker()
-            }, 3_000L)
         }
         toolDispatcher = ToolDispatcher(
             this, calendarClient, directionsClient, tasksClient,
@@ -1041,6 +1039,26 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         bindProcessToValidatedWifi()
+        // ── Silence any TapRadio that slipped past the exit handoff ──
+        // The chat / HUD screen must never have a radio station playing in
+        // the background. This is a safety net for paths that don't flow
+        // through TapBrowser.performDoubleTapBackNavigation (e.g. an orphan
+        // ExoPlayer that outlived a prior tapbrowser Activity instance, a
+        // crash/recreate cycle, or a cold start with `BrowserPrefs.last_url`
+        // still pointing at radio.html?playUrl=…). The upgraded
+        // stopOrphanedNativeRadioPlayer(context) also:
+        //   - releases the live tapbrowser instance's player + metadata
+        //   - navigates any radio.html / podcasts.html / spotify.html WebView
+        //     to about:blank so no <audio> element or pending JS timer can
+        //     resurrect playback
+        //   - sanitizes `BrowserPrefs.last_url` + wipes `webview_state` so
+        //     the next launch doesn't auto-replay the stream
+        //   - clears all `tapradio_now_playing_*` HUD prefs
+        try {
+            com.TapLinkX3.app.MainActivity.stopOrphanedNativeRadioPlayer(this)
+        } catch (t: Throwable) {
+            Log.w(TAG, "stopOrphanedNativeRadioPlayer failed: ${t.message}")
+        }
         if (!initialPageSnapDone) {
             initialPageSnapDone = true
             applyInitialPageSelection()
@@ -1579,11 +1597,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun syncTapRadioHudStateFromPrefs() {
-        val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
-        val playing = prefs.getBoolean("tapradio_now_playing_active", false)
-        val stationName = prefs.getString("tapradio_now_playing_name", null)
-        val genre = prefs.getString("tapradio_now_playing_genre", null)
-        viewModel.updateRadioHudState(stationName = stationName, genre = genre, playing = playing)
+        // The chat / HUD screen intentionally never surfaces the TapRadio
+        // "now playing" station — when the user is looking at the HUD, no
+        // radio should be playing at all (onResume enforces that, and the
+        // double-tap exit handler in tapbrowser clears the player). This
+        // function used to read the now-playing prefs and mirror them to
+        // the HUD; it now just pushes an empty state unconditionally so
+        // the HUD radio line is always hidden.
+        viewModel.updateRadioHudState(stationName = null, genre = null, playing = false)
     }
 
     private fun refreshLocationSnapshot(force: Boolean) {
@@ -2192,6 +2213,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastToolAssistTranscript = ""
     /** Prevents double-firing recovery for the same turn. */
     @Volatile private var toolAssistRecoveryFired = false
+    /** Prevents duplicate recovery when Gemini wrongly refuses a play follow-up. */
+    @Volatile private var mediaPlaybackRecoveryFired = false
 
     /**
      * Detect when Gemini says "I can't access the tool" or similar failure
@@ -2202,7 +2225,36 @@ class MainActivity : AppCompatActivity() {
     private fun maybeRecoverFromGeminiFallback(modelText: String): Boolean {
         // If local turn owner is active, don't attempt any recovery — suppress entirely
         if (isGeminiOutputSuppressed()) return true
-        val lower = modelText.lowercase()
+        val lower = modelText.lowercase(Locale.US)
+        val currentTranscript = listOf(
+            lastHandledLiveInputTranscript,
+            pendingLiveInputTranscript,
+            latestLiveTranscript,
+            lastToolAssistTranscript
+        ).firstOrNull { it.isNotBlank() }.orEmpty()
+        if (!mediaPlaybackRecoveryFired && isYouTubeDiscussionPlaybackRefusal(lower)) {
+            val youtubeRequest = resolveRecentYouTubeFollowUpPlaybackRequest(currentTranscript)
+            if (youtubeRequest != null) {
+                mediaPlaybackRecoveryFired = true
+                Log.d(
+                    TAG,
+                    "Recovered YouTube playback from discussion-style refusal for: ${currentTranscript.take(160)}"
+                )
+                runOnUiThread {
+                    armLocalDirectResponseHandoff()
+                    showHudNotification(youtubeRequest.hudLabel)
+                    viewModel.appendDirectAssistantResponse(youtubeRequest.responseText)
+                    ttsController?.stop()
+                    ttsController?.speak(youtubeRequest.hudLabel)
+                    launchTapBrowser(
+                        initialUrl = youtubeRequest.searchUrl,
+                        youtubeAutoplayQuery = youtubeRequest.query,
+                        youtubeAutoplayMode = youtubeRequest.mode
+                    )
+                }
+                return true
+            }
+        }
         val isToolFailure = lower.contains("unable to access") ||
             lower.contains("tool") && (lower.contains("not available") || lower.contains("can't") || lower.contains("cannot")) ||
             lower.contains("don't have access to") ||
@@ -2490,16 +2542,29 @@ class MainActivity : AppCompatActivity() {
                     sanitizeOpenTapLinkUrl(resultText)
                 else -> null
             }
-            val currentTurnYouTubeText = listOf(
+            val currentTurnYouTubeTranscripts = listOf(
                 pendingLiveInputTranscript,
                 latestLiveTranscript,
-                lastHandledLiveInputTranscript
-            ).firstOrNull { it.isNotBlank() }.orEmpty()
+                lastHandledLiveInputTranscript,
+                lastToolAssistTranscript
+            )
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+            val currentTurnYouTubeText = currentTurnYouTubeTranscripts.firstOrNull().orEmpty()
             val isYouTubeAutoOpen =
                 autoOpenUrl?.let { openUrl ->
                     openUrl.contains("youtube.com", ignoreCase = true) ||
                         openUrl.contains("youtu.be", ignoreCase = true)
                 } == true
+            val currentTurnHasExplicitYouTubePlayback = currentTurnYouTubeTranscripts.any { transcript ->
+                AssistantIntentParser.hasExplicitYouTubePlaybackVerb(transcript) ||
+                    looksLikeYouTubeFollowUpSelectionReference(transcript)
+            }
+            val currentTurnResolvedYouTubeFollowUp =
+                currentTurnYouTubeTranscripts.firstNotNullOfOrNull { transcript ->
+                    resolveRecentYouTubeFollowUpPlaybackRequest(transcript)
+                }
             val responseId = callId.trim().ifBlank { "tool-${System.currentTimeMillis()}" }
             Log.d(
                 TAG,
@@ -2518,7 +2583,9 @@ class MainActivity : AppCompatActivity() {
 
             if (functionName == "open_taplink" &&
                 isYouTubeAutoOpen &&
-                AssistantIntentParser.isYouTubeLookupRequest(currentTurnYouTubeText)
+                currentTurnYouTubeTranscripts.any { AssistantIntentParser.isYouTubeLookupRequest(it) } &&
+                !currentTurnHasExplicitYouTubePlayback &&
+                currentTurnResolvedYouTubeFollowUp == null
             ) {
                 Log.w(
                     TAG,
@@ -2586,6 +2653,10 @@ class MainActivity : AppCompatActivity() {
                 )
                 runOnUiThread {
                     chatFragment.setStreamActiveIndicator(false)
+                    recordHudFunctionTicker(
+                        completedToolTickerLabel(functionName, resultText),
+                        gatewayHealthy = lastOpenClawGatewayHealthy
+                    )
                     presentResearchReportLocally(resultText, topicHint = topic)
                 }
                 return@launch
@@ -2605,7 +2676,16 @@ class MainActivity : AppCompatActivity() {
                 !effectiveAutoOpenUrl.isNullOrBlank() -> "Opening ${AssistantIntentParser.displayLabelForUrl(effectiveAutoOpenUrl)}"
                 else -> hudSafeCalendarResult(finalResultText)
             }
+            val completedTickerLabel = completedToolTickerLabel(
+                functionName,
+                finalResultText,
+                effectiveAutoOpenUrl
+            )
             runOnUiThread {
+                recordHudFunctionTicker(
+                    completedTickerLabel,
+                    gatewayHealthy = lastOpenClawGatewayHealthy || functionName == "tapclaw_agent"
+                )
                 if (!effectiveAutoOpenUrl.isNullOrBlank()) {
                     // Capture a non-null local so smart-casts persist through
                     // nested lambdas / local functions below. The !! is safe
@@ -2768,11 +2848,29 @@ class MainActivity : AppCompatActivity() {
             return true
         }
 
+        resolveRecentYouTubeFollowUpPlaybackRequest(transcript)?.let { youtubeRequest ->
+            armLocalDirectResponseHandoff()
+            showHudNotification(youtubeRequest.hudLabel)
+            runOnUiThread {
+                viewModel.appendDirectAssistantResponse(youtubeRequest.responseText)
+                recordHudFunctionTicker("Opened YouTube video", gatewayHealthy = lastOpenClawGatewayHealthy)
+                ttsController?.stop()
+                ttsController?.speak(youtubeRequest.hudLabel)
+                launchTapBrowser(
+                    initialUrl = youtubeRequest.searchUrl,
+                    youtubeAutoplayQuery = youtubeRequest.query,
+                    youtubeAutoplayMode = youtubeRequest.mode
+                )
+            }
+            return true
+        }
+
         parseYouTubePlaybackIntent(transcript)?.let { youtubeRequest ->
             armLocalDirectResponseHandoff()
             showHudNotification(youtubeRequest.hudLabel)
             runOnUiThread {
                 viewModel.appendDirectAssistantResponse(youtubeRequest.responseText)
+                recordHudFunctionTicker("Opened YouTube video", gatewayHealthy = lastOpenClawGatewayHealthy)
                 ttsController?.stop()
                 ttsController?.speak(youtubeRequest.hudLabel)
                 launchTapBrowser(
@@ -3028,6 +3126,244 @@ class MainActivity : AppCompatActivity() {
         return null
     }
 
+    private fun resolveRecentYouTubeFollowUpPlaybackRequest(transcript: String): YouTubePlaybackRequest? {
+        val trimmed = transcript.trim().trimEnd('.', '!', '?')
+        if (trimmed.isBlank()) return null
+
+        val lower = trimmed.lowercase(Locale.US)
+        val hasPlaybackVerb = Regex(
+            """(?i)\b(?:play|watch|open|start|pull\s+up|put\s+on|queue\s+up)\b"""
+        ).containsMatchIn(trimmed)
+        val questionLike = transcript.trim().endsWith("?") ||
+            Regex("""(?i)^\s*(?:what|which|who|when|where|why|how|tell\s+me|describe|explain)\b""")
+                .containsMatchIn(trimmed)
+
+        val ordinalIndex = ordinalVideoPickIndex(lower)
+        val descriptor = extractVideoPickDescriptor(trimmed)
+        val genericPick = lower.contains("one of the videos") ||
+            lower.contains("one of those") ||
+            lower.contains("one of them") ||
+            lower.contains("play one of") ||
+            lower.contains("watch one of") ||
+            lower.contains("play one") ||
+            lower.contains("watch one") ||
+            Regex("""(?i)\b(?:that|this)\s+one\b""").containsMatchIn(trimmed) ||
+            Regex("""(?i)\b(?:play|watch|open)\s+it\b""").containsMatchIn(trimmed)
+
+        if (ordinalIndex == null && descriptor.isNullOrBlank() && !genericPick) return null
+        if (!hasPlaybackVerb && questionLike) return null
+
+        val candidates = recentYouTubeSuggestionCandidates()
+        if (candidates.isEmpty()) return null
+
+        val picked = when {
+            ordinalIndex != null -> candidates.getOrNull(ordinalIndex)
+            !descriptor.isNullOrBlank() -> pickRecentVideoCandidateByDescriptor(candidates, descriptor)
+            else -> candidates.firstOrNull()
+        } ?: return null
+
+        val query = listOfNotNull(
+            picked.title.takeIf { it.isNotBlank() },
+            picked.creator?.takeIf { it.isNotBlank() }
+        ).joinToString(" ").trim()
+        if (query.isBlank()) return null
+
+        return YouTubePlaybackRequest(
+            query = query,
+            mode = "video",
+            searchUrl = buildYouTubeSearchUrl(query, mode = "video"),
+            hudLabel = "Playing ${picked.title.take(60)}",
+            responseText = buildString {
+                append("Playing ")
+                append(picked.title)
+                if (!picked.creator.isNullOrBlank()) {
+                    append(" by ")
+                    append(picked.creator)
+                }
+                append(" on YouTube with captions enabled.")
+            }
+        )
+    }
+
+    private fun recentYouTubeSuggestionCandidates(): List<RecentVideoCandidate> {
+        val assistantCards = viewModel.getAssistantCardsSnapshot().asReversed()
+        for (card in assistantCards) {
+            val picks = extractRecentVideoCandidates(card.text)
+            if (picks.isNotEmpty()) return picks
+        }
+        return emptyList()
+    }
+
+    private fun extractRecentVideoCandidates(cardText: String): List<RecentVideoCandidate> {
+        if (cardText.isBlank()) return emptyList()
+
+        val lower = cardText.lowercase(Locale.US)
+        val looksVideoCard = lower.contains("youtube") ||
+            lower.contains(" videos") ||
+            lower.contains(" video ") ||
+            lower.contains("watch on youtube") ||
+            lower.contains("send this list") ||
+            lower.contains("play one of them")
+
+        val markerRegex = Regex("""^\s*(?:\d+[\).\:-]|[-*•])\s*(.+)$""")
+        val ordered = LinkedHashMap<String, RecentVideoCandidate>()
+
+        cardText.lines().forEach { rawLine ->
+            val body = markerRegex.find(rawLine)?.groupValues?.getOrNull(1)?.trim() ?: return@forEach
+            val parsed = parseRecentVideoCandidate(body) ?: return@forEach
+            ordered.putIfAbsent(parsed.title.lowercase(Locale.US), parsed)
+        }
+
+        if (ordered.isNotEmpty() && looksVideoCard) {
+            return ordered.values.take(6)
+        }
+
+        if (!looksVideoCard) return emptyList()
+
+        val quotedTitleRegex = Regex("""["“”'‘’]([^"“”'‘’]{3,120})["“”'‘’]""")
+        quotedTitleRegex.findAll(cardText).forEach { match ->
+            val title = match.groupValues[1].trim()
+            if (title.length < 3) return@forEach
+            if (title.split(Regex("\\s+")).size > 12) return@forEach
+            ordered.putIfAbsent(
+                title.lowercase(Locale.US),
+                RecentVideoCandidate(
+                    title = title,
+                    creator = null,
+                    matchText = title.lowercase(Locale.US)
+                )
+            )
+        }
+        return ordered.values.take(6)
+    }
+
+    private fun parseRecentVideoCandidate(body: String): RecentVideoCandidate? {
+        val cleaned = body
+            .trim()
+            .trimStart('-', '—', '–')
+            .trim()
+        if (cleaned.isBlank()) return null
+
+        val quoted = Regex("""["“”'‘’]([^"“”'‘’]{3,120})["“”'‘’]""")
+            .find(cleaned)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        val creator = Regex("""(?i)\bby\s+([^—–\-:;,.]+)""")
+            .find(cleaned)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+
+        var title = quoted
+            ?: cleaned
+                .substringBefore(" — ")
+                .substringBefore(" – ")
+                .substringBefore(" - ")
+                .substringBefore(": ")
+                .substringBefore(" (")
+                .trim()
+
+        title = Regex("""(?i)\s+\bby\b\s+.+$""").replace(title, "").trim()
+        title = title.trim('"', '\'', '“', '”', '‘', '’')
+        if (title.length < 3) return null
+        if (title.split(Regex("\\s+")).size > 12) return null
+
+        return RecentVideoCandidate(
+            title = title,
+            creator = creator,
+            matchText = listOf(title, creator.orEmpty(), cleaned)
+                .joinToString(" ")
+                .lowercase(Locale.US)
+        )
+    }
+
+    private fun pickRecentVideoCandidateByDescriptor(
+        candidates: List<RecentVideoCandidate>,
+        descriptor: String
+    ): RecentVideoCandidate? {
+        val tokens = descriptor
+            .lowercase(Locale.US)
+            .split(Regex("[^a-z0-9]+"))
+            .map { it.trim() }
+            .filter { it.length >= 3 }
+        if (tokens.isEmpty()) return null
+
+        return candidates
+            .map { candidate ->
+                candidate to tokens.count { token -> candidate.matchText.contains(token) }
+            }
+            .maxByOrNull { it.second }
+            ?.takeIf { it.second > 0 }
+            ?.first
+    }
+
+    private fun extractVideoPickDescriptor(transcript: String): String? {
+        val patterns = listOf(
+            Regex("""(?i)\b(?:the\s+)?one\s+(?:about|on|from|with)\s+(.+?)\s*$"""),
+            Regex("""(?i)\bvideo\s+(?:about|on|from|with)\s+(.+?)\s*$""")
+        )
+        return patterns.firstNotNullOfOrNull { pattern ->
+            pattern.find(transcript)?.groupValues?.getOrNull(1)
+        }?.trim()?.trimEnd('.', '!', '?', ',', ';', ':')
+    }
+
+    private fun looksLikeYouTubeFollowUpSelectionReference(transcript: String): Boolean {
+        val trimmed = transcript.trim().trimEnd('.', '!', '?')
+        if (trimmed.isBlank()) return false
+
+        val lower = trimmed.lowercase(Locale.US)
+        val mentionsVideoContext = lower.contains("youtube") ||
+            lower.contains("video") ||
+            lower.contains("videos") ||
+            lower.contains("one of those") ||
+            lower.contains("one of them") ||
+            lower.contains("one of the videos")
+        if (!mentionsVideoContext) return false
+
+        val questionLike = transcript.trim().endsWith("?") ||
+            Regex("""(?i)^\s*(?:what|which|who|when|where|why|how|tell\s+me|describe|explain)\b""")
+                .containsMatchIn(trimmed)
+        if (questionLike) return false
+
+        return ordinalVideoPickIndex(lower) != null ||
+            !extractVideoPickDescriptor(trimmed).isNullOrBlank() ||
+            Regex("""(?i)\b(?:that|this)\s+one\b""").containsMatchIn(trimmed) ||
+            Regex("""(?i)\b(?:first|second|third|fourth|last|final)\s+one\b""").containsMatchIn(trimmed) ||
+            Regex("""(?i)\b(?:one of the videos|one of those|one of them)\b""").containsMatchIn(trimmed)
+    }
+
+    private fun ordinalVideoPickIndex(lower: String): Int? {
+        return when {
+            Regex("""\b(?:first|1st|number 1|#1|top one)\b""").containsMatchIn(lower) -> 0
+            Regex("""\b(?:second|2nd|number 2|#2)\b""").containsMatchIn(lower) -> 1
+            Regex("""\b(?:third|3rd|number 3|#3)\b""").containsMatchIn(lower) -> 2
+            Regex("""\b(?:fourth|4th|number 4|#4)\b""").containsMatchIn(lower) -> 3
+            Regex("""\b(?:last|final)\b""").containsMatchIn(lower) -> {
+                val candidates = recentYouTubeSuggestionCandidates()
+                if (candidates.isEmpty()) null else candidates.lastIndex
+            }
+            else -> null
+        }
+    }
+
+    private fun isYouTubeDiscussionPlaybackRefusal(lowerModelText: String): Boolean {
+        val refusesPlayback = lowerModelText.contains("can't play") ||
+            lowerModelText.contains("cannot play") ||
+            lowerModelText.contains("can't open") ||
+            lowerModelText.contains("cannot open") ||
+            lowerModelText.contains("can't watch") ||
+            lowerModelText.contains("cannot watch")
+        val discussionGate = lowerModelText.contains("discussion") ||
+            lowerModelText.contains("discussing") ||
+            lowerModelText.contains("current turn") ||
+            lowerModelText.contains("lookup")
+        val mentionsVideo = lowerModelText.contains("video") || lowerModelText.contains("youtube")
+        return refusesPlayback && discussionGate && mentionsVideo
+    }
+
     private fun buildYouTubeSearchUrl(query: String, mode: String = "video"): String {
         val encoded = java.net.URLEncoder.encode(query, "UTF-8")
         // Plain search — no &sp filter. Double-encoding of sp=CAI%253D caused
@@ -3050,6 +3386,12 @@ class MainActivity : AppCompatActivity() {
         val searchUrl: String,
         val hudLabel: String,
         val responseText: String
+    )
+
+    private data class RecentVideoCandidate(
+        val title: String,
+        val creator: String?,
+        val matchText: String
     )
 
     private fun looksLikeNearbyPlacesIntent(transcript: String): Boolean {
@@ -3263,6 +3605,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastOpenClawGatewayHealthy = false
     /** Latest idle gateway label shown when there is no active task heartbeat. */
     @Volatile private var lastOpenClawConnectionLabel = "OpenClaw checking..."
+    /** Stationary HUD ticker label for the last user-requested function that completed. */
+    @Volatile private var lastHudFunctionTickerLabel: String? = null
     /** Throttle active-task ticker repaints so streaming status still feels live. */
     private var lastHeartbeatUiUpdateMs = 0L
     /** Guard to prevent overlapping ping coroutines when a ping hangs. */
@@ -3377,6 +3721,78 @@ class MainActivity : AppCompatActivity() {
         return "$timestamp • $label"
     }
 
+    private fun formatHudFunctionTicker(label: String): String {
+        val clean = label
+            .replace('\n', ' ')
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .take(140)
+        val prefix = if (clean.startsWith("OpenClaw", ignoreCase = true)) "" else "Last: "
+        return prefix + clean
+    }
+
+    private fun recordHudFunctionTicker(label: String?, gatewayHealthy: Boolean = lastOpenClawGatewayHealthy) {
+        val clean = label
+            ?.replace('\n', ' ')
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: return
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            runOnUiThread { recordHudFunctionTicker(clean, gatewayHealthy) }
+            return
+        }
+        lastHudFunctionTickerLabel = clean
+        renderOpenClawTicker(clean, gatewayHealthy = gatewayHealthy, transient = false)
+    }
+
+    private fun completedToolTickerLabel(
+        toolName: String,
+        resultText: String = "",
+        autoOpenUrl: String? = null
+    ): String? {
+        autoOpenUrl?.takeIf { it.isNotBlank() }?.let { url ->
+            return "Opened ${AssistantIntentParser.displayLabelForUrl(url)}"
+        }
+        return when (toolName) {
+            "google_places" -> "Places lookup complete"
+            "google_routes" -> "Route lookup complete"
+            "ask_maps" -> "Map ready"
+            "google_air_quality" -> "Air quality checked"
+            "location" -> "Location checked"
+            "weather" -> "Weather checked"
+            "calendar" -> "Calendar checked"
+            "tasks" -> "Tasks checked"
+            "gmail" -> "Email lookup complete"
+            "contacts" -> "Contact lookup complete"
+            "notes" -> "Notes updated"
+            "status_briefing" -> "Status briefing ready"
+            "battery_saver" -> "Battery status checked"
+            "research_topic" -> "Research report ready"
+            "learn_topic" -> "Learning response ready"
+            "tapclaw_agent" -> "OpenClaw task complete"
+            "tapradio" -> "TapRadio request complete"
+            "spotify_player" -> "Spotify request complete"
+            "send_video_list" -> "Video list ready"
+            "translate_text" -> "Translation ready"
+            "quick_action" -> "Action complete"
+            "open_taplink" -> null
+            else -> {
+                val firstLine = resultText.lineSequence()
+                    .map { it.trim() }
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
+                if (firstLine.isNotBlank() && firstLine.length <= 72) {
+                    firstLine
+                } else {
+                    toolName.replace('_', ' ')
+                        .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() } +
+                        " complete"
+                }
+            }
+        }
+    }
+
     private fun openClawActivityFresh(nowMs: Long = SystemClock.uptimeMillis()): Boolean {
         val lastHeartbeatMs = lastOpenClawActivityMs
         if (lastHeartbeatMs <= 0L) return false
@@ -3385,13 +3801,21 @@ class MainActivity : AppCompatActivity() {
         return nowMs - lastHeartbeatMs <= staleAfterMs
     }
 
-    private fun renderOpenClawTicker(label: String?, gatewayHealthy: Boolean) {
-        if (!viewModel.preferences.openClawEnabled || label.isNullOrBlank()) {
+    private fun renderOpenClawTicker(label: String?, gatewayHealthy: Boolean, transient: Boolean = false) {
+        if (label.isNullOrBlank()) {
             chatFragment.clearHeartbeat()
             chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
             return
         }
-        chatFragment.showHeartbeat(formatOpenClawTicker(label), 0L)
+        if (transient) {
+            chatFragment.showHeartbeat(
+                formatOpenClawTicker(label),
+                OPENCLAW_PROGRESS_TICKER_DISPLAY_MS,
+                scroll = true
+            )
+        } else {
+            chatFragment.showHeartbeat(formatHudFunctionTicker(label), 0L, scroll = false)
+        }
         val status = if (gatewayHealthy) {
             ChatPanelFragment.OpenClawGatewayStatus.GOOD
         } else {
@@ -3406,13 +3830,14 @@ class MainActivity : AppCompatActivity() {
             chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
             return
         }
-        val stickyTaskLabel = lastOpenClawTaskLabel?.takeIf { lastOpenClawGatewayHealthy }
-        val fallbackLabel = if (lastOpenClawGatewayHealthy && lastOpenClawConnectionLabel == "OpenClaw checking...") {
-            "OpenClaw connected"
-        } else {
-            lastOpenClawConnectionLabel
-        }
-        renderOpenClawTicker(stickyTaskLabel ?: fallbackLabel, gatewayHealthy = stickyTaskLabel != null || lastOpenClawGatewayHealthy)
+        val stickyLabel = lastHudFunctionTickerLabel
+            ?.takeIf { it.isNotBlank() }
+            ?: lastOpenClawTaskLabel
+                ?.takeIf { it.isNotBlank() }
+            ?: lastOpenClawConnectionLabel
+                .takeIf { it.isNotBlank() }
+            ?: "OpenClaw ready"
+        renderOpenClawTicker(stickyLabel, gatewayHealthy = lastOpenClawGatewayHealthy, transient = false)
     }
 
     private fun clearOpenClawTaskHeartbeat() {
@@ -3427,13 +3852,26 @@ class MainActivity : AppCompatActivity() {
     private val openClawPingRunnable = object : Runnable {
         override fun run() {
             val client = openClawClientField
-            if (client == null || !viewModel.preferences.openClawEnabled) {
+            if (!viewModel.preferences.openClawEnabled) {
                 clearOpenClawTaskHeartbeat()
                 lastOpenClawGatewayHealthy = false
                 pingInFlight = false
                 runOnUiThread {
                     chatFragment.clearHeartbeat()
                     chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
+                    chatFragment.setStreamActiveIndicator(false)
+                }
+                scheduleNextPing()
+                return
+            }
+            if (client == null) {
+                clearOpenClawTaskHeartbeat()
+                lastOpenClawGatewayHealthy = false
+                lastOpenClawConnectionLabel = "OpenClaw checking..."
+                pingInFlight = false
+                OpenClawStatusService.updateConnection(lastOpenClawConnectionLabel, healthy = false)
+                runOnUiThread {
+                    restoreOpenClawTicker()
                     chatFragment.setStreamActiveIndicator(false)
                 }
                 scheduleNextPing()
@@ -3474,7 +3912,7 @@ class MainActivity : AppCompatActivity() {
                         lastOpenClawGatewayHealthy = effectiveHealthy
                         OpenClawStatusService.updateConnection(label, healthy = effectiveHealthy)
                         runOnUiThread {
-                            renderOpenClawTicker(taskLabel ?: label, gatewayHealthy = effectiveHealthy)
+                            restoreOpenClawTicker()
                         }
                     }
                 } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
@@ -3484,7 +3922,7 @@ class MainActivity : AppCompatActivity() {
                     lastOpenClawConnectionLabel = "OpenClaw timeout"
                     OpenClawStatusService.updateConnection("OpenClaw timeout", healthy = false)
                     runOnUiThread {
-                        renderOpenClawTicker("OpenClaw timeout", gatewayHealthy = false)
+                        restoreOpenClawTicker()
                     }
                 } catch (e: Exception) {
                     Log.w("OpenClawPing", "Ping exception", e)
@@ -3492,7 +3930,7 @@ class MainActivity : AppCompatActivity() {
                     lastOpenClawConnectionLabel = "OpenClaw error"
                     OpenClawStatusService.updateConnection("OpenClaw error", healthy = false)
                     runOnUiThread {
-                        renderOpenClawTicker("OpenClaw error", gatewayHealthy = false)
+                        restoreOpenClawTicker()
                     }
                 } finally {
                     pingInFlight = false
@@ -3511,11 +3949,12 @@ class MainActivity : AppCompatActivity() {
         uiHandler.removeCallbacks(openClawPingRunnable)
         if (viewModel.preferences.openClawEnabled) {
             runOnUiThread {
-                renderOpenClawTicker(lastOpenClawConnectionLabel, gatewayHealthy = lastOpenClawGatewayHealthy)
+                restoreOpenClawTicker()
             }
         }
-        // First ping after a short delay to let the UI settle.
-        uiHandler.postDelayed(openClawPingRunnable, 1_000L)
+        // First ping after a short delay to let the UI settle; the ticker is
+        // rendered immediately above so the HUD never appears empty.
+        uiHandler.postDelayed(openClawPingRunnable, 2_500L)
     }
 
     private fun stopOpenClawPing() {
@@ -3570,6 +4009,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         runOnUiThread {
                             chatFragment.setStreamActiveIndicator(false)
+                            recordHudFunctionTicker("Research report ready", gatewayHealthy = lastOpenClawGatewayHealthy)
                             chatFragment.showHeartbeat("Research report ready! Say 'read the research report' or 'summarize the research report'.", 15_000L)
                             viewModel.appendDirectAssistantResponse(
                                 "Research report on \"$topic\" is ready.\nSay \"read the research report\" or \"summarize the research report\"."
@@ -4846,6 +5286,10 @@ class MainActivity : AppCompatActivity() {
             else -> resultText.lineSequence().map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
         }
         viewModel.appendDirectAssistantResponse(resultText)
+        recordHudFunctionTicker(
+            completedToolTickerLabel(toolName, resultText),
+            gatewayHealthy = lastOpenClawGatewayHealthy
+        )
         if (speech.isNotBlank()) {
             ttsController?.stop()
             ttsController?.speak(speech)

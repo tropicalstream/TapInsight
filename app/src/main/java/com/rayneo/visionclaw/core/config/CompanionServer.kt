@@ -936,7 +936,7 @@ window.__companionToken = '${sessionToken}';
         val postData = body["postData"] ?: ""
         if (postData.isBlank()) {
             return newFixedLengthResponse(
-                Response.Status.BAD_REQUEST, "application/json", """{\"error\":\"Empty body\"}"""
+                Response.Status.BAD_REQUEST, "application/json", """{"error":"Empty body"}"""
             )
         }
         // Validate it's valid JSON

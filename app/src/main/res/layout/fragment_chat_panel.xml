@@ -109,7 +109,8 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- OpenClaw heartbeat: one-shot horizontal scroll under clock.
+        <!-- OpenClaw ticker: stationary for the last completed/requested action,
+             one-shot horizontal scroll for transient heartbeat updates.
              We drive scrollX from code with an ObjectAnimator (see
              ChatPanelFragment.renderHeartbeat) instead of using Android's
              built-in ellipsize=marquee — the builtin loops forever and resets

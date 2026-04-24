@@ -26,7 +26,7 @@ class ChatAdapter(
         private const val MAX_HISTORY_CARDS = 20
         // Must mirror ChatPanelFragment.CARD_HEIGHT_DP — the fragment
         // uses this height when computing the focus-snap offset.
-        private const val CARD_HEIGHT_DP = 72f
+        private const val CARD_HEIGHT_DP = 96f
 
         const val VIEW_TYPE_CHAT_CARD = 1
         const val VIEW_TYPE_SENTINEL_CARD = 2
@@ -124,7 +124,7 @@ class ChatAdapter(
                 val focused = position == focusedPosition
                 val bubble = holder.itemView.findViewById<View>(R.id.messageBubble)
                 if (bubble != null) {
-                    bubble.alpha = if (focused) 1.0f else 0.45f
+                    bubble.alpha = if (focused) 1.0f else 0.78f
                     bubble.scaleX = if (focused) 1.04f else 0.96f
                     bubble.scaleY = if (focused) 1.04f else 0.96f
                 }
@@ -163,6 +163,7 @@ class ChatAdapter(
             messageText.gravity = Gravity.CENTER_VERTICAL or Gravity.START
             messageText.text = "New Chat"
             messageText.setTextColor(Color.parseColor("#FFFFFFFF"))
+            messageText.setShadowLayer(3f, 0f, 1f, Color.BLACK)
 
             launchCard.visibility = View.GONE
             launchCard.setOnClickListener(null)
@@ -185,7 +186,12 @@ class ChatAdapter(
             messageText.movementMethod = LinkMovementMethod.getInstance()
             messageText.highlightColor = Color.TRANSPARENT
             messageText.gravity = Gravity.START
+            messageText.setTextColor(Color.WHITE)
+            messageText.setShadowLayer(3f, 0f, 1f, Color.BLACK)
             messageText.text = buildLinkedText(message.text, urls, onUrlTapped)
+            messageScrollView.post {
+                messageScrollView.fullScroll(View.FOCUS_DOWN)
+            }
 
             val launchUrl = urls.firstOrNull()
             if (!isUser && launchUrl != null) {

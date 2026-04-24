@@ -21,7 +21,6 @@ captures/
 *.apk
 *.ap_
 *.aab
-*.ab
 *.dex
 *.class
 

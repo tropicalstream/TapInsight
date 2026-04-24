@@ -88,12 +88,12 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         // Cards are short horizontal strips (matching the redesign mock-up)
         // that slightly expand when in focus.  The focused scale stays
         // modest so consecutive cards never overlap vertically.
-        private const val CARD_HEIGHT_DP = 72f
+        private const val CARD_HEIGHT_DP = 96f
         private const val CARD_FOCUS_SCALE = 1.04f
         private const val CARD_FOCUS_ALPHA = 1.0f
         private const val CARD_FOCUS_Z = 12f
         private const val CARD_UNFOCUSED_SCALE = 0.96f
-        private const val CARD_UNFOCUSED_ALPHA = 0.45f
+        private const val CARD_UNFOCUSED_ALPHA = 0.78f
         private const val CARD_UNFOCUSED_Z = 0f
         private const val CARD_FOCUS_ANIM_MS = 200L
         private const val CARD_FOCUS_GLOW_PX = 3
@@ -266,6 +266,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
     private var externalRadioState: MainViewModel.RadioHudState? = null
     private var persistentHeartbeatMessage: String? = null
     private var transientHeartbeatMessage: String? = null
+    private var transientHeartbeatShouldScroll: Boolean = true
     // One-shot scroll animator for the heartbeat ticker. Replaces Android's
     // built-in ellipsize=marquee so we can park the text at the end (showing
     // the tail of the latest heartbeat) instead of looping forever and
@@ -1310,9 +1311,25 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         lastReaderTapMs = 0L
         readerCardUrl = null
         if (adapter.itemCount > 0) {
-            focusCard(adapter.getLastContentPosition(), animate = false)
+            // Set focusedCardIndex immediately so snapFocusedCard() inside
+            // exitReaderMode's finalize block picks up the New Chat card as
+            // its target.
+            focusedCardIndex = adapter.getLastContentPosition()
+            focusCard(focusedCardIndex, animate = false)
         }
         exitReaderMode(animated = true)
+        // Belt-and-suspenders: the pre-position focusCard() call above runs
+        // while chatRecycler is INVISIBLE (reader overlay still up), and the
+        // RecyclerView can silently drop the scroll request if no layout
+        // pass is active. After the 250ms fade-out animation completes, the
+        // recycler is visible again — re-issue focus on the New Chat card
+        // so double-tap-out always lands the user on New Chat regardless of
+        // which card they were reading.
+        uiHandler.postDelayed({
+            if (!isAdded || readerModeActive) return@postDelayed
+            if (adapter.itemCount <= 0) return@postDelayed
+            focusCard(adapter.getLastContentPosition(), animate = false)
+        }, 320L)
     }
 
     // ── OpenClaw heartbeat scrolling text under the clock ──────────
@@ -1349,6 +1366,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
 
         val prefix = "\u2764\uFE0F "
         val fullText = "$prefix$effectiveMessage"
+        val shouldScroll = transientHeartbeatMessage != null && transientHeartbeatShouldScroll
         // Drop any in-flight scroll so the new message starts from the left.
         heartbeatScrollAnimator?.cancel()
         heartbeatScrollAnimator = null
@@ -1357,9 +1375,11 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         hudHeartbeatText.visibility = View.VISIBLE
         hudHeartbeatText.animate().cancel()
         hudHeartbeatText.alpha = 1f
-        // Defer to post() so the TextView has been measured with the new text
-        // before we compute how far it needs to scroll.
-        hudHeartbeatText.post { startHeartbeatScroll(fullText) }
+        if (shouldScroll) {
+            // Defer to post() so the TextView has been measured with the new
+            // text before we compute how far it needs to scroll.
+            hudHeartbeatText.post { startHeartbeatScroll(fullText) }
+        }
     }
 
     /**
@@ -1433,7 +1453,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
      * transient message and fall back to the persistent ticker. Pass null
      * or blank with 0 to clear the persistent ticker entirely.
      */
-    fun showHeartbeat(message: String?, displayMs: Long = 6_000L) {
+    fun showHeartbeat(message: String?, displayMs: Long = 6_000L, scroll: Boolean = displayMs > 0L) {
         if (!isAdded || !::hudHeartbeatText.isInitialized) return
         uiHandler.removeCallbacks(hideHeartbeatRunnable)
 
@@ -1442,6 +1462,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
                 persistentHeartbeatMessage = null
             } else {
                 transientHeartbeatMessage = null
+                transientHeartbeatShouldScroll = true
             }
             renderHeartbeat(animateHide = transientHeartbeatMessage.isNullOrBlank() && persistentHeartbeatMessage.isNullOrBlank())
             return
@@ -1451,6 +1472,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
             persistentHeartbeatMessage = message
         } else {
             transientHeartbeatMessage = message
+            transientHeartbeatShouldScroll = scroll
             uiHandler.postDelayed(hideHeartbeatRunnable, displayMs)
         }
         renderHeartbeat()
@@ -1466,6 +1488,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         uiHandler.removeCallbacks(hideHeartbeatRunnable)
         persistentHeartbeatMessage = null
         transientHeartbeatMessage = null
+        transientHeartbeatShouldScroll = true
         renderHeartbeat(animateHide = true)
     }
 

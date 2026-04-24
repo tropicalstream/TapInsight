@@ -1232,7 +1232,7 @@ const HELP = {
 <p style="margin-top:12px"><b>Method 2: Manual Shared Token</b></p>
 <ol>
 <li>On your server, run: <code>openclaw config get gateway.auth.token</code> to get the shared gateway token</li>
-<li>Enter the <b>Gateway URL</b> using <code>ws://</code> prefix (e.g. <code>ws://&lt;openclaw-host-ip&gt;:18789</code>) and the <b>Gateway Token</b> in Section 8e above</li>
+<li>Enter the <b>Gateway URL</b> using <code>ws://</code> prefix (e.g. <code>ws://192.168.1.170:18789</code>) and the <b>Gateway Token</b> in Section 8e above</li>
 <li>Enable the TapClaw toggle and tap Save</li>
 <li>Note: This still requires device identity keys from a prior QR pairing. The gateway requires Ed25519 device identity for all connections.</li>
 </ol>
@@ -1374,7 +1374,7 @@ const HELP = {
   <li>Try <b>"tapclaw hello"</b>, then check <code>openclaw devices list</code> for additional pending approvals (role-upgrade to operator, scope-upgrade for operator.write). Approve each one.</li>
   </ul>
 </li>
-<li><b>Setup URL:</b> Paste a URL like <code>tapinsight://openclaw?url=ws://&lt;openclaw-host-ip&gt;:18789&token=abc123</code> (use <code>ws://</code> not <code>http://</code>)</li>
+<li><b>Setup URL:</b> Paste a URL like <code>tapinsight://openclaw?url=ws://192.168.1.100:18789&token=abc123</code> (use <code>ws://</code> not <code>http://</code>)</li>
 <li><b>Manual Token:</b> Scroll to Section 8e (TapClaw), enter the Gateway URL (<code>ws://YOUR_SERVER:18789</code>) and the gateway auth token from <code>openclaw config get gateway.auth.token</code></li>
 </ol>
 

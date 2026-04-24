@@ -298,9 +298,14 @@ function toggleFav(idx) {
 
 function deleteStation(idx) {
   if (!confirm('Delete "' + stations[idx].name + '"?')) return;
+  const removedName = stations[idx].name;
   stations.splice(idx, 1);
   populateGenreFilter();
   renderList();
+  // Auto-persist to glasses so the user doesn't have to remember to click
+  // "Save to Glasses" after every mutation. Without this, the station can
+  // reappear on reload because the glasses still have the old list.
+  saveToGlasses({ successMsg: 'Removed "' + removedName + '" and synced.' });
 }
 
 function previewStream(url, label) {
@@ -384,14 +389,32 @@ function saveModal() {
   const genre = getSelectedGenre();
   const desc = document.getElementById('fDesc').value.trim();
   if (!name || !url) { alert('Name and URL are required.'); return; }
-  if (editIdx >= 0) {
+  const isEdit = editIdx >= 0;
+  if (isEdit) {
     stations[editIdx] = sanitizeStation({ ...stations[editIdx], name, url, genre, desc });
   } else {
     stations.push(sanitizeStation({ name, url, genre, desc, fav: false }));
   }
   populateGenreFilter();
+  // If the current genre filter would hide the station we just added/edited,
+  // fall back to "all" so the user actually sees their change land in the list.
+  const filterEl = document.getElementById('genreFilter');
+  if (filterEl) {
+    const currentFilter = filterEl.value;
+    const normalized = normalizeGenre(genre);
+    const hidden = currentFilter !== 'all' && currentFilter !== 'favorites' && currentFilter !== normalized;
+    if (hidden) {
+      filterEl.value = 'all';
+    }
+  }
   renderList();
   closeModal();
+  // Auto-persist: the user's mental model is "I added a station, it's saved."
+  // Requiring a separate Save-to-Glasses click meant additions silently
+  // evaporated on reload. Sync immediately instead.
+  saveToGlasses({
+    successMsg: (isEdit ? 'Updated "' : 'Added "') + name + '" and synced to glasses.'
+  });
 }
 
 // ── Search Panel ─────────────────────────────────────────────────
@@ -553,12 +576,23 @@ function addFromSearch(btn, idx) {
 
   stations.push(sanitizeStation({ name, url: streamUrl, genre, desc, fav: false }));
   populateGenreFilter();
+  // Same filter-visibility rescue as saveModal() — if the active filter would
+  // hide the new station, drop back to "all" so the user can see it.
+  const filterEl = document.getElementById('genreFilter');
+  if (filterEl) {
+    const currentFilter = filterEl.value;
+    const normalized = normalizeGenre(genre);
+    if (currentFilter !== 'all' && currentFilter !== 'favorites' && currentFilter !== normalized) {
+      filterEl.value = 'all';
+    }
+  }
   renderList();
 
   btn.textContent = '\u2713 Added';
   btn.classList.add('added');
   btn.disabled = true;
-  showStatus('Added "' + name + '". Click "Save to Glasses" to sync.', 'ok');
+  // Auto-sync the station list to the glasses so "Added" is actually true.
+  saveToGlasses({ successMsg: 'Added "' + name + '" and synced to glasses.' });
 }
 
 function guessGenre(name, tags) {
@@ -579,7 +613,11 @@ function capitalizeFirst(s) {
 }
 
 // ── Save to glasses ───────────────────────────────────────────────
-async function saveToGlasses() {
+// opts.successMsg: custom status text shown on success (defaults to the
+// generic count message). Callers that trigger saves implicitly (add/edit/
+// delete) pass their own phrasing so the user sees what just happened.
+async function saveToGlasses(opts) {
+  const successMsg = (opts && opts.successMsg) || ('Saved ' + stations.length + ' stations to glasses!');
   try {
     const r = await fetch('/api/radio', {
       method: 'POST',
@@ -587,7 +625,7 @@ async function saveToGlasses() {
       body: JSON.stringify(sanitizeStations(stations))
     });
     if (r.ok) {
-      showStatus('Saved ' + stations.length + ' stations to glasses!', 'ok');
+      showStatus(successMsg, 'ok');
     } else {
       showStatus('Save failed: ' + r.status, 'err');
     }

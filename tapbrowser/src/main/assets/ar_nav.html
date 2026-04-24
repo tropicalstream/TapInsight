@@ -1365,7 +1365,8 @@ async function init() {
     }
     console.log('[ARNav] Map3DElement created, range=' + Math.round(currentRange) + ', heading=' + Math.round(currentHeading) + ', tilt=' + currentTilt + ', dist=' + Math.round(routeDist));
 
-    // Wait briefly for the initial scene, but do not stall route rendering.
+    // Wait only a beat for the first scene. Route overlays can render while
+    // terrain tiles continue streaming, which makes 3D maps feel ready sooner.
     await new Promise(function(resolve) {
       var settled = false;
       function finish() {
@@ -1376,7 +1377,7 @@ async function init() {
       }
       function onSteady() { finish(); }
       try { map3d.addEventListener('gmp-steadychange', onSteady); } catch (e) {}
-      setTimeout(finish, 1200);
+      setTimeout(finish, 350);
     });
 
     // ── Step 5: Draw route polyline on 3D map (route mode only) ──
@@ -1552,7 +1553,7 @@ window.gm_authFailure = function() {
 (function(){
   if (!apiKey) { showFatal('Google Maps API key missing'); return; }
   var s = document.createElement('script');
-  s.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(apiKey) + '&libraries=places&v=alpha&callback=initMap';
+  s.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(apiKey) + '&v=alpha&callback=initMap';
   s.async = true;
   s.defer = true;
   s.onerror = function() { showFatal('Google Maps JS failed to load'); };

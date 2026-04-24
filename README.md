@@ -113,7 +113,7 @@ OC3 fixes:
 1. **Download [`TapInsight.apk`](TapInsight.apk)** from this repo
 2. Sideload it onto your RayNeo X3 Pro via ADB: `adb install TapInsight.apk`
 3. Launch TapInsight on the glasses
-4. **Open the [TapInsight Companion Launcher](https://tropicalstream.github.io/TapInsight/companion.html)** in any browser on your phone or laptop — it's a rendered one-page setup wizard that connects to the glasses over WiFi or USB
+4. **Open [`companion.html`](companion.html)** in any browser on your phone or laptop — it's a one-page setup wizard that connects to the glasses over WiFi
 5. Enter your glasses' IP address (default: `<glasses-ip>`) and click **Connect**
 6. In the Setup tab, enter your Gemini API key
 7. Start talking — tap the glasses touchpad to activate the AI

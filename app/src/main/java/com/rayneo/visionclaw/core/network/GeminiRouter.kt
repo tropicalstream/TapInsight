@@ -166,6 +166,31 @@ class GeminiRouter(
                 "'show me', 'play me', 'pull up', 'open the', 'find a link', 'website', 'article', 'browser'. If one of " +
                 "those is present, route to the appropriate media tool per the rules below (5a for podcasts, tapradio for " +
                 "radio, open_taplink for videos/URLs, etc.). If none is present, this rule holds — stay conversational.\n" +
+                "RULE ZERO-E — EXPLICIT MEDIA CONSENT REQUIRED (HIGHEST PRIORITY, NO EXCEPTIONS): " +
+                "open_taplink, send_video_list, and any browser/YouTube/article/video-opening tool call is a USER-VISIBLE " +
+                "ACTION — it takes over the glasses display and interrupts the user's flow. You are ABSOLUTELY FORBIDDEN " +
+                "from making such a tool call unless ONE of these is true in the CURRENT user turn (or the immediately " +
+                "prior turn if the current turn is a bare 'yes' / 'sure' / 'go ahead' confirming your offer): " +
+                "(1) The user literally used an ACTION verb aimed at media — 'play', 'watch', 'show me', 'open', 'pull up', " +
+                "'put on', 'turn on', 'queue up', 'listen to', 'start', 'go to', 'load'. The verb must be aimed at the " +
+                "media (play THE VIDEO), not abstract ('play with the idea', 'open question'). " +
+                "(2) The user literally named a destination surface — 'YouTube', 'the browser', 'the glasses display', " +
+                "'web page', 'article', 'link', 'URL'. " +
+                "(3) The user said YES to an offer you made on the immediately prior turn. The offer must have been " +
+                "explicit ('want me to pull up a video?', 'should I open YouTube?'). A vague 'more detail?' offer does " +
+                "NOT count. " +
+                "If NONE of (1)/(2)/(3) is true, you MUST NOT call open_taplink, send_video_list, or open YouTube — not " +
+                "'as a helpful extra', not 'because the topic has good videos', not 'because the user might want to see " +
+                "it', not 'to illustrate what I'm saying'. Instead: speak the answer, and optionally close with a single " +
+                "one-sentence offer ('if you want, I can pull up a video on that'). Then STOP and wait for the user. " +
+                "OFFERING IS NOT OPENING. An offer is a spoken sentence; it does not trigger a tool call. A tool call " +
+                "requires the user's next-turn confirmation. Never collapse offer-and-open into a single turn. " +
+                "AMBIGUITY DEFAULTS TO SILENCE: If you cannot tell whether the user wants media, DO NOT open it — ask. " +
+                "Say 'I can talk it through, or pull up a video if you'd prefer — which would you like?' and wait. " +
+                "WORDS THAT ARE NOT MEDIA REQUESTS (common mistakes to avoid): 'tell me about', 'what is', 'explain', " +
+                "'how does', 'why', 'analyze', 'explore', 'break it down', 'walk me through', 'help me understand', " +
+                "'more on this', 'go deeper', 'what else', 'what about', 'interesting', 'continue' — NONE of these are " +
+                "consent to open media. They are prompts for more conversation.\n" +
                 "RULE ZERO-A — TAPCLAW AVAILABILITY: When tapclaw_agent is visible in your tool list, you may " +
                 "call it without the literal 'tapclaw' prefix. TWO PRIMARY CASES: " +
                 "(1) BROWSER / DESKTOP APP FUNCTIONALITY on the user's computer — opening a web app, automating " +
@@ -209,6 +234,43 @@ class GeminiRouter(
                 "fresh search and returns context-free garbage (e.g. 'play the one about thunder' from a " +
                 "drumming list must NOT become tapradio query='thunder' — that plays nature sounds; it " +
                 "must become query='[full drumming-podcast title]').\n" +
+                "SOURCE-CARD SELECTION (CRITICAL — DO NOT DEFAULT TO MOST RECENT): When the user references " +
+                "something by POSITION ('the second one', 'number 3', 'the first thing', 'the last one', 'the " +
+                "third thing you said'), by RELATIONAL cue ('the second thing that was said', 'the other one', " +
+                "'what else did you mention', 'the one before that'), or by DESCRIPTOR ('the one about X', 'the " +
+                "thunder one', 'the MKBHD one'), you MUST identify the CORRECT SOURCE CARD first — the card that " +
+                "actually contains the enumerated list or items the user is pointing at — BEFORE counting or " +
+                "matching. Do NOT default to the most recent card. Do NOT count items in your most recent reply " +
+                "if that reply was a follow-up (e.g. a clarifying question, a 'sure, which one?' prompt, a short " +
+                "answer to a sub-question) and an earlier card holds the original list. Concretely: " +
+                "SCAN BACKWARDS through the recent cards (including PREVIOUS CONVERSATION if present). Skip cards " +
+                "that are: conversational filler ('got it', 'which one?'), acknowledgments, single-item answers, " +
+                "or replies to a sub-question that didn't introduce a new list. STOP at the first card that " +
+                "contains an actual ENUMERATION the position reference could resolve against — a numbered list, " +
+                "a bulleted set, multiple named entities in order (e.g. a Phase A1 YouTube rundown with 4 titles, " +
+                "a tapradio podcast list, a google_places result with 5 cafes, a calendar list, a research report " +
+                "with named sections, a tapclaw file listing). That is the SOURCE CARD. Count position references " +
+                "against THAT card's items in the order they were presented. " +
+                "If there is ONLY ONE enumerated card in recent history, it is the source card — do not second-guess " +
+                "based on topical drift. If there are TWO OR MORE enumerated cards (e.g. two separate YouTube " +
+                "rundowns), prefer the one topically aligned with the current sub-conversation; if that is " +
+                "ambiguous, take the AMBIGUITY ESCAPE below rather than guessing. " +
+                "If the current user message itself introduces a new enumeration ('tell me about three of these'), " +
+                "wait until you've produced the enumeration before treating position references against it. " +
+                "SOURCE-CARD EXAMPLES: " +
+                "• You produced a 4-item YouTube rundown (card N-2), then the user asked 'what's the first one " +
+                "about?' (card N-1 was your one-sentence answer). User now says 'play the second one'. The source " +
+                "card is N-2 (the rundown), not N-1. Play item #2 from the rundown. " +
+                "• You listed 5 top podcasts (card N-3), then spent cards N-2 and N-1 discussing podcast #1 in " +
+                "depth. User says 'tell me about the third one'. Source card is N-3 (the list), not N-1 (a " +
+                "paragraph about #1). Describe item #3 from the original list. " +
+                "• You gave a Phase A1 YouTube rundown about Topic-A (card N-4), then user pivoted to Topic-B and " +
+                "you gave another rundown about Topic-B (card N-1). User says 'the second one'. Prefer the most " +
+                "recent rundown (N-1) because the sub-conversation is on Topic-B. If you cannot tell which topic " +
+                "the reference belongs to, ask. " +
+                "• Your most recent reply was a clarifying question ('did you mean the jazz list or the rock " +
+                "list?'). User says 'the second thing I mentioned'. Do NOT count words in your clarifying " +
+                "question; the source card is the list card before the clarifying question.\n" +
                 "CROSS-DOMAIN EXAMPLES: " +
                 "• Tapradio: after reading a drumming-podcast list, 'play the thunder one' → " +
                 "action='podcast' with query='[full show title]'. " +
@@ -484,13 +546,26 @@ class GeminiRouter(
                 "Never use daily_briefing for generic calendar, events-near-me, what's open, nearby places, traffic, weather, or route questions.\n" +
                 "10) For air quality, AQI, smoke, pollution, or whether the air is safe right now, ALWAYS call google_air_quality.\n" +
                 "10a) NEWS — STRICT TRIGGER. Call google_news ONLY when the user's message explicitly contains " +
-                "the word 'news', 'headlines', 'top stories', 'current events', 'breaking', or equivalent news-intent " +
-                "phrasing (e.g. 'what's in the news today', 'give me the headlines', 'top news on X'). " +
+                "the word 'news', 'headlines', 'top stories', 'breaking', or the FULL PHRASE 'current events' " +
+                "(e.g. 'what's in the news today', 'give me the headlines', 'top news on X', 'breaking news on Y'). " +
                 "DO NOT call google_news for learning, explanatory, analytical, or follow-up discussions on any " +
                 "topic — not even topics that are 'in the news'. If the user is talking about education, climate, " +
                 "technology, politics, economics, or any other newsworthy area WITHOUT using a news keyword, answer " +
                 "conversationally per Rule 18 / RULE ZERO-D. Never volunteer a 'top headlines' summary as a " +
                 "follow-up to a conceptual question; that's a bug, not a helpful add-on. " +
+                "CRITICAL — 'events' IS NOT A NEWS TRIGGER. The word 'events' by itself (or in phrases like " +
+                "'events this weekend', 'weekend events', 'events near me', 'upcoming events', 'retro computing events', " +
+                "'local events', 'what events are on', 'any events tonight', 'music events', 'tech events') refers to " +
+                "calendar-style listings (concerts, meetups, conventions, festivals, screenings, expos, conferences) — " +
+                "NOT to news headlines. Do NOT fire google_news on these. Route them through Internet Search " +
+                "(Google Search grounding per Rule 6 / Rule 18) or, if they're local and place-based, through " +
+                "ask_maps. The ONLY time 'events' should trigger google_news is the literal contiguous phrase " +
+                "'current events' used as a news-intent signal (e.g. 'what are the current events today', " +
+                "'give me a rundown of current events'). 'Current events in AI' is ambiguous — prefer conversational " +
+                "answer or Internet Search unless the user also said 'news' or 'headlines'. " +
+                "NEGATIVE EXAMPLES (do NOT call google_news): 'events this weekend related to retro computing', " +
+                "'what festivals are happening Saturday', 'any tech meetups nearby', 'upcoming concerts in town', " +
+                "'what's going on this weekend'. Each of these is a search/maps query, never a news query. " +
                 "If the user asked for news on a specific topic ('news about AI safety'), pass the topic as the " +
                 "query; if they asked for generic headlines, no topic is needed.\n" +
                 "11) BROWSER TASKS (see also RULE ZERO): When the user asks TapClaw to do something that " +
@@ -737,6 +812,10 @@ class GeminiRouter(
                 "FOLLOW-UP HANDLING — CRITICAL:\n" +
                 "After your Phase A1 voice description, branch on what the user says next:\n" +
                 "  • Named pick or play verb → Phase B (open_taplink with the specific title).\n" +
+                "  • 'play one of the videos', 'play one of those', 'watch one', 'watch one of them', " +
+                "'play one of them', or similar explicit play/watch wording after A1 is ALSO Phase B. " +
+                "Use the first reasonable title from your own immediately preceding rundown. Do NOT refuse " +
+                "just because the turn is still a discussion; an explicit play/watch request always wins.\n" +
                 "  • 'send the list', 'show me the list', 'put it on the glasses' → Phase A2 " +
                 "(send_video_list with the same titles).\n" +
                 "  • Bare 'yes' / 'sure' with no hint → ONE short clarifying question (see above).\n" +
@@ -2140,7 +2219,19 @@ class GeminiRouter(
                 .put("name", "open_taplink")
                 .put("description", "Display or play content on the AR glasses by opening a URL in the TapBrowser viewer. " +
                     "Supports images (JPEG, PNG), videos (YouTube, MP4), audio (MP3, WAV, OGG, M4A, FLAC), web pages, and text files. " +
-                    "Use this whenever the user asks to 'show', 'display', 'view', 'open', 'play', or 'listen to' any content on their glasses. " +
+                    "CONSENT REQUIRED (per RULE ZERO-E): Call this tool ONLY when the user's CURRENT message contains " +
+                    "one of these explicit triggers: (a) an action verb aimed at media — 'play', 'watch', 'show me', " +
+                    "'open', 'pull up', 'put on', 'turn on', 'queue up', 'listen to', 'start', 'load'; OR " +
+                    "(b) a named surface — 'YouTube', 'the browser', 'a web page', 'article', 'URL', 'link', 'website'; OR " +
+                    "(c) an explicit YES to a one-sentence offer you made on the immediately prior turn (e.g. you asked " +
+                    "'want me to pull up a video?' and the user said 'yes'). " +
+                    "DO NOT call this tool proactively, speculatively, or 'because it might be helpful'. " +
+                    "DO NOT call this tool in response to learning / analytical questions ('tell me about', 'what is', " +
+                    "'explain', 'how does', 'why', 'analyze', 'more on this', 'go deeper') — those are conversation prompts, " +
+                    "not consent to open media. " +
+                    "DO NOT call this tool on the same turn as your OFFER — offers are spoken sentences, not tool calls; " +
+                    "wait for the user's next-turn confirmation. " +
+                    "If you are unsure whether the user wants media, ask a one-sentence clarifying question and wait. " +
                     "Always pass a fully-qualified absolute URL (for example https://example.com/image.jpg or file:///android_asset/page.html). " +
                     "Never pass a relative path like /v1/... . " +
                     "For workspace files, use ONLY the exact base URL from the MEDIA RELAY section in the system prompt — " +
@@ -2270,8 +2361,9 @@ class GeminiRouter(
                 .put("name", "google_news")
                 .put("description", "Fetch top news headlines from Google News. " +
                     "Call ONLY when the user EXPLICITLY asks for news — their message must contain one of: " +
-                    "'news', 'headlines', 'top stories', 'current events', 'what's happening in the news', " +
-                    "'what's in the news', 'breaking news', 'daily news', 'news about [topic]'. " +
+                    "'news', 'headlines', 'top stories', the full contiguous phrase 'current events', " +
+                    "'what's happening in the news', 'what's in the news', 'breaking news', 'daily news', " +
+                    "'news about [topic]'. " +
                     "DO NOT call this tool for learning/explanatory requests ('tell me about X', 'explain X', " +
                     "'what is X', 'how does X work', 'analyze X', 'what's going on with X', etc.) — those are " +
                     "conversational answers per RULE ZERO-D and Rule 18. " +
@@ -2279,7 +2371,14 @@ class GeminiRouter(
                     "(education, policy, politics, technology, etc.); a topic being newsworthy is NOT a signal " +
                     "to fetch news — the user must literally ask for news/headlines. " +
                     "DO NOT call this tool as a 'here's what's happening' follow-up after answering a question — " +
-                    "that short-circuits the conversation.")
+                    "that short-circuits the conversation. " +
+                    "CRITICAL — 'events' ALONE IS NOT A TRIGGER. Phrases like 'events this weekend', 'weekend events', " +
+                    "'events near me', 'upcoming events', 'local events', 'music events', 'tech events', " +
+                    "'retro computing events', 'any events tonight', 'what events are on', 'what's happening this " +
+                    "weekend' refer to calendar-style listings (concerts, meetups, conventions, festivals, expos) " +
+                    "and must be answered via Internet Search (Google Search grounding) or ask_maps for local " +
+                    "place-based events — NEVER via google_news. The ONLY 'events' phrasing that triggers this " +
+                    "tool is the literal contiguous phrase 'current events' used as a news-intent signal.")
                 .put("parameters", JSONObject()
                     .put("type", "OBJECT")
                     .put("properties", JSONObject()
