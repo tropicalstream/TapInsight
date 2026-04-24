@@ -82,12 +82,12 @@ There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (ve
 
 ## Download
 
-**[TapInsight OC3 APK](https://github.com/tropicalstream/TapInsight/releases/download/tapinsight-oc3/tapinsight-oc3.apk)** — Latest publishable debug build for RayNeo X3 Pro.
+**[TapInsight beta.1 APK](https://github.com/tropicalstream/TapInsight/releases/download/beta.1/tapinsight-beta.1.apk)** — Latest publishable debug build for RayNeo X3 Pro.
 
-OC3 fixes:
-- Closed captions now display more reliably by default in YouTube video mode.
-- Gemini routing is less likely to auto-play YouTube when the user is asking an informational question.
-- Saying `status` now triggers the intended OpenClaw heartbeat plus current/next Google Calendar briefing.
+beta.1 highlights:
+- TapBrowser scrollbar/right-shift stabilization during page loads and back navigation.
+- Recent Gemini, OpenClaw, media, and HUD improvements from the current 1.1.2 working line.
+- Published from a scrubbed clean export with APK and source tarball attached to the GitHub release.
 
 ---
 
@@ -302,6 +302,20 @@ Your gateway is now reachable at `wss://tapclaw.yourdomain.com`. Use this as the
 - **"Error 1033"** — The tunnel isn't running. Start with `cloudflared tunnel run tapclaw`.
 
 **Alternative:** [Tailscale](https://tailscale.com) provides a free mesh VPN with stable private IPs — no domain needed. Use your Tailscale IP with `ws://` protocol in the companion app.
+
+### Magentic Project UI on the OpenClaw Host
+
+If your OpenClaw host also runs the Magentic project, start it locally before pairing TapInsight so you have the Magentic inspection dashboard available while the glasses talk to the OpenClaw gateway.
+
+```bash
+source .venv/bin/activate
+magentic-ui --config ./config.yaml --run-without-docker --port 8081
+```
+
+Purpose:
+- `source .venv/bin/activate` loads the Magentic Python environment.
+- `magentic-ui --config ./config.yaml --run-without-docker --port 8081` launches the Magentic web UI directly on the host using your local config, without Docker.
+- OpenClaw is still the TapInsight-facing gateway on port `18789`; Magentic UI is the host-side admin/debug dashboard on port `8081`.
 
 ---
 
