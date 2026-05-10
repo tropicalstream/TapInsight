@@ -82,7 +82,7 @@ There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (ve
 
 ## Download
 
-**[TapInsight OC Beta 3 APK](https://github.com/tropicalstream/TapInsight/releases/download/TapInsight-OC-Beta-3/TapInsight-OC-Beta-3.apk)** — Latest publishable debug build for RayNeo X3 Pro.
+**[TapInsight releases](https://github.com/tropicalstream/TapInsight/releases)** — TapInsight OC Beta 3 is temporarily paused while the release artifacts are re-verified.
 
 OC Beta 3 highlights:
 - Customizable avatars and companion-side bookmark editing.
