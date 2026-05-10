@@ -21,6 +21,7 @@ captures/
 *.apk
 *.ap_
 *.aab
+*.ab
 *.dex
 *.class
 
@@ -33,6 +34,8 @@ google-services.json
 
 # Claude/dev artifacts
 .claude/
+__pycache__/
+*.pyc
 
 # OS Metadata
 .DS_Store
