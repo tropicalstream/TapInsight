@@ -82,18 +82,21 @@ There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (ve
 
 ## Download
 
-**[TapInsight beta.1 APK](https://github.com/tropicalstream/TapInsight/releases/download/beta.1/tapinsight-beta.1.apk)** — Latest publishable debug build for RayNeo X3 Pro.
+**[TapInsight OC Beta 3 APK](https://github.com/tropicalstream/TapInsight/releases/download/TapInsight-OC-Beta-3/TapInsight-OC-Beta-3.apk)** — Latest publishable debug build for RayNeo X3 Pro.
 
-beta.1 highlights:
-- TapBrowser scrollbar/right-shift stabilization during page loads and back navigation.
-- Recent Gemini, OpenClaw, media, and HUD improvements from the current 1.1.2 working line.
-- Published from a scrubbed clean export with APK and source tarball attached to the GitHub release.
+OC Beta 3 highlights:
+- Customizable avatars and companion-side bookmark editing.
+- Left-arm tap camera toggle for faster privacy/battery control.
+- Tighter Gemini, TapClaw, OpenClaw, TapBrowser, and media-agent handoffs.
+- Recent TapBrowser scrollbar, media-routing, radio/podcast, and HUD cleanup.
 
 ---
 
 ## Videos
 
-- **[TapInsight Overview](https://youtu.be/42DV0rl1NOo)** — The main walkthrough showing the current alpha running on the glasses, including voice, vision, and companion workflow.
+- **[TapInsight OC Beta 3 - New Features](https://youtu.be/EH8dxzB1UKg)** — Customizable avatars, tap-left-arm camera toggle, companion bookmark editing, and tighter agent integration.
+- **[How to Set Up TapInsight](https://youtu.be/VxpLvR1Jz2Y)** — A practical setup walkthrough for the glasses and companion app.
+- **[TapInsight Overview](https://youtu.be/42DV0rl1NOo)** — The main walkthrough showing TapInsight running on the glasses, including voice, vision, and companion workflow.
 - **[TapInsight - Learning Partner](https://youtu.be/nUUxjQn-ZgU)** — Based on the video description: a demo of TapInsight acting as a thoughtful learning partner, building on the earlier camera-learning examples.
 - **[TapInsight Setup Overview](https://youtu.be/shRHLzmlQOk)** — Based on the video description: a quick setup overview that also shows the media-files workflow.
 
@@ -327,7 +330,7 @@ Special thanks to **InformalTech** and **glxblt76**, the developers of [TapLinkX
 
 ## Disclaimer
 
-This is alpha software provided as-is. The developers are not responsible for any issues arising from its use. API keys and credentials are stored locally on your device and are never transmitted to third parties beyond the configured API providers (Google, Spotify, etc.).
+This is beta software provided as-is. The developers are not responsible for any issues arising from its use. API keys and credentials are stored locally on your device and are never transmitted to third parties beyond the configured API providers (Google, Spotify, etc.).
 
 **Security note**: This repository has been scrubbed of all personal information, API keys, and credentials. All sensitive values use placeholders. You must supply your own API keys via the companion app or `local.properties`.
 
