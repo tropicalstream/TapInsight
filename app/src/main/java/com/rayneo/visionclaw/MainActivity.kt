@@ -851,6 +851,10 @@ class MainActivity : AppCompatActivity() {
         // Store client reference for periodic ping and start idle status ticker.
         openClawClientField = openClawClient
         startOpenClawPing()
+        // Hermes equivalent: store reference and start the parallel ping
+        // loop so the HUD status icon turns red/green based on Hermes
+        // server reachability. Constructed below in this same scope —
+        // assign after construction to avoid forward-reference confusion.
 
         // Hermes Agent client — separate HTTP/SSE client that talks to
         // the user's hermes-agent API server. Constructed alongside
@@ -1031,6 +1035,55 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        // ── Hermes Agent client ────────────────────────────────────
+        // Separate HTTP/SSE client that talks to the user's hermes-agent
+        // API server. Constructed alongside OpenClaw so both can be
+        // active simultaneously (different voice keyword routes to each).
+        // Endpoint + API key come from AppPreferences, populated via the
+        // companion app's Hermes section.
+        val prefsForHermes = viewModel.preferences
+        val hermesClient = com.rayneo.visionclaw.core.network.HermesClient(
+            endpointUrlProvider = { prefsForHermes.hermesEndpoint.takeIf { it.isNotBlank() } },
+            apiKeyProvider = { prefsForHermes.hermesApiKey.takeIf { it.isNotBlank() } },
+            sessionIdProvider = { prefsForHermes.hermesSessionId.ifBlank { "main" } },
+            timeoutMsProvider = {
+                val t = prefsForHermes.hermesTimeoutSeconds
+                if (t > 0) t * 1000 else 30_000
+            }
+        )
+        // Wire the SSE progress callbacks into the same HUD ticker
+        // surface used by OpenClaw so the user sees Hermes' streaming
+        // assistant text scrolling under the clock during turns.
+        hermesClient.onProgressUpdate = { deltaText ->
+            val now = android.os.SystemClock.uptimeMillis()
+            val heartbeatText = deltaText.take(200).replace('\n', ' ')
+            lastTapClawHeartbeat = heartbeatText
+            lastOpenClawTaskLabel = "Hermes working"
+            lastOpenClawActivityMs = now
+            lastOpenClawGatewayHealthy = true
+            if (now - lastHeartbeatUiUpdateMs >= OPENCLAW_PROGRESS_UI_MIN_INTERVAL_MS) {
+                lastHeartbeatUiUpdateMs = now
+                runOnUiThread {
+                    renderOpenClawTicker("Hermes working", gatewayHealthy = true, transient = true)
+                    chatFragment.setStreamActiveIndicator(true)
+                }
+            }
+        }
+        hermesClient.onProgressComplete = { success ->
+            val now = android.os.SystemClock.uptimeMillis()
+            lastOpenClawTaskLabel = if (success) "Hermes done" else "Hermes failed"
+            lastOpenClawActivityMs = now
+            lastHeartbeatUiUpdateMs = now
+            runOnUiThread {
+                renderOpenClawTicker(lastOpenClawTaskLabel, gatewayHealthy = success, transient = false)
+                chatFragment.setStreamActiveIndicator(false)
+            }
+        }
+        // Store + start the parallel Hermes ping so the HUD status icon
+        // (next to the clock) turns green when Hermes is reachable.
+        hermesClientField = hermesClient
+        startHermesPing()
+
         toolDispatcher = ToolDispatcher(
             this, calendarClient, directionsClient, tasksClient,
             placesClient = placesClient,
@@ -2663,6 +2716,340 @@ class MainActivity : AppCompatActivity() {
         setHudConnectionStatus(ChatPanelFragment.ConnectionStatus.TOOLS_READY)
     }
 
+    private data class SideEffectAuthorization(
+        val checked: Boolean,
+        val allowed: Boolean,
+        val reason: String
+    )
+
+    private fun dispatchSkippedToolResponse(callId: String, functionName: String, reason: String) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val responseId = callId.trim().ifBlank { "tool-${System.currentTimeMillis()}" }
+            geminiLiveSession?.sendToolResponse(
+                responseId,
+                functionName,
+                "Tool call skipped: $reason. Cached conversation context may identify the subject, " +
+                    "but the current user turn must authorize visible actions or device changes. " +
+                    "Answer verbally or ask one concise confirmation before taking action."
+            )
+        }
+    }
+
+    private fun authorizeCurrentTurnSideEffectTool(
+        functionName: String,
+        argsJson: String
+    ): SideEffectAuthorization {
+        val args = parseToolArgsForAuthorization(argsJson)
+        val action = args?.optString("action").orEmpty().trim().lowercase(Locale.US)
+        val display = args?.optString("display").orEmpty().trim().lowercase(Locale.US)
+        val transcript = currentTranscriptForSideEffectAuthorization()
+
+        fun allow(reason: String, checked: Boolean = true) =
+            SideEffectAuthorization(checked = checked, allowed = true, reason = reason)
+
+        fun block(reason: String) =
+            SideEffectAuthorization(checked = true, allowed = false, reason = reason)
+
+        fun requireCurrentTurn(ok: Boolean, reason: String): SideEffectAuthorization =
+            if (transcript.isBlank()) {
+                block("$functionName was requested without a fresh current-turn transcript")
+            } else if (ok) {
+                allow(reason)
+            } else {
+                block("$functionName was requested from context/cache without current-turn permission")
+            }
+
+        val mediaAction = hasCurrentTurnMediaActionIntent(transcript)
+        val mediaDiscovery = hasCurrentTurnMediaDiscoveryIntent(transcript)
+        val mediaConfirmation = confirmsRecentAssistantOffer(
+            transcript,
+            Regex(
+                """(?i)\b(?:play|watch|open|show|display|send|pull\s+up|put\s+on|queue|listen|start|youtube|video|podcast|radio|station|glasses|browser|link|url|spotify|tapradio)\b"""
+            )
+        )
+        val displayRequested = hasCurrentTurnDisplayIntent(transcript)
+        val writeRequested = hasCurrentTurnWriteIntent(transcript)
+
+        return when (functionName) {
+            "open_taplink", "send_video_list" ->
+                requireCurrentTurn(
+                    mediaAction || displayRequested || mediaConfirmation,
+                    "$functionName authorized by current-turn media/display intent"
+                )
+
+            "tapclaw_agent" ->
+                requireCurrentTurn(
+                    hasCurrentTurnTapClawInvocation(transcript) ||
+                        confirmsRecentAssistantOffer(
+                            transcript,
+                            Regex("""(?i)\b(?:tap\s*claw|tapclaw|open\s*claw|openclaw)\b""")
+                        ),
+                    "tapclaw_agent authorized by explicit TapClaw/OpenClaw invocation or confirmation"
+                )
+
+            "camera_action" ->
+                requireCurrentTurn(
+                    hasCurrentTurnCameraActionIntent(transcript, action),
+                    "camera_action authorized by explicit camera/photo/record/QR intent"
+                )
+
+            "tapradio" -> {
+                val visualDisplay = display in setOf("glasses", "browser", "display", "show", "visual", "hud")
+                val playbackAction = action in setOf("play", "podcast", "stop", "add")
+                val discoveryAction = action in setOf(
+                    "",
+                    "list",
+                    "search",
+                    "preview",
+                    "preview_station",
+                    "preview_podcast",
+                    "info_station",
+                    "top_podcasts"
+                )
+                when {
+                    visualDisplay ->
+                        requireCurrentTurn(
+                            displayRequested || mediaAction || mediaConfirmation,
+                            "tapradio visual display authorized by current-turn display intent"
+                        )
+                    playbackAction ->
+                        requireCurrentTurn(
+                            mediaAction || mediaConfirmation,
+                            "tapradio playback/control authorized by current-turn media intent"
+                        )
+                    discoveryAction ->
+                        requireCurrentTurn(
+                            mediaDiscovery || mediaAction || mediaConfirmation,
+                            "tapradio lookup authorized by current-turn media discovery intent"
+                        )
+                    else -> allow("tapradio non-side-effect action")
+                }
+            }
+
+            "spotify_player", "sonos_control" -> {
+                val playbackAction = functionName == "sonos_control" ||
+                    action in setOf("", "play", "pause", "resume", "next", "previous", "save")
+                if (playbackAction) {
+                    requireCurrentTurn(
+                        mediaAction || mediaConfirmation,
+                        "$functionName playback/control authorized by current-turn media intent"
+                    )
+                } else {
+                    allow("$functionName read-only/search action", checked = false)
+                }
+            }
+
+            "ask_maps" -> {
+                val opensMap = action in setOf(
+                    "navigate",
+                    "navigate_3d",
+                    "show_3d",
+                    "preview_3d",
+                    "view_3d",
+                    "show_3d_map",
+                    "photorealistic_view",
+                    "fly_over",
+                    "flyover",
+                    "orbit",
+                    "cinematic_view",
+                    "aerial_view"
+                )
+                if (opensMap) {
+                    requireCurrentTurn(
+                        hasCurrentTurnMapActionIntent(transcript) ||
+                            confirmsRecentAssistantOffer(
+                                transcript,
+                                Regex("""(?i)\b(?:map|3d|navigation|directions|route|show|open|display)\b""")
+                            ),
+                        "ask_maps visual/navigation action authorized by current-turn map intent"
+                    )
+                } else {
+                    allow("ask_maps informational action", checked = false)
+                }
+            }
+
+            "research_topic" ->
+                requireCurrentTurn(
+                    hasCurrentTurnResearchIntent(transcript) ||
+                        confirmsRecentAssistantOffer(
+                            transcript,
+                            Regex("""(?i)\b(?:research|look\s+up|source|journal|study|paper|article|cite)\b""")
+                        ),
+                    "research_topic authorized by current-turn research/source intent"
+                )
+
+            "google_keep" -> {
+                val writeAction = action.isBlank() || action in setOf("create", "append")
+                if (writeAction) {
+                    requireCurrentTurn(writeRequested, "google_keep write authorized by current-turn note/save intent")
+                } else {
+                    allow("google_keep read-only action", checked = false)
+                }
+            }
+
+            "google_calendar" -> {
+                val writeAction = action in setOf("create", "add", "schedule")
+                if (writeAction) {
+                    requireCurrentTurn(writeRequested, "google_calendar write authorized by current-turn schedule intent")
+                } else {
+                    allow("google_calendar read-only action", checked = false)
+                }
+            }
+
+            "google_tasks" -> {
+                val writeAction = action in setOf("create", "add", "complete", "done", "finish")
+                if (writeAction) {
+                    requireCurrentTurn(writeRequested, "google_tasks write authorized by current-turn task intent")
+                } else {
+                    allow("google_tasks read-only action", checked = false)
+                }
+            }
+
+            "send_message" ->
+                requireCurrentTurn(
+                    Regex("""(?i)\b(?:send|text|message|sms|email|share)\b""").containsMatchIn(transcript),
+                    "send_message authorized by current-turn communication intent"
+                )
+
+            "battery_saver" -> {
+                val writeAction = action in setOf("enable", "on", "activate", "save", "disable", "off", "deactivate")
+                if (writeAction) {
+                    requireCurrentTurn(
+                        Regex("""(?i)\b(?:battery|power|low\s+power|battery\s+saver)\b""").containsMatchIn(transcript),
+                        "battery_saver toggle authorized by current-turn battery intent"
+                    )
+                } else {
+                    allow("battery_saver status action", checked = false)
+                }
+            }
+
+            "quick_action" -> {
+                val listOnly = action in setOf("list", "help")
+                if (listOnly) {
+                    allow("quick_action list/help action", checked = false)
+                } else {
+                    requireCurrentTurn(
+                        Regex("""(?i)\b(?:quick\s+action|macro|shortcut|good\s+morning|leaving\s+work|heading\s+home|meeting\s+mode|what'?s\s+nearby)\b""")
+                            .containsMatchIn(transcript),
+                        "quick_action authorized by current-turn macro intent"
+                    )
+                }
+            }
+
+            else -> allow("read-only or already locally guarded tool", checked = false)
+        }
+    }
+
+    private fun parseToolArgsForAuthorization(argsJson: String): JSONObject? {
+        val trimmed = argsJson.trim()
+        if (trimmed.isBlank() || trimmed == "{}") return JSONObject()
+        return try {
+            JSONObject(trimmed)
+        } catch (e: Exception) {
+            Log.w(TAG, "SideEffectGate could not parse args for authorization: ${e.message}")
+            null
+        }
+    }
+
+    private fun currentTranscriptForSideEffectAuthorization(): String =
+        listOf(pendingLiveInputTranscript, latestLiveTranscript)
+            .map { it.trim() }
+            .firstOrNull { it.isNotBlank() }
+            .orEmpty()
+
+    private fun hasCurrentTurnTapClawInvocation(transcript: String): Boolean =
+        Regex("""(?i)\b(?:tap\s*claw|tapclaw|open\s*claw|openclaw)\b""").containsMatchIn(transcript)
+
+    private fun hasCurrentTurnMediaActionIntent(transcript: String): Boolean {
+        if (transcript.isBlank() || isMediaServiceCapabilityQuestion(transcript)) return false
+        return Regex(
+            """(?i)^\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+)?(?:play|watch|open|show(?:\s+me)?|display|send|pull\s+up|put\s+on|queue(?:\s+up)?|listen\s+to|start|load|go\s+to|bring\s+up|launch)\b"""
+        ).containsMatchIn(transcript) ||
+            Regex(
+                """(?i)\b(?:i\s+(?:want|need|would\s+like)\s+(?:to\s+)?|let'?s\s+|please\s+)(?:play|watch|open|show|display|send|pull\s+up|put\s+on|queue|listen\s+to|start|load|bring\s+up|launch)\b"""
+            ).containsMatchIn(transcript)
+    }
+
+    private fun hasCurrentTurnDisplayIntent(transcript: String): Boolean {
+        if (transcript.isBlank() || isMediaServiceCapabilityQuestion(transcript)) return false
+        return Regex(
+            """(?i)\b(?:show|display|send|open|pull\s+up|put|load|bring\s+up)\b.*\b(?:glasses|display|browser|web\s*page|website|link|url|list|video|youtube|article)\b"""
+        ).containsMatchIn(transcript)
+    }
+
+    private fun hasCurrentTurnMediaDiscoveryIntent(transcript: String): Boolean {
+        if (transcript.isBlank() || isMediaServiceCapabilityQuestion(transcript)) return false
+        val hasMediaType = Regex(
+            """(?i)\b(?:podcasts?|radio|stations?|youtube|videos?|songs?|tracks?|music|spotify|tapradio|streams?)\b"""
+        ).containsMatchIn(transcript)
+        val hasDiscoveryCue = Regex(
+            """(?i)\b(?:find|search|look\s+up|list|browse|recommend|suggest|top|best|popular|trending|what\s+are|what'?s|any\s+good|give\s+me|show\s+me)\b"""
+        ).containsMatchIn(transcript)
+        val explanatoryOnly = Regex(
+            """(?i)^\s*(?:tell\s+me\s+about|explain|analyze|what\s+is|what'?s\s+the\s+history|why|how\s+does|help\s+me\s+understand)\b"""
+        ).containsMatchIn(transcript)
+        return hasMediaType && hasDiscoveryCue && !explanatoryOnly
+    }
+
+    private fun hasCurrentTurnCameraActionIntent(transcript: String, action: String): Boolean {
+        if (transcript.isBlank()) return false
+        return when (action) {
+            "read_qr" ->
+                Regex("""(?i)\b(?:scan|read)\b.*\b(?:qr|code)\b|\b(?:qr|code)\b.*\b(?:scan|read)\b""")
+                    .containsMatchIn(transcript)
+            "start_recording", "stop_recording" ->
+                Regex("""(?i)\b(?:start|stop|save|record)\b.*\b(?:recording|audio|video)\b|\brecord(?:ing)?\b""")
+                    .containsMatchIn(transcript)
+            else ->
+                Regex("""(?i)\b(?:take|save|capture|snap|shoot)\b.*\b(?:photo|picture|image|camera)\b|\b(?:photo|picture|image)\b.*\b(?:take|save|capture)\b""")
+                    .containsMatchIn(transcript)
+        }
+    }
+
+    private fun hasCurrentTurnMapActionIntent(transcript: String): Boolean {
+        if (transcript.isBlank()) return false
+        return Regex(
+            """(?i)\b(?:navigate|directions?|route|take\s+me|guide\s+me|show|open|display|pull\s+up|3d|map|fly\s+over|aerial)\b"""
+        ).containsMatchIn(transcript)
+    }
+
+    private fun hasCurrentTurnResearchIntent(transcript: String): Boolean {
+        if (transcript.isBlank()) return false
+        return Regex(
+            """(?i)\b(?:research|deep\s+dive|look\s+up|source|sources|journal|study|paper|article|cite|citation|reference|medical\s+journal|peer\s+reviewed)\b"""
+        ).containsMatchIn(transcript)
+    }
+
+    private fun hasCurrentTurnWriteIntent(transcript: String): Boolean {
+        if (transcript.isBlank()) return false
+        return Regex(
+            """(?i)\b(?:create|add|save|remember|note|memo|append|write\s+down|schedule|calendar|event|remind|task|todo|complete|mark\s+done)\b"""
+        ).containsMatchIn(transcript)
+    }
+
+    private fun isMediaServiceCapabilityQuestion(transcript: String): Boolean =
+        Regex(
+            """(?i)^\s*(?:can|could|does|do|will|would)\s+(?:youtube|spotify|tap\s*radio|tapradio|radio|podcasts?|browser|tapbrowser|tap\s*claw|tapclaw|open\s*claw|openclaw|gemini)\b"""
+        ).containsMatchIn(transcript.trim())
+
+    private fun confirmsRecentAssistantOffer(transcript: String, offerPattern: Regex): Boolean {
+        if (!isBareConfirmation(transcript)) return false
+        val recentAssistantText = viewModel.getAssistantCardsSnapshot()
+            .asReversed()
+            .take(3)
+            .joinToString("\n") { it.text }
+        if (recentAssistantText.isBlank()) return false
+        val hasOfferLanguage = Regex(
+            """(?i)\b(?:want\s+me\s+to|would\s+you\s+like\s+me\s+to|should\s+i|i\s+can|if\s+you\s+want|if\s+you'd\s+like)\b"""
+        ).containsMatchIn(recentAssistantText)
+        return hasOfferLanguage && offerPattern.containsMatchIn(recentAssistantText)
+    }
+
+    private fun isBareConfirmation(transcript: String): Boolean =
+        Regex(
+            """(?i)^\s*(?:yes|yeah|yep|yup|sure|ok(?:ay)?|go\s+ahead|please\s+do|do\s+it|that\s+works|sounds\s+good|affirmative)(?:\s+please)?[.!?]*\s*$"""
+        ).containsMatchIn(transcript.trim())
+
     private fun dispatchLiveToolCall(callId: String, name: String, args: String) {
         // Defense-in-depth: reject tool calls that arrive after local handoff claimed the turn
         if (isGeminiOutputSuppressed()) {
@@ -2942,6 +3329,22 @@ class MainActivity : AppCompatActivity() {
                 )
             }
             return
+        }
+
+        val sideEffectAuthorization = authorizeCurrentTurnSideEffectTool(functionName, effectiveArgs)
+        if (sideEffectAuthorization.checked) {
+            val gateTranscript = currentTranscriptForSideEffectAuthorization()
+            val logLine =
+                "SideEffectGate ${if (sideEffectAuthorization.allowed) "ALLOW" else "BLOCK"} " +
+                    "tool=$functionName reason=${sideEffectAuthorization.reason} " +
+                    "currentTurn='${gateTranscript.take(180)}'"
+            if (sideEffectAuthorization.allowed) {
+                Log.d(TAG, logLine)
+            } else {
+                Log.w(TAG, logLine)
+                dispatchSkippedToolResponse(callId, functionName, sideEffectAuthorization.reason)
+                return
+            }
         }
 
         // ── Research tool: show "Researching…" while fetching ────────
@@ -6090,6 +6493,11 @@ class MainActivity : AppCompatActivity() {
 
     /** OpenClaw client instance — promoted from onCreate for periodic ping access. */
     private var openClawClientField: com.rayneo.visionclaw.core.network.OpenClawClient? = null
+    // Hermes equivalent — drives the HUD status icon (red/green) on this branch.
+    // When set, hermesPingRunnable polls `/v1/models` to color the icon.
+    private var hermesClientField: com.rayneo.visionclaw.core.network.HermesClient? = null
+    private var hermesPingInFlight: Boolean = false
+    private var lastHermesGatewayHealthy: Boolean = false
 
     private fun openClawProgressLabel(deltaText: String): String {
         val lower = deltaText.lowercase()
@@ -6334,7 +6742,13 @@ class MainActivity : AppCompatActivity() {
                 pingInFlight = false
                 runOnUiThread {
                     chatFragment.clearHeartbeat()
-                    chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
+                    // On the Hermes branch the HUD status icon represents
+                    // Hermes. Leave it alone here so hermesPingRunnable
+                    // keeps coloring it red/green independently. Only hide
+                    // it when BOTH OpenClaw AND Hermes are off.
+                    if (!viewModel.preferences.hermesEnabled) {
+                        chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
+                    }
                     chatFragment.setStreamActiveIndicator(false)
                 }
                 scheduleNextPing()
@@ -6435,6 +6849,96 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopOpenClawPing() {
         uiHandler.removeCallbacks(openClawPingRunnable)
+    }
+
+    /**
+     * Hermes equivalent of [openClawPingRunnable]. Pings the user's
+     * configured hermes-agent server every `openclaw_heartbeat_interval_seconds`
+     * (reusing the same cadence pref) and updates the HUD status icon
+     * red (unreachable) / green (reachable). Independent of the OpenClaw
+     * ping so the two integrations don't fight over the same icon.
+     */
+    private val hermesPingRunnable = object : Runnable {
+        override fun run() {
+            val prefs = viewModel.preferences
+            val client = hermesClientField
+            if (!prefs.hermesEnabled || client == null) {
+                hermesPingInFlight = false
+                lastHermesGatewayHealthy = false
+                runOnUiThread {
+                    // Only hide if OpenClaw isn't holding the icon either.
+                    if (!prefs.openClawEnabled) {
+                        chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
+                    }
+                }
+                scheduleNextPing()
+                return
+            }
+            // Quick local config check — if endpoint or key blank, paint red
+            // immediately and don't waste a network round-trip.
+            if (prefs.hermesEndpoint.isBlank() || prefs.hermesApiKey.isBlank()) {
+                lastHermesGatewayHealthy = false
+                runOnUiThread {
+                    chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+                }
+                scheduleNextPing()
+                return
+            }
+            if (hermesPingInFlight) {
+                scheduleNextPing()
+                return
+            }
+            hermesPingInFlight = true
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    val result = kotlinx.coroutines.withTimeout(12_000L) { client.ping() }
+                    val healthy = result is com.rayneo.visionclaw.core.network.HermesClient.ClawResult.Success
+                    lastHermesGatewayHealthy = healthy
+                    runOnUiThread {
+                        chatFragment.setOpenClawGatewayStatus(
+                            if (healthy) ChatPanelFragment.OpenClawGatewayStatus.GOOD
+                            else ChatPanelFragment.OpenClawGatewayStatus.BAD
+                        )
+                    }
+                } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                    lastHermesGatewayHealthy = false
+                    runOnUiThread {
+                        chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+                    }
+                } catch (e: Exception) {
+                    Log.w("HermesPing", "Ping exception", e)
+                    lastHermesGatewayHealthy = false
+                    runOnUiThread {
+                        chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+                    }
+                } finally {
+                    hermesPingInFlight = false
+                }
+            }
+            scheduleNextPing()
+        }
+
+        private fun scheduleNextPing() {
+            val intervalMs = viewModel.preferences.openClawHeartbeatIntervalSeconds * 1000L
+            uiHandler.postDelayed(this, intervalMs.coerceAtLeast(5_000L))
+        }
+    }
+
+    private fun startHermesPing() {
+        uiHandler.removeCallbacks(hermesPingRunnable)
+        // Show the icon immediately in "checking" (red) so it's visible
+        // from the moment the HUD draws, instead of waiting for the first
+        // ping result.
+        runOnUiThread {
+            if (viewModel.preferences.hermesEnabled) {
+                chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+            }
+        }
+        uiHandler.postDelayed(hermesPingRunnable, 1_500L)
+    }
+
+    private fun stopHermesPing() {
+        uiHandler.removeCallbacks(hermesPingRunnable)
     }
 
     /** Start polling the relay for a research report file. Called when

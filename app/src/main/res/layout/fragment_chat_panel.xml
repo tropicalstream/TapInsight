@@ -118,9 +118,9 @@
                     android:layout_height="16dp"
                     android:layout_marginStart="8dp"
                     android:contentDescription="@string/hud_openclaw_status"
-                    android:src="@drawable/ic_hermes_helmet"
-                    android:tint="#FFFFD86B"
-                    android:visibility="gone" />
+                    android:src="@drawable/ic_hermes_status"
+                    android:tint="#FFFF5B5B"
+                    android:visibility="visible" />
             </LinearLayout>
         </LinearLayout>
 

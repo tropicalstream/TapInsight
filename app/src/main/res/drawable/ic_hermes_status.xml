@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hermes HUD status icon — small AR-glasses silhouette that reads
+  clearly at 16dp. Rectangular wraparound lenses with a thin bridge,
+  short temple arms, and a subtle dot in each lens to suggest AR
+  HUD content. Single fill so setColorFilter() works (red = Hermes
+  unreachable, green = reachable).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Left lens -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M3,10.5
+                          C3,9.7 3.7,9 4.5,9
+                          L9.5,9
+                          C10.3,9 11,9.7 11,10.5
+                          L11,13.5
+                          C11,14.3 10.3,15 9.5,15
+                          L4.5,15
+                          C3.7,15 3,14.3 3,13.5
+                          Z" />
+    <!-- Right lens -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M13,10.5
+                          C13,9.7 13.7,9 14.5,9
+                          L19.5,9
+                          C20.3,9 21,9.7 21,10.5
+                          L21,13.5
+                          C21,14.3 20.3,15 19.5,15
+                          L14.5,15
+                          C13.7,15 13,14.3 13,13.5
+                          Z" />
+    <!-- Bridge between lenses -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M11,11.5 L13,11.5 L13,12.5 L11,12.5 Z" />
+    <!-- Left temple -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M1.5,11.5 L3,11.2 L3,12.8 L1.5,12.5 Z" />
+    <!-- Right temple -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M21,11.2 L22.5,11.5 L22.5,12.5 L21,12.8 Z" />
+</vector>
