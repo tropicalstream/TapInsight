@@ -1035,52 +1035,10 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        // ── Hermes Agent client ────────────────────────────────────
-        // Separate HTTP/SSE client that talks to the user's hermes-agent
-        // API server. Constructed alongside OpenClaw so both can be
-        // active simultaneously (different voice keyword routes to each).
-        // Endpoint + API key come from AppPreferences, populated via the
-        // companion app's Hermes section.
-        val prefsForHermes = viewModel.preferences
-        val hermesClient = com.rayneo.visionclaw.core.network.HermesClient(
-            endpointUrlProvider = { prefsForHermes.hermesEndpoint.takeIf { it.isNotBlank() } },
-            apiKeyProvider = { prefsForHermes.hermesApiKey.takeIf { it.isNotBlank() } },
-            sessionIdProvider = { prefsForHermes.hermesSessionId.ifBlank { "main" } },
-            timeoutMsProvider = {
-                val t = prefsForHermes.hermesTimeoutSeconds
-                if (t > 0) t * 1000 else 30_000
-            }
-        )
-        // Wire the SSE progress callbacks into the same HUD ticker
-        // surface used by OpenClaw so the user sees Hermes' streaming
-        // assistant text scrolling under the clock during turns.
-        hermesClient.onProgressUpdate = { deltaText ->
-            val now = android.os.SystemClock.uptimeMillis()
-            val heartbeatText = deltaText.take(200).replace('\n', ' ')
-            lastTapClawHeartbeat = heartbeatText
-            lastOpenClawTaskLabel = "Hermes working"
-            lastOpenClawActivityMs = now
-            lastOpenClawGatewayHealthy = true
-            if (now - lastHeartbeatUiUpdateMs >= OPENCLAW_PROGRESS_UI_MIN_INTERVAL_MS) {
-                lastHeartbeatUiUpdateMs = now
-                runOnUiThread {
-                    renderOpenClawTicker("Hermes working", gatewayHealthy = true, transient = true)
-                    chatFragment.setStreamActiveIndicator(true)
-                }
-            }
-        }
-        hermesClient.onProgressComplete = { success ->
-            val now = android.os.SystemClock.uptimeMillis()
-            lastOpenClawTaskLabel = if (success) "Hermes done" else "Hermes failed"
-            lastOpenClawActivityMs = now
-            lastHeartbeatUiUpdateMs = now
-            runOnUiThread {
-                renderOpenClawTicker(lastOpenClawTaskLabel, gatewayHealthy = success, transient = false)
-                chatFragment.setStreamActiveIndicator(false)
-            }
-        }
         // Store + start the parallel Hermes ping so the HUD status icon
-        // (next to the clock) turns green when Hermes is reachable.
+        // (next to the clock) turns green when Hermes is reachable. The
+        // hermesClient itself was constructed (and its onProgressUpdate /
+        // onProgressComplete wired) earlier in this same scope.
         hermesClientField = hermesClient
         startHermesPing()
 
@@ -3027,10 +2985,8 @@ class MainActivity : AppCompatActivity() {
         ).containsMatchIn(transcript)
     }
 
-    private fun isMediaServiceCapabilityQuestion(transcript: String): Boolean =
-        Regex(
-            """(?i)^\s*(?:can|could|does|do|will|would)\s+(?:youtube|spotify|tap\s*radio|tapradio|radio|podcasts?|browser|tapbrowser|tap\s*claw|tapclaw|open\s*claw|openclaw|gemini)\b"""
-        ).containsMatchIn(transcript.trim())
+    // (Removed duplicate isMediaServiceCapabilityQuestion — the
+    // authoritative definition lives further down in the same file.)
 
     private fun confirmsRecentAssistantOffer(transcript: String, offerPattern: Regex): Boolean {
         if (!isBareConfirmation(transcript)) return false
