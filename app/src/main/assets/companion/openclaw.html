@@ -93,6 +93,22 @@ button:active{opacity:.7}
   <input type="number" id="openClawTimeoutSeconds" placeholder="0 (default 30s)" min="0" max="600">
   <div class="hint">How long to wait for a TapClaw response. 0 = default (30s). Set to 300-600 for Deep Research tasks.</div>
 
+  <!-- ── Hermes follow-up toggle ──
+       When enabled, Gemini Live keeps the mic open for ~30 s after a
+       Hermes turn's TTS finishes so you can ask a natural follow-up
+       without re-activating. When disabled, the normal idle timeout
+       applies. -->
+  <div style="background:#1a1633;border:1px solid #3a2c66;border-radius:8px;padding:12px 14px;margin:14px 0 10px 0">
+    <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:13px;color:#e0e0e0;line-height:1.5">
+      <input id="hermesAutoFollowupToggle" type="checkbox"
+             style="margin-top:3px;width:16px;height:16px;accent-color:#ffd86b;cursor:pointer;flex-shrink:0">
+      <span>
+        <span style="font-weight:600;color:#ffd86b">Auto follow-up after Hermes</span><br>
+        <span style="color:#bbb">After Hermes responds and Gemini's TTS finishes, keep the mic listening for 30 s so you can ask a natural follow-up without re-activating. Off by default.</span>
+      </span>
+    </label>
+  </div>
+
   <!-- ── Mode brackets (slash-command prefix + after-turn restore) ── -->
   <hr style="border-color:#333;margin:18px 0 10px 0">
   <div style="display:flex;align-items:center;gap:10px;margin:0 0 6px 0">
@@ -361,6 +377,9 @@ const FIELDS = {
   openClawSessionId:   { key: 'openclaw_session_id',       type: 'string' },
   openClawTimeoutSeconds: { key: 'openclaw_timeout_seconds', type: 'int' },
   openClawHeartbeatIntervalSeconds: { key: 'openclaw_heartbeat_interval_seconds', type: 'int' },
+  // Keep the Gemini Live mic open for ~30 s after a Hermes turn so the
+  // user can ask a natural follow-up without re-activating.
+  hermesAutoFollowupToggle: { key: 'hermes_auto_followup_enabled', type: 'bool' },
   // Mode brackets — see OpenClawClient.consumeModePrefixForSession +
   // fireAfterTurnRestoreIfConfigured for how these drive sendMessage.
   openClawFastMode:        { key: 'openclaw_fast_mode',         type: 'string' },

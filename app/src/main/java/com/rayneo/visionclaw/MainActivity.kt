@@ -75,6 +75,7 @@ import com.rayneo.visionclaw.core.location.DeviceLocationResolver
 import com.rayneo.visionclaw.core.model.DeviceLocationContext
 import com.rayneo.visionclaw.core.model.OpenClawStatusService
 import com.rayneo.visionclaw.core.network.ActiveNetworkHttp
+import com.rayneo.visionclaw.core.storage.AppPreferences
 import com.rayneo.visionclaw.core.storage.ReadableArtifactStore
 import com.rayneo.visionclaw.core.tools.ToolDispatcher
 import com.rayneo.visionclaw.ui.MainPagerAdapter
@@ -855,7 +856,26 @@ class MainActivity : AppCompatActivity() {
         // the clock, with frequent updates during active gateway work.
         openClawClient.onProgressUpdate = { deltaText ->
             val now = android.os.SystemClock.uptimeMillis()
-            val heartbeatText = deltaText.take(200).replace('\n', ' ')
+            // Accumulate streaming deltas so the ticker scrolls readable
+            // text instead of flashing one token at a time. Hermes' SSE
+            // stream delivers content token-by-token; the old OpenClaw
+            // gateway delivered short stage labels. We append, then
+            // display the trailing 200 chars so the user sees the most
+            // recent context. heartbeatStreamBuffer is reset in
+            // onProgressComplete so each turn starts fresh.
+            synchronized(heartbeatStreamBuffer) {
+                heartbeatStreamBuffer.append(deltaText)
+                // Cap the buffer at ~4 KB so a runaway long response
+                // doesn't grow it without bound. We only show 200 chars
+                // anyway.
+                if (heartbeatStreamBuffer.length > 4096) {
+                    val drop = heartbeatStreamBuffer.length - 2048
+                    heartbeatStreamBuffer.delete(0, drop)
+                }
+            }
+            val heartbeatText = heartbeatStreamBuffer.toString()
+                .takeLast(200)
+                .replace('\n', ' ')
             val hudLabel = openClawProgressLabel(deltaText)
             val labelChanged = hudLabel != lastOpenClawTaskLabel
 
@@ -903,6 +923,10 @@ class MainActivity : AppCompatActivity() {
             val hadActiveTask = lastOpenClawTaskLabel != null
             val finalLabel = if (success) "Task complete" else "Task failed"
             val now = android.os.SystemClock.uptimeMillis()
+            // Reset the streaming-text accumulator so the next turn's
+            // ticker starts fresh instead of continuing to show the
+            // tail of the previous response.
+            synchronized(heartbeatStreamBuffer) { heartbeatStreamBuffer.setLength(0) }
             lastOpenClawTaskLabel = finalLabel
             lastOpenClawActivityMs = now
             lastHeartbeatUiUpdateMs = now
@@ -2878,6 +2902,11 @@ class MainActivity : AppCompatActivity() {
             // When a TapClaw research task returns, start background polling
             // for the report file instead of keeping the Gemini session open.
             if (functionName == "tapclaw_agent") {
+                // Tag this turn so armSilenceWatchdog can apply the
+                // Hermes follow-up window when the user has the
+                // companion-app toggle on. Cleared on the next user
+                // input transcript (see onInputTranscription).
+                lastToolCallWasHermesAgent = true
                 cacheTapClawReadableArtifact(resultText)
                 runOnUiThread {
                     chatFragment.setStreamActiveIndicator(false)
@@ -5951,6 +5980,26 @@ class MainActivity : AppCompatActivity() {
     private var lastResearchTopic: String? = null
     /** Latest heartbeat snippet from OpenClaw — appended to tool results so Gemini has context. */
     @Volatile private var lastTapClawHeartbeat: String? = null
+    /**
+     * Accumulator for the streaming agent response so the HUD ticker
+     * shows readable scrolling text instead of flashing one token at a
+     * time. With OpenClaw, each `onProgressUpdate` delta arrived as a
+     * complete short stage label ("Browsing https://…") and `.take(200)`
+     * worked. With Hermes (OpenAI-compatible SSE), each delta is a
+     * single token — replacing the ticker every chunk made the bar
+     * flash unreadably. We append every delta to this buffer, take the
+     * last 200 chars for display, and clear it on `onProgressComplete`
+     * so the next turn starts fresh.
+     */
+    @Volatile private var heartbeatStreamBuffer: StringBuilder = StringBuilder()
+
+    /**
+     * Set true after dispatching a hermes_agent / tapclaw_agent tool call
+     * to Gemini Live, so [armSilenceWatchdog] knows whether to apply the
+     * Hermes follow-up window when the next idle timer is armed. Cleared
+     * on any new user input transcript so a non-Hermes turn isn't tagged.
+     */
+    @Volatile private var lastToolCallWasHermesAgent: Boolean = false
     /** Most recent human-readable OpenClaw task ticker line shown on the HUD. */
     @Volatile private var lastOpenClawTaskLabel: String? = null
     /** Monotonic timestamp of the latest OpenClaw task heartbeat delta. */
@@ -8444,7 +8493,24 @@ class MainActivity : AppCompatActivity() {
         if (geminiLiveSession == null) return
         val userLiveIdleSeconds = viewModel.preferences.timeoutLiveIdleSeconds
         val defaultTimeout = if (keepLearnLmSessionAliveUntilManualClose) LEARNLM_IDLE_TIMEOUT_MS else GEMINI_LIVE_IDLE_TIMEOUT_MS
-        val timeout = if (userLiveIdleSeconds > 0) userLiveIdleSeconds * 1000L else defaultTimeout
+        val resolvedTimeout = if (userLiveIdleSeconds > 0) userLiveIdleSeconds * 1000L else defaultTimeout
+
+        // Hermes auto-follow-up: when the toggle in the Hermes companion
+        // page is on AND the most recent tool call was hermes_agent /
+        // tapclaw_agent, override the watchdog timeout to a short
+        // "follow-up window" so the mic stays listening for a brief but
+        // bounded period after Gemini's TTS finishes. Long enough for a
+        // natural follow-up sentence, short enough that the session
+        // doesn't sit open burning audio for two minutes after the user
+        // has clearly moved on.
+        val timeout = if (
+            viewModel.preferences.hermesAutoFollowupEnabled &&
+            lastToolCallWasHermesAgent
+        ) {
+            AppPreferences.HERMES_FOLLOWUP_WINDOW_MS
+        } else {
+            resolvedTimeout
+        }
         uiHandler.postDelayed(stopGeminiCaptureRunnable, timeout)
     }
 
@@ -8738,6 +8804,15 @@ class MainActivity : AppCompatActivity() {
                                         liveState = GeminiLiveState.LISTENING
                                         awaitingServerTurnComplete = true
                                         markUserSpeechActivity()
+                                        if (startingFreshTurn) {
+                                            // Clear the Hermes-follow-up tag on every fresh user
+                                            // turn — if the user does ask a follow-up, the
+                                            // dispatcher will tag the turn again when (and if)
+                                            // hermes_agent fires. Otherwise this guarantees the
+                                            // short-window override doesn't bleed into unrelated
+                                            // non-Hermes turns.
+                                            lastToolCallWasHermesAgent = false
+                                        }
                                         if (startingFreshTurn && latestLiveTranscript.isNotBlank()) {
                                             Log.d(
                                                 TAG,

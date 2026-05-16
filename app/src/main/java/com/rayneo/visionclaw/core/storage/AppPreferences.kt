@@ -115,6 +115,19 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_OPENCLAW_AFTER_THINK_LEVEL, "") ?: ""
         set(value) = prefs.edit().putString(KEY_OPENCLAW_AFTER_THINK_LEVEL, value).apply()
 
+    /**
+     * When enabled, after a Hermes-routed turn completes and Gemini's
+     * TTS finishes reading the response, the Live session is kept
+     * listening for [HERMES_FOLLOWUP_WINDOW_MS] (default 30 s) so the
+     * user can ask a natural follow-up without re-activating. When
+     * disabled, the regular Gemini-Live idle timeout applies.
+     *
+     * Surfaced in the Hermes section of the companion app.
+     */
+    var hermesAutoFollowupEnabled: Boolean
+        get() = prefs.getBoolean(KEY_HERMES_AUTO_FOLLOWUP_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_HERMES_AUTO_FOLLOWUP_ENABLED, value).apply()
+
     /** Whether Gemini assistant starts with camera on by default (false = audio-only). */
     var assistantDefaultCamera: Boolean
         get() = prefs.getBoolean(KEY_ASSISTANT_DEFAULT_CAMERA, false)
@@ -776,6 +789,14 @@ class AppPreferences(context: Context) {
         private const val KEY_OPENCLAW_THINK_LEVEL = "openclaw_think_level"
         private const val KEY_OPENCLAW_AFTER_FAST_MODE = "openclaw_after_fast_mode"
         private const val KEY_OPENCLAW_AFTER_THINK_LEVEL = "openclaw_after_think_level"
+        private const val KEY_HERMES_AUTO_FOLLOWUP_ENABLED = "hermes_auto_followup_enabled"
+
+        /**
+         * How long Gemini Live keeps the mic open after a Hermes-routed
+         * turn finishes when [hermesAutoFollowupEnabled] is on, so the
+         * user can ask a natural follow-up without re-activating.
+         */
+        const val HERMES_FOLLOWUP_WINDOW_MS = 30_000L
         private const val KEY_ASSISTANT_DEFAULT_CAMERA = "assistant_default_camera"
 
         // Battery Saver

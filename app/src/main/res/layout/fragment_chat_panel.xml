@@ -14,10 +14,9 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_margin="12dp"
-        android:background="@color/bg_panel_opaque"
+        android:background="@color/bg_panel_soft"
         android:orientation="vertical"
         android:padding="8dp"
-        android:elevation="8dp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
@@ -119,8 +118,8 @@
                     android:layout_height="16dp"
                     android:layout_marginStart="8dp"
                     android:contentDescription="@string/hud_openclaw_status"
-                    android:src="@drawable/ic_openclaw_crab"
-                    android:tint="#FFFF5B5B"
+                    android:src="@drawable/ic_hermes_helmet"
+                    android:tint="#FFFFD86B"
                     android:visibility="gone" />
             </LinearLayout>
         </LinearLayout>

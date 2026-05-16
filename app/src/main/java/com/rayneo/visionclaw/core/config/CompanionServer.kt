@@ -479,6 +479,9 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "tts_auto_read" to true,
         // OpenClaw
         "openclaw_enabled" to false,
+        // Hermes auto-follow-up — keep Gemini Live listening after a
+        // Hermes turn so the user can ask a natural follow-up.
+        "hermes_auto_followup_enabled" to false,
         // Assistant
         "assistant_default_camera" to false,
         // Translation
@@ -644,6 +647,8 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "openclaw_think_level",
         "openclaw_after_fast_mode",
         "openclaw_after_think_level",
+        // Hermes follow-up toggle (Hermes section of companion app).
+        "hermes_auto_followup_enabled",
         // OpenClaw web-dashboard credentials. The companion app stores
         // these so the user can manage them in one place — they are
         // surfaced verbatim on the dashboard tile so the user can
