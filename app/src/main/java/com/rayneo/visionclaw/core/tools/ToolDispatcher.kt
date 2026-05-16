@@ -35,6 +35,7 @@ class ToolDispatcher(
     recentCardsProvider: (() -> List<String>)? = null,
     locationProvider: (() -> DeviceLocationContext?)? = null,
     openClawClient: OpenClawClient? = null,
+    hermesClient: com.rayneo.visionclaw.core.network.HermesClient? = null,
     cameraFrameProvider: (() -> String?)? = null,
     batteryLevelProvider: (() -> Int)? = null,
     isChargingProvider: (() -> Boolean)? = null,
@@ -143,6 +144,27 @@ class ToolDispatcher(
                 frameProvider = cameraFrameProvider ?: { null }
             ))
             Log.d(TAG, "TapClaw integration enabled (toggle=${prefs.openClawEnabled}, pairingToken=$hasPairingToken)")
+        }
+
+        // Hermes Agent — register the `hermes_agent` tool when enabled
+        // and a non-blank endpoint + API key are configured. Separate
+        // from the OpenClaw block above so both can be active at once
+        // (one keyword routes to each).
+        val hermesConfigured = prefs.hermesEndpoint.isNotBlank() && prefs.hermesApiKey.isNotBlank()
+        if (hermesClient != null && prefs.hermesEnabled && hermesConfigured) {
+            register(com.rayneo.visionclaw.core.tools.HermesTool(
+                context,
+                hermesClient,
+                effectiveLocationProvider,
+                frameProvider = cameraFrameProvider ?: { null }
+            ))
+            Log.d(TAG, "Hermes integration enabled (endpoint=${prefs.hermesEndpoint})")
+        } else {
+            Log.d(
+                TAG,
+                "Hermes integration NOT enabled " +
+                    "(toggle=${prefs.hermesEnabled}, configured=$hermesConfigured)"
+            )
         }
 
         // TapRadio — internet radio and podcast playback/search

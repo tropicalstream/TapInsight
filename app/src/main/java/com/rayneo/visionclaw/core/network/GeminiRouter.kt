@@ -156,6 +156,19 @@ class GeminiRouter(
                 "URLs aloud. Always include URLs by default in the relayed result — never wait for the user to " +
                 "ask 'do you have links?'. " +
                 "This rule overrides ALL other rules below.\n" +
+                "RULE ZERO-H — HERMES EXCLUSIVITY (parallel to RULE ZERO, applies to the 'hermes' keyword): " +
+                "If the user's request starts with or contains 'hermes' (case-insensitive) — e.g. " +
+                "'hermes summarize this', 'hermes what do you see', 'ask hermes who Athena is' — you MUST call " +
+                "hermes_agent with the FULL request as the query and NOTHING ELSE. Do NOT call tapclaw_agent, " +
+                "open_taplink, research_topic, google_calendar, tapradio, or ANY other tool. Pass the user's " +
+                "entire message verbatim to hermes_agent. Only after hermes_agent returns should you relay the " +
+                "result to the user. When hermes_agent returns (success OR failure), BRIEFLY acknowledge the " +
+                "return — e.g. 'Hermes came back with…' or on failure 'Hermes ran into an issue — it said …'. " +
+                "If the user says 'hermes' with a vision request (e.g. 'hermes what do you see', 'hermes " +
+                "describe this', 'hermes read this label'), set include_image to true so the current camera " +
+                "frame is attached. If hermes_agent is NOT in the tool list this session, do not mention " +
+                "Hermes — treat the request normally. This rule is parallel to RULE ZERO above (TapClaw); " +
+                "the keyword determines the route. This rule overrides all rules below.\n" +
                 "RULE ZERO-C — 'STATUS' IS ALWAYS status_briefing (HIGH PRIORITY, OVERRIDES ALL TOOL-SPECIFIC RULES): " +
                 "If the user says 'status', 'status update', 'give me a status update', or close variants like " +
                 "'what's my status', you MUST call status_briefing with no arguments. Legacy phrases like " +
@@ -3363,6 +3376,38 @@ class GeminiRouter(
                             .put("description", "Set to true when the request involves seeing, " +
                                 "analyzing, describing, or reading something from the camera. " +
                                 "This attaches the current AR glasses camera frame to the request.")))
+                    .put("required", JSONArray().put("query"))))
+
+            // hermes_agent — Hermes Agent (NousResearch hermes-agent OpenAI-compatible API)
+            // Parallel to tapclaw_agent. Only registered server-side when Hermes is enabled
+            // + configured (endpoint + API key set). The declaration is always sent to Gemini;
+            // the ToolDispatcher will gate execution. Per RULE ZERO-H, the "hermes" voice
+            // keyword routes here exclusively.
+            tools.put(JSONObject()
+                .put("name", "hermes_agent")
+                .put("description", "Forward a request to the user's personal Hermes Agent. " +
+                    "Hermes runs as an OpenAI-compatible HTTP server (NousResearch/hermes-agent) " +
+                    "configured by the user via the Hermes section of the companion app (endpoint + API key). " +
+                    "Call this tool ONLY when the user's request starts with or contains the keyword 'hermes' " +
+                    "(case-insensitive) — e.g. 'hermes what is the capital of France', " +
+                    "'hermes summarize this email', 'hermes what do you see'. " +
+                    "Pass the user's entire message verbatim as the query. " +
+                    "When the request includes a vision cue ('hermes what do you see', 'hermes describe this', " +
+                    "'hermes read this sign'), set include_image to true to attach the current AR glasses " +
+                    "camera frame. Hermes streams its response back over SSE — TapInsight surfaces progress " +
+                    "via the HUD ticker, so do not narrate intermediate state. When Hermes returns, briefly " +
+                    "acknowledge ('Hermes came back with…') and then relay the answer.")
+                .put("parameters", JSONObject()
+                    .put("type", "OBJECT")
+                    .put("properties", JSONObject()
+                        .put("query", JSONObject().put("type", "STRING")
+                            .put("description", "The full user request to send to Hermes, verbatim."))
+                        .put("context", JSONObject().put("type", "STRING")
+                            .put("description", "Optional context from the current conversation."))
+                        .put("include_image", JSONObject().put("type", "BOOLEAN")
+                            .put("description", "Set to true when the request involves seeing, " +
+                                "analyzing, describing, or reading something from the camera. " +
+                                "Attaches the current AR glasses camera frame to the Hermes request.")))
                     .put("required", JSONArray().put("query"))))
 
             return tools

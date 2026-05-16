@@ -852,6 +852,73 @@ class MainActivity : AppCompatActivity() {
         openClawClientField = openClawClient
         startOpenClawPing()
 
+        // Hermes Agent client — separate HTTP/SSE client that talks to
+        // the user's hermes-agent API server. Constructed alongside
+        // OpenClaw so both can be active simultaneously (different
+        // voice keyword routes to each tool). Reads endpoint + API key
+        // from AppPreferences — settings configured in the Hermes
+        // section of the companion app.
+        val hermesClient = com.rayneo.visionclaw.core.network.HermesClient(
+            endpointUrlProvider = { prefs.hermesEndpoint.takeIf { it.isNotBlank() } },
+            apiKeyProvider = { prefs.hermesApiKey.takeIf { it.isNotBlank() } },
+            sessionIdProvider = { prefs.hermesSessionId.ifBlank { "main" } },
+            timeoutMsProvider = {
+                val t = prefs.hermesTimeoutSeconds
+                if (t > 0) t * 1000 else 30_000
+            }
+        )
+        // Wire HUD ticker / heartbeat for Hermes turns into the SAME
+        // callbacks as OpenClaw so the existing UI (ticker scrolling,
+        // stream-active indicator, etc.) Just Works™ for Hermes too.
+        // The accumulator + reset logic from OpenClaw's handler is
+        // duplicated here against the Hermes client's callbacks.
+        hermesClient.onProgressUpdate = { deltaText ->
+            val now = android.os.SystemClock.uptimeMillis()
+            synchronized(heartbeatStreamBuffer) {
+                // Hermes already sends the rolling tail via takeLast(200)
+                // from inside HermesClient — but to keep the same UI
+                // behavior as OpenClaw, we treat each callback as an
+                // already-accumulated snapshot. Replace, don't append.
+                heartbeatStreamBuffer.setLength(0)
+                heartbeatStreamBuffer.append(deltaText)
+            }
+            val heartbeatText = deltaText.take(200).replace('\n', ' ')
+            lastTapClawHeartbeat = heartbeatText
+            lastOpenClawTaskLabel = "Hermes working"
+            lastOpenClawActivityMs = now
+            lastOpenClawGatewayHealthy = true
+            OpenClawStatusService.updateHeartbeat(
+                heartbeat = heartbeatText,
+                taskLabel = "Hermes working",
+                gatewayHealthy = true,
+                activityUptimeMs = now
+            )
+            if (now - lastHeartbeatUiUpdateMs >= OPENCLAW_PROGRESS_UI_MIN_INTERVAL_MS) {
+                lastHeartbeatUiUpdateMs = now
+                runOnUiThread {
+                    renderOpenClawTicker("Hermes working", gatewayHealthy = true, transient = true)
+                    chatFragment.setStreamActiveIndicator(true)
+                }
+            }
+        }
+        hermesClient.onProgressComplete = { success ->
+            val now = android.os.SystemClock.uptimeMillis()
+            synchronized(heartbeatStreamBuffer) { heartbeatStreamBuffer.setLength(0) }
+            lastOpenClawTaskLabel = if (success) "Hermes done" else "Hermes failed"
+            lastOpenClawActivityMs = now
+            lastHeartbeatUiUpdateMs = now
+            OpenClawStatusService.updateHeartbeat(
+                heartbeat = lastTapClawHeartbeat,
+                taskLabel = lastOpenClawTaskLabel,
+                gatewayHealthy = lastOpenClawGatewayHealthy || success,
+                activityUptimeMs = now
+            )
+            runOnUiThread {
+                renderOpenClawTicker(lastOpenClawTaskLabel, gatewayHealthy = success, transient = false)
+                chatFragment.setStreamActiveIndicator(false)
+            }
+        }
+
         // Show OpenClaw streaming progress as a persistent HUD ticker under
         // the clock, with frequent updates during active gateway work.
         openClawClient.onProgressUpdate = { deltaText ->
@@ -973,6 +1040,7 @@ class MainActivity : AppCompatActivity() {
             recentCardsProvider = { viewModel.getAssistantCardsSnapshot().map { it.text } },
             locationProvider = deviceLocationLambda,
             openClawClient = openClawClient,
+            hermesClient = hermesClient,
             cameraFrameProvider = { latestFrame },
             batteryLevelProvider = { getBatteryLevel() },
             isChargingProvider = { isBatteryCharging() },

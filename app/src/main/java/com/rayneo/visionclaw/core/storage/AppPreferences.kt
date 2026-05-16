@@ -128,6 +128,42 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_HERMES_AUTO_FOLLOWUP_ENABLED, false)
         set(value) = prefs.edit().putBoolean(KEY_HERMES_AUTO_FOLLOWUP_ENABLED, value).apply()
 
+    // ══════════════════════════════════════════════════════════════════════
+    // Hermes Agent — NousResearch/hermes-agent integration
+    //
+    // The HermesClient + HermesTool combo talks to a user's Hermes API
+    // server (default 127.0.0.1:8642) via OpenAI-compatible HTTP/SSE.
+    // Keys live in `~/.hermes/.env` on the host; this Android side just
+    // needs the public endpoint URL the Cloudflare tunnel exposes and
+    // the bearer token. Keys must match the May 14 build's names so
+    // existing SharedPreferences values are picked up automatically.
+    // ══════════════════════════════════════════════════════════════════════
+
+    /** Base URL of the Hermes API server, e.g. http://192.168.1.170:8642 or https://hermes.example.com */
+    var hermesEndpoint: String
+        get() = prefs.getString(KEY_HERMES_ENDPOINT, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_HERMES_ENDPOINT, value).apply()
+
+    /** Bearer token — value of API_SERVER_KEY in ~/.hermes/.env on the host. */
+    var hermesApiKey: String
+        get() = prefs.getString(KEY_HERMES_API_KEY, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_HERMES_API_KEY, value).apply()
+
+    /** X-Hermes-Session-Id header value. "main" by default for cross-reconnect continuity. */
+    var hermesSessionId: String
+        get() = prefs.getString(KEY_HERMES_SESSION_ID, "main") ?: "main"
+        set(value) = prefs.edit().putString(KEY_HERMES_SESSION_ID, value).apply()
+
+    /** Hermes HTTP timeout in seconds; 0 = default (30 s). */
+    var hermesTimeoutSeconds: Int
+        get() = prefs.getInt(KEY_HERMES_TIMEOUT_SECONDS, 0)
+        set(value) = prefs.edit().putInt(KEY_HERMES_TIMEOUT_SECONDS, value).apply()
+
+    /** Whether the Hermes integration is enabled. */
+    var hermesEnabled: Boolean
+        get() = prefs.getBoolean(KEY_HERMES_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_HERMES_ENABLED, value).apply()
+
     /** Whether Gemini assistant starts with camera on by default (false = audio-only). */
     var assistantDefaultCamera: Boolean
         get() = prefs.getBoolean(KEY_ASSISTANT_DEFAULT_CAMERA, false)
@@ -790,6 +826,11 @@ class AppPreferences(context: Context) {
         private const val KEY_OPENCLAW_AFTER_FAST_MODE = "openclaw_after_fast_mode"
         private const val KEY_OPENCLAW_AFTER_THINK_LEVEL = "openclaw_after_think_level"
         private const val KEY_HERMES_AUTO_FOLLOWUP_ENABLED = "hermes_auto_followup_enabled"
+        private const val KEY_HERMES_ENDPOINT = "hermes_endpoint"
+        private const val KEY_HERMES_API_KEY = "hermes_api_key"
+        private const val KEY_HERMES_SESSION_ID = "hermes_session_id"
+        private const val KEY_HERMES_TIMEOUT_SECONDS = "hermes_timeout_seconds"
+        private const val KEY_HERMES_ENABLED = "hermes_enabled"
 
         /**
          * How long Gemini Live keeps the mic open after a Hermes-routed
