@@ -37,8 +37,8 @@ button:active{opacity:.7}
 </head>
 <body>
 
-<h1>🦞 OpenClaw</h1>
-<p class="sub">TapClaw AI Agent Integration</p>
+<h1>🪶 Hermes Agent</h1>
+<p class="sub">NousResearch hermes-agent — local AI server integration</p>
 
 <div class="nav">
   <a href="/">Setup</a>
@@ -48,6 +48,61 @@ button:active{opacity:.7}
   <a href="/library">Library</a>
   <a href="/openclaw" class="active">Hermes</a>
 </div>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     HERMES AGENT (PRIMARY) — endpoint + API key for the NousResearch
+     hermes-agent OpenAI-compatible API server. The voice keyword
+     'hermes' routes exclusively to this tool (RULE ZERO-H in GeminiRouter).
+     ════════════════════════════════════════════════════════════════════ -->
+<div class="section" style="border:1px solid #6a4dff;background:linear-gradient(180deg,#1a1438 0%,#0e0a1f 100%)">
+  <div class="section-title" style="color:#c9b9ff">🪶 Hermes Connection</div>
+  <p class="section-desc">Configure the NousResearch <code style="background:#1a1228;padding:2px 6px;border-radius:4px;color:#c9b9ff">hermes-agent</code> API server. When enabled, saying "<b>hermes</b> &lt;your request&gt;" routes the full message exclusively to this agent.</p>
+
+  <label>Enable Hermes</label>
+  <select id="hermesEnabled"><option value="false">Disabled</option><option value="true">Enabled</option></select>
+  <div class="hint">Turn on to enable the "<b>hermes</b>" voice prefix. Requires a working endpoint + API key below.</div>
+
+  <label>Endpoint URL</label>
+  <input type="text" id="hermesEndpoint" placeholder="https://your-tunnel.trycloudflare.com  or  http://your-mac.local:8642">
+  <div class="hint">Where your hermes-agent server is reachable. Defaults to port <code>8642</code>. Bare hostnames assume <code>https://</code>; <code>host:port</code> uses <code>http://</code>. Cloudflare Tunnel URLs work over cell.</div>
+
+  <label>API Key</label>
+  <div style="position:relative">
+    <input type="password" id="hermesApiKey" placeholder="Your Hermes API_SERVER_KEY (bearer token)">
+    <button onclick="togglePw('hermesApiKey')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:11px;color:#c9b9ff;cursor:pointer;background:none;border:none">👁</button>
+  </div>
+  <div class="hint">Set on the server side via <code>hermes config set API_SERVER_KEY ...</code> in <code>~/.hermes/.env</code> (generate one with <code>openssl rand -hex 32</code>).</div>
+
+  <label>Session ID</label>
+  <input type="text" id="hermesSessionId" placeholder="main">
+  <div class="hint">Forwarded as <code>X-Hermes-Session-Id</code>. <code>main</code> is the default; use distinct IDs (e.g. <code>glasses</code>) to isolate conversations.</div>
+
+  <label>Timeout (seconds)</label>
+  <input type="number" id="hermesTimeoutSeconds" placeholder="0 (default 30s)" min="0" max="600">
+  <div class="hint">Per-request timeout. 0 = 30s default. Raise for slow reasoning runs. Read timeout is fixed at 5 min for streamed responses.</div>
+
+  <!-- ── Hermes follow-up toggle ──
+       When enabled, Gemini Live keeps the mic open for ~30 s after a
+       Hermes turn's TTS finishes so you can ask a natural follow-up
+       without re-activating. -->
+  <div style="background:#1a1633;border:1px solid #3a2c66;border-radius:8px;padding:12px 14px;margin:14px 0 4px 0">
+    <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:13px;color:#e0e0e0;line-height:1.5">
+      <input id="hermesAutoFollowupToggle" type="checkbox"
+             style="margin-top:3px;width:16px;height:16px;accent-color:#ffd86b;cursor:pointer;flex-shrink:0">
+      <span>
+        <span style="font-weight:600;color:#ffd86b">Auto follow-up after Hermes</span><br>
+        <span style="color:#bbb">After Hermes responds and Gemini's TTS finishes, keep the mic listening for 30 s so you can ask a natural follow-up without re-activating. Off by default.</span>
+      </span>
+    </label>
+  </div>
+
+  <button onclick="saveAll()" style="background:#7c4dff;color:#fff;padding:10px 18px;font-size:13px;font-weight:600;border-radius:8px;border:none;cursor:pointer;width:100%;margin-top:14px">
+    💾 Save Hermes Settings
+  </button>
+</div>
+
+<hr style="border:none;border-top:1px dashed #333;margin:24px 0">
+<p style="color:#888;font-size:12px;margin:0 0 12px 0">Below: legacy TapClaw / OpenClaw integration (optional secondary agent). You can ignore this section unless you're also using your own TapClaw gateway.</p>
 
 <!-- Quick Setup -->
 <div class="section">
@@ -93,21 +148,8 @@ button:active{opacity:.7}
   <input type="number" id="openClawTimeoutSeconds" placeholder="0 (default 30s)" min="0" max="600">
   <div class="hint">How long to wait for a TapClaw response. 0 = default (30s). Set to 300-600 for Deep Research tasks.</div>
 
-  <!-- ── Hermes follow-up toggle ──
-       When enabled, Gemini Live keeps the mic open for ~30 s after a
-       Hermes turn's TTS finishes so you can ask a natural follow-up
-       without re-activating. When disabled, the normal idle timeout
-       applies. -->
-  <div style="background:#1a1633;border:1px solid #3a2c66;border-radius:8px;padding:12px 14px;margin:14px 0 10px 0">
-    <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:13px;color:#e0e0e0;line-height:1.5">
-      <input id="hermesAutoFollowupToggle" type="checkbox"
-             style="margin-top:3px;width:16px;height:16px;accent-color:#ffd86b;cursor:pointer;flex-shrink:0">
-      <span>
-        <span style="font-weight:600;color:#ffd86b">Auto follow-up after Hermes</span><br>
-        <span style="color:#bbb">After Hermes responds and Gemini's TTS finishes, keep the mic listening for 30 s so you can ask a natural follow-up without re-activating. Off by default.</span>
-      </span>
-    </label>
-  </div>
+  <!-- Hermes auto-followup toggle moved to the Hermes Connection
+       section at the top of the page. -->
 
   <!-- ── Mode brackets (slash-command prefix + after-turn restore) ── -->
   <hr style="border-color:#333;margin:18px 0 10px 0">
@@ -371,15 +413,22 @@ ingress:
 <script>
 // ── Field Mapping ────────────────────────────────────────────
 const FIELDS = {
+  // ── Hermes Agent (primary) ──
+  hermesEnabled:          { key: 'hermes_enabled',          type: 'bool'   },
+  hermesEndpoint:         { key: 'hermes_endpoint',         type: 'string' },
+  hermesApiKey:           { key: 'hermes_api_key',          type: 'string' },
+  hermesSessionId:        { key: 'hermes_session_id',       type: 'string' },
+  hermesTimeoutSeconds:   { key: 'hermes_timeout_seconds',  type: 'int'    },
+  // Keep the Gemini Live mic open for ~30 s after a Hermes turn so the
+  // user can ask a natural follow-up without re-activating.
+  hermesAutoFollowupToggle: { key: 'hermes_auto_followup_enabled', type: 'bool' },
+  // ── TapClaw / OpenClaw (secondary, legacy) ──
   openClawEnabled:     { key: 'openclaw_enabled',          type: 'bool'   },
   openClawEndpoint:    { key: 'openclaw_endpoint',         type: 'string' },
   openClawToken:       { key: 'openclaw_token',            type: 'string' },
   openClawSessionId:   { key: 'openclaw_session_id',       type: 'string' },
   openClawTimeoutSeconds: { key: 'openclaw_timeout_seconds', type: 'int' },
   openClawHeartbeatIntervalSeconds: { key: 'openclaw_heartbeat_interval_seconds', type: 'int' },
-  // Keep the Gemini Live mic open for ~30 s after a Hermes turn so the
-  // user can ask a natural follow-up without re-activating.
-  hermesAutoFollowupToggle: { key: 'hermes_auto_followup_enabled', type: 'bool' },
   // Mode brackets — see OpenClawClient.consumeModePrefixForSession +
   // fireAfterTurnRestoreIfConfigured for how these drive sendMessage.
   openClawFastMode:        { key: 'openclaw_fast_mode',         type: 'string' },

@@ -479,6 +479,10 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "tts_auto_read" to true,
         // OpenClaw
         "openclaw_enabled" to false,
+        // Hermes Agent (NousResearch hermes-agent OpenAI-compatible API).
+        // Master enable toggle — gates HermesTool registration in
+        // ToolDispatcher.
+        "hermes_enabled" to false,
         // Hermes auto-follow-up — keep Gemini Live listening after a
         // Hermes turn so the user can ask a natural follow-up.
         "hermes_auto_followup_enabled" to false,
@@ -521,6 +525,8 @@ document.addEventListener('DOMContentLoaded', loadAll);
         // OpenClaw
         "openclaw_timeout_seconds" to 0,
         "openclaw_heartbeat_interval_seconds" to 20,
+        // Hermes per-request timeout (seconds). 0 = default 30s.
+        "hermes_timeout_seconds" to 0,
         // Battery Saver
         "battery_saver_auto_threshold" to 20
     )
@@ -647,6 +653,14 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "openclaw_think_level",
         "openclaw_after_fast_mode",
         "openclaw_after_think_level",
+        // Hermes Agent connection settings (Hermes section of companion app).
+        // The endpoint + API key feed HermesClient; session ID supports
+        // isolating conversations; timeout overrides the default 30s.
+        "hermes_enabled",
+        "hermes_endpoint",
+        "hermes_api_key",
+        "hermes_session_id",
+        "hermes_timeout_seconds",
         // Hermes follow-up toggle (Hermes section of companion app).
         "hermes_auto_followup_enabled",
         // OpenClaw web-dashboard credentials. The companion app stores
