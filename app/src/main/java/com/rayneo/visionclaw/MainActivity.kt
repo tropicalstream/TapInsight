@@ -3065,11 +3065,16 @@ class MainActivity : AppCompatActivity() {
             )
 
             var effectiveAutoOpenUrl = autoOpenUrl
+            // Both tapclaw_agent and hermes_agent reuse the OpenClaw HUD
+            // ticker / heartbeat pipeline and the local-readout branch
+            // below. Treat them as a single "local AI agent" class.
+            val isLocalAgentTool = functionName == "tapclaw_agent" || functionName == "hermes_agent"
+            val agentLabel = if (functionName == "hermes_agent") "Hermes" else "TapClaw"
             var finalResultText = when {
-                functionName == "tapclaw_agent" -> {
+                isLocalAgentTool -> {
                     val hb = lastTapClawHeartbeat
                     lastTapClawHeartbeat = null
-                    if (!hb.isNullOrBlank()) "$resultText\n[TapClaw last status: $hb]" else resultText
+                    if (!hb.isNullOrBlank()) "$resultText\n[$agentLabel last status: $hb]" else resultText
                 }
                 else -> resultText
             }
@@ -3123,23 +3128,23 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            if (functionName == "tapclaw_agent" && effectiveAutoOpenUrl.isNullOrBlank() && !voiceFirstAutoOpenBlocked) {
+            if (isLocalAgentTool && effectiveAutoOpenUrl.isNullOrBlank() && !voiceFirstAutoOpenBlocked) {
                 suppressGeminiOutputUntilMs = maxOf(
                     suppressGeminiOutputUntilMs,
                     SystemClock.uptimeMillis() + 30_000L
                 )
                 val contextResult =
-                    "TapClaw result has been displayed locally as a visible chat card and read aloud by TapInsight. " +
+                    "$agentLabel result has been displayed locally as a visible chat card and read aloud by TapInsight. " +
                         "Do not repeat it unless the user asks. Use the result below for immediate follow-up context.\n\n" +
-                        "[TapClaw result]\n$finalResultText"
+                        "[$agentLabel result]\n$finalResultText"
                 val sent = geminiLiveSession?.sendToolResponse(responseId, functionName, contextResult) == true
-                Log.d(TAG, "tapclaw_agent delivered locally sentContext=$sent callId=$responseId")
+                Log.d(TAG, "$functionName delivered locally sentContext=$sent callId=$responseId")
                 runOnUiThread {
                     armLocalDirectResponseHandoff()
                     chatFragment.setStreamActiveIndicator(false)
                     val presented = presentTapClawResultLocally(finalResultText, autoRead = true)
                     if (!presented) {
-                        showHudNotification("TapClaw returned, but there was no readable result.")
+                        showHudNotification("$agentLabel returned, but there was no readable result.")
                     }
                     setHudConnectionStatus(
                         if (sent) ChatPanelFragment.ConnectionStatus.TOOLS_READY
@@ -3252,9 +3257,9 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 recordHudFunctionTicker(
                     completedTickerLabel,
-                    gatewayHealthy = lastOpenClawGatewayHealthy || functionName == "tapclaw_agent"
+                    gatewayHealthy = lastOpenClawGatewayHealthy || isLocalAgentTool
                 )
-                if (functionName == "tapclaw_agent") {
+                if (isLocalAgentTool) {
                     presentTapClawResultLocally(finalResultText, autoRead = false)
                 }
                 if (!effectiveAutoOpenUrl.isNullOrBlank()) {
