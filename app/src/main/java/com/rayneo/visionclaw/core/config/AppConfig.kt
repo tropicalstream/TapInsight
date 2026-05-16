@@ -44,7 +44,7 @@ data class AppConfig(
     data class DebugServerSettings(
         val enabled: Boolean = true,
         val host: String = "0.0.0.0",
-        val port: Int = 19110,
+        val port: Int = 19120,
         val token: String = "",
         val allowedHosts: List<String> = listOf("0.0.0.0")
     ) {
@@ -118,7 +118,7 @@ data class AppConfig(
                 debugServerSettings = DebugServerSettings(
                     enabled = debug.optBoolean("enabled", true),
                     host = debug.optString("host", "0.0.0.0").ifBlank { "0.0.0.0" },
-                    port = debug.optInt("port", 19110).coerceIn(1, 65535),
+                    port = debug.optInt("port", 19120).coerceIn(1, 65535),
                     token = debug.optString(
                         "token",
                         debug.optString("debugToken", "")

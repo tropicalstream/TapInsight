@@ -762,7 +762,7 @@ class AppPreferences(context: Context) {
         private const val KEY_SPOTIFY_PKCE_VERIFIER = "spotify_pkce_verifier"
         private const val KEY_SPOTIFY_AUTH_STATE = "spotify_auth_state"
         private const val KEY_SPOTIFY_REDIRECT_URI = "spotify_redirect_uri"
-        private const val DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:19110/spotify/callback"
+        private const val DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:19120/spotify/callback"
         private const val KEY_GOOGLE_OAUTH_CLIENT_ID = "google_oauth_client_id"
         private const val KEY_GOOGLE_OAUTH_CLIENT_SECRET = "google_oauth_client_secret"
         private const val KEY_GOOGLE_OAUTH_ACCESS_TOKEN = "google_oauth_access_token"

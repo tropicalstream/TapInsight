@@ -34,7 +34,7 @@ class OpenClawTool(
         private const val TAG = "OpenClawTool"
         private const val PREFS_NAME = "visionclaw_prefs"
         private const val SESSION_TOKEN_KEY = "companion_session_token"
-        private const val COMPANION_PORT = 19110
+        private const val COMPANION_PORT = 19120
 
         /** Keywords that suggest the user wants vision/image analysis */
         private val VISION_KEYWORDS = setOf(
