@@ -3328,11 +3328,14 @@ class MainActivity : AppCompatActivity() {
             val resultText = rewriteAllUrlsInText(resultTextRaw)
             // When a TapClaw research task returns, start background polling
             // for the report file instead of keeping the Gemini session open.
-            if (functionName == "tapclaw_agent") {
+            if (functionName == "tapclaw_agent" || functionName == "hermes_agent") {
                 // Tag this turn so armSilenceWatchdog can apply the
                 // Hermes follow-up window when the user has the
                 // companion-app toggle on. Cleared on the next user
                 // input transcript (see onInputTranscription).
+                // NOTE: previously only fired for tapclaw_agent — so the
+                // "Auto follow-up after Hermes" toggle had no effect on
+                // actual Hermes turns. Both agents now set the flag.
                 lastToolCallWasHermesAgent = true
                 cacheTapClawReadableArtifact(resultText)
                 runOnUiThread {
@@ -3340,19 +3343,25 @@ class MainActivity : AppCompatActivity() {
                     chatFragment.hideHeartbeat()
                     restoreOpenClawTicker()
                 }
-                val queryLower = try {
-                    JSONObject(args).optString("query", "").lowercase()
-                } catch (_: Exception) { "" }
-                if (queryLower.contains("deep research") || queryLower.contains("background research")) {
-                    val topic = queryLower
-                        .substringAfter("research")
-                        .replace(Regex("""[.!,;:'"]+"""), "")
-                        .substringBefore("use the google")
-                        .substringBefore("save the")
-                        .substringBefore("this is a background")
-                        .trim()
-                        .ifBlank { "unknown topic" }
-                    startResearchPoll(topic)
+                // Background research polling is a TapClaw-only path
+                // (the agent drops a report file the relay polls). Hermes
+                // returns its full response synchronously over SSE so there
+                // is nothing to poll for.
+                if (functionName == "tapclaw_agent") {
+                    val queryLower = try {
+                        JSONObject(args).optString("query", "").lowercase()
+                    } catch (_: Exception) { "" }
+                    if (queryLower.contains("deep research") || queryLower.contains("background research")) {
+                        val topic = queryLower
+                            .substringAfter("research")
+                            .replace(Regex("""[.!,;:'"]+"""), "")
+                            .substringBefore("use the google")
+                            .substringBefore("save the")
+                            .substringBefore("this is a background")
+                            .trim()
+                            .ifBlank { "unknown topic" }
+                        startResearchPoll(topic)
+                    }
                 }
             }
             /** Extract a URL after "open_taplink:" and normalize only valid absolute URLs. */

@@ -1,50 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Hermes HUD status icon — small AR-glasses silhouette that reads
-  clearly at 16dp. Rectangular wraparound lenses with a thin bridge,
-  short temple arms, and a subtle dot in each lens to suggest AR
-  HUD content. Single fill so setColorFilter() works (red = Hermes
-  unreachable, green = reachable).
+  Hermes HUD status icon — winged-helmet motif rendered as just the
+  wings, symmetric and readable at 16dp. Single fill so setColorFilter()
+  can tint it red (Hermes unreachable) or green (reachable).
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
-    <!-- Left lens -->
+    <!-- Left wing — three swept feathers fanning up-and-out -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M3,10.5
-                          C3,9.7 3.7,9 4.5,9
-                          L9.5,9
-                          C10.3,9 11,9.7 11,10.5
-                          L11,13.5
-                          C11,14.3 10.3,15 9.5,15
-                          L4.5,15
-                          C3.7,15 3,14.3 3,13.5
+        android:pathData="M11.5,10
+                          C9,9.4 6.6,8.8 4.5,8.2
+                          C3.4,7.9 2.2,7.7 1.5,8
+                          C2.8,8.6 4.6,9.4 6.8,10.2
+                          C5.2,10.4 3.6,10.6 2.5,10.9
+                          C3.9,11.4 6,11.9 8.6,12.2
+                          C7.4,12.6 6.2,13 5.5,13.4
+                          C7.1,13.5 9.2,13.4 11.5,13
                           Z" />
-    <!-- Right lens -->
+    <!-- Right wing — mirror of left -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M13,10.5
-                          C13,9.7 13.7,9 14.5,9
-                          L19.5,9
-                          C20.3,9 21,9.7 21,10.5
-                          L21,13.5
-                          C21,14.3 20.3,15 19.5,15
-                          L14.5,15
-                          C13.7,15 13,14.3 13,13.5
+        android:pathData="M12.5,10
+                          C15,9.4 17.4,8.8 19.5,8.2
+                          C20.6,7.9 21.8,7.7 22.5,8
+                          C21.2,8.6 19.4,9.4 17.2,10.2
+                          C18.8,10.4 20.4,10.6 21.5,10.9
+                          C20.1,11.4 18,11.9 15.4,12.2
+                          C16.6,12.6 17.8,13 18.5,13.4
+                          C16.9,13.5 14.8,13.4 12.5,13
                           Z" />
-    <!-- Bridge between lenses -->
+    <!-- Center band — small connector between the wings -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M11,11.5 L13,11.5 L13,12.5 L11,12.5 Z" />
-    <!-- Left temple -->
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M1.5,11.5 L3,11.2 L3,12.8 L1.5,12.5 Z" />
-    <!-- Right temple -->
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M21,11.2 L22.5,11.5 L22.5,12.5 L21,12.8 Z" />
+        android:pathData="M11,10.5 L13,10.5 L13,12.5 L11,12.5 Z" />
 </vector>
