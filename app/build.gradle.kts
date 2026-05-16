@@ -10,7 +10,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.rayneo.visionclaw"
+        applicationId = "com.rayneo.visionclaw.hermes"
         minSdk = 29
         targetSdk = 35
         versionCode = 5

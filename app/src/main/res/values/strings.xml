@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">TapResearch</string>
+    <string name="app_name">TapHermes</string>
     <string name="chat_hint">Ask TapResearch…</string>
     <string name="settings_title">Settings</string>
     <string name="gemini_api_key_label">Gemini API Key</string>
