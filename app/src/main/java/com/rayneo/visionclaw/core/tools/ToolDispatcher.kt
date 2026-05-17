@@ -97,7 +97,7 @@ class ToolDispatcher(
         register(SpotifyTool(context))
         register(SonosTool(context))
         register(CommunicationTool(context))
-        register(CameraTool(context))
+        register(CameraTool(context, frameProvider = cameraFrameProvider ?: { null }))
         register(TapLinkTool(context))
         register(SendVideoListTool(context))
         register(SendLinkListTool(context))

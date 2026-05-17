@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Photos — TapInsight</title>
+<style>
+/* ─── Tokens ──────────────────────────────────────────────────────── */
+:root {
+  --bg:           #0a0c10;
+  --bg-2:         #14171d;
+  --tile:         #1a1e26;
+  --tile-hover:   #232833;
+  --border:       rgba(255,255,255,0.06);
+  --text:         #e6edf3;
+  --text-dim:     #8b949e;
+  --accent:       #00e5ff;
+  --accent-glow:  rgba(0,229,255,0.35);
+  --danger:       #ff5b5b;
+  --shadow-card:  0 2px 8px rgba(0,0,0,0.4);
+  --shadow-lift:  0 8px 24px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,229,255,0.18);
+}
+
+*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html,body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  overflow: hidden;
+}
+
+button { font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer; }
+
+/* ─── Header ─────────────────────────────────────────────────────── */
+.header {
+  position: fixed; inset: 0 0 auto 0;
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 18px;
+  background: linear-gradient(180deg, rgba(10,12,16,0.96) 0%, rgba(10,12,16,0.6) 90%, transparent 100%);
+  z-index: 10;
+}
+.header h1 {
+  font-size: 18px; font-weight: 600; letter-spacing: 0.2px;
+  display: flex; align-items: center; gap: 8px;
+}
+.header h1 .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent-glow);
+}
+.header .meta {
+  margin-left: auto; font-size: 12px; color: var(--text-dim);
+}
+
+/* ─── Grid ───────────────────────────────────────────────────────── */
+.grid {
+  position: fixed; inset: 56px 0 0 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 12px 24px;
+  -webkit-overflow-scrolling: touch;
+}
+.grid-inner {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+.tile {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  background: var(--tile);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.tile:hover, .tile:active {
+  background: var(--tile-hover);
+  transform: scale(1.02);
+  box-shadow: var(--shadow-lift);
+}
+.tile img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+.tile .label {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 18px 8px 6px;
+  font-size: 10px;
+  color: rgba(255,255,255,0.92);
+  background: linear-gradient(180deg, transparent, rgba(0,0,0,0.7));
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none;
+}
+.empty {
+  padding: 80px 24px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+.empty .big { font-size: 18px; color: var(--text); margin-bottom: 6px; }
+
+/* ─── Lightbox ────────────────────────────────────────────────────── */
+.lightbox {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.98);
+  display: none;
+  z-index: 100;
+  touch-action: pan-y;
+}
+.lightbox.open { display: flex; flex-direction: column; }
+
+.lightbox .top {
+  display: flex; align-items: center;
+  padding: 14px 18px;
+  gap: 10px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.85), transparent);
+}
+.lightbox .top .filename {
+  font-size: 13px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 1;
+}
+.lightbox .top .index {
+  font-size: 13px; color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.lightbox .top button {
+  width: 36px; height: 36px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text);
+  font-size: 18px;
+}
+.lightbox .top button:hover, .lightbox .top button:active {
+  background: rgba(255,255,255,0.08);
+}
+
+.lightbox .stage {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.lightbox .stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.lightbox .nav {
+  position: absolute;
+  top: 50%; transform: translateY(-50%);
+  width: 48px; height: 48px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.45);
+  color: var(--text);
+  font-size: 24px;
+  transition: background 0.15s;
+}
+.lightbox .nav:hover, .lightbox .nav:active { background: rgba(0,0,0,0.75); }
+.lightbox .nav.prev { left: 12px; }
+.lightbox .nav.next { right: 12px; }
+.lightbox .nav.disabled { opacity: 0.25; pointer-events: none; }
+
+.lightbox .toolbar {
+  display: flex; justify-content: center; align-items: center;
+  gap: 12px;
+  padding: 14px 18px 20px;
+  background: linear-gradient(0deg, rgba(0,0,0,0.85), transparent);
+}
+.lightbox .toolbar button {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 4px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--text);
+  background: rgba(255,255,255,0.06);
+  transition: background 0.15s;
+  min-width: 64px;
+}
+.lightbox .toolbar button:hover, .lightbox .toolbar button:active {
+  background: rgba(255,255,255,0.14);
+}
+.lightbox .toolbar button .icon { font-size: 18px; line-height: 1; }
+.lightbox .toolbar button.danger:hover, .lightbox .toolbar button.danger:active {
+  background: rgba(255, 91, 91, 0.18);
+}
+
+.toast {
+  position: fixed; left: 50%; bottom: 90px;
+  transform: translateX(-50%);
+  padding: 10px 18px;
+  background: rgba(20, 24, 30, 0.95);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  font-size: 13px;
+  color: var(--text);
+  z-index: 200;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
+}
+.toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span class="dot"></span>Photos</h1>
+  <div class="meta" id="meta">Loading…</div>
+</div>
+
+<div class="grid" id="grid">
+  <div class="grid-inner" id="gridInner"></div>
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true">
+  <div class="top">
+    <button id="closeBtn" aria-label="Close">✕</button>
+    <div class="filename" id="lbFilename"></div>
+    <div class="index" id="lbIndex"></div>
+  </div>
+  <div class="stage">
+    <button class="nav prev" id="prevBtn" aria-label="Previous">‹</button>
+    <img id="lbImage" alt="">
+    <button class="nav next" id="nextBtn" aria-label="Next">›</button>
+  </div>
+  <div class="toolbar">
+    <button id="rotLeftBtn" title="Rotate 90° counter-clockwise">
+      <span class="icon">↺</span><span>Rotate</span>
+    </button>
+    <button id="rotRightBtn" title="Rotate 90° clockwise">
+      <span class="icon">↻</span><span>Rotate</span>
+    </button>
+    <button id="downloadBtn" title="Download to phone via companion app">
+      <span class="icon">⬇</span><span>Download</span>
+    </button>
+    <button id="shareBtn" title="Copy URL">
+      <span class="icon">🔗</span><span>Share</span>
+    </button>
+    <button class="danger" id="deleteBtn" title="Delete">
+      <span class="icon">🗑</span><span>Delete</span>
+    </button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/**
+ * TapInsight photos gallery.
+ *
+ * Data source: the on-glasses WebView attaches a TapMedia
+ * JavascriptInterface (see MediaLibraryBridge). We call:
+ *   window.TapMedia.listFolder("Photos")   → JSON of entries
+ *   window.TapMedia.deleteFile(path)       → boolean
+ *
+ * Image bytes are served by the asset host at:
+ *   https://appassets.androidplatform.net/media/Photos/<filename>
+ *
+ * URL params:
+ *   ?focus=Photos/<filename>   open the lightbox on that photo on load
+ */
+
+const MEDIA_BASE = 'https://appassets.androidplatform.net/media/';
+const PHOTOS_FOLDER = 'Photos';
+
+const els = {
+  meta: document.getElementById('meta'),
+  gridInner: document.getElementById('gridInner'),
+  grid: document.getElementById('grid'),
+  lightbox: document.getElementById('lightbox'),
+  lbImage: document.getElementById('lbImage'),
+  lbFilename: document.getElementById('lbFilename'),
+  lbIndex: document.getElementById('lbIndex'),
+  closeBtn: document.getElementById('closeBtn'),
+  prevBtn: document.getElementById('prevBtn'),
+  nextBtn: document.getElementById('nextBtn'),
+  rotLeftBtn: document.getElementById('rotLeftBtn'),
+  rotRightBtn: document.getElementById('rotRightBtn'),
+  downloadBtn: document.getElementById('downloadBtn'),
+  shareBtn: document.getElementById('shareBtn'),
+  deleteBtn: document.getElementById('deleteBtn'),
+  toast: document.getElementById('toast'),
+};
+
+/** @type {Array<{name:string, relativePath:string, sizeBytes:number, lastModifiedMs:number}>} */
+let photos = [];
+let lightboxIndex = -1;
+let rotation = 0;  // accumulated degrees in lightbox (view-only this commit)
+
+function toast(msg) {
+  els.toast.textContent = msg;
+  els.toast.classList.add('show');
+  setTimeout(() => els.toast.classList.remove('show'), 2200);
+}
+
+function mediaUrl(relativePath) {
+  return MEDIA_BASE + relativePath.split('/').map(encodeURIComponent).join('/');
+}
+
+function formatDate(ms) {
+  if (!ms) return '';
+  try {
+    const d = new Date(ms);
+    return d.toLocaleString(undefined, {
+      year: 'numeric', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit'
+    });
+  } catch { return ''; }
+}
+
+async function loadPhotos() {
+  if (!window.TapMedia || typeof window.TapMedia.listFolder !== 'function') {
+    els.meta.textContent = 'TapMedia bridge not available';
+    els.gridInner.innerHTML =
+      '<div class="empty"><div class="big">Photo library not available</div>' +
+      '<div>This page must be opened from the TapInsight glasses.</div></div>';
+    return;
+  }
+  let json;
+  try {
+    json = JSON.parse(window.TapMedia.listFolder(PHOTOS_FOLDER));
+  } catch (e) {
+    els.meta.textContent = 'Bridge error';
+    els.gridInner.innerHTML =
+      '<div class="empty"><div class="big">Could not read Photos folder</div><div>' +
+      String(e) + '</div></div>';
+    return;
+  }
+  if (json.error) {
+    els.gridInner.innerHTML =
+      '<div class="empty"><div class="big">' + json.error + '</div></div>';
+    return;
+  }
+
+  // Filter to image entries only and sort newest first.
+  const imageKinds = new Set(['IMAGE']);
+  photos = (json.entries || [])
+    .filter(e => imageKinds.has(e.kind))
+    .sort((a, b) => (b.lastModifiedMs || 0) - (a.lastModifiedMs || 0));
+
+  if (!photos.length) {
+    els.meta.textContent = '0 photos';
+    els.gridInner.innerHTML =
+      '<div class="empty"><div class="big">No photos yet</div>' +
+      '<div>Say <i>"save this photo"</i> to TapInsight while the AR camera is active.</div></div>';
+    return;
+  }
+  els.meta.textContent = photos.length + ' photo' + (photos.length === 1 ? '' : 's');
+  renderGrid();
+  maybeFocusFromQuery();
+}
+
+function renderGrid() {
+  const frag = document.createDocumentFragment();
+  photos.forEach((p, i) => {
+    const tile = document.createElement('div');
+    tile.className = 'tile';
+    tile.addEventListener('click', () => openLightbox(i));
+
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.src = mediaUrl(p.relativePath);
+    img.alt = p.name;
+    tile.appendChild(img);
+
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.textContent = formatDate(p.lastModifiedMs);
+    tile.appendChild(label);
+
+    frag.appendChild(tile);
+  });
+  els.gridInner.replaceChildren(frag);
+}
+
+function maybeFocusFromQuery() {
+  const m = location.search.match(/[?&]focus=([^&]+)/);
+  if (!m) return;
+  const focus = decodeURIComponent(m[1]);
+  const idx = photos.findIndex(p => p.relativePath === focus);
+  if (idx >= 0) openLightbox(idx);
+}
+
+function openLightbox(idx) {
+  if (idx < 0 || idx >= photos.length) return;
+  lightboxIndex = idx;
+  rotation = 0;
+  renderLightbox();
+  els.lightbox.classList.add('open');
+}
+
+function closeLightbox() {
+  els.lightbox.classList.remove('open');
+  lightboxIndex = -1;
+  rotation = 0;
+}
+
+function renderLightbox() {
+  const p = photos[lightboxIndex];
+  if (!p) return closeLightbox();
+  els.lbImage.src = mediaUrl(p.relativePath);
+  els.lbImage.style.transform = `rotate(${rotation}deg)`;
+  els.lbFilename.textContent = p.name;
+  els.lbIndex.textContent = (lightboxIndex + 1) + ' / ' + photos.length;
+  els.prevBtn.classList.toggle('disabled', lightboxIndex === 0);
+  els.nextBtn.classList.toggle('disabled', lightboxIndex === photos.length - 1);
+}
+
+function nav(delta) {
+  const newIdx = lightboxIndex + delta;
+  if (newIdx < 0 || newIdx >= photos.length) return;
+  lightboxIndex = newIdx;
+  rotation = 0;
+  renderLightbox();
+}
+
+function rotateBy(deg) {
+  rotation = (rotation + deg + 360) % 360;
+  els.lbImage.style.transform = `rotate(${rotation}deg)`;
+  // NOTE: rotation is currently view-only. Persistent rotation
+  // (writing the rotated JPEG back) lands in a follow-up commit
+  // that introduces a /api/library/rotate endpoint + a
+  // TapMedia.rotateImage bridge method.
+}
+
+async function deletePhoto() {
+  const p = photos[lightboxIndex];
+  if (!p) return;
+  if (!window.TapMedia || typeof window.TapMedia.deleteFile !== 'function') {
+    return toast('Delete not available in this view');
+  }
+  if (!confirm(`Delete ${p.name}?`)) return;
+  let ok = false;
+  try { ok = window.TapMedia.deleteFile(p.relativePath) === true || window.TapMedia.deleteFile(p.relativePath) === 'true'; }
+  catch (e) { /* swallow */ }
+  if (!ok) return toast('Delete failed');
+  photos.splice(lightboxIndex, 1);
+  if (!photos.length) {
+    closeLightbox();
+    renderGrid();
+    els.meta.textContent = '0 photos';
+    els.gridInner.innerHTML =
+      '<div class="empty"><div class="big">No photos yet</div></div>';
+    return;
+  }
+  if (lightboxIndex >= photos.length) lightboxIndex = photos.length - 1;
+  renderGrid();
+  renderLightbox();
+  els.meta.textContent = photos.length + ' photos';
+  toast('Deleted');
+}
+
+function copyShareUrl() {
+  const p = photos[lightboxIndex];
+  if (!p) return;
+  const url = mediaUrl(p.relativePath);
+  try {
+    navigator.clipboard.writeText(url).then(
+      () => toast('URL copied'),
+      () => fallbackCopy(url)
+    );
+  } catch { fallbackCopy(url); }
+}
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text; document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); toast('URL copied'); }
+  catch { toast('Copy failed — URL: ' + text); }
+  finally { document.body.removeChild(ta); }
+}
+
+function triggerDownload() {
+  const p = photos[lightboxIndex];
+  if (!p) return;
+  // The companion app exposes /api/library/file?path=... which streams
+  // the file with a download header. When this page is loaded inside
+  // the on-glasses asset host the link still works because the WebView
+  // honors download attributes on same-origin <a> elements.
+  const a = document.createElement('a');
+  a.href = mediaUrl(p.relativePath);
+  a.download = p.name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+// ─── Event wiring ───────────────────────────────────────────────
+els.closeBtn.addEventListener('click', closeLightbox);
+els.prevBtn.addEventListener('click', () => nav(-1));
+els.nextBtn.addEventListener('click', () => nav(1));
+els.rotLeftBtn.addEventListener('click', () => rotateBy(-90));
+els.rotRightBtn.addEventListener('click', () => rotateBy(90));
+els.shareBtn.addEventListener('click', copyShareUrl);
+els.downloadBtn.addEventListener('click', triggerDownload);
+els.deleteBtn.addEventListener('click', deletePhoto);
+
+document.addEventListener('keydown', (e) => {
+  if (!els.lightbox.classList.contains('open')) return;
+  if (e.key === 'Escape') closeLightbox();
+  else if (e.key === 'ArrowLeft') nav(-1);
+  else if (e.key === 'ArrowRight') nav(1);
+});
+
+// Swipe nav inside the lightbox.
+(function attachSwipe() {
+  let startX = null, startY = null;
+  els.lightbox.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+  }, { passive: true });
+  els.lightbox.addEventListener('touchend', (e) => {
+    if (startX === null) return;
+    const dx = (e.changedTouches[0].clientX - startX);
+    const dy = (e.changedTouches[0].clientY - startY);
+    startX = startY = null;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) {
+      nav(dx < 0 ? 1 : -1);
+    } else if (dy > 80 && Math.abs(dy) > Math.abs(dx)) {
+      closeLightbox();
+    }
+  });
+})();
+
+loadPhotos();
+</script>
+</body>
+</html>

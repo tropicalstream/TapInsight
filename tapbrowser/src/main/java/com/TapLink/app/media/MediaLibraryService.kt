@@ -42,10 +42,12 @@ class MediaLibraryService(private val context: Context) {
         const val DEFAULT_VIDEOS_DIR = "Videos"
         const val DEFAULT_PLAYLISTS_DIR = "Playlists"
         const val DEFAULT_TEXT_DIR = "Text"
+        const val DEFAULT_PHOTOS_DIR = "Photos"
 
         val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "ogg", "opus", "wav", "flac", "weba")
         val VIDEO_EXTENSIONS = setOf("mp4", "webm", "mkv", "mov", "m4v", "3gp", "avi")
         val PLAYLIST_EXTENSIONS = setOf("m3u", "m3u8")
+        val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
         /**
          * Readable text formats the media player can display (and read aloud
          * via Gemini 3.1 TTS). Kept narrow on purpose — these open in the
@@ -98,6 +100,7 @@ class MediaLibraryService(private val context: Context) {
             File(mediaRoot, DEFAULT_VIDEOS_DIR).mkdirs()
             File(mediaRoot, DEFAULT_PLAYLISTS_DIR).mkdirs()
             File(mediaRoot, DEFAULT_TEXT_DIR).mkdirs()
+            File(mediaRoot, DEFAULT_PHOTOS_DIR).mkdirs()
             val readme = File(mediaRoot, "README.txt")
             if (!readme.exists() || !readme.readText(Charsets.UTF_8).contains("Playlists/")) {
                 readme.writeText(README_CONTENT)
@@ -150,6 +153,7 @@ class MediaLibraryService(private val context: Context) {
             ext in VIDEO_EXTENSIONS -> MediaKind.VIDEO
             ext in PLAYLIST_EXTENSIONS -> MediaKind.PLAYLIST
             ext in TEXT_EXTENSIONS -> MediaKind.TEXT
+            ext in IMAGE_EXTENSIONS -> MediaKind.IMAGE
             file.isDirectory -> MediaKind.FOLDER
             else -> MediaKind.OTHER
         }
@@ -177,6 +181,10 @@ class MediaLibraryService(private val context: Context) {
             cleanKind.contains("audio") ||
                 cleanKind.contains("music") ||
                 ext in AUDIO_EXTENSIONS -> DEFAULT_MUSIC_DIR
+            cleanKind.contains("photo") ||
+                cleanKind.contains("image") ||
+                cleanKind.contains("picture") ||
+                ext in IMAGE_EXTENSIONS -> DEFAULT_PHOTOS_DIR
             else -> DEFAULT_TEXT_DIR
         }
     }
@@ -478,7 +486,7 @@ class MediaLibraryService(private val context: Context) {
     // ── Data classes ──────────────────────────────────────────────────
 
     enum class MediaKind(val sortOrder: Int) {
-        FOLDER(0), PLAYLIST(1), AUDIO(2), VIDEO(3), TEXT(4), OTHER(5)
+        FOLDER(0), PLAYLIST(1), AUDIO(2), VIDEO(3), IMAGE(4), TEXT(5), OTHER(6)
     }
 
     data class MediaEntry(
