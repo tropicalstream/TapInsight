@@ -15,6 +15,7 @@
         android:layout_height="wrap_content"
         android:layout_margin="12dp"
         android:background="@color/bg_panel_opaque"
+        android:elevation="6dp"
         android:orientation="vertical"
         android:padding="8dp"
         app:layout_constraintEnd_toEndOf="parent"
@@ -262,17 +263,16 @@
     </LinearLayout>
 
     <!--
-      Chat recycler: end-anchored to the parent right, start-anchored to
-      the cameraColumn end. When the camera is OFF the cameraColumn
-      collapses to zero width at parent-start and the recycler expands
-      leftward to fill the entire panel — older history reads full-width.
-      When the camera is ON the recycler stays right of the camera column
-      so the camera preview is never obscured. The orb sits in its own
-      bottom-left container that overlaps the recycler's bottom-left
-      corner; the ChatAdapter applies an extra startMargin to the last
-      row (only when the orb is visible AND the camera is off) so the
-      streaming card flows around the orb. goneMarginStart keeps a
-      14dp gutter in the camera-off state.
+      Chat recycler: start-anchored to a Barrier that resolves to the
+      END of whichever of (cameraColumn, orbContainer) is currently
+      visible and right-most. Result:
+        • Camera on (with or without orb)  → recycler shifts past camera column
+        • Orb on, camera off               → recycler shifts past avatar only
+        • Both off                         → recycler reads full width
+      That keeps older history wide whenever the camera is off, and only
+      narrows the bottom when the avatar is up — no per-row margin hack
+      required. goneMarginStart keeps a 14dp gutter when the barrier
+      collapses to parent-start.
     -->
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/chatRecycler"
@@ -292,7 +292,7 @@
         android:scrollbars="vertical"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toEndOf="@id/cameraColumn"
+        app:layout_constraintStart_toEndOf="@id/chatLeftBarrier"
         app:layout_constraintTop_toBottomOf="@id/hudContainer"
         app:layout_goneMarginStart="14dp" />
 
@@ -507,6 +507,28 @@
             android:scaleType="fitCenter"
             android:src="@drawable/earth_orb" />
     </FrameLayout>
+
+    <!--
+      Left-edge barrier for [chatRecycler]: resolves to the END of
+      whichever of (cameraColumn, orbContainer) is currently visible
+      and right-most. When both are GONE, the barrier collapses to
+      parent-start so the recycler reads full-width — exactly what
+      we want for an empty / idle chat panel.
+
+      • cameraColumn ON  → barrier = cameraColumn.end  (recycler shifts past camera + orb area)
+      • orbContainer ON  → barrier = orbContainer.end  (recycler shifts past avatar only)
+      • neither visible  → barrier collapses, recycler full width
+
+      orbContainer's visibility is toggled in code based on orb alpha
+      so the barrier ignores it when the orb has faded out.
+    -->
+    <androidx.constraintlayout.widget.Barrier
+        android:id="@+id/chatLeftBarrier"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        app:barrierAllowsGoneWidgets="false"
+        app:barrierDirection="end"
+        app:constraint_referenced_ids="cameraColumn,orbContainer" />
 
     <!-- Battery-saving dark mode overlay: covers entire panel, shows only
          battery % and charging indicator at 10% brightness. Elevation 32dp

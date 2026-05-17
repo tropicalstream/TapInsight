@@ -2411,22 +2411,23 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
     }
 
     /**
-     * Toggle the upper-left camera column purely from camera state.
-     * The orb is no longer inside this column — it lives in its own
-     * bottom-left FrameLayout that's always present in the layout
-     * tree (the orb's appearance is driven by alpha, not parent
-     * visibility).
+     * Toggle visibility of the two views the chatLeftBarrier watches:
      *
-     * Two follow-on effects:
-     *  • When the camera is OFF, [chatRecycler]'s start constraint
-     *    collapses to parent-start (goneMarginStart=14dp) so older
-     *    chat history reads full-width.
-     *  • Whenever orb-visible or camera-on state changes, the
-     *    ChatAdapter is told whether to pad the last row's start so
-     *    the streaming card flows around the orb instead of through
-     *    it. We only need that pad when the orb is up AND the camera
-     *    is off — when the camera is on, the recycler is already
-     *    shifted past the orb's footprint.
+     *   • [cameraColumn] is VISIBLE when the camera is on, GONE otherwise.
+     *   • [orbContainer] is VISIBLE when the orb's alpha is non-zero
+     *     (voice activity in progress), GONE otherwise.
+     *
+     * The Barrier defined in fragment_chat_panel.xml then resolves
+     * [chatRecycler]'s start to whichever of those two is right-most:
+     *   – Camera on  → recycler starts after the 208dp camera column
+     *     (older history pushes right; orb sits underneath the column).
+     *   – Camera off, orb on → recycler starts after the ~88dp orb gutter
+     *     (the streaming card flows around the avatar; older history
+     *     above the orb stays equally narrow — the Barrier doesn't know
+     *     which rows are higher, but the orb is only ~88dp wide so the
+     *     loss is small).
+     *   – Both off → Barrier collapses to parent-start; recycler is
+     *     full width (goneMarginStart=14dp keeps a gutter).
      */
     private fun updateOrbColumnVisibility() {
         if (!::cameraColumn.isInitialized) return
@@ -2436,12 +2437,12 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         if (cameraColumn.visibility != cameraTarget) {
             cameraColumn.visibility = cameraTarget
         }
-        // 72dp orb + 12dp gutter = 84dp of left margin on the streaming
-        // card when the orb is up and the camera is off. `adapter` is a
-        // val initialized in the field declaration, so no isInitialized
-        // guard is required.
-        val padLastRow = orbVisible && !cameraVisible
-        adapter.setLastRowOrbOffsetDp(if (padLastRow) 84 else 0)
+        if (::orbContainer.isInitialized) {
+            val orbTarget = if (orbVisible) View.VISIBLE else View.GONE
+            if (orbContainer.visibility != orbTarget) {
+                orbContainer.visibility = orbTarget
+            }
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════════

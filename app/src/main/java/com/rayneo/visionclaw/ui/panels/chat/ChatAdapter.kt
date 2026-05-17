@@ -96,23 +96,6 @@ class ChatAdapter(
      */
     var focusedPosition: Int = RecyclerView.NO_POSITION
 
-    /**
-     * Extra start margin (in dp) the LAST row's bubble should claim so
-     * the streaming card flows around the bottom-left orb. The fragment
-     * sets this to a positive value (typically 84dp = 72dp orb + 12dp
-     * gutter) when the orb is visible AND the camera is off; to 0
-     * otherwise. Only the last position is affected so older history
-     * still reads full-width.
-     */
-    private var lastRowOrbOffsetDp: Int = 0
-
-    fun setLastRowOrbOffsetDp(dp: Int) {
-        if (dp == lastRowOrbOffsetDp) return
-        lastRowOrbOffsetDp = dp
-        val last = chatHistory.size - 1
-        if (last >= 0) notifyItemChanged(last)
-    }
-
     fun submitMessages(messages: List<ChatMessage>) {
         chatHistory.clear()
         chatHistory += messages.takeLast(MAX_HISTORY_CARDS)
@@ -197,21 +180,6 @@ class ChatAdapter(
                     bubble.alpha = if (focused) 1.0f else 0.78f
                     bubble.scaleX = if (focused) 1.04f else 0.96f
                     bubble.scaleY = if (focused) 1.04f else 0.96f
-                    // Reserve space for the bottom-left orb on the LATEST
-                    // message row (the streaming card). Older history and
-                    // the New Chat sentinel are unaffected — they read
-                    // full-width as the user expects.
-                    val isLatestMessage = position == chatHistory.size - 1 && position >= 0
-                    val targetStartPx = if (isLatestMessage && lastRowOrbOffsetDp > 0) {
-                        (lastRowOrbOffsetDp * bubble.resources.displayMetrics.density).toInt()
-                    } else {
-                        0
-                    }
-                    val lp = bubble.layoutParams
-                    if (lp is android.view.ViewGroup.MarginLayoutParams && lp.marginStart != targetStartPx) {
-                        lp.marginStart = targetStartPx
-                        bubble.layoutParams = lp
-                    }
                 }
             }
         }
