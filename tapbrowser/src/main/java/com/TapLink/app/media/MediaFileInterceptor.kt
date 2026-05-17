@@ -517,6 +517,11 @@ class MediaFileInterceptor(
         }
         return try {
             val length = file.length()
+            Log.d(
+                TAG,
+                "/local-image serving ${file.name} mime=$mime length=$length " +
+                    "range='${rangeHeader ?: ""}'"
+            )
             // Reuse the same Range-aware response builders /media/ uses.
             // Without 206 Partial Content support the WebView's <video>
             // element refuses to start playback, so videos in particular
@@ -531,7 +536,7 @@ class MediaFileInterceptor(
                 buildFullResponse(file, length, mime, 0L)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to open /local-image $bare: ${e.message}")
+            Log.w(TAG, "Failed to open /local-image $bare: ${e.message}", e)
             errorResponse(500, "Open failed")
         }
     }
@@ -992,30 +997,27 @@ class MediaFileInterceptor(
     // ── Bounded stream ────────────────────────────────────────────────
 
     /**
-     * FileInputStream wrapper that starts at [startOffset] and reads at
-     * most [remaining] bytes. WebView consumes this on a background thread
-     * and closes it when the request ends.
+     * RandomAccessFile-backed bounded stream. Switched from
+     * FileInputStream + skip() because skip() can return less than
+     * requested on large seeks (the contract permits short reads),
+     * which left the stream positioned wrong for video seek requests
+     * and caused FFmpeg's demuxer to read mismatched bytes. seek()
+     * on a RAF is atomic and guaranteed to land at the requested
+     * absolute offset.
      */
     private class BoundedFileStream(
         file: File,
         startOffset: Long,
         initialRemaining: Long
     ) : InputStream() {
-        private val fis = FileInputStream(file).also {
-            if (startOffset > 0) {
-                var skipped = 0L
-                while (skipped < startOffset) {
-                    val s = it.skip(startOffset - skipped)
-                    if (s <= 0) break
-                    skipped += s
-                }
-            }
+        private val raf = java.io.RandomAccessFile(file, "r").also {
+            if (startOffset > 0) it.seek(startOffset)
         }
         private var remaining: Long = initialRemaining
 
         override fun read(): Int {
             if (remaining <= 0) return -1
-            val b = fis.read()
+            val b = raf.read()
             if (b >= 0) remaining--
             return b
         }
@@ -1023,18 +1025,17 @@ class MediaFileInterceptor(
         override fun read(b: ByteArray, off: Int, len: Int): Int {
             if (remaining <= 0) return -1
             val toRead = minOf(len.toLong(), remaining).toInt()
-            val n = fis.read(b, off, toRead)
+            val n = raf.read(b, off, toRead)
             if (n > 0) remaining -= n
             return n
         }
 
         override fun available(): Int {
-            val raw = fis.available()
-            return minOf(raw.toLong(), remaining.coerceAtLeast(0L)).toInt()
+            return remaining.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         }
 
         override fun close() {
-            try { fis.close() } catch (_: Exception) {}
+            try { raf.close() } catch (_: Exception) {}
         }
     }
 }
