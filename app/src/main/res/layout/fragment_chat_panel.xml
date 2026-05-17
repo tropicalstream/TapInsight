@@ -263,21 +263,20 @@
     </LinearLayout>
 
     <!--
-      Chat recycler: start-anchored to cameraColumn.end so:
-        • Camera ON  → recycler starts past the 208dp camera column.
-        • Camera OFF → cameraColumn collapses; recycler reads full
-          width with a 14dp gutter (goneMarginStart).
-      The orb is NOT in this constraint chain — it sits on top of the
-      recycler's bottom-left corner via elevation. Older chat rows
-      render full-width and tuck under the orb visually; the LAST row
-      (the streaming card) gets a per-row startMargin from ChatAdapter
-      so its text flows around the orb instead of through it.
+      Chat recycler: ALWAYS full-width, anchored directly to parent
+      edges. Both the camera column and the orb container are
+      overlaid on top via elevation, so they cover bits of the
+      recycler when active but never narrow it. The streaming card
+      (last position) gets a per-row marginStart inset from
+      ChatAdapter to flow around the orb cleanly; older history rows
+      render at margin 0 and read full-width — they're "behind" the
+      orb visually, the elevation makes the orb stay readable on top.
     -->
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/chatRecycler"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        android:layout_marginStart="6dp"
+        android:layout_marginStart="14dp"
         android:layout_marginTop="8dp"
         android:layout_marginEnd="14dp"
         android:layout_marginBottom="16dp"
@@ -291,9 +290,8 @@
         android:scrollbars="vertical"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toEndOf="@id/cameraColumn"
-        app:layout_constraintTop_toBottomOf="@id/hudContainer"
-        app:layout_goneMarginStart="14dp" />
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/hudContainer" />
 
     <TextView
         android:id="@+id/chatStreamIndicator"
@@ -422,6 +420,7 @@
         android:layout_height="0dp"
         android:layout_marginStart="16dp"
         android:layout_marginBottom="8dp"
+        android:elevation="3dp"
         android:visibility="gone"
         app:layout_constraintBottom_toTopOf="@id/orbContainer"
         app:layout_constraintStart_toStartOf="parent"
