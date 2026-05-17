@@ -110,8 +110,12 @@ class ChatAdapter(
     fun setLastRowLeftInsetDp(dp: Int) {
         if (dp == lastRowLeftInsetDp) return
         lastRowLeftInsetDp = dp
-        val last = chatHistory.size - 1
-        if (last >= 0) notifyItemChanged(last)
+        // Both the latest message AND the New Chat sentinel use the
+        // inset, so refresh both positions when the value changes.
+        val lastMessage = chatHistory.size - 1
+        val sentinel = chatHistory.size
+        if (lastMessage >= 0) notifyItemChanged(lastMessage)
+        notifyItemChanged(sentinel)
     }
 
     fun submitMessages(messages: List<ChatMessage>) {
@@ -198,13 +202,17 @@ class ChatAdapter(
                     bubble.alpha = if (focused) 1.0f else 0.78f
                     bubble.scaleX = if (focused) 1.04f else 0.96f
                     bubble.scaleY = if (focused) 1.04f else 0.96f
-                    // The LATEST chat row (the streaming card) gets a
-                    // small left inset so it dodges the bottom-left orb.
-                    // Older rows render at margin 0 and stretch full
-                    // width — the orb is drawn on top via elevation so
-                    // older content tucks behind it visually.
+                    // The LATEST chat row AND the New Chat sentinel both
+                    // sit at the bottom of the recycler where the orb
+                    // overlays the screen, so BOTH get a small left
+                    // inset to dodge the avatar. Older history rows
+                    // render at margin 0 and read full-width — the orb
+                    // is drawn on top via elevation so older content
+                    // tucks behind it visually.
                     val isLatestMessage = position == chatHistory.size - 1 && position >= 0
-                    val targetStartPx = if (isLatestMessage && lastRowLeftInsetDp > 0) {
+                    val isNewChatSentinel = position == chatHistory.size
+                    val dodgesOrb = (isLatestMessage || isNewChatSentinel) && lastRowLeftInsetDp > 0
+                    val targetStartPx = if (dodgesOrb) {
                         (lastRowLeftInsetDp * bubble.resources.displayMetrics.density).toInt()
                     } else {
                         0
