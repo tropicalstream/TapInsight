@@ -20,6 +20,7 @@
     <string name="hud_battery_charging">Battery charging</string>
     <string name="hud_openclaw_status">OpenClaw gateway status</string>
     <string name="hud_hermes_status">Hermes gateway status</string>
+    <string name="hud_tapclaw_result_ready">TapClaw result ready</string>
     <string name="send">Send</string>
 
     <!-- Settings panel -->
