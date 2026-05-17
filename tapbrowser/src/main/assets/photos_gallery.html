@@ -633,12 +633,30 @@ function renderGrid() {
     tile.addEventListener('click', () => openEntry(i));
 
     if (p.kind === 'VIDEO') {
-      // Styled placeholder + ▶ pill — no <img> because the WebView
-      // can't render an MP4 as an image source and would show the
-      // broken-image icon.
-      const thumb = document.createElement('div');
-      thumb.className = 'vid-thumb';
-      tile.appendChild(thumb);
+      // Try the bridge's thumbnailUrl first (MediaMetadataRetriever
+      // pulls the real first frame on Kotlin side). If it 404s or
+      // fails to decode (e.g. broken file), swap in the styled
+      // placeholder so the tile isn't empty.
+      const thumbUrl = p.thumbnailUrl;
+      if (thumbUrl && thumbUrl !== entryUrl(p)) {
+        const img = document.createElement('img');
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.src = thumbUrl;
+        img.alt = p.name;
+        img.addEventListener('error', () => {
+          if (img.parentNode === tile) {
+            const fallback = document.createElement('div');
+            fallback.className = 'vid-thumb';
+            tile.replaceChild(fallback, img);
+          }
+        });
+        tile.appendChild(img);
+      } else {
+        const thumb = document.createElement('div');
+        thumb.className = 'vid-thumb';
+        tile.appendChild(thumb);
+      }
       const badge = document.createElement('div');
       badge.className = 'video-badge';
       const pill = document.createElement('span');

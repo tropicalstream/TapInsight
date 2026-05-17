@@ -529,6 +529,15 @@ class MediaLibraryBridge(
                         val encoded = URLEncoder.encode(f.absolutePath, "UTF-8")
                             .replace("+", "%20")
                         val proxyUrl = "https://$ASSETS_HOST/local-image/$encoded"
+                        // Videos get a separate thumb URL pointing at
+                        // the MediaMetadataRetriever-backed route. The
+                        // gallery uses thumbnailUrl in the grid (<img>)
+                        // and fullUrl when handing off to media_player
+                        // for playback. For images both URLs point at
+                        // the same content.
+                        val thumbUrl = if (isVideo) {
+                            "https://$ASSETS_HOST/local-video-thumb/$encoded"
+                        } else proxyUrl
                         val relPath = f.absolutePath.removePrefix("/storage/emulated/0/")
                         arr.put(
                             JSONObject()
@@ -540,7 +549,7 @@ class MediaLibraryBridge(
                                 .put("mimeType", mime)
                                 .put("relativeDisplayPath", relPath)
                                 .put("fullUrl", proxyUrl)
-                                .put("thumbnailUrl", proxyUrl)
+                                .put("thumbnailUrl", thumbUrl)
                                 .put("width", 0)
                                 .put("height", 0)
                                 .put("durationMs", JSONObject.NULL)

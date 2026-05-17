@@ -99,6 +99,15 @@ class MediaFileInterceptor(
         const val LOCAL_ALLOWED_ROOT = "/storage/emulated/0/DCIM/"
 
         /**
+         * Proxy prefix for video thumbnails extracted from local
+         * DCIM files. MediaMetadataRetriever pulls the first decoded
+         * frame, we compress to JPEG, and serve through this URL so
+         * the gallery grid can paint a real thumbnail instead of the
+         * generic placeholder. Same path-safety rules as /local-image/.
+         */
+        const val LOCAL_VIDEO_THUMB_PREFIX = "/local-video-thumb/"
+
+        /**
          * Filenames we're willing to serve out of the APK assets/ folder via
          * https://appassets.androidplatform.net/assets/ . Kept narrow on
          * purpose — a stray third-party page shouldn't be able to walk
@@ -196,6 +205,13 @@ class MediaFileInterceptor(
                 ?.value
                 ?.trim()
             return handleLocalImageRequest(rawPath.removePrefix(LOCAL_PREFIX), rangeHeader)
+        }
+
+        // ── /local-video-thumb/<encoded-path> → first-frame thumbnail ──
+        // Returns a small JPEG of the video's first frame so the
+        // gallery grid can paint a real thumbnail.
+        if (rawPath.startsWith(LOCAL_VIDEO_THUMB_PREFIX)) {
+            return handleLocalVideoThumbRequest(rawPath.removePrefix(LOCAL_VIDEO_THUMB_PREFIX))
         }
 
         if (!rawPath.startsWith(MEDIA_PREFIX)) return null
@@ -517,6 +533,110 @@ class MediaFileInterceptor(
         } catch (e: Exception) {
             Log.w(TAG, "Failed to open /local-image $bare: ${e.message}")
             errorResponse(500, "Open failed")
+        }
+    }
+
+    /**
+     * In-memory LRU of generated video thumbnails. Keyed by absolute
+     * file path + mtime, so a file that's overwritten in place produces
+     * a fresh thumbnail. Small cap — these are tiny JPEGs (~10–30 KB
+     * each), and we'd rather pay decode cost over OOM risk.
+     */
+    private val videoThumbCache = object : LinkedHashMap<String, ByteArray>(
+        24, 0.75f, true
+    ) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, ByteArray>?): Boolean {
+            return size > 64
+        }
+    }
+
+    /**
+     * Serve a JPEG thumbnail extracted from the first frame of a
+     * local video. Same path-safety rules as [handleLocalImageRequest].
+     * Uses MediaMetadataRetriever to grab the first decoded frame,
+     * scales it to fit a 320 px box (cheap to encode, plenty for a
+     * grid tile), and caches by `<path>@<mtime>` so repeat requests
+     * hit memory.
+     */
+    private fun handleLocalVideoThumbRequest(rawTail: String): WebResourceResponse {
+        val decoded = try {
+            URLDecoder.decode(rawTail, "UTF-8")
+        } catch (e: Exception) {
+            return errorResponse(400, "Bad path encoding")
+        }
+        val bare = decoded.substringBefore('?').substringBefore('#')
+        if (bare.contains("..") || !bare.startsWith(LOCAL_ALLOWED_ROOT)) {
+            return errorResponse(403, "Forbidden")
+        }
+        val file = File(bare)
+        val canonical = try { file.canonicalPath } catch (_: Exception) { bare }
+        if (!canonical.startsWith(LOCAL_ALLOWED_ROOT)) {
+            return errorResponse(403, "Forbidden")
+        }
+        if (!file.exists() || !file.isFile) {
+            return errorResponse(404, "Not found")
+        }
+        val cacheKey = "$bare@${file.lastModified()}"
+        val cached = synchronized(videoThumbCache) { videoThumbCache[cacheKey] }
+        val bytes = cached ?: try {
+            extractVideoThumbnail(file)
+        } catch (e: Exception) {
+            Log.w(TAG, "extractVideoThumbnail failed for $bare: ${e.message}")
+            null
+        }
+        if (bytes == null || bytes.isEmpty()) {
+            return errorResponse(500, "Thumbnail extract failed")
+        }
+        if (cached == null) {
+            synchronized(videoThumbCache) { videoThumbCache[cacheKey] = bytes }
+        }
+        val headers = linkedMapOf(
+            "Content-Length" to bytes.size.toString(),
+            // Browser cache helps when scrolling the grid — these are
+            // immutable per (path, mtime) so a long max-age is safe.
+            "Cache-Control" to "public, max-age=86400",
+            "Access-Control-Allow-Origin" to "*"
+        )
+        val resp = WebResourceResponse("image/jpeg", null, ByteArrayInputStream(bytes))
+        resp.responseHeaders = headers
+        resp.setStatusCodeAndReasonPhrase(200, "OK")
+        return resp
+    }
+
+    /**
+     * Pull the first frame from a video via MediaMetadataRetriever,
+     * scale to fit a 320 px box, encode as JPEG. Returns null on any
+     * failure — the caller surfaces a 500 in that case.
+     *
+     * Why MediaMetadataRetriever instead of ThumbnailUtils: more
+     * predictable behavior on partial/broken files (it'll either
+     * succeed with a frame or throw cleanly; ThumbnailUtils sometimes
+     * deadlocks on malformed MP4s).
+     */
+    private fun extractVideoThumbnail(file: File): ByteArray? {
+        val mmr = android.media.MediaMetadataRetriever()
+        try {
+            mmr.setDataSource(file.absolutePath)
+            val frame = mmr.getFrameAtTime(0L, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: return null
+            val maxDim = 320
+            val w = frame.width
+            val h = frame.height
+            val scale = if (w > maxDim || h > maxDim) {
+                maxDim.toFloat() / maxOf(w, h)
+            } else 1f
+            val scaled = if (scale < 1f) {
+                android.graphics.Bitmap.createScaledBitmap(
+                    frame, (w * scale).toInt(), (h * scale).toInt(), true
+                )
+            } else frame
+            val out = java.io.ByteArrayOutputStream()
+            scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 78, out)
+            if (scaled !== frame) scaled.recycle()
+            frame.recycle()
+            return out.toByteArray()
+        } finally {
+            try { mmr.release() } catch (_: Exception) {}
         }
     }
 
