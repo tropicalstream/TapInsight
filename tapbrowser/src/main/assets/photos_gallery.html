@@ -495,11 +495,12 @@ async function loadPhotos() {
     return;
   }
   // Tally TapInsight saves (library OR dcim_own) vs device photos
-  // (dcim from other apps). After the MediaStore switch, "own"
-  // entries can live in either source — TapInsight's saves now go
-  // to DCIM/TapInsight via MediaStore (source=dcim_own), with the
-  // app-private Media/Photos (source=library) preserved for any
-  // older saves that pre-date the switch.
+  // (dcim/local from other apps or system services). After the
+  // MediaStore switch, "own" entries live in either source — saves
+  // now go to DCIM/TapInsight via MediaStore (source=dcim_own), with
+  // app-private Media/Photos (source=library) preserved for legacy.
+  // `local` source covers files on disk that MediaStore wouldn't
+  // register (RayNeo's monocular camera output, mostly).
   const ownCount = photos.filter(p =>
     p.source === 'library' || p.source === 'dcim_own'
   ).length;
@@ -669,10 +670,12 @@ async function rotateBy(deg) {
   // MediaStore id yet, both are view-only here. Rotation for own
   // DCIM saves is doable in a future bridge change (open the URI,
   // re-encode, update via resolver), but not today.
-  if (p.source === 'dcim' || p.source === 'dcim_own') {
-    toast(p.source === 'dcim_own'
-      ? 'Rotating MediaStore-backed photos is not yet supported'
-      : 'Device-camera photos are view-only here');
+  if (p.source === 'dcim' || p.source === 'dcim_own' || p.source === 'local') {
+    toast(p.source === 'local'
+      ? 'Direct-filesystem photos are view-only'
+      : p.source === 'dcim_own'
+        ? 'Rotating MediaStore-backed photos is not yet supported'
+        : 'Device-camera photos are view-only here');
     return;
   }
 
@@ -716,6 +719,10 @@ async function deletePhoto() {
   }
   if (p.source === 'dcim') {
     toast('Delete device-camera photos from the RayNeo Camera app');
+    return;
+  }
+  if (p.source === 'local') {
+    toast('Delete direct-filesystem photos via ADB or a file manager on the glasses');
     return;
   }
   if (!window.TapMedia || typeof window.TapMedia.deleteEntry !== 'function') {
@@ -780,6 +787,7 @@ function showInfo() {
   const sourceLabel = p.source === 'dcim'      ? 'RayNeo Camera'
                     : p.source === 'dcim_own'  ? 'TapInsight (DCIM)'
                     : p.source === 'library'   ? 'TapInsight (legacy)'
+                    : p.source === 'local'     ? 'Device storage (' + (p.relativeDisplayPath || 'DCIM') + ')'
                     : 'TapInsight';
   parts.push(sourceLabel);
   if (p.width && p.height) parts.push(p.width + '×' + p.height);

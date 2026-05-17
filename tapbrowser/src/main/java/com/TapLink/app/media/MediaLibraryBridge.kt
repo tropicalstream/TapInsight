@@ -478,6 +478,79 @@ class MediaLibraryBridge(
             }
         }
 
+        // (3) direct-filesystem fallback. On some Android builds the
+        // MediaScanner refuses to register files written by raw
+        // filesystem services (RayNeo's monocular camera being a
+        // concrete example). In that case File.walk can still see
+        // them, so we enumerate the DCIM tree directly and emit the
+        // results with source="local". The interceptor's
+        // /local-image/ route reads bytes from the file path.
+        // De-duped by absolute path against entries we already
+        // emitted via MediaStore (compare to relativeDisplayPath
+        // ending — best-effort, not perfect).
+        try {
+            val dcimRoot = File("/storage/emulated/0/DCIM")
+            if (hasMediaPermission && dcimRoot.exists() && dcimRoot.canRead()) {
+                val mediaExts = setOf(
+                    "jpg", "jpeg", "png", "webp", "heic", "heif", "bmp", "gif",
+                    "mp4", "mov", "m4v", "webm", "mkv", "3gp"
+                )
+                // We want to avoid double-emitting things MediaStore
+                // already covered. Track display-name fragments we've
+                // already seen so File.walk doesn't re-add them.
+                val seenNames = HashSet<String>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val nm = o.optString("name").takeIf { it.isNotBlank() } ?: continue
+                    seenNames += nm.lowercase(java.util.Locale.ROOT)
+                }
+                dcimRoot.walkTopDown()
+                    .filter { it.isFile && it.length() > 0 }
+                    .filter { it.extension.lowercase(java.util.Locale.ROOT) in mediaExts }
+                    .take(500)
+                    .forEach { f ->
+                        if (f.name.lowercase(java.util.Locale.ROOT) in seenNames) return@forEach
+                        val ext = f.extension.lowercase(java.util.Locale.ROOT)
+                        val isVideo = ext in setOf("mp4", "mov", "m4v", "webm", "mkv", "3gp")
+                        val mime = when (ext) {
+                            "jpg", "jpeg" -> "image/jpeg"
+                            "png" -> "image/png"
+                            "webp" -> "image/webp"
+                            "gif" -> "image/gif"
+                            "bmp" -> "image/bmp"
+                            "heic", "heif" -> "image/heic"
+                            "mp4", "m4v" -> "video/mp4"
+                            "webm" -> "video/webm"
+                            "mov" -> "video/quicktime"
+                            "mkv" -> "video/x-matroska"
+                            "3gp" -> "video/3gpp"
+                            else -> "application/octet-stream"
+                        }
+                        val encoded = URLEncoder.encode(f.absolutePath, "UTF-8")
+                            .replace("+", "%20")
+                        val proxyUrl = "https://$ASSETS_HOST/local-image/$encoded"
+                        val relPath = f.absolutePath.removePrefix("/storage/emulated/0/")
+                        arr.put(
+                            JSONObject()
+                                .put("source", "local")
+                                .put("name", f.name)
+                                .put("lastModifiedMs", f.lastModified())
+                                .put("sizeBytes", f.length())
+                                .put("kind", if (isVideo) "VIDEO" else "IMAGE")
+                                .put("mimeType", mime)
+                                .put("relativeDisplayPath", relPath)
+                                .put("fullUrl", proxyUrl)
+                                .put("thumbnailUrl", proxyUrl)
+                                .put("width", 0)
+                                .put("height", 0)
+                                .put("durationMs", JSONObject.NULL)
+                        )
+                    }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Filesystem DCIM walk failed: ${e.message}")
+        }
+
         // Sort newest first by lastModifiedMs.
         val sorted = JSONArray()
         val asList = (0 until arr.length()).map { arr.getJSONObject(it) }

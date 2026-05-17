@@ -80,6 +80,25 @@ class MediaFileInterceptor(
         const val DCIM_PREFIX = "/dcim/"
 
         /**
+         * Proxy prefix for direct-filesystem reads of DCIM files. Used
+         * for photos that File.walk can enumerate but MediaStore refuses
+         * to register (a real-world failure mode on some Android builds
+         * where system services write files via raw filesystem calls).
+         * Path is URL-encoded after the prefix; the handler enforces
+         * containment inside `/storage/emulated/0/DCIM/` so this can't
+         * be coerced into reading arbitrary files.
+         */
+        const val LOCAL_PREFIX = "/local-image/"
+
+        /**
+         * Safety: the only filesystem root /local-image/ will read from.
+         * Any decoded path must `startsWith` this prefix and must not
+         * contain `..` segments. Kept narrow on purpose so the proxy
+         * can't escape into app-private storage or other apps' data.
+         */
+        const val LOCAL_ALLOWED_ROOT = "/storage/emulated/0/DCIM/"
+
+        /**
          * Filenames we're willing to serve out of the APK assets/ folder via
          * https://appassets.androidplatform.net/assets/ . Kept narrow on
          * purpose — a stray third-party page shouldn't be able to walk
@@ -165,6 +184,13 @@ class MediaFileInterceptor(
         // gallery's <img src> works. See [DCIM_PREFIX] for rationale.
         if (rawPath.startsWith(DCIM_PREFIX)) {
             return handleDcimRequest(rawPath.removePrefix(DCIM_PREFIX))
+        }
+
+        // ── /local-image/<encoded-path> → direct-filesystem fallback ──
+        // For files that exist on disk under DCIM/ but MediaStore refuses
+        // to register. See [LOCAL_PREFIX] for the safety contract.
+        if (rawPath.startsWith(LOCAL_PREFIX)) {
+            return handleLocalImageRequest(rawPath.removePrefix(LOCAL_PREFIX))
         }
 
         if (!rawPath.startsWith(MEDIA_PREFIX)) return null
@@ -411,6 +437,77 @@ class MediaFileInterceptor(
         resp.setStatusCodeAndReasonPhrase(200, "OK")
         Log.d(TAG, "served DCIM $kind/$id (${bytes.size}B, $mime)")
         return resp
+    }
+
+    // ── /local-image/<path> → direct File-system read ────────────────
+
+    /**
+     * Serve a file straight off disk, used when MediaStore can't see
+     * it but `File.walk()` from the app process can. The encoded path
+     * after the prefix is URL-decoded and must satisfy:
+     *
+     *   • starts with [LOCAL_ALLOWED_ROOT] (no escape into other roots),
+     *   • contains no `..` segments (no traversal),
+     *   • resolves to a real file under that root,
+     *   • is a media MIME type (image/* or video/*).
+     *
+     * Reject everything else with 403/404. We intentionally don't
+     * surface filesystem errors verbatim — just enough to debug.
+     */
+    private fun handleLocalImageRequest(rawTail: String): WebResourceResponse {
+        val decoded = try {
+            URLDecoder.decode(rawTail, "UTF-8")
+        } catch (e: Exception) {
+            return errorResponse(400, "Bad path encoding")
+        }
+        val bare = decoded.substringBefore('?').substringBefore('#')
+        if (bare.contains("..") || !bare.startsWith(LOCAL_ALLOWED_ROOT)) {
+            Log.w(TAG, "Rejecting /local-image request outside DCIM root: $bare")
+            return errorResponse(403, "Forbidden")
+        }
+        val file = File(bare)
+        // canonicalPath collapses any sneaky symlink → if it doesn't
+        // still live under DCIM, refuse. (Cheap belt-and-suspenders.)
+        val canonical = try { file.canonicalPath } catch (_: Exception) { bare }
+        if (!canonical.startsWith(LOCAL_ALLOWED_ROOT)) {
+            Log.w(TAG, "Rejecting /local-image after canonicalize: $canonical")
+            return errorResponse(403, "Forbidden")
+        }
+        if (!file.exists() || !file.isFile) {
+            return errorResponse(404, "Not found")
+        }
+        val ext = file.extension.lowercase(Locale.US)
+        val mime = when (ext) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            "gif" -> "image/gif"
+            "bmp" -> "image/bmp"
+            "heic", "heif" -> "image/heic"
+            "mp4", "m4v" -> "video/mp4"
+            "webm" -> "video/webm"
+            "mov" -> "video/quicktime"
+            "mkv" -> "video/x-matroska"
+            "3gp" -> "video/3gpp"
+            else -> return errorResponse(415, "Unsupported media type")
+        }
+        return try {
+            val length = file.length()
+            val headers = linkedMapOf(
+                "Content-Length" to length.toString(),
+                "Accept-Ranges" to "bytes",
+                "Cache-Control" to "no-store",
+                "Access-Control-Allow-Origin" to "*"
+            )
+            val resp = WebResourceResponse(mime, null, FileInputStream(file))
+            resp.responseHeaders = headers
+            resp.setStatusCodeAndReasonPhrase(200, "OK")
+            Log.d(TAG, "served /local-image $bare (${length}B, $mime)")
+            resp
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to open /local-image $bare: ${e.message}")
+            errorResponse(500, "Open failed")
+        }
     }
 
     // ── Response builders ─────────────────────────────────────────────
