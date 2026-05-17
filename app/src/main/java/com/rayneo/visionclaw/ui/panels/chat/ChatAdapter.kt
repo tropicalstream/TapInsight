@@ -96,6 +96,24 @@ class ChatAdapter(
      */
     var focusedPosition: Int = RecyclerView.NO_POSITION
 
+    /**
+     * Left-edge inset (in dp) that the LATEST chat row's bubble claims
+     * so its text flows around the bottom-left orb without colliding
+     * with it. Default 68dp (60dp orb + 8dp gutter) — the avatar is a
+     * persistent screen element, so the inset is always live. Older
+     * history rows always render at margin 0 and stretch over the
+     * orb's vertical zone (the orb is drawn on top via elevation, so
+     * it stays readable above older content). Set to 0 to disable.
+     */
+    private var lastRowLeftInsetDp: Int = 68
+
+    fun setLastRowLeftInsetDp(dp: Int) {
+        if (dp == lastRowLeftInsetDp) return
+        lastRowLeftInsetDp = dp
+        val last = chatHistory.size - 1
+        if (last >= 0) notifyItemChanged(last)
+    }
+
     fun submitMessages(messages: List<ChatMessage>) {
         chatHistory.clear()
         chatHistory += messages.takeLast(MAX_HISTORY_CARDS)
@@ -180,6 +198,22 @@ class ChatAdapter(
                     bubble.alpha = if (focused) 1.0f else 0.78f
                     bubble.scaleX = if (focused) 1.04f else 0.96f
                     bubble.scaleY = if (focused) 1.04f else 0.96f
+                    // The LATEST chat row (the streaming card) gets a
+                    // small left inset so it dodges the bottom-left orb.
+                    // Older rows render at margin 0 and stretch full
+                    // width — the orb is drawn on top via elevation so
+                    // older content tucks behind it visually.
+                    val isLatestMessage = position == chatHistory.size - 1 && position >= 0
+                    val targetStartPx = if (isLatestMessage && lastRowLeftInsetDp > 0) {
+                        (lastRowLeftInsetDp * bubble.resources.displayMetrics.density).toInt()
+                    } else {
+                        0
+                    }
+                    val lp = bubble.layoutParams
+                    if (lp is android.view.ViewGroup.MarginLayoutParams && lp.marginStart != targetStartPx) {
+                        lp.marginStart = targetStartPx
+                        bubble.layoutParams = lp
+                    }
                 }
             }
         }

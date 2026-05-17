@@ -2411,37 +2411,36 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
     }
 
     /**
-     * Toggle visibility of the two views the chatLeftBarrier watches:
+     * Toggle the upper-left camera column purely from camera state and
+     * keep the avatar / orb container permanently in the layout tree.
      *
      *   • [cameraColumn] is VISIBLE when the camera is on, GONE otherwise.
-     *   • [orbContainer] is VISIBLE when the orb's alpha is non-zero
-     *     (voice activity in progress), GONE otherwise.
+     *     The recycler is start-anchored to it; on GONE the constraint
+     *     collapses (goneMarginStart=14dp) and older chat history reads
+     *     full-width.
      *
-     * The Barrier defined in fragment_chat_panel.xml then resolves
-     * [chatRecycler]'s start to whichever of those two is right-most:
-     *   – Camera on  → recycler starts after the 208dp camera column
-     *     (older history pushes right; orb sits underneath the column).
-     *   – Camera off, orb on → recycler starts after the ~88dp orb gutter
-     *     (the streaming card flows around the avatar; older history
-     *     above the orb stays equally narrow — the Barrier doesn't know
-     *     which rows are higher, but the orb is only ~88dp wide so the
-     *     loss is small).
-     *   – Both off → Barrier collapses to parent-start; recycler is
-     *     full width (goneMarginStart=14dp keeps a gutter).
+     *   • [orbContainer] stays VISIBLE at all times so the avatar is a
+     *     persistent screen element on the bottom-left. The orb image
+     *     and halo inside it fade in/out via alpha during voice
+     *     activity — that's their existing animation.
+     *
+     *   • The LATEST chat row gets a small left inset (60dp orb +
+     *     8dp gutter = 68dp) so the streaming card flows around the
+     *     avatar without losing readable width. Older rows render at
+     *     margin 0 and visually tuck behind the elevated orb. When the
+     *     camera is ON, the recycler is already shifted right of the
+     *     camera column so the inset reads as a small extra gutter
+     *     rather than a horizontal squeeze.
      */
     private fun updateOrbColumnVisibility() {
         if (!::cameraColumn.isInitialized) return
-        val orbVisible = ::coreEyeOrb.isInitialized && coreEyeOrb.alpha > 0.01f
         val cameraVisible = coreEyeEnabled && !hudModeEnabled
         val cameraTarget = if (cameraVisible) View.VISIBLE else View.GONE
         if (cameraColumn.visibility != cameraTarget) {
             cameraColumn.visibility = cameraTarget
         }
-        if (::orbContainer.isInitialized) {
-            val orbTarget = if (orbVisible) View.VISIBLE else View.GONE
-            if (orbContainer.visibility != orbTarget) {
-                orbContainer.visibility = orbTarget
-            }
+        if (::orbContainer.isInitialized && orbContainer.visibility != View.VISIBLE) {
+            orbContainer.visibility = View.VISIBLE
         }
     }
 
