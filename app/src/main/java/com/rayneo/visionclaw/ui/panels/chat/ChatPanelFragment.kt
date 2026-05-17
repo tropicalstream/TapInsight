@@ -209,7 +209,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
     // right-hand column collapses (visibility = GONE) when both the camera
     // and the orb are idle, which lets the chat-card recycler expand to
     // the full width of the panel.
-    private lateinit var orbColumn: View
+    private lateinit var cameraColumn: View
     private lateinit var orbContainer: FrameLayout
     private lateinit var orbGlow: View
     private lateinit var coreEyeOrb: ImageView
@@ -390,7 +390,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         coreEyePreviewTexture = view.findViewById(R.id.coreEyePreviewTexture)
         coreEyeRing = view.findViewById(R.id.coreEyeRing)
         coreEyeIdleIcon = view.findViewById(R.id.coreEyeIdleIcon)
-        orbColumn = view.findViewById(R.id.orbColumn)
+        cameraColumn = view.findViewById(R.id.cameraColumn)
         orbContainer = view.findViewById(R.id.orbContainer)
         orbGlow = view.findViewById(R.id.orbGlow)
         coreEyeOrb = view.findViewById(R.id.coreEyeOrb)
@@ -413,7 +413,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         // what makes the orb + halo appear; the legacy oscilloscope stub is
         // kept visibility=GONE permanently and is never drawn.
         inlineOscilloscope.visibility = View.GONE
-        orbColumn.visibility = View.GONE
+        cameraColumn.visibility = View.GONE
         orbGlow.alpha = 0f
         coreEyeOrb.alpha = 0f
 
@@ -2311,7 +2311,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         // Gemini is speaking; only this visual indicator is silenced.
         val ctx = context
         if (ctx != null && !AppPreferences(ctx).chatOrbVisible) {
-            if (::orbColumn.isInitialized) orbColumn.visibility = View.GONE
+            if (::cameraColumn.isInitialized) cameraColumn.visibility = View.GONE
             return
         }
         // Drop the waveform stub — it no longer renders anything.
@@ -2342,7 +2342,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
             coreEyeOrb.clearColorFilter()
         }
 
-        orbColumn.visibility = View.VISIBLE
+        cameraColumn.visibility = View.VISIBLE
         coreEyeOrb.animate().cancel()
         coreEyeOrb.alpha = 1f
 
@@ -2411,20 +2411,37 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
     }
 
     /**
-     * Show the right-hand orb column while either the camera is live or
-     * the orb halo is visible; hide it otherwise so [chatRecycler]'s
-     * constraint expands back to parent-end.  Called whenever either of
-     * those states changes.
+     * Toggle the upper-left camera column purely from camera state.
+     * The orb is no longer inside this column — it lives in its own
+     * bottom-left FrameLayout that's always present in the layout
+     * tree (the orb's appearance is driven by alpha, not parent
+     * visibility).
+     *
+     * Two follow-on effects:
+     *  • When the camera is OFF, [chatRecycler]'s start constraint
+     *    collapses to parent-start (goneMarginStart=14dp) so older
+     *    chat history reads full-width.
+     *  • Whenever orb-visible or camera-on state changes, the
+     *    ChatAdapter is told whether to pad the last row's start so
+     *    the streaming card flows around the orb instead of through
+     *    it. We only need that pad when the orb is up AND the camera
+     *    is off — when the camera is on, the recycler is already
+     *    shifted past the orb's footprint.
      */
     private fun updateOrbColumnVisibility() {
-        if (!::orbColumn.isInitialized) return
+        if (!::cameraColumn.isInitialized) return
         val orbVisible = ::coreEyeOrb.isInitialized && coreEyeOrb.alpha > 0.01f
         val cameraVisible = coreEyeEnabled && !hudModeEnabled
-        val shouldShow = orbVisible || cameraVisible
-        val target = if (shouldShow) View.VISIBLE else View.GONE
-        if (orbColumn.visibility != target) {
-            orbColumn.visibility = target
+        val cameraTarget = if (cameraVisible) View.VISIBLE else View.GONE
+        if (cameraColumn.visibility != cameraTarget) {
+            cameraColumn.visibility = cameraTarget
         }
+        // 72dp orb + 12dp gutter = 84dp of left margin on the streaming
+        // card when the orb is up and the camera is off. `adapter` is a
+        // val initialized in the field declaration, so no isInitialized
+        // guard is required.
+        val padLastRow = orbVisible && !cameraVisible
+        adapter.setLastRowOrbOffsetDp(if (padLastRow) 84 else 0)
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -2657,7 +2674,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
      * aspect-ratio image and we never stretch or distort.
      *
      * Visibility: when the user has chosen to hide the orb entirely (via
-     * the companion-app toggle), we force GONE on the orbColumn and
+     * the companion-app toggle), we force GONE on the cameraColumn and
      * suppress the alpha animations from re-showing it. The orb is the
      * voice-activity indicator, so when it's off the user just sees the
      * chat content uninterrupted.
@@ -2705,11 +2722,11 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         // not draw, so the user sees nothing during voice activity either.
         val prefs = AppPreferences(context)
         if (!prefs.chatOrbVisible) {
-            if (::orbColumn.isInitialized) orbColumn.visibility = View.GONE
+            if (::cameraColumn.isInitialized) cameraColumn.visibility = View.GONE
             coreEyeOrb.visibility = View.GONE
             if (::orbGlow.isInitialized) orbGlow.visibility = View.GONE
         } else {
-            // Restore baseline visibility (the orbColumn's voice-activity
+            // Restore baseline visibility (the cameraColumn's voice-activity
             // logic decides when to flip GONE/VISIBLE). VISIBLE here just
             // means "eligible to be shown" — the alpha gate still controls
             // actual render until voice fires.

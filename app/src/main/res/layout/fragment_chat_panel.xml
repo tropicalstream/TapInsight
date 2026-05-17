@@ -14,7 +14,7 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_margin="12dp"
-        android:background="@color/bg_panel_soft"
+        android:background="@color/bg_panel_opaque"
         android:orientation="vertical"
         android:padding="8dp"
         app:layout_constraintEnd_toEndOf="parent"
@@ -262,13 +262,17 @@
     </LinearLayout>
 
     <!--
-      Chat recycler: anchored to the parent end on the right and to the
-      [orbColumn] on the left.  When the orb column is GONE the
-      ConstraintLayout collapses it to zero width at its parent-start
-      anchor, which causes the recycler to expand leftward and fill the
-      entire panel width — exactly the "chat cards expand to the left when
-      the orb and camera frame are not in use" behaviour from the mock-up.
-      goneMarginStart keeps the 14dp gutter in that state.
+      Chat recycler: end-anchored to the parent right, start-anchored to
+      the cameraColumn end. When the camera is OFF the cameraColumn
+      collapses to zero width at parent-start and the recycler expands
+      leftward to fill the entire panel — older history reads full-width.
+      When the camera is ON the recycler stays right of the camera column
+      so the camera preview is never obscured. The orb sits in its own
+      bottom-left container that overlaps the recycler's bottom-left
+      corner; the ChatAdapter applies an extra startMargin to the last
+      row (only when the orb is visible AND the camera is off) so the
+      streaming card flows around the orb. goneMarginStart keeps a
+      14dp gutter in the camera-off state.
     -->
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/chatRecycler"
@@ -288,7 +292,7 @@
         android:scrollbars="vertical"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toEndOf="@id/orbColumn"
+        app:layout_constraintStart_toEndOf="@id/cameraColumn"
         app:layout_constraintTop_toBottomOf="@id/hudContainer"
         app:layout_goneMarginStart="14dp" />
 
@@ -404,43 +408,28 @@
         app:layout_constraintTop_toTopOf="parent" />
 
     <!--
-      Bottom-left column containing (top → bottom):
-        • coreEyeContainer — camera preview inside a burgundy-stroked frame
-          (shown only while the "Core Eye" camera stream is active).
-        • orbContainer — earth orb with a recolourable halo behind it;
-          the halo is red while the microphone is recording the user and
-          blue while Gemini is speaking.  When neither is active the orb
-          fades out.
-
-      Top anchor is the bottom of [hudContainer] so the column can never
-      overlap the HUD.  [coreEyeContainer] is bottom-aligned inside the
-      column so it sits directly above the orb, exactly matching the
-      mock-up.  The column is GONE whenever BOTH the camera is off AND
-      the orb has faded; ConstraintLayout collapses it to zero width at
-      parent-start so [chatRecycler] expands leftward to fill the panel.
+      Camera preview column (left strip, top half). Shown only while the
+      "Core Eye" camera stream is active; collapses to zero width when
+      hidden so [chatRecycler] reclaims the screen for full-width history.
+      Bottom-constrained to the orb so the two visually stack without
+      overlapping when both are on. The orb lives in its own container
+      below so the recycler can render full-width history above an
+      activated orb instead of being forced narrow whenever voice
+      activity briefly turns the orb on.
     -->
     <androidx.constraintlayout.widget.ConstraintLayout
-        android:id="@+id/orbColumn"
+        android:id="@+id/cameraColumn"
         android:layout_width="208dp"
         android:layout_height="0dp"
         android:layout_marginStart="16dp"
-        android:layout_marginBottom="20dp"
+        android:layout_marginBottom="8dp"
         android:visibility="gone"
-        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/orbContainer"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/hudContainer">
 
-        <!-- Burgundy-stroked camera frame. 2× the original 96×72 footprint
-             — gives a much more usable view of what the camera sees while
-             still leaving comfortable margin from the screen edge and
-             enough room beside it for chat content. Top-anchored to the
-             orb column (which itself is anchored to the HUD's bottom)
-             with a small explicit top margin so there is always a clear
-             gap between the HUD cards above and the frame — regardless
-             of how tall the HUD stack grows when calendar / news / tasks
-             cards are all populated. The orb below sits at the bottom of
-             the column; the space between the frame and the orb is
-             intentional empty breathing room. -->
+        <!-- Burgundy-stroked camera frame, 192×144 (doubled from the
+             original 96×72). 6dp inner padding from the burgundy stroke. -->
         <FrameLayout
             android:id="@+id/coreEyeContainer"
             android:layout_width="192dp"
@@ -476,37 +465,48 @@
                 android:tint="#FFFFFFFF"
                 android:visibility="gone" />
         </FrameLayout>
-
-        <!-- Earth orb pinned to the bottom-start of the column. -->
-        <FrameLayout
-            android:id="@+id/orbContainer"
-            android:layout_width="96dp"
-            android:layout_height="96dp"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent">
-
-            <!-- Halo behind the orb.  Drawable swaps between the red and
-                 blue variants from code; alpha is driven by the voice
-                 level stream. -->
-            <View
-                android:id="@+id/orbGlow"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:alpha="0"
-                android:background="@drawable/bg_orb_glow_blue"
-                android:contentDescription="@null" />
-
-            <ImageView
-                android:id="@+id/coreEyeOrb"
-                android:layout_width="78dp"
-                android:layout_height="78dp"
-                android:layout_gravity="center"
-                android:contentDescription="Voice activity orb"
-                android:scaleType="fitCenter"
-                android:src="@drawable/earth_orb" />
-        </FrameLayout>
     </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <!--
+      Earth orb — standalone, bottom-left corner. 25% smaller than the
+      previous footprint (96→72 dp container, 78→58 dp earth image).
+      Lives outside the camera column so that turning on voice activity
+      (which fades the orb in) does not shrink the chat history's width.
+      When the orb is visible AND the camera is off, ChatAdapter pads the
+      LAST chat row with marginStart = orb width + gutter so its text
+      flows around the orb instead of through it. When the camera is on,
+      the recycler is already pushed right past this region so no per-row
+      adjustment is needed.
+    -->
+    <FrameLayout
+        android:id="@+id/orbContainer"
+        android:layout_width="72dp"
+        android:layout_height="72dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginBottom="20dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <!-- Halo behind the orb. Drawable swaps between the red and
+             blue variants from code; alpha is driven by the voice
+             level stream. -->
+        <View
+            android:id="@+id/orbGlow"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:alpha="0"
+            android:background="@drawable/bg_orb_glow_blue"
+            android:contentDescription="@null" />
+
+        <ImageView
+            android:id="@+id/coreEyeOrb"
+            android:layout_width="58dp"
+            android:layout_height="58dp"
+            android:layout_gravity="center"
+            android:contentDescription="Voice activity orb"
+            android:scaleType="fitCenter"
+            android:src="@drawable/earth_orb" />
+    </FrameLayout>
 
     <!-- Battery-saving dark mode overlay: covers entire panel, shows only
          battery % and charging indicator at 10% brightness. Elevation 32dp
