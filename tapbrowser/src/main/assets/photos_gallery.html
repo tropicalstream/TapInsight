@@ -286,12 +286,18 @@ button { font: inherit; color: inherit; background: transparent; border: 0; curs
 <div class="header">
   <h1><span class="dot"></span>Photos</h1>
   <div class="meta" id="meta">Loading…</div>
+  <button id="scanBtn" title="Re-scan device storage for DCIM photos"
+          style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);
+                 color:var(--text);font-size:11.5px;font-weight:600;line-height:1;
+                 padding:0 10px;height:30px;border-radius:15px;cursor:pointer;
+                 display:inline-flex;align-items:center;justify-content:center;gap:4px;
+                 margin-left:6px;flex-shrink:0;transition:filter 0.15s">🔍 Scan</button>
   <button id="refreshBtn" title="Reload the gallery"
           style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);
                  color:var(--text);font-size:14px;line-height:1;
                  width:30px;height:30px;border-radius:50%;cursor:pointer;
                  display:inline-flex;align-items:center;justify-content:center;
-                 margin-left:8px;flex-shrink:0;transition:filter 0.15s">↻</button>
+                 margin-left:6px;flex-shrink:0;transition:filter 0.15s">↻</button>
   <button id="accessPill" class="access-pill missing" title="Manage device-photo access">
     <span class="ap-dot"></span>
     <span id="accessPillLabel">…</span>
@@ -386,6 +392,7 @@ const els = {
   accessPill: document.getElementById('accessPill'),
   accessPillLabel: document.getElementById('accessPillLabel'),
   refreshBtn: document.getElementById('refreshBtn'),
+  scanBtn: document.getElementById('scanBtn'),
   toast: document.getElementById('toast'),
 };
 
@@ -807,6 +814,38 @@ els.accessPill.addEventListener('click', () => {
 // re-entering the gallery.
 els.refreshBtn.addEventListener('click', () => {
   toast('Refreshing…');
+  loadPhotos();
+});
+
+// "Scan" button — kicks off MediaScannerConnection on the DCIM tree
+// for cases where files were written to disk by services that
+// bypassed MediaStore (e.g. RayNeo's monocular camera capture). After
+// the scan completes, reload to surface anything newly registered.
+els.scanBtn.addEventListener('click', async () => {
+  if (!window.TapMedia || typeof window.TapMedia.scanDcim !== 'function') {
+    toast('Scan not supported in this build');
+    return;
+  }
+  els.scanBtn.disabled = true;
+  els.scanBtn.style.opacity = '0.6';
+  toast('Scanning device storage…');
+  let resp;
+  try {
+    resp = JSON.parse(window.TapMedia.scanDcim());
+  } catch (e) {
+    toast('Scan failed: ' + String(e));
+    els.scanBtn.disabled = false;
+    els.scanBtn.style.opacity = '1';
+    return;
+  }
+  els.scanBtn.disabled = false;
+  els.scanBtn.style.opacity = '1';
+  if (resp.error) {
+    toast(resp.error);
+    return;
+  }
+  toast('Scan complete · ' + (resp.imageCount || 0) + ' images, ' +
+        (resp.videoCount || 0) + ' videos in DCIM');
   loadPhotos();
 });
 

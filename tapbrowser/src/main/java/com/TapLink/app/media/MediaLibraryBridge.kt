@@ -491,6 +491,70 @@ class MediaLibraryBridge(
     }
 
     /**
+     * Trigger MediaScannerConnection over the device's DCIM folder
+     * and a couple of common subfolders so on-disk files that aren't
+     * yet registered with MediaStore become queryable.
+     *
+     * Why this is needed: RayNeo's monocular camera service and some
+     * other system tools write directly to `/storage/emulated/0/DCIM/`
+     * via raw filesystem calls — they don't go through MediaStore.
+     * Until something scans them, even with READ_MEDIA_IMAGES granted,
+     * a MediaStore query returns nothing for those files. Calling
+     * this method asks the MediaScanner service to walk the paths
+     * and register what it finds.
+     *
+     * Returns JSON with the scan result. The scan is asynchronous in
+     * the framework, so we wait up to 4 seconds for the last callback
+     * before responding. Empty results within the timeout simply mean
+     * "nothing newly registered" — not necessarily an error.
+     *
+     *   {"status":"ok", "scanned":[...paths...], "imageCount": N, "videoCount": M}
+     *   {"error":"<reason>"}
+     */
+    @JavascriptInterface
+    fun scanDcim(): String {
+        if (!isTrusted()) return denied("scanDcim")
+        if (!DcimEnumerator.hasPermission(context)) {
+            return JSONObject().put("error", "Device-photo permission not granted").toString()
+        }
+        val paths = mutableListOf(
+            "/storage/emulated/0/DCIM/",
+            "/storage/emulated/0/DCIM/Camera/",
+            "/storage/emulated/0/DCIM/${DcimEnumerator.DCIM_OWN_SUBFOLDER}/",
+            "/storage/emulated/0/Pictures/"
+        )
+        val latch = java.util.concurrent.CountDownLatch(paths.size)
+        val scanned = java.util.Collections.synchronizedList(mutableListOf<String>())
+        try {
+            android.media.MediaScannerConnection.scanFile(
+                context, paths.toTypedArray(),
+                null  // let the scanner figure out mime from extension
+            ) { path, _ ->
+                scanned += path
+                latch.countDown()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "scanDcim: MediaScannerConnection.scanFile threw ${e.message}")
+            return JSONObject().put("error", "Scan launch failed: ${e.message}").toString()
+        }
+        // Best-effort wait — the scanner reports each path back individually
+        // when done; some paths (non-files / non-readable directories) won't
+        // come back at all, hence the timeout.
+        try { latch.await(4, java.util.concurrent.TimeUnit.SECONDS) } catch (_: Exception) {}
+
+        val imageCount = try { dcim.listAll(limit = 5000).count { !it.isVideo } } catch (_: Exception) { 0 }
+        val videoCount = try { dcim.listAll(limit = 5000).count { it.isVideo } } catch (_: Exception) { 0 }
+        val arr = JSONArray()
+        scanned.forEach { arr.put(it) }
+        return JSONObject()
+            .put("status", "ok")
+            .put("scanned", arr)
+            .put("imageCount", imageCount)
+            .put("videoCount", videoCount)
+            .toString()
+    }
+
+    /**
      * Launch the system runtime-permission dialog for
      * READ_MEDIA_IMAGES / READ_MEDIA_VIDEO (or READ_EXTERNAL_STORAGE on
      * pre-Tiramisu). Used by photos_gallery.html when
