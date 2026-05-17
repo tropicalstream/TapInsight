@@ -362,7 +362,7 @@ class MediaLibraryBridge(
 
     /**
      * Merged photo+video listing: TapInsight's own `Media/Photos/`
-     * folder ∪ the device's `/DCIM/*` MediaStore entries (RayNeo
+     * folder plus the device's DCIM MediaStore entries (RayNeo
      * native Camera app captures). Newest first.
      *
      * Returns JSON `{"hasMediaPermission": bool, "entries": [...]}`.
