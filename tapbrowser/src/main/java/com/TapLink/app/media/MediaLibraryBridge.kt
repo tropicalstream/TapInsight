@@ -728,6 +728,56 @@ class MediaLibraryBridge(
         return JSONObject().put("status", "requested").toString()
     }
 
+    /**
+     * Persist a URL to use as the AR Dashboard background ("browser
+     * wallpaper" in user terms). The URL is whatever the gallery
+     * passes — typically a `/local-image/`, `/media/`, or `/dcim/`
+     * proxy URL pointing at one of the user's photos. The dashboard
+     * reads this on load and applies it via CSS background-image.
+     *
+     * Storage: SharedPreferences key `browser_wallpaper_url` in
+     * the existing visionclaw_prefs file (same place the chat orb,
+     * Gemini key, etc. live).
+     *
+     * Pass `""` (empty string) to clear the wallpaper and return to
+     * the default dark background.
+     */
+    @JavascriptInterface
+    fun setBrowserWallpaper(url: String?): String {
+        if (!isTrusted()) return denied("setBrowserWallpaper")
+        val clean = url?.trim().orEmpty()
+        return try {
+            val prefs = context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putString("browser_wallpaper_url", clean).apply()
+            JSONObject()
+                .put("status", if (clean.isEmpty()) "cleared" else "set")
+                .put("url", clean)
+                .toString()
+        } catch (e: Exception) {
+            Log.w(TAG, "setBrowserWallpaper failed: ${e.message}")
+            JSONObject().put("error", e.message ?: "Write failed").toString()
+        }
+    }
+
+    /**
+     * Read-side accessor for the dashboard. Returns the currently
+     * configured wallpaper URL, or empty string if none set. The
+     * dashboard JS uses this on DOMContentLoaded to apply the
+     * background-image.
+     */
+    @JavascriptInterface
+    fun getBrowserWallpaper(): String {
+        if (!isTrusted()) return denied("getBrowserWallpaper")
+        return try {
+            val prefs = context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
+            JSONObject()
+                .put("url", prefs.getString("browser_wallpaper_url", "") ?: "")
+                .toString()
+        } catch (e: Exception) {
+            JSONObject().put("error", e.message ?: "Read failed").toString()
+        }
+    }
+
     @JavascriptInterface
     fun findAllPlaylists(): String {
         if (!isTrusted()) return denied("findAllPlaylists")
