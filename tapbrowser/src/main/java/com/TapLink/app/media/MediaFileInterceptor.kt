@@ -449,7 +449,7 @@ class MediaFileInterceptor(
      *   • starts with [LOCAL_ALLOWED_ROOT] (no escape into other roots),
      *   • contains no `..` segments (no traversal),
      *   • resolves to a real file under that root,
-     *   • is a media MIME type (image/* or video/*).
+     *   • is a recognised image or video MIME type.
      *
      * Reject everything else with 403/404. We intentionally don't
      * surface filesystem errors verbatim — just enough to debug.
