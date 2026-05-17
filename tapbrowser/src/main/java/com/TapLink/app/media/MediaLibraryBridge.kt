@@ -84,6 +84,7 @@ class MediaLibraryBridge(
         private val TRUSTED_ASSETS = setOf(
             "library_local.html",
             "media_player.html",
+            "photos_gallery.html",
             "AR_Dashboard_Landscape_Sidebar.html"
         )
     }
@@ -259,6 +260,98 @@ class MediaLibraryBridge(
         return JSONObject()
             .put("status", if (ok) "deleted" else "error")
             .put("path", path ?: "")
+            .toString()
+    }
+
+    /**
+     * Rotate a JPEG/PNG/WEBP in place. Used by the photos gallery's
+     * rotate buttons. `degrees` is interpreted clockwise; the call
+     * decodes the bitmap, applies a Matrix.postRotate, and re-encodes
+     * back over the original file at high quality.
+     *
+     * The new bitmap is held entirely in memory once; on a memory-tight
+     * device a >24MP RAW would be a problem, but TapInsight saves only
+     * the live camera frame which is bounded by the Gemini Live frame
+     * size (a few MB at most).
+     *
+     * Returns JSON: `{"status":"rotated", "path":"...", "degrees":90}`
+     * on success; `{"error":"..."}` on failure.
+     */
+    @JavascriptInterface
+    fun rotateImage(path: String?, degrees: Int): String {
+        if (!isTrusted()) return denied("rotateImage")
+        if (path.isNullOrBlank()) return JSONObject().put("error", "Empty path").toString()
+        val normalizedDeg = ((degrees % 360) + 360) % 360
+        if (normalizedDeg == 0) {
+            return JSONObject().put("status", "noop").put("path", path).toString()
+        }
+        val file = service.resolveSafe(path)
+            ?: return JSONObject().put("error", "Path outside Media root").toString()
+        if (!file.exists() || !file.isFile) {
+            return JSONObject().put("error", "File not found").toString()
+        }
+        val ext = file.extension.lowercase(java.util.Locale.ROOT)
+        if (ext !in MediaLibraryService.IMAGE_EXTENSIONS) {
+            return JSONObject().put("error", "Not an image file").toString()
+        }
+
+        val bitmap = try {
+            android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+        } catch (e: Exception) {
+            Log.w(TAG, "rotateImage decode failed: ${e.message}")
+            null
+        } ?: return JSONObject().put("error", "Could not decode image").toString()
+
+        val matrix = android.graphics.Matrix().apply { postRotate(normalizedDeg.toFloat()) }
+        val rotated = try {
+            android.graphics.Bitmap.createBitmap(
+                bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
+            )
+        } catch (e: Exception) {
+            bitmap.recycle()
+            Log.w(TAG, "rotateImage matrix create failed: ${e.message}")
+            return JSONObject().put("error", "Rotation failed").toString()
+        }
+
+        val format = when (ext) {
+            "png" -> android.graphics.Bitmap.CompressFormat.PNG
+            "webp" -> android.graphics.Bitmap.CompressFormat.WEBP_LOSSLESS
+            else -> android.graphics.Bitmap.CompressFormat.JPEG
+        }
+        val quality = if (format == android.graphics.Bitmap.CompressFormat.JPEG) 92 else 100
+
+        // Write to a sibling tmp file then atomically rename so a
+        // crash mid-write doesn't corrupt the original.
+        val tmp = File(file.parentFile, file.name + ".tmp.${System.currentTimeMillis()}")
+        try {
+            tmp.outputStream().use { rotated.compress(format, quality, it) }
+            if (!tmp.renameTo(file)) {
+                tmp.delete()
+                return JSONObject().put("error", "Atomic replace failed").toString()
+            }
+        } catch (e: Exception) {
+            tmp.delete()
+            Log.w(TAG, "rotateImage write failed: ${e.message}")
+            return JSONObject().put("error", "Write failed: ${e.localizedMessage}").toString()
+        } finally {
+            if (rotated !== bitmap) rotated.recycle()
+            bitmap.recycle()
+        }
+
+        // Best-effort MediaScanner so the native gallery picks up the
+        // change. The file path is unchanged, so this just refreshes
+        // the image-pixel cache.
+        try {
+            android.media.MediaScannerConnection.scanFile(
+                context, arrayOf(file.absolutePath),
+                arrayOf("image/${if (ext == "jpg") "jpeg" else ext}"), null
+            )
+        } catch (_: Exception) {}
+
+        return JSONObject()
+            .put("status", "rotated")
+            .put("path", path)
+            .put("degrees", normalizedDeg)
             .toString()
     }
 

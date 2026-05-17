@@ -432,25 +432,52 @@ function nav(delta) {
   renderLightbox();
 }
 
-function rotateBy(deg) {
+async function rotateBy(deg) {
+  const p = photos[lightboxIndex];
+  if (!p) return;
+
+  // Optimistic view-rotate while the disk write runs.
   rotation = (rotation + deg + 360) % 360;
   els.lbImage.style.transform = `rotate(${rotation}deg)`;
-  // NOTE: rotation is currently view-only. Persistent rotation
-  // (writing the rotated JPEG back) lands in a follow-up commit
-  // that introduces a /api/library/rotate endpoint + a
-  // TapMedia.rotateImage bridge method.
+
+  if (!window.TapMedia || typeof window.TapMedia.rotateImage !== 'function') {
+    toast('Rotation not persisted (bridge missing)');
+    return;
+  }
+  let resp;
+  try {
+    resp = JSON.parse(window.TapMedia.rotateImage(p.relativePath, deg));
+  } catch (e) {
+    toast('Rotation failed: ' + String(e));
+    return;
+  }
+  if (resp && resp.error) {
+    toast(resp.error);
+    return;
+  }
+  // After a successful disk write, reset the on-screen transform and
+  // bust the image cache so the rotated bytes load fresh.
+  rotation = 0;
+  els.lbImage.style.transform = 'rotate(0deg)';
+  const fresh = mediaUrl(p.relativePath) + '?t=' + Date.now();
+  els.lbImage.src = fresh;
+  // Also invalidate the corresponding tile thumb in the grid.
+  const tileImg = els.gridInner.querySelectorAll('.tile img')[lightboxIndex];
+  if (tileImg) tileImg.src = fresh;
+  toast('Rotated');
 }
 
 async function deletePhoto() {
   const p = photos[lightboxIndex];
   if (!p) return;
-  if (!window.TapMedia || typeof window.TapMedia.deleteFile !== 'function') {
+  if (!window.TapMedia || typeof window.TapMedia.deleteEntry !== 'function') {
     return toast('Delete not available in this view');
   }
   if (!confirm(`Delete ${p.name}?`)) return;
-  let ok = false;
-  try { ok = window.TapMedia.deleteFile(p.relativePath) === true || window.TapMedia.deleteFile(p.relativePath) === 'true'; }
+  let resp = null;
+  try { resp = JSON.parse(window.TapMedia.deleteEntry(p.relativePath)); }
   catch (e) { /* swallow */ }
+  const ok = resp && resp.status === 'deleted';
   if (!ok) return toast('Delete failed');
   photos.splice(lightboxIndex, 1);
   if (!photos.length) {
