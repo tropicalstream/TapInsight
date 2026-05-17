@@ -182,6 +182,7 @@ h1{color:#00e5ff;font-size:22px;margin-bottom:2px}
 <!-- Toolbar -->
 <div class="toolbar">
   <button class="btn" onclick="goHome()">🏠 Root</button>
+  <button class="btn" onclick="loadFolder('Photos')" title="Jump to Media/Photos">📷 Photos</button>
   <button class="btn" onclick="refresh()">↻ Refresh</button>
   <button class="btn primary" onclick="openUploadModal()">⬆ Upload</button>
   <button class="btn accent" onclick="autoGenerate()">♪ Auto-generate playlist</button>
@@ -245,12 +246,34 @@ coffee.mp3
 <div class="modal-overlay hidden" id="uploadModal">
   <div class="modal">
     <h2>Upload Media</h2>
-    <p class="modal-sub">Files will be added to <code id="uploadTarget">/</code></p>
+    <p class="modal-sub">Files will be added to <code id="uploadTarget">/</code>. Photos and videos auto-route to <code>Photos/</code> / <code>Videos/</code> regardless of the current folder.</p>
+
+    <!-- Primary upload: any file from the desktop / phone the browser is on. -->
     <div class="upload-zone" id="uploadZone" onclick="document.getElementById('uploadInput').click()">
       <div>📁 Click to choose files or drag-drop here</div>
-      <div style="font-size:11px;color:#666;margin-top:4px">Audio, video, text, or .m3u files</div>
-      <input type="file" id="uploadInput" multiple accept="audio/*,video/*,.m3u,.m3u8,.txt,.md,.markdown,.log,.csv,.json,.xml,.html,.htm,.rtf,.ini,.cfg,.conf,.yaml,.yml,.toml,text/*">
+      <div style="font-size:11px;color:#666;margin-top:4px">Photos, videos, audio, text, or .m3u playlists</div>
+      <input type="file" id="uploadInput" multiple accept="image/*,video/*,audio/*,.m3u,.m3u8,.txt,.md,.markdown,.log,.csv,.json,.xml,.html,.htm,.rtf,.ini,.cfg,.conf,.yaml,.yml,.toml,text/*">
     </div>
+
+    <!-- USB import path: explains how to grab the glasses' DCIM photos
+         from a desktop browser without needing the on-glasses media
+         permission to be granted. Same upload zone, just a how-to. -->
+    <details id="usbHelp" style="margin-top:14px;background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:10px 12px">
+      <summary style="cursor:pointer;font-size:13px;color:#80cbc4;font-weight:600;list-style:none;display:flex;align-items:center;gap:6px">
+        <span>📷 Import DCIM photos from glasses (USB)</span>
+        <span style="margin-left:auto;font-size:11px;color:#666;font-weight:400">if grant flow on glasses isn't working</span>
+      </summary>
+      <ol style="margin-top:10px;padding-left:20px;color:#bbb;font-size:12.5px;line-height:1.7">
+        <li>Plug the glasses into your desktop with a USB cable.</li>
+        <li>On the glasses, pull down the notification shade and switch USB mode to <b>File transfer (MTP)</b>.</li>
+        <li>On your desktop, open the glasses storage in Finder/Explorer and navigate to <code>Internal storage › DCIM › Camera</code>.</li>
+        <li>Drag the photos / videos you want into the upload area above (or click and pick them).</li>
+      </ol>
+      <p style="margin-top:8px;font-size:11.5px;color:#888">
+        Photos save to <code>Media/Photos/</code> and videos to <code>Media/Videos/</code> on the glasses, where they appear in the TapInsight gallery alongside saves from <i>"save this photo"</i>.
+      </p>
+    </details>
+
     <div class="upload-progress" id="uploadProgress">
       <div class="label"><span id="uploadFileName">Uploading…</span><span id="uploadPct">0%</span></div>
       <div class="bar-wrap"><div class="bar" id="uploadBar"></div></div>
@@ -636,8 +659,17 @@ async function doUpload(files) {
   const nameEl = document.getElementById('uploadFileName');
   progressEl.classList.add('visible');
 
+  // Image / video uploads always auto-route to Media/Photos or
+  // Media/Videos regardless of which folder the user is currently
+  // browsing — otherwise dragging a photo while inside Music/ would
+  // leave it in the wrong place and out of the photos gallery's
+  // scope. We detect by extension because file.type can be empty on
+  // older browsers / certain MTP sources. If ALL files are
+  // photo/video, send folder='' to trigger server-side auto-route.
+  const photoVideoExt = /\.(jpe?g|png|webp|gif|bmp|heic|heif|mp4|mov|m4v|3gp|webm|mkv|avi)$/i;
+  const allPhotoVideo = Array.from(files).every(f => photoVideoExt.test(f.name));
   const fd = new FormData();
-  fd.append('folder', currentPath);
+  fd.append('folder', allPhotoVideo ? '' : currentPath);
   let totalBytes = 0;
   for (let i = 0; i < files.length; i++) {
     fd.append('file_' + i, files[i], files[i].name);

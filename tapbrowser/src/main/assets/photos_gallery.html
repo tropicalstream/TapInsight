@@ -55,6 +55,26 @@ button { font: inherit; color: inherit; background: transparent; border: 0; curs
 .header .meta {
   margin-left: auto; font-size: 12px; color: var(--text-dim);
 }
+.header .header-actions {
+  display: flex; align-items: center; gap: 8px;
+  margin-left: 12px;
+}
+/* Always-visible "Grant device photos" pill in the header, distinct
+   from the larger empty-state CTA. Stays in the corner so the user
+   can find it after any failed grant attempt without scrolling. */
+.grant-pill {
+  background: var(--accent); color: #001; border: 0;
+  padding: 6px 12px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.2px;
+  cursor: pointer; display: none; align-items: center; gap: 6px;
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+.grant-pill.visible { display: inline-flex; }
+.grant-pill .pill-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #b71c1c; animation: pulse 1.6s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 /* ─── Grid ───────────────────────────────────────────────────────── */
 .grid {
@@ -222,6 +242,12 @@ button { font: inherit; color: inherit; background: transparent; border: 0; curs
 <div class="header">
   <h1><span class="dot"></span>Photos</h1>
   <div class="meta" id="meta">Loading…</div>
+  <div class="header-actions">
+    <button id="grantPill" class="grant-pill" title="Grant access to RayNeo Camera photos">
+      <span class="pill-dot"></span>
+      <span>Grant device photos</span>
+    </button>
+  </div>
 </div>
 
 <div class="grid" id="grid">
@@ -296,6 +322,7 @@ const els = {
   infoBtn: document.getElementById('infoBtn'),
   shareBtn: document.getElementById('shareBtn'),
   deleteBtn: document.getElementById('deleteBtn'),
+  grantPill: document.getElementById('grantPill'),
   toast: document.getElementById('toast'),
 };
 
@@ -396,10 +423,16 @@ async function loadPhotos() {
   if (dcimCount > 0) metaParts.push(libCount + ' TapInsight · ' + dcimCount + ' device');
   else if (accessMissing) metaParts.push('device photos hidden');
   els.meta.textContent = metaParts.join(' · ');
-  // If library photos exist but the user hasn't granted device-photo
-  // access yet, surface a small inline banner above the grid so the
-  // CTA isn't trapped inside the empty-state branch (which only fires
-  // when there are zero photos of any kind).
+  // Show the always-on Grant pill whenever permission is missing,
+  // regardless of how many library photos exist. The previous banner
+  // only painted when there were zero photos total OR zero DCIM
+  // photos — both branches had the user stuck if they'd just saved
+  // their first TapInsight photo.
+  if (accessMissing) {
+    els.grantPill.classList.add('visible');
+  } else {
+    els.grantPill.classList.remove('visible');
+  }
   if (accessMissing && dcimCount === 0) {
     renderAccessBanner();
   }
@@ -431,11 +464,31 @@ function renderAccessBanner() {
 }
 
 function requestMediaAccess() {
-  if (window.TapMedia && typeof window.TapMedia.requestMediaPermission === 'function') {
-    try { window.TapMedia.requestMediaPermission(); } catch (_) {}
-    toast('Approve in the system dialog, then return here.');
-  } else {
+  if (!window.TapMedia || typeof window.TapMedia.requestMediaPermission !== 'function') {
     toast('Permission request not supported in this build.');
+    return;
+  }
+  let respRaw, resp;
+  try {
+    respRaw = window.TapMedia.requestMediaPermission();
+    resp = JSON.parse(respRaw);
+  } catch (e) {
+    toast('Permission call failed: ' + String(e));
+    return;
+  }
+  // The bridge returns one of three statuses. Surface each clearly so
+  // the user knows whether to wait for the system dialog, whether the
+  // grant was already in place (in which case we just reload), or
+  // whether something stopped the request from firing.
+  if (resp && resp.status === 'alreadyGranted') {
+    toast('Already granted — reloading to pick up photos…');
+    setTimeout(() => location.reload(), 400);
+  } else if (resp && resp.status === 'requested') {
+    toast('System dialog opened. Tap Allow on the glasses.');
+  } else if (resp && resp.error) {
+    toast('Could not open dialog: ' + resp.error);
+  } else {
+    toast('Permission request response: ' + (respRaw || '(empty)'));
   }
 }
 
@@ -636,6 +689,7 @@ els.rotRightBtn.addEventListener('click', () => rotateBy(90));
 els.shareBtn.addEventListener('click', copyShareUrl);
 els.infoBtn.addEventListener('click', showInfo);
 els.deleteBtn.addEventListener('click', deletePhoto);
+els.grantPill.addEventListener('click', requestMediaAccess);
 
 document.addEventListener('keydown', (e) => {
   if (!els.lightbox.classList.contains('open')) return;
