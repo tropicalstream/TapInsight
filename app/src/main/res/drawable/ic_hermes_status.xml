@@ -1,40 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Hermes HUD status icon — winged-helmet motif rendered as just the
-  wings, symmetric and readable at 16dp. Single fill so setColorFilter()
-  can tint it red (Hermes unreachable) or green (reachable).
+  Hermes HUD status icon — a bold letter "H". Sits beside the OpenClaw
+  crab in the HUD; tinted red (Hermes unreachable) or green (reachable)
+  via setColorFilter. Single fill path so the tint applies uniformly.
+
+  Geometry: 24x24 viewport. Left and right verticals are 4-units wide
+  bars from y=4 to y=20 (height 16). Crossbar spans them at y=10..14
+  (height 4, vertically centered on y=12). The result is a chunky, even,
+  highly-readable H that holds up at 16dp on a HUD strip.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
-    <!-- Left wing — three swept feathers fanning up-and-out -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M11.5,10
-                          C9,9.4 6.6,8.8 4.5,8.2
-                          C3.4,7.9 2.2,7.7 1.5,8
-                          C2.8,8.6 4.6,9.4 6.8,10.2
-                          C5.2,10.4 3.6,10.6 2.5,10.9
-                          C3.9,11.4 6,11.9 8.6,12.2
-                          C7.4,12.6 6.2,13 5.5,13.4
-                          C7.1,13.5 9.2,13.4 11.5,13
-                          Z" />
-    <!-- Right wing — mirror of left -->
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M12.5,10
-                          C15,9.4 17.4,8.8 19.5,8.2
-                          C20.6,7.9 21.8,7.7 22.5,8
-                          C21.2,8.6 19.4,9.4 17.2,10.2
-                          C18.8,10.4 20.4,10.6 21.5,10.9
-                          C20.1,11.4 18,11.9 15.4,12.2
-                          C16.6,12.6 17.8,13 18.5,13.4
-                          C16.9,13.5 14.8,13.4 12.5,13
-                          Z" />
-    <!-- Center band — small connector between the wings -->
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M11,10.5 L13,10.5 L13,12.5 L11,12.5 Z" />
+        android:pathData="M5,4 L9,4 L9,10 L15,10 L15,4 L19,4 L19,20 L15,20 L15,14 L9,14 L9,20 L5,20 Z" />
 </vector>
