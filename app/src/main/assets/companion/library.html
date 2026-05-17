@@ -49,8 +49,48 @@ h1{color:#00e5ff;font-size:22px;margin-bottom:2px}
 .entry.playlist .icon{color:#b388ff}
 .entry.audio .icon{color:#4caf50}
 .entry.video .icon{color:#ff5722}
+.entry.image .icon{color:#80cbc4}
 .entry.other .icon{color:#555}
 .entry.folder{cursor:pointer}
+.entry.image{cursor:pointer}
+
+/* Photo entries replace the icon column with an actual thumbnail so the
+   user sees what each photo is at a glance. The thumb sits in the same
+   24-px slot as kind icons but expands to ~48px, with the entry row
+   gaining a bit of height accordingly. */
+.entry.image .thumb{
+  width:48px;height:48px;border-radius:6px;flex-shrink:0;object-fit:cover;
+  background:#0f0f0f;border:1px solid #2a2a2a;display:block;
+}
+.entry.image{padding:8px 12px}
+
+/* Photo lightbox — only used for IMAGE clicks. The existing modal-overlay
+   CSS is too constrained (max 720px wide, padded) for full-screen photo
+   viewing, so this is its own surface. */
+.photo-lightbox{
+  position:fixed;inset:0;background:rgba(0,0,0,.97);z-index:300;
+  display:flex;flex-direction:column;
+}
+.photo-lightbox.hidden{display:none}
+.photo-lightbox .top{
+  display:flex;align-items:center;padding:12px 16px;gap:12px;
+  background:linear-gradient(180deg,rgba(0,0,0,.7),transparent);
+}
+.photo-lightbox .top .name{flex:1;font-size:13px;color:#ddd;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.photo-lightbox .top button{
+  background:transparent;border:0;color:#eee;font-size:20px;
+  cursor:pointer;padding:6px 10px;border-radius:6px;
+}
+.photo-lightbox .top button:hover{background:rgba(255,255,255,.08)}
+.photo-lightbox .stage{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  padding:20px;overflow:hidden;
+}
+.photo-lightbox .stage img{
+  max-width:100%;max-height:100%;object-fit:contain;
+  border-radius:6px;box-shadow:0 8px 32px rgba(0,0,0,.6);
+}
 .empty{text-align:center;color:#555;padding:28px 16px;font-size:13px}
 
 .status{padding:8px 12px;border-radius:6px;font-size:12px;margin-bottom:12px;display:none}
@@ -267,6 +307,18 @@ coffee.mp3
   </div>
 </div>
 
+<!-- Photo lightbox — opens when the user clicks an IMAGE entry. -->
+<div class="photo-lightbox hidden" id="photoLightbox">
+  <div class="top">
+    <button id="photoCloseBtn" aria-label="Close">✕</button>
+    <div class="name" id="photoName"></div>
+    <button id="photoOpenBtn" aria-label="Open original" title="Open in new tab">↗</button>
+  </div>
+  <div class="stage">
+    <img id="photoImg" alt="">
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -317,8 +369,46 @@ function formatBytes(b) {
 
 function kindIcon(kind) {
   return ({
-    FOLDER: '📁', PLAYLIST: '🎵', AUDIO: '♪', VIDEO: '▶', TEXT: '📄', OTHER: '•'
+    FOLDER: '📁', PLAYLIST: '🎵', AUDIO: '♪', VIDEO: '▶',
+    IMAGE: '🖼', TEXT: '📄', OTHER: '•'
   })[kind] || '•';
+}
+
+/**
+ * Build the URL the companion server uses to stream a library file.
+ * The endpoint is `/media/file?path=<rel>` (note: NOT `/api/library/file`
+ * — that one doesn't exist). It requires the session token, which the
+ * companion HTML pages already have via cookie, so authenticated fetches
+ * + image src loads both work transparently.
+ */
+function libraryFileUrl(relativePath) {
+  return '/media/file?path=' + encodeURIComponent(relativePath);
+}
+
+/**
+ * Open the photo lightbox over the page. Streams the full-size image
+ * from /media/file?path=…, which the same companion server backs with
+ * Range support so the WebView/browser fetches incrementally.
+ *
+ * Esc and click-on-backdrop both dismiss. The "↗" button opens the
+ * file in a new tab so the user can download it via the browser's
+ * normal Save-As affordance — which is the meaningful "download"
+ * action on a phone, unlike the glasses-side button we removed.
+ */
+function openPhotoLightbox(entry) {
+  const lb = document.getElementById('photoLightbox');
+  const img = document.getElementById('photoImg');
+  const name = document.getElementById('photoName');
+  const openBtn = document.getElementById('photoOpenBtn');
+  const url = libraryFileUrl(entry.relativePath);
+  img.src = url;
+  name.textContent = entry.name;
+  openBtn.onclick = () => window.open(url, '_blank');
+  lb.classList.remove('hidden');
+}
+function closePhotoLightbox() {
+  document.getElementById('photoLightbox').classList.add('hidden');
+  document.getElementById('photoImg').src = '';
 }
 
 // ── Root info ────────────────────────────────────────────────────────
@@ -391,8 +481,14 @@ function renderEntries(entries) {
   entries.forEach(entry => {
     const div = document.createElement('div');
     div.className = 'entry ' + entry.kind.toLowerCase();
+    // IMAGE entries get an actual <img> thumbnail in place of the
+    // emoji icon column. Everything else keeps the existing layout.
+    const iconCell = entry.kind === 'IMAGE'
+      ? '<img class="thumb" loading="lazy" decoding="async" src="' +
+          libraryFileUrl(entry.relativePath) + '" alt="">'
+      : '<div class="icon">' + kindIcon(entry.kind) + '</div>';
     div.innerHTML =
-      '<div class="icon">' + kindIcon(entry.kind) + '</div>' +
+      iconCell +
       '<div class="name"></div>' +
       '<div class="meta">' + (entry.kind === 'FOLDER' ? '' : formatBytes(entry.sizeBytes)) + '</div>' +
       '<div class="actions"></div>';
@@ -400,6 +496,17 @@ function renderEntries(entries) {
     const actions = div.querySelector('.actions');
     if (entry.kind === 'FOLDER') {
       div.onclick = () => loadFolder(entry.relativePath);
+    } else if (entry.kind === 'IMAGE') {
+      // Whole row is clickable → opens full-size lightbox.
+      div.onclick = (ev) => {
+        if (ev.target.closest('.actions')) return;
+        openPhotoLightbox(entry);
+      };
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn small danger';
+      delBtn.textContent = '✕';
+      delBtn.onclick = (ev) => { ev.stopPropagation(); deleteEntry(entry); };
+      actions.append(delBtn);
     } else if (entry.kind === 'PLAYLIST') {
       const playBtn = document.createElement('button');
       playBtn.className = 'btn small primary';
@@ -504,6 +611,20 @@ document.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
     zone.classList.remove('drag-over');
     doUpload(e.dataTransfer.files);
+  });
+
+  // Photo lightbox close affordances. Backdrop click closes, but a
+  // click directly on the image must NOT — otherwise zoom-gesture
+  // taps would dismiss. Esc also closes.
+  const lb = document.getElementById('photoLightbox');
+  document.getElementById('photoCloseBtn').addEventListener('click', closePhotoLightbox);
+  lb.addEventListener('click', (e) => {
+    if (e.target === lb || e.target.classList.contains('stage')) {
+      closePhotoLightbox();
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !lb.classList.contains('hidden')) closePhotoLightbox();
   });
 });
 
