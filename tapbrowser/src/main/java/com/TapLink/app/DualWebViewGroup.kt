@@ -2391,6 +2391,31 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         mediaLibraryBridge.jsEvaluator = { js ->
             webView.post { webView.evaluateJavascript(js, null) }
         }
+        // photos_gallery.html → "Grant access to device photos" → bridge
+        // → here. Permission requests have to launch from an Activity to
+        // receive the onRequestPermissionsResult callback; if our
+        // context happens to be a non-Activity (shouldn't normally),
+        // we skip silently — the bridge returns the requested status,
+        // and the user just won't get a system dialog.
+        mediaLibraryBridge.permissionRequester = {
+            try {
+                val act = context as? android.app.Activity
+                if (act != null) {
+                    val needed = com.TapLink.app.media.DcimEnumerator
+                        .requiredPermissions()
+                        .filter { p ->
+                            androidx.core.content.ContextCompat
+                                .checkSelfPermission(act, p) !=
+                                    android.content.pm.PackageManager.PERMISSION_GRANTED
+                        }
+                    if (needed.isNotEmpty()) {
+                        androidx.core.app.ActivityCompat.requestPermissions(
+                            act, needed.toTypedArray(), 124
+                        )
+                    }
+                }
+            } catch (_: Exception) {}
+        }
 
         // Keep WebAppInterface for referencing context/logic if needed, but primary comms via URL
         // scheme

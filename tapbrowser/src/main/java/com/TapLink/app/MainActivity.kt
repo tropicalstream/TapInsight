@@ -697,6 +697,15 @@ class MainActivity :
     private var keyboardListener: DualWebViewGroup.KeyboardListener? = null
 
     private val PERMISSIONS_REQUEST_CODE = 123
+    /**
+     * Request code for the in-app "Grant access to device photos" flow
+     * triggered from photos_gallery.html via
+     * [MediaLibraryBridge.requestMediaPermission]. The RayNeo X3 Pro
+     * doesn't expose a Settings UI for runtime permissions, so this is
+     * the only way the user can authorize READ_MEDIA_IMAGES /
+     * READ_MEDIA_VIDEO on the glasses.
+     */
+    private val MEDIA_PERMISSIONS_REQUEST_CODE = 124
     private var pendingPermissionRequest: PermissionRequest? = null
     private var qrScanCallbackWebView: WebView? = null
     private var isQrScanInProgress = false
@@ -7746,6 +7755,30 @@ class MainActivity :
         mediaLibraryBridge.jsEvaluator = { js ->
             webView.post { webView.evaluateJavascript(js, null) }
         }
+        // photos_gallery.html → "Grant access to device photos" → bridge
+        // → this lambda. We have to do the actual requestPermissions call
+        // from the host Activity because that's the only context that has
+        // the onRequestPermissionsResult delivery. The bridge marshals to
+        // the main thread before invoking, so this can safely call
+        // requestPermissions directly.
+        mediaLibraryBridge.permissionRequester = {
+            try {
+                val needed = com.TapLink.app.media.DcimEnumerator
+                    .requiredPermissions()
+                    .filter { p ->
+                        androidx.core.content.ContextCompat
+                            .checkSelfPermission(this, p) !=
+                                android.content.pm.PackageManager.PERMISSION_GRANTED
+                    }
+                if (needed.isNotEmpty()) {
+                    androidx.core.app.ActivityCompat.requestPermissions(
+                        this, needed.toTypedArray(), MEDIA_PERMISSIONS_REQUEST_CODE
+                    )
+                }
+            } catch (e: Exception) {
+                DebugLog.w("MediaPerm", "requestMediaPermission launch failed: ${e.message}")
+            }
+        }
         // Add JavaScript interface for custom media handling if needed
         webView.addJavascriptInterface(
                 object {
@@ -10211,6 +10244,27 @@ class MainActivity :
                     val targetWebView = qrScanCallbackWebView ?: webView
                     startNativeQrScanner(targetWebView)
                 }
+            }
+            MEDIA_PERMISSIONS_REQUEST_CODE -> {
+                val allGranted = grantResults.isNotEmpty() &&
+                    grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+                DebugLog.d("MediaPerm",
+                    "MEDIA_PERMISSIONS_REQUEST_CODE result: allGranted=$allGranted, " +
+                        "perms=${permissions.joinToString()}")
+                // The photos gallery polls hasMediaPermission on load, so
+                // a reload is the cleanest way to refresh its state. If
+                // the user is currently on photos_gallery.html, this will
+                // re-render the grid with DCIM entries included; if they
+                // navigated away, the bridge state simply reflects the
+                // new grant for next time. We only reload if we're on a
+                // gallery URL — reloading the dashboard mid-conversation
+                // would be a regression.
+                try {
+                    val current = webView.url.orEmpty()
+                    if (current.contains("photos_gallery.html", ignoreCase = true)) {
+                        webView.post { webView.reload() }
+                    }
+                } catch (_: Exception) {}
             }
         }
     }

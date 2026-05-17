@@ -90,6 +90,7 @@
   .entry.video  .ic{color:#b08cff;border-color:#3a1c4a}
   .entry.playlist .ic{color:#00e5ff;border-color:#1c3a4a}
   .entry.text .ic{color:#ffcc80;border-color:#4a351c}
+  .entry.image .ic{color:#86e8b8;border-color:#1c4a32}
   .entry .txt{flex:1;min-width:0}
   .entry .name{font-size:14px;color:#e0e0e0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .entry .meta{font-size:11px;color:#6a8594;margin-top:2px}
@@ -98,7 +99,7 @@
     width:28px;height:28px;border-radius:6px;border:1px solid #331515;color:#ff7676;
     font-size:12px;display:none;align-items:center;justify-content:center;flex-shrink:0;
   }
-  .entry.playlist .del,.entry.audio .del,.entry.video .del,.entry.text .del{display:flex}
+  .entry.playlist .del,.entry.audio .del,.entry.video .del,.entry.text .del,.entry.image .del{display:flex}
   .entry .del:hover{background:#4a1a1a;color:#fff}
 
   .empty{
@@ -263,6 +264,7 @@
       case 'VIDEO'   : return '▶';
       case 'PLAYLIST': return '≡';
       case 'TEXT'    : return '📄';
+      case 'IMAGE'   : return '🖼';
       default        : return '·';
     }
   }
@@ -307,8 +309,8 @@
       renderEmptyFolder();
       return;
     }
-    // Folders first, then playlists, then audio, then video, then text.
-    var order = {FOLDER:0,PLAYLIST:1,AUDIO:2,VIDEO:3,TEXT:4,OTHER:5};
+    // Folders first, then playlists, then audio, then video, then images, then text.
+    var order = {FOLDER:0,PLAYLIST:1,AUDIO:2,VIDEO:3,IMAGE:4,TEXT:5,OTHER:6};
     var sorted = state.folderEntries.slice().sort(function(a,b){
       var ka = order[a.kind] == null ? 6 : order[a.kind];
       var kb = order[b.kind] == null ? 6 : order[b.kind];
@@ -379,6 +381,11 @@
       openFolder(e.relativePath);
     } else if (e.kind === 'PLAYLIST') {
       openPlaylist(e.relativePath, e.name);
+    } else if (e.kind === 'IMAGE') {
+      // Photos use a dedicated Material-style gallery, not the
+      // audio/video player. The gallery scrolls/zooms to ?focus=
+      // and provides rotate/share/download/delete in a lightbox.
+      openPhotoInGallery(e.relativePath);
     } else if (e.kind === 'AUDIO' || e.kind === 'VIDEO' || e.kind === 'TEXT') {
       // Hand off to the same media_player.html the browser uses for any
       // tapped audio/video URL — the WebView's shouldInterceptRequest wire
@@ -576,6 +583,17 @@
   // media URL is same-origin and isn't dropped as a cross-origin sub-
   // resource from a file:// page.
   var PLAYER_URL = 'https://appassets.androidplatform.net/assets/media_player.html';
+  // Material-style photos gallery — separate page from the audio/video
+  // player because the affordances (grid, lightbox, rotate, swipe) don't
+  // overlap. MediaFileInterceptor.ALLOWED_ASSET_PAGES must include this
+  // filename or the WebView main-frame load 404s.
+  var PHOTOS_URL = 'https://appassets.androidplatform.net/assets/photos_gallery.html';
+
+  function openPhotoInGallery(relativePath){
+    if (!relativePath) { toast('No photo to open', true); return; }
+    window.location.href = PHOTOS_URL + '?focus=' + encodeURIComponent(relativePath);
+  }
+
   // Same virtual https origin as PLAYER_URL — using file:///android_asset/
   // here would be a cross-protocol top-level navigation from this https page,
   // which the WebView silently blocks (tapping a stream playlist did

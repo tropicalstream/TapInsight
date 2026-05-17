@@ -74,7 +74,16 @@ class MediaFileInterceptor(
             // navigation, which the WebView silently blocks. See
             // library_local.html#openPlaylistInTapRadio and
             // OpenClawTool.addMediaLibraryHint for the navigation contract.
-            "radio.html"
+            "radio.html",
+            // Material-style photos gallery. Reached via three paths:
+            //   1. CameraTool returns `open_taplink:.../photos_gallery.html?focus=…`
+            //      after `save_photo`, so the user can say "view it".
+            //   2. library_local.html navigates here when the user taps an
+            //      IMAGE/VIDEO entry in the Photos folder.
+            //   3. Gemini's "open the gallery" voice command.
+            // Without this entry the WebView 404s the main-frame load and
+            // the browser shows a generic "Not found" page.
+            "photos_gallery.html"
         )
 
         /** URL of an on-glasses asset page served through this interceptor. */

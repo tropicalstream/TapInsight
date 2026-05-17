@@ -67,6 +67,23 @@ class MediaLibraryBridge(
      */
     var jsEvaluator: ((String) -> Unit)? = null
 
+    /**
+     * Callback used by the photos gallery's "Grant access to device
+     * photos" button. The RayNeo X3 Pro doesn't expose an Android
+     * Settings UI for runtime permission grants, so the only way for
+     * the user to authorize READ_MEDIA_IMAGES / READ_MEDIA_VIDEO is
+     * through the standard ActivityCompat.requestPermissions dialog
+     * launched from the host Activity.
+     *
+     * The host (MainActivity / DualWebViewGroup) sets this after
+     * addJavascriptInterface; the implementation must marshal onto the
+     * UI thread and call requestPermissions with
+     * [DcimEnumerator.requiredPermissions]. If left null, the bridge
+     * method returns an error so the JS shows a clear "not supported"
+     * toast instead of silently swallowing the tap.
+     */
+    var permissionRequester: (() -> Unit)? = null
+
     companion object {
         private const val TAG = "MediaLibraryBridge"
         /** JS side reads this as `window.TapMedia`. */
@@ -443,6 +460,46 @@ class MediaLibraryBridge(
             .put("hasMediaPermission", hasMediaPermission)
             .put("entries", sorted)
             .toString()
+    }
+
+    /**
+     * Launch the system runtime-permission dialog for
+     * READ_MEDIA_IMAGES / READ_MEDIA_VIDEO (or READ_EXTERNAL_STORAGE on
+     * pre-Tiramisu). Used by photos_gallery.html when
+     * [DcimEnumerator.hasPermission] returned false — the RayNeo X3 Pro
+     * has no Android Settings UI, so this is the user's only path to
+     * granting access to DCIM photos and videos.
+     *
+     * Returns JSON:
+     *   - `{"status":"requested"}` when the host launched the dialog.
+     *   - `{"status":"alreadyGranted"}` when permission was already on.
+     *   - `{"error":"…"}` when no host callback is wired (older builds).
+     *
+     * The actual grant result lands in MainActivity.onRequestPermissionsResult;
+     * the gallery polls / refreshes when it regains focus, so no extra
+     * bridge call back is needed for the "after-grant" reload.
+     */
+    @JavascriptInterface
+    fun requestMediaPermission(): String {
+        if (!isTrusted()) return denied("requestMediaPermission")
+        if (DcimEnumerator.hasPermission(context)) {
+            return JSONObject().put("status", "alreadyGranted").toString()
+        }
+        val requester = permissionRequester
+            ?: return JSONObject()
+                .put("error", "Permission UI not wired on this build.")
+                .toString()
+        // Marshal to the main thread — JS interface calls run on a
+        // background WebView worker, but requestPermissions must be
+        // launched from the Activity's main thread.
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                requester.invoke()
+            } catch (e: Exception) {
+                Log.w(TAG, "permissionRequester invocation failed: ${e.message}")
+            }
+        }
+        return JSONObject().put("status", "requested").toString()
     }
 
     @JavascriptInterface

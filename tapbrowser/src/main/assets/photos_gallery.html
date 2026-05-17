@@ -378,10 +378,40 @@ async function loadPhotos() {
   const dcimCount = photos.length - libCount;
   let metaParts = [photos.length + ' total'];
   if (dcimCount > 0) metaParts.push(libCount + ' TapInsight · ' + dcimCount + ' device');
-  else if (accessMissing) metaParts.push('device photos hidden — tap a photo to see access prompt');
+  else if (accessMissing) metaParts.push('device photos hidden');
   els.meta.textContent = metaParts.join(' · ');
+  // If library photos exist but the user hasn't granted device-photo
+  // access yet, surface a small inline banner above the grid so the
+  // CTA isn't trapped inside the empty-state branch (which only fires
+  // when there are zero photos of any kind).
+  if (accessMissing && dcimCount === 0) {
+    renderAccessBanner();
+  }
   renderGrid();
   maybeFocusFromQuery();
+}
+
+function renderAccessBanner() {
+  if (document.getElementById('accessBanner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'accessBanner';
+  banner.style.cssText =
+    'margin:0 0 12px;padding:12px 14px;border-radius:10px;' +
+    'background:linear-gradient(135deg,rgba(0,229,255,0.08),rgba(0,229,255,0.02));' +
+    'border:1px solid rgba(0,229,255,0.28);display:flex;align-items:center;gap:12px;';
+  banner.innerHTML =
+    '<div style="flex:1;font-size:12.5px;line-height:1.5">' +
+      '<div style="color:var(--text);font-weight:600;margin-bottom:2px">' +
+        'Show photos from the RayNeo Camera?</div>' +
+      '<div style="color:var(--text-dim);font-size:11.5px">' +
+        'TapInsight needs permission to read /DCIM. ' +
+        'No Settings UI on the glasses — tap to grant directly.</div>' +
+    '</div>' +
+    '<button id="bannerGrantBtn" style="background:var(--accent);color:#001;' +
+      'border:0;padding:9px 14px;border-radius:8px;font-weight:600;font-size:12px;' +
+      'cursor:pointer;flex-shrink:0">Grant</button>';
+  els.grid.insertBefore(banner, els.gridInner);
+  document.getElementById('bannerGrantBtn').addEventListener('click', requestMediaAccess);
 }
 
 function requestMediaAccess() {
