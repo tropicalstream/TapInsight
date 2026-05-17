@@ -55,13 +55,46 @@ button { font: inherit; color: inherit; background: transparent; border: 0; curs
 .header .meta {
   margin-left: auto; font-size: 12px; color: var(--text-dim);
 }
+/* Always-visible status pill in the header showing whether device-
+   photo access is currently granted. Replaces the previous "hidden
+   until missing" UX, which left users stranded if they couldn't tell
+   whether they had permission or not. Pill stays small to fit the
+   narrow glasses display. */
+.access-pill {
+  margin-left: 12px; flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 10px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.2px;
+  cursor: pointer; border: 1px solid transparent;
+  transition: filter 0.15s, background 0.15s;
+}
+.access-pill .ap-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  flex-shrink: 0;
+}
+.access-pill.granted {
+  background: rgba(126, 236, 170, 0.12);
+  border-color: rgba(126, 236, 170, 0.4);
+  color: #c8efd5;
+}
+.access-pill.granted .ap-dot { background: #7eecaa; }
+.access-pill.missing {
+  background: var(--accent);
+  color: #001;
+  box-shadow: 0 0 10px var(--accent-glow);
+  font-weight: 700;
+}
+.access-pill.missing .ap-dot {
+  background: #b71c1c;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.access-pill:hover, .access-pill:active { filter: brightness(1.15); }
+
 /* Grant-permission banner — full-width card pinned to the top of
-   the grid scroll surface. Previously this was a header pill that
-   got clipped by the narrow glasses display when meta text grew.
-   In the new layout the gallery already works without permission
-   for TapInsight's own saves, so the banner is purely "+ also show
-   RayNeo Camera photos" — it should be discoverable but not block
-   the grid. */
+   the grid scroll surface. Sits in parallel with the header pill;
+   the pill is the persistent affordance, the banner is the
+   one-time "you have library photos but not device photos" nudge. */
 .grant-banner {
   display: none;
   margin: 0 0 12px;
@@ -253,6 +286,10 @@ button { font: inherit; color: inherit; background: transparent; border: 0; curs
 <div class="header">
   <h1><span class="dot"></span>Photos</h1>
   <div class="meta" id="meta">Loading…</div>
+  <button id="accessPill" class="access-pill missing" title="Manage device-photo access">
+    <span class="ap-dot"></span>
+    <span id="accessPillLabel">…</span>
+  </button>
 </div>
 
 <div class="grid" id="grid">
@@ -340,6 +377,8 @@ const els = {
   deleteBtn: document.getElementById('deleteBtn'),
   grantBanner: document.getElementById('grantBanner'),
   grantBtn: document.getElementById('grantBtn'),
+  accessPill: document.getElementById('accessPill'),
+  accessPillLabel: document.getElementById('accessPillLabel'),
   toast: document.getElementById('toast'),
 };
 
@@ -458,6 +497,8 @@ async function loadPhotos() {
     metaParts.push('device photos hidden');
   }
   els.meta.textContent = metaParts.join(' · ');
+  // Always-visible header pill reflects current access state.
+  updateAccessPill(accessMissing);
   // Show the "+ device photos" banner above the grid whenever the
   // user hasn't granted permission — even if they already have
   // library photos. The banner is purely additive now ("also show
@@ -469,6 +510,28 @@ async function loadPhotos() {
   }
   renderGrid();
   maybeFocusFromQuery();
+}
+
+/**
+ * Update the always-visible header pill to reflect current state.
+ * Two states:
+ *   missing → cyan pill, pulsing red dot, "Grant device photos"
+ *   granted → green pill, green dot, "Device photos: ON"
+ * Tap on missing fires the system permission dialog. Tap on granted
+ * surfaces a toast about how to revoke (which can only be done via
+ * adb/Files on Android since the OS doesn't let an app revoke its
+ * own grant).
+ */
+function updateAccessPill(accessMissing) {
+  if (accessMissing) {
+    els.accessPill.classList.add('missing');
+    els.accessPill.classList.remove('granted');
+    els.accessPillLabel.textContent = 'Grant device photos';
+  } else {
+    els.accessPill.classList.remove('missing');
+    els.accessPill.classList.add('granted');
+    els.accessPillLabel.textContent = 'Device photos: ON';
+  }
 }
 
 // renderAccessBanner was a dynamically-inserted node that competed
@@ -724,6 +787,13 @@ els.shareBtn.addEventListener('click', copyShareUrl);
 els.infoBtn.addEventListener('click', showInfo);
 els.deleteBtn.addEventListener('click', deletePhoto);
 els.grantBtn.addEventListener('click', requestMediaAccess);
+els.accessPill.addEventListener('click', () => {
+  if (els.accessPill.classList.contains('granted')) {
+    toast('Device photos already granted. Revoke via adb if needed.');
+  } else {
+    requestMediaAccess();
+  }
+});
 
 document.addEventListener('keydown', (e) => {
   if (!els.lightbox.classList.contains('open')) return;

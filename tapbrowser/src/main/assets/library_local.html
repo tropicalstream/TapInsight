@@ -378,6 +378,18 @@
 
   function handleEntryClick(e){
     if (e.kind === 'FOLDER') {
+      // Photos folder is a special case: TapInsight now saves photos
+      // to DCIM/TapInsight via MediaStore (not the on-disk
+      // Media/Photos folder), so a plain file listing of Photos/
+      // would only show legacy saves and miss the user's recent
+      // captures. Route the whole folder to photos_gallery.html
+      // instead — it merges legacy Media/Photos entries with
+      // DCIM/TapInsight (and optionally device-wide DCIM when
+      // permission is granted) in one view.
+      if (e.relativePath === 'Photos' || e.relativePath.endsWith('/Photos')) {
+        openPhotoInGallery('');
+        return;
+      }
       openFolder(e.relativePath);
     } else if (e.kind === 'PLAYLIST') {
       openPlaylist(e.relativePath, e.name);
@@ -590,8 +602,13 @@
   var PHOTOS_URL = 'https://appassets.androidplatform.net/assets/photos_gallery.html';
 
   function openPhotoInGallery(relativePath){
-    if (!relativePath) { toast('No photo to open', true); return; }
-    window.location.href = PHOTOS_URL + '?focus=' + encodeURIComponent(relativePath);
+    // Empty relativePath = open the gallery in its default state
+    // (Photos folder click); a path opens the lightbox on that photo.
+    if (relativePath) {
+      window.location.href = PHOTOS_URL + '?focus=' + encodeURIComponent(relativePath);
+    } else {
+      window.location.href = PHOTOS_URL;
+    }
   }
 
   // Same virtual https origin as PLAYER_URL — using file:///android_asset/
