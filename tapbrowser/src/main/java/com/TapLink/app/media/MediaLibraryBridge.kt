@@ -514,44 +514,105 @@ class MediaLibraryBridge(
     @JavascriptInterface
     fun scanDcim(): String {
         if (!isTrusted()) return denied("scanDcim")
-        if (!DcimEnumerator.hasPermission(context)) {
-            return JSONObject().put("error", "Device-photo permission not granted").toString()
-        }
-        val paths = mutableListOf(
-            "/storage/emulated/0/DCIM/",
-            "/storage/emulated/0/DCIM/Camera/",
-            "/storage/emulated/0/DCIM/${DcimEnumerator.DCIM_OWN_SUBFOLDER}/",
-            "/storage/emulated/0/Pictures/"
+        val hasPerm = DcimEnumerator.hasPermission(context)
+
+        // ── Step 1: walk DCIM via File API to find candidate files ──
+        val dcimRoot = File("/storage/emulated/0/DCIM")
+        val dcimReadable = dcimRoot.exists() && dcimRoot.canRead()
+        val mediaExts = setOf(
+            "jpg", "jpeg", "png", "webp", "heic", "heif", "bmp", "gif",
+            "mp4", "mov", "m4v", "webm", "mkv", "3gp"
         )
-        val latch = java.util.concurrent.CountDownLatch(paths.size)
-        val scanned = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val foundPaths = mutableListOf<String>()
+        if (dcimReadable) {
+            try {
+                dcimRoot.walkTopDown()
+                    .filter { it.isFile && it.length() > 0 }
+                    .filter { it.extension.lowercase(java.util.Locale.ROOT) in mediaExts }
+                    .take(2000)
+                    .forEach { foundPaths += it.absolutePath }
+            } catch (e: Exception) {
+                Log.w(TAG, "scanDcim: walk threw ${e.message}")
+            }
+        }
+
+        // ── Step 2: scan whatever we found (real file paths, not folders) ──
+        // Falls back to scanning the well-known folder paths if File.walk
+        // couldn't see anything — better than nothing.
+        val scanTargets: Array<String> = if (foundPaths.isNotEmpty()) {
+            foundPaths.toTypedArray()
+        } else {
+            arrayOf(
+                "/storage/emulated/0/DCIM",
+                "/storage/emulated/0/DCIM/Camera",
+                "/storage/emulated/0/DCIM/${DcimEnumerator.DCIM_OWN_SUBFOLDER}",
+                "/storage/emulated/0/Pictures"
+            )
+        }
+        val scannedBack = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val latch = java.util.concurrent.CountDownLatch(scanTargets.size)
         try {
             android.media.MediaScannerConnection.scanFile(
-                context, paths.toTypedArray(),
-                null  // let the scanner figure out mime from extension
+                context, scanTargets, null
             ) { path, _ ->
-                scanned += path
+                scannedBack += path
                 latch.countDown()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "scanDcim: MediaScannerConnection.scanFile threw ${e.message}")
-            return JSONObject().put("error", "Scan launch failed: ${e.message}").toString()
+            Log.w(TAG, "scanDcim: scanFile threw ${e.message}")
         }
-        // Best-effort wait — the scanner reports each path back individually
-        // when done; some paths (non-files / non-readable directories) won't
-        // come back at all, hence the timeout.
-        try { latch.await(4, java.util.concurrent.TimeUnit.SECONDS) } catch (_: Exception) {}
+        try {
+            latch.await(if (scanTargets.size > 100) 8 else 4,
+                java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: Exception) {}
 
-        val imageCount = try { dcim.listAll(limit = 5000).count { !it.isVideo } } catch (_: Exception) { 0 }
-        val videoCount = try { dcim.listAll(limit = 5000).count { it.isVideo } } catch (_: Exception) { 0 }
-        val arr = JSONArray()
-        scanned.forEach { arr.put(it) }
+        // ── Step 3: diagnostic MediaStore counts ──
+        // imagesTotal/videosTotal are unfiltered — useful for distinguishing
+        // "MediaStore is empty" from "MediaStore is fine but our DCIM filter
+        // doesn't match". imagesDcim/videosDcim are with the DCIM filter,
+        // which is what the gallery actually uses.
+        val imagesTotal = countMediaStore(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, false)
+        val videosTotal = countMediaStore(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, false)
+        val imagesDcim = try { dcim.listAll(limit = 5000).count { !it.isVideo } } catch (_: Exception) { 0 }
+        val videosDcim = try { dcim.listAll(limit = 5000).count { it.isVideo } } catch (_: Exception) { 0 }
+
+        val foundJson = JSONArray()
+        foundPaths.take(20).forEach { foundJson.put(it) }   // cap response size
+        val scannedJson = JSONArray()
+        scannedBack.take(20).forEach { scannedJson.put(it) }
+
         return JSONObject()
             .put("status", "ok")
-            .put("scanned", arr)
-            .put("imageCount", imageCount)
-            .put("videoCount", videoCount)
+            .put("hasMediaPermission", hasPerm)
+            .put("dcimReadable", dcimReadable)
+            .put("filesFoundOnDisk", foundPaths.size)
+            .put("filesScanned", scannedBack.size)
+            .put("imagesTotal", imagesTotal)
+            .put("videosTotal", videosTotal)
+            .put("imageCount", imagesDcim)
+            .put("videoCount", videosDcim)
+            .put("found", foundJson)
+            .put("scanned", scannedJson)
             .toString()
+    }
+
+    /**
+     * Quick row-count against a MediaStore collection. Returns -1 if the
+     * query throws (permission denied, provider unavailable, etc.).
+     */
+    private fun countMediaStore(collection: android.net.Uri, isVideo: Boolean): Int {
+        @Suppress("UNUSED_PARAMETER")
+        val _ignored = isVideo
+        return try {
+            context.contentResolver.query(
+                collection,
+                arrayOf(android.provider.MediaStore.MediaColumns._ID),
+                null, null, null
+            )?.use { it.count } ?: -1
+        } catch (e: Exception) {
+            Log.w(TAG, "countMediaStore failed: ${e.message}")
+            -1
+        }
     }
 
     /**

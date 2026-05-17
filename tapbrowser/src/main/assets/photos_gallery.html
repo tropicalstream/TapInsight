@@ -844,8 +844,29 @@ els.scanBtn.addEventListener('click', async () => {
     toast(resp.error);
     return;
   }
-  toast('Scan complete · ' + (resp.imageCount || 0) + ' images, ' +
-        (resp.videoCount || 0) + ' videos in DCIM');
+  // Diagnostic-rich message. The four numbers tell us exactly where
+  // the pipeline is breaking on the user's device:
+  //   filesFoundOnDisk → did File.walk see the DCIM tree?
+  //   filesScanned     → did MediaScanner accept the paths?
+  //   imagesTotal      → how many images does MediaStore know about
+  //                      (any folder, sanity check that the query
+  //                      itself works)?
+  //   imageCount       → how many images match our DCIM filter
+  //                      (what the gallery actually shows).
+  const diag = [
+    'disk: ' + (resp.filesFoundOnDisk || 0) + ' files (readable=' + !!resp.dcimReadable + ')',
+    'scan: ' + (resp.filesScanned || 0) + ' accepted',
+    'MediaStore total: ' + (resp.imagesTotal === -1 ? '?' : (resp.imagesTotal || 0)) +
+      ' images, ' + (resp.videosTotal === -1 ? '?' : (resp.videosTotal || 0)) + ' videos',
+    'DCIM filter: ' + (resp.imageCount || 0) + ' images, ' + (resp.videoCount || 0) + ' videos'
+  ].join('\n');
+  // The toast widget shows one line, so log the full diagnostic and
+  // toast a compact summary. Long-press / inspect via webview console
+  // for the full breakdown.
+  console.log('[scanDcim diag]\n' + diag);
+  console.log('[scanDcim raw]', resp);
+  toast('Scan: disk=' + (resp.filesFoundOnDisk || 0) +
+        ' · MediaStore=' + (resp.imageCount || 0) + 'img/' + (resp.videoCount || 0) + 'vid');
   loadPhotos();
 });
 
