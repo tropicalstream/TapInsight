@@ -52,12 +52,32 @@ class MediaFileInterceptor(
     private val service: MediaLibraryService
 ) {
 
+    /**
+     * Lazy enumerator for the DCIM proxy route. Allocated on first
+     * `/dcim/…` request so a build without DCIM access (or one whose
+     * users never grant the permission) doesn't carry the allocation
+     * cost. Wraps MediaStore queries / openInputStream — the actual
+     * work is one ContentResolver call per request.
+     */
+    private val dcim: DcimEnumerator by lazy { DcimEnumerator(context) }
+
     companion object {
         private const val TAG = "MediaFileInterceptor"
         const val HOST = "appassets.androidplatform.net"
         const val MEDIA_PREFIX = "/media/"
         const val ASSETS_PREFIX = "/assets/"
         const val TTS_PREFIX = "/tts/"
+        /**
+         * Proxy prefix for RayNeo native Camera (DCIM) photos and videos.
+         * `<kind>` is "image" or "video"; `<id>` is the MediaStore _ID
+         * (i.e. the suffix of the content:// URI). The WebView can't load
+         * `<img src="content://…">` directly — even with
+         * setAllowContentAccess, the resolver behaves unreliably across
+         * RayNeo's OEM WebView. Routing through this proxy means DCIM
+         * photos load via the same virtual https origin as library
+         * photos, with no special WebView config required.
+         */
+        const val DCIM_PREFIX = "/dcim/"
 
         /**
          * Filenames we're willing to serve out of the APK assets/ folder via
@@ -138,6 +158,13 @@ class MediaFileInterceptor(
         // origin as /media/ so the WebView doesn't trip over CORS.
         if (rawPath.startsWith(TTS_PREFIX)) {
             return handleTtsRequest(rawPath.removePrefix(TTS_PREFIX))
+        }
+
+        // ── /dcim/<image|video>/<id> → RayNeo native Camera proxy ──
+        // Streams DCIM MediaStore bytes through the asset host so the
+        // gallery's <img src> works. See [DCIM_PREFIX] for rationale.
+        if (rawPath.startsWith(DCIM_PREFIX)) {
+            return handleDcimRequest(rawPath.removePrefix(DCIM_PREFIX))
         }
 
         if (!rawPath.startsWith(MEDIA_PREFIX)) return null
@@ -316,6 +343,73 @@ class MediaFileInterceptor(
         resp.responseHeaders = headers
         resp.setStatusCodeAndReasonPhrase(200, "OK")
         Log.d(TAG, "served TTS $id (${bytes.size}B)")
+        return resp
+    }
+
+    // ── /dcim/<kind>/<id> → MediaStore proxy ─────────────────────────
+
+    /**
+     * Stream bytes for a RayNeo native Camera DCIM entry through the
+     * asset host. `rawTail` looks like `image/12345` or `video/678` —
+     * the kind segment tells us which MediaStore collection to base
+     * the content URI on, and the id is the row's `_ID`.
+     *
+     * Why proxy instead of `<img src="content://…">`: even with
+     * `WebSettings.setAllowContentAccess(true)`, RayNeo's WebView
+     * frequently refuses to load content:// URIs (the resolver isn't
+     * always exposed to the renderer process, and some OEMs disable
+     * the path entirely). A simple HTTPS proxy through this
+     * interceptor avoids the issue, makes the URL identical in shape
+     * to library media URLs, and lets the gallery JS use a single
+     * code path for both sources.
+     */
+    private fun handleDcimRequest(rawTail: String): WebResourceResponse {
+        val tail = rawTail.substringBefore('?').substringBefore('#')
+        val parts = tail.split('/').filter { it.isNotBlank() }
+        if (parts.size < 2) {
+            return errorResponse(400, "Bad DCIM path")
+        }
+        val kind = parts[0].lowercase(Locale.US)
+        val id = parts[1].toLongOrNull()
+            ?: return errorResponse(400, "Bad DCIM id")
+        if (!DcimEnumerator.hasPermission(context)) {
+            return errorResponse(403, "DCIM permission not granted")
+        }
+        val baseCollection = when (kind) {
+            "image" -> android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            "video" -> android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            else -> return errorResponse(400, "Unknown DCIM kind: $kind")
+        }
+        val contentUri = android.content.ContentUris.withAppendedId(baseCollection, id)
+        val bytes = dcim.readBytes(contentUri)
+            ?: return errorResponse(404, "DCIM entry not found")
+        // Best-effort mime: trust the file extension via DCIM listing,
+        // but the cheapest path here is to peek the bytes header. For
+        // image/jpeg this is the magic FF D8 FF; for png it's 89 50 4E
+        // 47. Anything else we fall back to a generic
+        // image/* or video/* based on kind so the WebView still treats
+        // the response as image data and the <img> tag renders.
+        val mime = when {
+            bytes.size >= 3 && bytes[0] == 0xFF.toByte() &&
+                bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte() -> "image/jpeg"
+            bytes.size >= 8 && bytes[0] == 0x89.toByte() &&
+                bytes[1] == 0x50.toByte() && bytes[2] == 0x4E.toByte() &&
+                bytes[3] == 0x47.toByte() -> "image/png"
+            bytes.size >= 4 && bytes[0] == 0x52.toByte() &&
+                bytes[1] == 0x49.toByte() && bytes[2] == 0x46.toByte() &&
+                bytes[3] == 0x46.toByte() -> "image/webp"
+            kind == "video" -> "video/mp4"
+            else -> "image/*"
+        }
+        val headers = linkedMapOf(
+            "Content-Length" to bytes.size.toString(),
+            "Cache-Control" to "no-store",
+            "Access-Control-Allow-Origin" to "*"
+        )
+        val resp = WebResourceResponse(mime, null, ByteArrayInputStream(bytes))
+        resp.responseHeaders = headers
+        resp.setStatusCodeAndReasonPhrase(200, "OK")
+        Log.d(TAG, "served DCIM $kind/$id (${bytes.size}B, $mime)")
         return resp
     }
 

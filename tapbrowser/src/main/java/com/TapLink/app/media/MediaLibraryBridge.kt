@@ -424,25 +424,31 @@ class MediaLibraryBridge(
         val hasMediaPermission = DcimEnumerator.hasPermission(context)
         if (hasMediaPermission) {
             for (d in dcim.listAll(limit = 1000)) {
-                // Proxy DCIM via the companion server's /api/dcim/file
-                // endpoint when used from the companion app. On the
-                // glasses gallery we ask the WebView to load
-                // content:// directly via androidx WebView's
-                // setAllowContentAccess — which is true by default
-                // for in-app WebViews. So a content:// URL works.
+                // We route DCIM bytes through MediaFileInterceptor's
+                // /dcim/<kind>/<id> proxy rather than handing the
+                // WebView a raw content:// URI. The WebView on RayNeo
+                // can't reliably load content:// from <img src>, even
+                // with setAllowContentAccess(true) — the resolver
+                // isn't exposed to the renderer process in every OEM
+                // build. The proxy URL lives on the same virtual
+                // https origin as library photos, so the gallery JS
+                // doesn't have to branch.
+                val dcimId = ContentUris.parseId(d.contentUri)
+                val kindSeg = if (d.isVideo) "video" else "image"
+                val proxyUrl = "https://$ASSETS_HOST/dcim/$kindSeg/$dcimId"
                 arr.put(
                     JSONObject()
                         .put("source", "dcim")
                         .put("name", d.displayName)
-                        .put("dcimId", ContentUris.parseId(d.contentUri))
+                        .put("dcimId", dcimId)
                         .put("dcimUri", d.contentUri.toString())
                         .put("lastModifiedMs", d.dateTakenMs)
                         .put("sizeBytes", d.sizeBytes)
                         .put("kind", if (d.isVideo) "VIDEO" else "IMAGE")
                         .put("mimeType", d.mimeType)
                         .put("relativeDisplayPath", d.relativeDisplayPath ?: JSONObject.NULL)
-                        .put("fullUrl", d.contentUri.toString())
-                        .put("thumbnailUrl", d.contentUri.toString())
+                        .put("fullUrl", proxyUrl)
+                        .put("thumbnailUrl", proxyUrl)
                         .put("width", d.width)
                         .put("height", d.height)
                         .put("durationMs", d.durationMs ?: JSONObject.NULL)

@@ -247,11 +247,11 @@ button { font: inherit; color: inherit; background: transparent; border: 0; curs
     <button id="rotRightBtn" title="Rotate 90° clockwise">
       <span class="icon">↻</span><span>Rotate</span>
     </button>
-    <button id="downloadBtn" title="Download to phone via companion app">
-      <span class="icon">⬇</span><span>Download</span>
+    <button id="infoBtn" title="Show photo details">
+      <span class="icon">ⓘ</span><span>Info</span>
     </button>
-    <button id="shareBtn" title="Copy URL">
-      <span class="icon">🔗</span><span>Share</span>
+    <button id="shareBtn" title="Copy image URL to clipboard">
+      <span class="icon">🔗</span><span>Copy URL</span>
     </button>
     <button class="danger" id="deleteBtn" title="Delete">
       <span class="icon">🗑</span><span>Delete</span>
@@ -293,7 +293,7 @@ const els = {
   nextBtn: document.getElementById('nextBtn'),
   rotLeftBtn: document.getElementById('rotLeftBtn'),
   rotRightBtn: document.getElementById('rotRightBtn'),
-  downloadBtn: document.getElementById('downloadBtn'),
+  infoBtn: document.getElementById('infoBtn'),
   shareBtn: document.getElementById('shareBtn'),
   deleteBtn: document.getElementById('deleteBtn'),
   toast: document.getElementById('toast'),
@@ -311,7 +311,23 @@ function toast(msg) {
 }
 
 function mediaUrl(relativePath) {
+  if (!relativePath) return '';
   return MEDIA_BASE + relativePath.split('/').map(encodeURIComponent).join('/');
+}
+
+/**
+ * Resolve the WebView-loadable URL for any photo entry, library or
+ * DCIM. The bridge already supplies `fullUrl` (and `thumbnailUrl`)
+ * for both sources — library uses /media/<rel>, DCIM uses
+ * /dcim/<kind>/<id> — so prefer those when present, falling back to
+ * the relativePath path for older bridge builds. Returning '' for an
+ * entry with neither lets the caller skip / show a placeholder.
+ */
+function entryUrl(p) {
+  if (!p) return '';
+  if (p.fullUrl) return p.fullUrl;
+  if (p.relativePath) return mediaUrl(p.relativePath);
+  return '';
 }
 
 function formatDate(ms) {
@@ -433,7 +449,7 @@ function renderGrid() {
     const img = document.createElement('img');
     img.loading = 'lazy';
     img.decoding = 'async';
-    img.src = mediaUrl(p.relativePath);
+    img.src = entryUrl(p);
     img.alt = p.name;
     tile.appendChild(img);
 
@@ -451,6 +467,10 @@ function maybeFocusFromQuery() {
   const m = location.search.match(/[?&]focus=([^&]+)/);
   if (!m) return;
   const focus = decodeURIComponent(m[1]);
+  // The `focus` query param is the library relative path; DCIM
+  // entries don't have one, but they're never the focus of a "view
+  // it after save" flow anyway (only TapInsight saves emit
+  // open_taplink with focus). Library entries match on relativePath.
   const idx = photos.findIndex(p => p.relativePath === focus);
   if (idx >= 0) openLightbox(idx);
 }
@@ -472,7 +492,7 @@ function closeLightbox() {
 function renderLightbox() {
   const p = photos[lightboxIndex];
   if (!p) return closeLightbox();
-  els.lbImage.src = mediaUrl(p.relativePath);
+  els.lbImage.src = entryUrl(p);
   els.lbImage.style.transform = `rotate(${rotation}deg)`;
   els.lbFilename.textContent = p.name;
   els.lbIndex.textContent = (lightboxIndex + 1) + ' / ' + photos.length;
@@ -491,6 +511,14 @@ function nav(delta) {
 async function rotateBy(deg) {
   const p = photos[lightboxIndex];
   if (!p) return;
+  // DCIM entries belong to the RayNeo native Camera app — we have read
+  // access through the MediaStore proxy, but writing back over the
+  // file would require WRITE_EXTERNAL_STORAGE-equivalent grants the
+  // glasses can't easily surface. View-only is the safer contract.
+  if (p.source === 'dcim') {
+    toast('Device-camera photos are view-only here');
+    return;
+  }
 
   // Optimistic view-rotate while the disk write runs.
   rotation = (rotation + deg + 360) % 360;
@@ -515,7 +543,7 @@ async function rotateBy(deg) {
   // bust the image cache so the rotated bytes load fresh.
   rotation = 0;
   els.lbImage.style.transform = 'rotate(0deg)';
-  const fresh = mediaUrl(p.relativePath) + '?t=' + Date.now();
+  const fresh = entryUrl(p) + '?t=' + Date.now();
   els.lbImage.src = fresh;
   // Also invalidate the corresponding tile thumb in the grid.
   const tileImg = els.gridInner.querySelectorAll('.tile img')[lightboxIndex];
@@ -526,6 +554,10 @@ async function rotateBy(deg) {
 async function deletePhoto() {
   const p = photos[lightboxIndex];
   if (!p) return;
+  if (p.source === 'dcim') {
+    toast('Delete device-camera photos from the RayNeo Camera app');
+    return;
+  }
   if (!window.TapMedia || typeof window.TapMedia.deleteEntry !== 'function') {
     return toast('Delete not available in this view');
   }
@@ -554,7 +586,8 @@ async function deletePhoto() {
 function copyShareUrl() {
   const p = photos[lightboxIndex];
   if (!p) return;
-  const url = mediaUrl(p.relativePath);
+  const url = entryUrl(p);
+  if (!url) return toast('Nothing to share');
   try {
     navigator.clipboard.writeText(url).then(
       () => toast('URL copied'),
@@ -571,19 +604,27 @@ function fallbackCopy(text) {
   finally { document.body.removeChild(ta); }
 }
 
-function triggerDownload() {
+/**
+ * "Info" button — shows file metadata in a toast. The previous Download
+ * button created an <a download> that pointed at the same-origin asset
+ * URL; on the glasses there's no Downloads folder UX, so it just sat
+ * there doing nothing useful. Replacing it with an info readout gives
+ * the user something to read about the photo (source, dimensions, size,
+ * date) without sending them elsewhere. For real cross-device transfers
+ * the user can use the companion app's Library tab.
+ */
+function showInfo() {
   const p = photos[lightboxIndex];
   if (!p) return;
-  // The companion app exposes /api/library/file?path=... which streams
-  // the file with a download header. When this page is loaded inside
-  // the on-glasses asset host the link still works because the WebView
-  // honors download attributes on same-origin <a> elements.
-  const a = document.createElement('a');
-  a.href = mediaUrl(p.relativePath);
-  a.download = p.name;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const parts = [];
+  parts.push(p.source === 'dcim' ? 'RayNeo Camera' : 'TapInsight');
+  if (p.width && p.height) parts.push(p.width + '×' + p.height);
+  if (p.sizeBytes) {
+    const kb = p.sizeBytes / 1024;
+    parts.push(kb < 1024 ? Math.round(kb) + ' KB' : (kb / 1024).toFixed(1) + ' MB');
+  }
+  if (p.lastModifiedMs) parts.push(formatDate(p.lastModifiedMs));
+  toast(parts.join(' · '));
 }
 
 // ─── Event wiring ───────────────────────────────────────────────
@@ -593,7 +634,7 @@ els.nextBtn.addEventListener('click', () => nav(1));
 els.rotLeftBtn.addEventListener('click', () => rotateBy(-90));
 els.rotRightBtn.addEventListener('click', () => rotateBy(90));
 els.shareBtn.addEventListener('click', copyShareUrl);
-els.downloadBtn.addEventListener('click', triggerDownload);
+els.infoBtn.addEventListener('click', showInfo);
 els.deleteBtn.addEventListener('click', deletePhoto);
 
 document.addEventListener('keydown', (e) => {

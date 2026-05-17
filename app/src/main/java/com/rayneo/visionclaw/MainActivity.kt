@@ -4322,6 +4322,18 @@ class MainActivity : AppCompatActivity() {
         if (functionName == "open_taplink" && (transcriptSaysGoogleSearch || urlIsGoogleSearch)) {
             return false
         }
+        // Photos gallery is the user's own saved photos. Reaching it
+        // requires the user to either (a) have just saved a photo and
+        // followed up with "view it" or (b) explicitly asked to open
+        // their photo gallery. Neither is a "voice-first reference
+        // request" — the user actively wants the image surface, not a
+        // verbal answer. Bypass before the lookup-style heuristic kicks
+        // in. Covers Gemini's open_taplink follow-up after a save and
+        // any direct "open my photos" command.
+        val urlLowerEarly = openUrl.lowercase(Locale.US)
+        if (urlLowerEarly.contains("photos_gallery.html")) {
+            return false
+        }
         if (hasExplicitBrowserOrMediaConsent(primaryTranscript)) return false
         if (hasExplicitYouTubePlaybackConsent(primaryTranscript)) return false
         if (candidates.none { looksLikeVoiceFirstReferenceRequest(it) }) return false
