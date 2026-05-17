@@ -175,8 +175,60 @@ h1{color:#00e5ff;font-size:22px;margin-bottom:2px}
   <h2>Media Folder on Glasses</h2>
   <p>Drop media files into this folder over USB/MTP, or upload them here. Uploads from the root auto-route by type.</p>
   <p><code id="rootPath">Loading…</code>
-    <button class="copy-btn" onclick="copyRootPath()">Copy path</button></p>
+    <button class="copy-btn" onclick="copyRootPath()">Copy path</button>
+    <button class="copy-btn" onclick="openMediaFolderHelp()" title="Show how to reach this folder over USB">📂 Open folder</button></p>
   <p id="rootSpace" style="font-size:11px;color:#888"></p>
+</div>
+
+<!-- "Open folder" help modal — explains how to reach the glasses'
+     app-private Media folder from a Mac / Windows / Linux desktop
+     over USB/MTP. We don't have a reliable cross-platform way to
+     actually open the folder from a browser (file:// from http:// is
+     blocked, and Android app-private storage is often hidden over
+     MTP anyway), so we show clear, copy-able instructions instead. -->
+<div class="modal-overlay hidden" id="folderHelpModal">
+  <div class="modal" style="max-width:560px">
+    <h2>📂 Open the Media folder over USB</h2>
+    <p class="modal-sub">
+      <code id="folderHelpPath">Android/data/&lt;app&gt;/files/Media</code>
+    </p>
+    <p class="modal-sub" style="margin-top:6px;color:#ffb870">
+      ⚠ This is Android <i>app-private</i> storage. On Android 11+ it's hidden from desktop file browsers by default and may not be reachable without sideloading tools. The <b>Upload</b> button in this page is the supported path; the instructions below are for advanced cases.
+    </p>
+
+    <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:12px 14px;margin-top:14px">
+      <div style="font-weight:600;color:#80cbc4;margin-bottom:6px">🍎 Mac</div>
+      <ol style="margin:0 0 0 18px;padding:0;line-height:1.7;color:#bbb;font-size:12.5px">
+        <li>Install <a href="https://www.android.com/filetransfer/" target="_blank" rel="noopener" style="color:#9ef3ff">Android File Transfer</a> (free from Google) — macOS doesn't speak MTP natively.</li>
+        <li>Plug the glasses in via USB. On the glasses, pull down the notification shade and set USB mode to <b>File transfer (MTP)</b>.</li>
+        <li>Open <b>Android File Transfer</b> (it auto-launches on connection). Navigate to <code id="folderHelpPathMac">Android/data/…/files/Media</code>.</li>
+        <li>If the <code>Android/data</code> folder doesn't appear: the glasses' MTP layer is hiding it. Use the companion app's <b>Upload</b> button instead, or use ADB: <code>adb push /local/file /storage/emulated/0/&lt;path&gt;</code>.</li>
+      </ol>
+    </div>
+
+    <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:12px 14px;margin-top:10px">
+      <div style="font-weight:600;color:#80cbc4;margin-bottom:6px">🪟 Windows</div>
+      <ol style="margin:0 0 0 18px;padding:0;line-height:1.7;color:#bbb;font-size:12.5px">
+        <li>Plug glasses in via USB and switch USB mode to <b>File transfer (MTP)</b>.</li>
+        <li>Open <b>File Explorer</b> — the glasses appear under <b>This PC</b>.</li>
+        <li>Navigate to <code id="folderHelpPathWin">Internal storage\Android\data\…\files\Media</code>.</li>
+      </ol>
+    </div>
+
+    <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:12px 14px;margin-top:10px">
+      <div style="font-weight:600;color:#80cbc4;margin-bottom:6px">🐧 Linux / ADB (any OS)</div>
+      <ol style="margin:0 0 0 18px;padding:0;line-height:1.7;color:#bbb;font-size:12.5px">
+        <li>Enable developer mode + USB debugging on the glasses (one-time).</li>
+        <li>Push files via ADB:
+          <div style="background:#060606;padding:6px 8px;border-radius:5px;margin:4px 0;font-family:ui-monospace,Menlo,monospace;color:#9ef3ff;font-size:11.5px;word-break:break-all" id="folderHelpAdbCmd">adb push ~/photo.jpg /storage/emulated/0/Android/data/…/files/Media/Photos/</div>
+        </li>
+      </ol>
+    </div>
+
+    <div class="modal-btns">
+      <button class="btn primary" onclick="closeFolderHelpModal()">Got it</button>
+    </div>
+  </div>
 </div>
 
 <!-- Toolbar -->
@@ -456,6 +508,35 @@ function copyRootPath() {
     () => toast('Path copied to clipboard'),
     () => toast('Copy failed', 'err')
   );
+}
+
+/**
+ * Show the "Open folder" help modal. The path the server reports is
+ * server-relative (e.g. `Android/data/com.TapLink.app/files/Media`).
+ * We populate Mac, Windows, and ADB-shaped variants of it so the
+ * user can just copy/paste their way into the right place without
+ * having to mentally translate path separators or invent a guess
+ * for the package name.
+ */
+function openMediaFolderHelp() {
+  if (!rootInfo) {
+    toast('Library info not loaded yet — try again in a moment', 'err');
+    return;
+  }
+  const macPath = rootInfo.rootShortHint;
+  // Windows uses backslashes; Mac/Linux use forward slashes. The path
+  // we get from the server is already Mac/Linux-shaped.
+  const winPath = 'Internal storage\\' + macPath.replace(/\//g, '\\');
+  const adbCmd = 'adb push ~/your-file.jpg /storage/emulated/0/' +
+    macPath + '/Photos/';
+  document.getElementById('folderHelpPath').textContent = macPath;
+  document.getElementById('folderHelpPathMac').textContent = macPath;
+  document.getElementById('folderHelpPathWin').textContent = winPath;
+  document.getElementById('folderHelpAdbCmd').textContent = adbCmd;
+  document.getElementById('folderHelpModal').classList.remove('hidden');
+}
+function closeFolderHelpModal() {
+  document.getElementById('folderHelpModal').classList.add('hidden');
 }
 
 // ── Folder navigation ────────────────────────────────────────────────
