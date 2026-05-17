@@ -190,7 +190,12 @@ class MediaFileInterceptor(
         // For files that exist on disk under DCIM/ but MediaStore refuses
         // to register. See [LOCAL_PREFIX] for the safety contract.
         if (rawPath.startsWith(LOCAL_PREFIX)) {
-            return handleLocalImageRequest(rawPath.removePrefix(LOCAL_PREFIX))
+            val rangeHeader = req.requestHeaders
+                ?.entries
+                ?.firstOrNull { it.key.equals("Range", ignoreCase = true) }
+                ?.value
+                ?.trim()
+            return handleLocalImageRequest(rawPath.removePrefix(LOCAL_PREFIX), rangeHeader)
         }
 
         if (!rawPath.startsWith(MEDIA_PREFIX)) return null
@@ -454,7 +459,10 @@ class MediaFileInterceptor(
      * Reject everything else with 403/404. We intentionally don't
      * surface filesystem errors verbatim — just enough to debug.
      */
-    private fun handleLocalImageRequest(rawTail: String): WebResourceResponse {
+    private fun handleLocalImageRequest(
+        rawTail: String,
+        rangeHeader: String?
+    ): WebResourceResponse {
         val decoded = try {
             URLDecoder.decode(rawTail, "UTF-8")
         } catch (e: Exception) {
@@ -493,17 +501,19 @@ class MediaFileInterceptor(
         }
         return try {
             val length = file.length()
-            val headers = linkedMapOf(
-                "Content-Length" to length.toString(),
-                "Accept-Ranges" to "bytes",
-                "Cache-Control" to "no-store",
-                "Access-Control-Allow-Origin" to "*"
-            )
-            val resp = WebResourceResponse(mime, null, FileInputStream(file))
-            resp.responseHeaders = headers
-            resp.setStatusCodeAndReasonPhrase(200, "OK")
-            Log.d(TAG, "served /local-image $bare (${length}B, $mime)")
-            resp
+            // Reuse the same Range-aware response builders /media/ uses.
+            // Without 206 Partial Content support the WebView's <video>
+            // element refuses to start playback, so videos in particular
+            // need this — and audio/large image responses benefit from
+            // seeking too. mp3Offset=0 because /local-image/ doesn't do
+            // the ID3v2-strip trick that /media/ uses for audio
+            // (only relevant for AI-music ingested .mp3 files).
+            if (!rangeHeader.isNullOrEmpty()) {
+                buildPartialResponse(file, length, rangeHeader, mime, 0L)
+                    ?: buildFullResponse(file, length, mime, 0L)
+            } else {
+                buildFullResponse(file, length, mime, 0L)
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to open /local-image $bare: ${e.message}")
             errorResponse(500, "Open failed")

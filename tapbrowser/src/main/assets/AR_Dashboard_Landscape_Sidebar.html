@@ -36,33 +36,6 @@
       overflow: hidden;
     }
 
-    /* User-selected wallpaper layer.
-       Sits behind everything on the dashboard. JS sets the
-       background-image (and toggles the visible class) when
-       window.TapMedia.getBrowserWallpaper() returns a URL.
-       The dark scrim above keeps tile text readable on bright
-       photos. */
-    .wallpaper {
-      position: fixed;
-      inset: 0;
-      background-size: cover;
-      background-position: center;
-      background-repeat: no-repeat;
-      z-index: 0;
-      display: none;
-      pointer-events: none;
-    }
-    .wallpaper.visible { display: block; }
-    .wallpaper-scrim {
-      position: fixed;
-      inset: 0;
-      background: linear-gradient(180deg, rgba(0,0,0,0.55), rgba(0,0,0,0.78));
-      z-index: 1;
-      display: none;
-      pointer-events: none;
-    }
-    .wallpaper-scrim.visible { display: block; }
-
     /* Portrait lock */
     .rotate {
       display: none;
@@ -115,11 +88,6 @@
       display: flex;
       flex-direction: column;
       overflow-y: auto;
-      /* Stack ABOVE the fixed-position wallpaper layer (z-index 0)
-         and its scrim (z-index 1). Without this the tiles would
-         render below the scrim and look perpetually washed out. */
-      position: relative;
-      z-index: 2;
       /* Clip horizontally so an over-wide child (e.g. a long URL or a
          sub-pixel scale drift) can never push the container to the right
          and park the vertical scrollbar off-screen. */
@@ -780,13 +748,6 @@
 </head>
 
 <body>
-  <!-- Custom wallpaper layer. Background image and visibility are
-       both set from JS once the TapMedia bridge tells us a
-       wallpaper is configured. Z-order: wallpaper (0) below scrim
-       (1) below all UI content. -->
-  <div class="wallpaper" id="dashWallpaper" aria-hidden="true"></div>
-  <div class="wallpaper-scrim" id="dashWallpaperScrim" aria-hidden="true"></div>
-
   <div class="rotate">
     <div class="box">
       <h1>Rotate your device</h1>
@@ -856,27 +817,16 @@
       if (e.target.closest('button')) { e.preventDefault(); }
     });
 
-    /* ── Custom wallpaper ──
-       The photos gallery's "Set as wallpaper" button stores a URL via
-       TapMedia.setBrowserWallpaper(). The bridge is available here
-       because this page is in TRUSTED_ASSETS for MediaLibraryBridge.
-       We ask for the URL once on load. If it's set, apply it as the
-       wallpaper div's background-image and reveal the dark scrim so
-       tile text stays readable on bright photos. */
-    (function applyWallpaper(){
+    /* Wallpaper feature was removed — if the user's prefs still have
+       a URL stored from a previous build, scrub it so it can't get
+       re-applied by any stale code path. Best-effort: silent fail if
+       the bridge isn't present. */
+    (function clearLegacyWallpaper(){
       try {
-        if (!window.TapMedia || typeof window.TapMedia.getBrowserWallpaper !== 'function') return;
-        var resp = JSON.parse(window.TapMedia.getBrowserWallpaper());
-        var url = (resp && resp.url) ? String(resp.url).trim() : '';
-        if (!url) return;
-        var wp = document.getElementById('dashWallpaper');
-        var sc = document.getElementById('dashWallpaperScrim');
-        if (wp) {
-          wp.style.backgroundImage = 'url("' + url.replace(/"/g, '%22') + '")';
-          wp.classList.add('visible');
+        if (window.TapMedia && typeof window.TapMedia.setBrowserWallpaper === 'function') {
+          window.TapMedia.setBrowserWallpaper('');
         }
-        if (sc) sc.classList.add('visible');
-      } catch (_) { /* bridge missing → keep default background */ }
+      } catch (_) { /* no-op */ }
     })();
 
     /* Interactive selector and touchmove blocker removed to allow scrolling */

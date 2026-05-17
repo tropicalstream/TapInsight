@@ -154,6 +154,27 @@ button { font: inherit; color: inherit; background: transparent; border: 0; curs
   display: block;
   pointer-events: none;
 }
+/* Video thumbnail placeholder. We can't render an MP4 in <img>
+   (the WebView shows the broken-image icon), and a <video> poster
+   would block the grid while it decodes a frame. A plain styled
+   div with the ▶ pill on top is reliable and instant. */
+.tile .vid-thumb {
+  width: 100%; height: 100%;
+  display: block;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(255,255,255,0.06), transparent 60%),
+    linear-gradient(135deg, #2a3140 0%, #16191f 100%);
+  position: relative;
+}
+.tile .vid-thumb::before {
+  content: '';
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(0deg,  rgba(255,255,255,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+  background-size: 14px 14px;
+  pointer-events: none;
+}
 .tile .label {
   position: absolute;
   inset: auto 0 0 0;
@@ -360,9 +381,6 @@ button { font: inherit; color: inherit; background: transparent; border: 0; curs
     <button id="rotRightBtn" title="Rotate 90° clockwise">
       <span class="icon">↻</span><span>Rotate</span>
     </button>
-    <button id="wallpaperBtn" title="Use this image as the browser wallpaper">
-      <span class="icon">🖼</span><span>Wallpaper</span>
-    </button>
     <button id="infoBtn" title="Show photo details">
       <span class="icon">ⓘ</span><span>Info</span>
     </button>
@@ -411,7 +429,6 @@ const els = {
   rotRightBtn: document.getElementById('rotRightBtn'),
   infoBtn: document.getElementById('infoBtn'),
   shareBtn: document.getElementById('shareBtn'),
-  wallpaperBtn: document.getElementById('wallpaperBtn'),
   deleteBtn: document.getElementById('deleteBtn'),
   grantBanner: document.getElementById('grantBanner'),
   grantBtn: document.getElementById('grantBtn'),
@@ -615,30 +632,30 @@ function renderGrid() {
     tile.className = 'tile';
     tile.addEventListener('click', () => openEntry(i));
 
-    const img = document.createElement('img');
-    img.loading = 'lazy';
-    img.decoding = 'async';
-    img.src = entryUrl(p);
-    img.alt = p.name;
-    tile.appendChild(img);
-
-    // Video badge — small "▶ 0:45"-style overlay on the centre of
-    // the tile so the user knows tapping will start playback in the
-    // dedicated video player rather than zoom the still image.
     if (p.kind === 'VIDEO') {
+      // Styled placeholder + ▶ pill — no <img> because the WebView
+      // can't render an MP4 as an image source and would show the
+      // broken-image icon.
+      const thumb = document.createElement('div');
+      thumb.className = 'vid-thumb';
+      tile.appendChild(thumb);
       const badge = document.createElement('div');
       badge.className = 'video-badge';
       const pill = document.createElement('span');
       pill.className = 'pill';
-      // Duration if the bridge supplied it (DCIM entries do); fall
-      // back to the word "video" so the affordance is clear even
-      // without duration.
       const ms = p.durationMs;
       pill.textContent = (typeof ms === 'number' && ms > 0)
         ? humanDuration(ms)
         : 'video';
       badge.appendChild(pill);
       tile.appendChild(badge);
+    } else {
+      const img = document.createElement('img');
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.src = entryUrl(p);
+      img.alt = p.name;
+      tile.appendChild(img);
     }
 
     const label = document.createElement('div');
@@ -855,40 +872,6 @@ function fallbackCopy(text) {
  * date) without sending them elsewhere. For real cross-device transfers
  * the user can use the companion app's Library tab.
  */
-/**
- * Save the currently-viewed photo as the AR Dashboard wallpaper.
- * Sends the entry's full URL to the bridge — the dashboard will read
- * it back on its next load and apply it as background-image. Works
- * for every entry kind whose entryUrl() returns a non-empty value
- * (library, dcim_own, dcim, local).
- */
-function setAsWallpaper() {
-  const p = photos[lightboxIndex];
-  if (!p) return;
-  if (p.kind === 'VIDEO') {
-    toast('Wallpaper must be an image, not a video');
-    return;
-  }
-  const url = entryUrl(p);
-  if (!url) { toast('Cannot set this entry as wallpaper'); return; }
-  if (!window.TapMedia || typeof window.TapMedia.setBrowserWallpaper !== 'function') {
-    toast('Wallpaper not supported in this build');
-    return;
-  }
-  let resp;
-  try {
-    resp = JSON.parse(window.TapMedia.setBrowserWallpaper(url));
-  } catch (e) {
-    toast('Wallpaper set failed: ' + String(e));
-    return;
-  }
-  if (resp && resp.error) {
-    toast(resp.error);
-    return;
-  }
-  toast('Wallpaper set · visible on the AR Dashboard');
-}
-
 function showInfo() {
   const p = photos[lightboxIndex];
   if (!p) return;
@@ -916,7 +899,6 @@ els.rotLeftBtn.addEventListener('click', () => rotateBy(-90));
 els.rotRightBtn.addEventListener('click', () => rotateBy(90));
 els.shareBtn.addEventListener('click', copyShareUrl);
 els.infoBtn.addEventListener('click', showInfo);
-els.wallpaperBtn.addEventListener('click', setAsWallpaper);
 els.deleteBtn.addEventListener('click', deletePhoto);
 els.grantBtn.addEventListener('click', requestMediaAccess);
 els.accessPill.addEventListener('click', () => {
