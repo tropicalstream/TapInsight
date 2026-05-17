@@ -1,5 +1,6 @@
 package com.TapLink.app.media
 
+import android.content.ContentUris
 import android.content.Context
 import android.util.Log
 import android.webkit.JavascriptInterface
@@ -97,6 +98,10 @@ class MediaLibraryBridge(
     val service: MediaLibraryService = MediaLibraryService(context).also { it.ensureBootstrap() }
 
     val mediaRoot: File get() = service.mediaRoot
+
+    /** Lazy DCIM enumerator — only allocated if the gallery actually
+     *  asks for the merged shared-storage view. */
+    private val dcim: DcimEnumerator by lazy { DcimEnumerator(context) }
 
     /**
      * Background worker pool for async TTS synth. A small cached pool gives
@@ -352,6 +357,91 @@ class MediaLibraryBridge(
             .put("status", "rotated")
             .put("path", path)
             .put("degrees", normalizedDeg)
+            .toString()
+    }
+
+    /**
+     * Merged photo+video listing: TapInsight's own `Media/Photos/`
+     * folder ∪ the device's `/DCIM/*` MediaStore entries (RayNeo
+     * native Camera app captures). Newest first.
+     *
+     * Returns JSON `{"hasMediaPermission": bool, "entries": [...]}`.
+     * Each entry has:
+     *   source: "library" | "dcim"
+     *   name, lastModifiedMs, sizeBytes, kind ("IMAGE"|"VIDEO"),
+     *   thumbnailUrl, fullUrl   ← always virtual https URLs the
+     *     WebView can <img src=…> directly.
+     *   relativePath ("Photos/IMG_…jpg") OR dcimId (numeric, used in
+     *     subsequent rotate/delete bridge calls — DCIM ops are NOT
+     *     yet wired; PR says read-only for shared storage).
+     *
+     * When [DcimEnumerator.hasPermission] is false, hasMediaPermission
+     * is false and only the library entries are returned. The JS side
+     * can show a "Grant access" CTA in that case.
+     */
+    @JavascriptInterface
+    fun listAllPhotos(): String {
+        if (!isTrusted()) return denied("listAllPhotos")
+
+        val arr = JSONArray()
+
+        // ── Library (Media/Photos) entries ──
+        val libraryListing = service.listFolder(MediaLibraryService.DEFAULT_PHOTOS_DIR)
+        libraryListing?.entries?.forEach { e ->
+            if (e.kind != MediaLibraryService.MediaKind.IMAGE &&
+                e.kind != MediaLibraryService.MediaKind.VIDEO) return@forEach
+            arr.put(
+                JSONObject()
+                    .put("source", "library")
+                    .put("name", e.name)
+                    .put("relativePath", e.relativePath)
+                    .put("lastModifiedMs", e.lastModifiedMs)
+                    .put("sizeBytes", e.sizeBytes)
+                    .put("kind", e.kind.name)
+                    .put("fullUrl", toMediaUrl(e.relativePath))
+                    .put("thumbnailUrl", toMediaUrl(e.relativePath))
+            )
+        }
+
+        // ── DCIM (shared storage) entries ──
+        val hasMediaPermission = DcimEnumerator.hasPermission(context)
+        if (hasMediaPermission) {
+            for (d in dcim.listAll(limit = 1000)) {
+                // Proxy DCIM via the companion server's /api/dcim/file
+                // endpoint when used from the companion app. On the
+                // glasses gallery we ask the WebView to load
+                // content:// directly via androidx WebView's
+                // setAllowContentAccess — which is true by default
+                // for in-app WebViews. So a content:// URL works.
+                arr.put(
+                    JSONObject()
+                        .put("source", "dcim")
+                        .put("name", d.displayName)
+                        .put("dcimId", ContentUris.parseId(d.contentUri))
+                        .put("dcimUri", d.contentUri.toString())
+                        .put("lastModifiedMs", d.dateTakenMs)
+                        .put("sizeBytes", d.sizeBytes)
+                        .put("kind", if (d.isVideo) "VIDEO" else "IMAGE")
+                        .put("mimeType", d.mimeType)
+                        .put("relativeDisplayPath", d.relativeDisplayPath ?: JSONObject.NULL)
+                        .put("fullUrl", d.contentUri.toString())
+                        .put("thumbnailUrl", d.contentUri.toString())
+                        .put("width", d.width)
+                        .put("height", d.height)
+                        .put("durationMs", d.durationMs ?: JSONObject.NULL)
+                )
+            }
+        }
+
+        // Sort newest first by lastModifiedMs.
+        val sorted = JSONArray()
+        val asList = (0 until arr.length()).map { arr.getJSONObject(it) }
+            .sortedByDescending { it.optLong("lastModifiedMs") }
+        for (o in asList) sorted.put(o)
+
+        return JSONObject()
+            .put("hasMediaPermission", hasMediaPermission)
+            .put("entries", sorted)
             .toString()
     }
 

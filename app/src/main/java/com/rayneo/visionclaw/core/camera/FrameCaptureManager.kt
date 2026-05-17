@@ -6,6 +6,7 @@ import android.graphics.Rect
 import android.graphics.YuvImage
 import android.os.SystemClock
 import android.util.Base64
+import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -37,6 +38,12 @@ class FrameCaptureManager(
 
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                // 720p target: CameraX picks the closest sensor-supported
+                // size. Roughly 12× the pixels of the previous default
+                // (~640×480) so saved photos look like real photos
+                // instead of thumbnails, while staying small enough for
+                // Gemini Live multimodal streaming.
+                .setTargetResolution(Size(1280, 720))
                 .build()
 
             analysis.setAnalyzer(cameraExecutor) { imageProxy ->
@@ -154,6 +161,10 @@ class FrameCaptureManager(
 
     companion object {
         private const val FRAME_INTERVAL_MS = 1100L
-        private const val JPEG_QUALITY = 62
+        // Bumped 62 → 88 so save_photo writes look like real photos
+        // (sharp text, recognizable detail) instead of low-bitrate
+        // streaming preview frames. The wire cost for Gemini Live
+        // is acceptable at 720p.
+        private const val JPEG_QUALITY = 88
     }
 }

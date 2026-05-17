@@ -326,20 +326,30 @@ function formatDate(ms) {
 }
 
 async function loadPhotos() {
-  if (!window.TapMedia || typeof window.TapMedia.listFolder !== 'function') {
+  if (!window.TapMedia) {
     els.meta.textContent = 'TapMedia bridge not available';
     els.gridInner.innerHTML =
       '<div class="empty"><div class="big">Photo library not available</div>' +
       '<div>This page must be opened from the TapInsight glasses.</div></div>';
     return;
   }
+  // Prefer listAllPhotos() (merged library + DCIM) when available;
+  // fall back to listFolder("Photos") on older builds where only
+  // the library scope exists.
   let json;
   try {
-    json = JSON.parse(window.TapMedia.listFolder(PHOTOS_FOLDER));
+    if (typeof window.TapMedia.listAllPhotos === 'function') {
+      json = JSON.parse(window.TapMedia.listAllPhotos());
+    } else if (typeof window.TapMedia.listFolder === 'function') {
+      const folder = JSON.parse(window.TapMedia.listFolder(PHOTOS_FOLDER));
+      json = { entries: folder.entries || [], hasMediaPermission: true };
+    } else {
+      throw new Error('No listing method on TapMedia');
+    }
   } catch (e) {
     els.meta.textContent = 'Bridge error';
     els.gridInner.innerHTML =
-      '<div class="empty"><div class="big">Could not read Photos folder</div><div>' +
+      '<div class="empty"><div class="big">Could not read Photos</div><div>' +
       String(e) + '</div></div>';
     return;
   }
@@ -349,22 +359,38 @@ async function loadPhotos() {
     return;
   }
 
-  // Filter to image entries only and sort newest first.
-  const imageKinds = new Set(['IMAGE']);
+  const imageKinds = new Set(['IMAGE', 'VIDEO']);
   photos = (json.entries || [])
     .filter(e => imageKinds.has(e.kind))
     .sort((a, b) => (b.lastModifiedMs || 0) - (a.lastModifiedMs || 0));
 
+  const accessMissing = json.hasMediaPermission === false;
   if (!photos.length) {
     els.meta.textContent = '0 photos';
+    const cta = accessMissing
+      ? '<div style="margin-top:14px"><button onclick="requestMediaAccess()" style="background:var(--accent);color:#001;border:0;padding:10px 18px;border-radius:8px;font-weight:600;cursor:pointer">Grant access to device photos</button></div><div style="margin-top:10px;font-size:11px;color:var(--text-dim)">Required to show photos and videos taken with the RayNeo native Camera.</div>'
+      : '<div>Say <i>"save this photo"</i> to TapInsight while the AR camera is active.</div>';
     els.gridInner.innerHTML =
-      '<div class="empty"><div class="big">No photos yet</div>' +
-      '<div>Say <i>"save this photo"</i> to TapInsight while the AR camera is active.</div></div>';
+      '<div class="empty"><div class="big">No photos yet</div>' + cta + '</div>';
     return;
   }
-  els.meta.textContent = photos.length + ' photo' + (photos.length === 1 ? '' : 's');
+  const libCount = photos.filter(p => p.source !== 'dcim').length;
+  const dcimCount = photos.length - libCount;
+  let metaParts = [photos.length + ' total'];
+  if (dcimCount > 0) metaParts.push(libCount + ' TapInsight · ' + dcimCount + ' device');
+  else if (accessMissing) metaParts.push('device photos hidden — tap a photo to see access prompt');
+  els.meta.textContent = metaParts.join(' · ');
   renderGrid();
   maybeFocusFromQuery();
+}
+
+function requestMediaAccess() {
+  if (window.TapMedia && typeof window.TapMedia.requestMediaPermission === 'function') {
+    try { window.TapMedia.requestMediaPermission(); } catch (_) {}
+    toast('Approve in the system dialog, then return here.');
+  } else {
+    toast('Permission request not supported in this build.');
+  }
 }
 
 function renderGrid() {

@@ -4281,6 +4281,13 @@ class MainActivity : AppCompatActivity() {
         // after they've explicitly accepted the offer ('yes, send the
         // links'), so the voice-first reference guard doesn't apply here.
         if (functionName == "send_link_list") return false
+        // camera_action is the photo-save tool. When it returns an
+        // open_taplink: pointing at the on-glasses photos gallery, that
+        // URL is the user's direct request ("view it") — not a
+        // reference-style pull that the voice-first guard exists to
+        // intercept. Letting the gallery open here is the whole point
+        // of the save → view flow.
+        if (functionName == "camera_action") return false
         val primaryTranscript = candidates.first()
         // GOOGLE SEARCH BYPASS — same intent as the corresponding bypass
         // in explicitMediaTypeConflictResponse(). When the user asks for
