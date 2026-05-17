@@ -112,15 +112,32 @@
                     android:textStyle="bold"
                     android:visibility="gone" />
 
+                <!-- OpenClaw / TapClaw status — crab silhouette. Visible
+                     when openclaw_enabled is on. Tinted red (unreachable)
+                     or green (reachable) by the OpenClaw ping. -->
                 <ImageView
                     android:id="@+id/hudOpenClawStatusIcon"
                     android:layout_width="16dp"
                     android:layout_height="16dp"
                     android:layout_marginStart="8dp"
                     android:contentDescription="@string/hud_openclaw_status"
+                    android:src="@drawable/ic_openclaw_crab"
+                    android:tint="#FFFF5B5B"
+                    android:visibility="gone" />
+                <!-- Hermes status — winged-helmet silhouette. Visible when
+                     hermes_enabled is on. Tinted red (unreachable) or
+                     green (reachable) by the Hermes ping. The two icons
+                     sit side-by-side so the user sees both agents'
+                     status at a glance when both are enabled. -->
+                <ImageView
+                    android:id="@+id/hudHermesStatusIcon"
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:layout_marginStart="6dp"
+                    android:contentDescription="@string/hud_hermes_status"
                     android:src="@drawable/ic_hermes_status"
                     android:tint="#FFFF5B5B"
-                    android:visibility="visible" />
+                    android:visibility="gone" />
             </LinearLayout>
         </LinearLayout>
 

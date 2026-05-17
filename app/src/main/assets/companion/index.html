@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TapHermes Setup</title>
+<title>TapInsight Setup</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;padding:16px;max-width:640px;margin:0 auto}
@@ -91,7 +91,7 @@
 </head>
 <body>
 
-<h1>TapHermes Setup Guide</h1>
+<h1>TapInsight Setup Guide</h1>
 <p class="sub">RayNeo X3 Pro &mdash; Follow each step in order</p>
 
 <div style="display:flex;gap:0;margin-bottom:20px;border-radius:8px;overflow:hidden;border:1px solid #333">
@@ -100,7 +100,7 @@
   <a href="/dashboard" style="flex:1;padding:10px;text-align:center;text-decoration:none;font-size:13px;font-weight:600;color:#aaa;background:#1a1a1a">Dashboard</a>
   <a href="/radio" style="flex:1;padding:10px;text-align:center;text-decoration:none;font-size:13px;font-weight:600;color:#aaa;background:#1a1a1a">TapRadio</a>
   <a href="/library" style="flex:1;padding:10px;text-align:center;text-decoration:none;font-size:13px;font-weight:600;color:#aaa;background:#1a1a1a">Library</a>
-  <a href="/openclaw" style="flex:1;padding:10px;text-align:center;text-decoration:none;font-size:13px;font-weight:600;color:#aaa;background:#1a1a1a">Hermes</a>
+  <a href="/openclaw" style="flex:1;padding:10px;text-align:center;text-decoration:none;font-size:13px;font-weight:600;color:#aaa;background:#1a1a1a">Agents</a>
 </div>
 
 <div class="server-card" id="serverInfoCard">
@@ -470,7 +470,7 @@
         <span style="font-size:14px;font-weight:600;color:#fff">Copy the URL from the error page</span>
       </div>
       <p style="font-size:12px;color:#aaa;margin:0 0 6px 32px;line-height:1.5">On the error page, tap the <b style="color:#fff">address bar</b> at the top of the tab. Select and copy the <b style="color:#fff">entire URL</b>. It will look something like:</p>
-      <div style="margin:0 0 6px 32px;background:#0a0f14;padding:8px 10px;border-radius:6px;font-size:11px;color:#9ef3ff;word-break:break-all;border:1px solid #1a2a34">http://localhost:19120/oauth/callback?code=4/0Axx...&amp;scope=...</div>
+      <div style="margin:0 0 6px 32px;background:#0a0f14;padding:8px 10px;border-radius:6px;font-size:11px;color:#9ef3ff;word-break:break-all;border:1px solid #1a2a34">http://localhost:19110/oauth/callback?code=4/0Axx...&amp;scope=...</div>
     </div>
 
     <!-- Step 3: Paste -->
@@ -570,7 +570,7 @@
     5. Click <b>Save</b> on the Spotify page. Open <b>Settings</b>, copy the <b>Client ID</b> and <b>Client Secret</b>, and paste them below. Click <b>Save configuration</b> at the bottom of this page before continuing.<br>
     <div style="margin-top:10px;padding:8px;background:#000;border:1px dashed #1DB954;border-radius:6px;font-size:12px">
       <div style="color:#1DB954;margin-bottom:4px">Redirect URI to paste on Spotify (copy this verbatim):</div>
-      <code id="spotifyRedirectUri" style="user-select:all;color:#eee">http://127.0.0.1:19120/spotify/callback</code>
+      <code id="spotifyRedirectUri" style="user-select:all;color:#eee">http://127.0.0.1:19110/spotify/callback</code>
       <button type="button" style="margin-left:8px;background:#222;color:#1DB954;border:1px solid #1DB954;border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer" onclick="copySpotifyRedirectUri()">Copy</button>
       <div style="color:#888;margin-top:6px;font-size:11px;line-height:1.55">
         If you see <b style="color:#f77">"redirect_uri: Not matching configuration"</b> from Spotify after clicking Connect, it means the URI pasted in your Spotify app dashboard doesn't exactly match this line. Copy it with the button above and make sure the URI in your Spotify app (and that you clicked <b>Save</b> on the dashboard) matches character-for-character.
@@ -1385,7 +1385,7 @@ const HELP = {
 <p><b>Step 3 &mdash; Create OAuth credentials</b></p>
 <ol><li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:#00e5ff">Credentials</a> &rarr; <b>Create Credentials</b> &rarr; <b>OAuth Client ID</b></li>
 <li>Application type: <b>Web application</b></li>
-<li>Under <b>Authorized redirect URIs</b>, add exactly:<br><code id="oauthRedirectHint">http://localhost:19120/oauth/callback</code></li>
+<li>Under <b>Authorized redirect URIs</b>, add exactly:<br><code id="oauthRedirectHint">http://localhost:19110/oauth/callback</code></li>
 <li>Click <b>Create</b>, then copy the <b>Client ID</b> and <b>Client Secret</b></li></ol>
 <p><b>Step 4 &mdash; Authorize</b></p>
 <ol><li>Paste the Client ID and Secret into the fields on the setup page</li>
@@ -3259,7 +3259,7 @@ async function disablePhoneLocationBridge(){
 // When the user is accessing the companion app from another device (phone/laptop),
 // the redirect to localhost will land on a blank page, but the auth code will be
 // in the URL bar for them to copy-paste back here.
-const OAUTH_REDIRECT_URI = 'http://localhost:19120/oauth/callback';
+const OAUTH_REDIRECT_URI = 'http://localhost:19110/oauth/callback';
 let oauthPollTimer = null;
 
 // Show the user exactly which redirect URI to add in Google Cloud
@@ -3868,7 +3868,7 @@ function applySkillQr(data) {
   // Fallback: if the status endpoint isn't reachable yet (e.g. during
   // initial load), show the most common canonical form.
   el.textContent = (location.protocol === 'https:' ? 'https' : 'http') +
-    '://127.0.0.1:19120/spotify/callback';
+    '://127.0.0.1:19110/spotify/callback';
 })();
 
 function copySpotifyRedirectUri(){

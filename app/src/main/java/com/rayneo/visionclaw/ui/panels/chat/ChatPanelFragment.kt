@@ -184,6 +184,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
     private lateinit var hudAqiText: TextView
     private lateinit var hudTapClawResultBadge: TextView
     private lateinit var hudOpenClawStatusIcon: ImageView
+    private lateinit var hudHermesStatusIcon: ImageView
     private lateinit var hudRadioText: TextView
     private lateinit var hudHeartbeatText: TextView
     private lateinit var hudConnectionDot: View
@@ -372,6 +373,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         hudAqiText = view.findViewById(R.id.hudAqiText)
         hudTapClawResultBadge = view.findViewById(R.id.hudTapClawResultBadge)
         hudOpenClawStatusIcon = view.findViewById(R.id.hudOpenClawStatusIcon)
+        hudHermesStatusIcon = view.findViewById(R.id.hudHermesStatusIcon)
         hudRadioText = view.findViewById(R.id.hudRadioText)
         hudHeartbeatText = view.findViewById(R.id.hudHeartbeatText)
         hudConnectionDot = view.findViewById(R.id.hudConnectionDot)
@@ -1619,21 +1621,37 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
     }
 
     fun setOpenClawGatewayStatus(status: OpenClawGatewayStatus) {
-        if (!isAdded || !::hudOpenClawStatusIcon.isInitialized) return
+        if (!::hudOpenClawStatusIcon.isInitialized) return
+        applyAgentGatewayStatus(hudOpenClawStatusIcon, status)
+    }
+
+    /**
+     * Hermes parallel of [setOpenClawGatewayStatus]. Drives the second
+     * 16dp HUD icon (winged-helmet glyph) that sits beside the crab.
+     * Same red/green/hidden semantics; independent of the OC status so
+     * both agents can be visible simultaneously.
+     */
+    fun setHermesGatewayStatus(status: OpenClawGatewayStatus) {
+        if (!::hudHermesStatusIcon.isInitialized) return
+        applyAgentGatewayStatus(hudHermesStatusIcon, status)
+    }
+
+    private fun applyAgentGatewayStatus(icon: ImageView?, status: OpenClawGatewayStatus) {
+        if (!isAdded || icon == null) return
         when (status) {
             OpenClawGatewayStatus.HIDDEN -> {
-                hudOpenClawStatusIcon.visibility = View.GONE
-                hudOpenClawStatusIcon.clearColorFilter()
+                icon.visibility = View.GONE
+                icon.clearColorFilter()
             }
             OpenClawGatewayStatus.GOOD -> {
-                hudOpenClawStatusIcon.visibility = View.VISIBLE
-                hudOpenClawStatusIcon.setColorFilter(0xFF00E676.toInt())
-                hudOpenClawStatusIcon.alpha = 1f
+                icon.visibility = View.VISIBLE
+                icon.setColorFilter(0xFF00E676.toInt())
+                icon.alpha = 1f
             }
             OpenClawGatewayStatus.BAD -> {
-                hudOpenClawStatusIcon.visibility = View.VISIBLE
-                hudOpenClawStatusIcon.setColorFilter(0xFFFF5B5B.toInt())
-                hudOpenClawStatusIcon.alpha = 1f
+                icon.visibility = View.VISIBLE
+                icon.setColorFilter(0xFFFF5B5B.toInt())
+                icon.alpha = 1f
             }
         }
     }

@@ -52,7 +52,7 @@ import javax.net.ssl.SSLContext
  * secure context in browsers (required for Geolocation API / Phone GPS Bridge).
  *
  * Open from any phone/computer on the same WiFi:
- *   https://<glasses-ip>:19120
+ *   https://<glasses-ip>:19110
  * (Accept the self-signed certificate warning on first visit.)
  *
  * Pages:
@@ -71,7 +71,7 @@ import javax.net.ssl.SSLContext
  */
 class CompanionServer(
     private val context: Context,
-    port: Int = 19120,
+    port: Int = 19110,
     var oauthManager: GoogleOAuthManager? = null,
     /** Provides the latest device GPS location for the Location test button. */
     var locationProvider: (() -> com.rayneo.visionclaw.core.model.DeviceLocationContext?)? = null,
@@ -216,7 +216,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
     private val appPreferences = AppPreferences(context)
 
     /** Whether HTTPS was successfully configured. When true, the server serves
-     *  HTTPS on port 19120 and the Geolocation API works (secure context). */
+     *  HTTPS on port 19110 and the Geolocation API works (secure context). */
     var httpsEnabled: Boolean = false
         private set
 
@@ -233,7 +233,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
      * The keystore is persisted in the app's private files dir so the certificate
      * stays stable across restarts (users only accept the cert warning once).
      *
-     * On success: port 19120 serves HTTPS, `window.isSecureContext === true` in browsers,
+     * On success: port 19110 serves HTTPS, `window.isSecureContext === true` in browsers,
      *   enabling the Geolocation API for the Phone GPS Bridge.
      * On failure: server falls back to plain HTTP (GPS bridge won't work but everything else does).
      */
@@ -298,7 +298,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
 
             makeSecure(sslContext.serverSocketFactory, null)
             httpsEnabled = true
-            Log.i(TAG, "HTTPS enabled on companion server (port 19120)")
+            Log.i(TAG, "HTTPS enabled on companion server (port 19110)")
         } catch (e: Exception) {
             Log.e(TAG, "HTTPS setup failed — falling back to HTTP. GPS bridge will not work.", e)
             httpsEnabled = false
@@ -1317,7 +1317,7 @@ window.__companionToken = '${sessionToken}';
         }
 
         // Reconstruct the redirect URI from the incoming request
-        val host = session.headers["host"] ?: "localhost:19120"
+        val host = session.headers["host"] ?: "localhost:19110"
         val scheme = if (httpsEnabled) "https" else "http"
         val redirectUri = "$scheme://$host/oauth/callback"
 
@@ -1336,7 +1336,7 @@ window.__companionToken = '${sessionToken}';
 
     /**
      * Handle manual OAuth code submission: POST /api/oauth/exchange
-     * Body: {"code": "...", "redirect_uri": "http://<glasses-ip>:19120/oauth/callback"}
+     * Body: {"code": "...", "redirect_uri": "http://<glasses-ip>:19110/oauth/callback"}
      */
     private fun handleOAuthExchange(session: IHTTPSession): Response {
         return try {
@@ -1362,7 +1362,7 @@ window.__companionToken = '${sessionToken}';
             }
 
             val code = json.optString("code", "").trim()
-            val host = session.headers["host"] ?: "localhost:19120"
+            val host = session.headers["host"] ?: "localhost:19110"
             val scheme = if (httpsEnabled) "https" else "http"
             val defaultRedirectUri = "$scheme://$host/oauth/callback"
             val redirectUri = json.optString("redirect_uri", defaultRedirectUri).trim()
@@ -1561,9 +1561,9 @@ window.__companionToken = '${sessionToken}';
 
     /** Returns server connection info (protocol, HTTPS status, URL hint). */
     private fun serveServerInfo(session: IHTTPSession): Response {
-        val host = session.headers["host"] ?: "localhost:19120"
+        val host = session.headers["host"] ?: "localhost:19110"
         val hostName = host.substringBefore(':').ifBlank { "localhost" }
-        val serverPort = runCatching { listeningPort }.getOrDefault(19120)
+        val serverPort = runCatching { listeningPort }.getOrDefault(19110)
         val lanIps = detectLanIpv4Addresses()
         val primaryLanIp = lanIps.firstOrNull() ?: hostName.takeIf { it != "localhost" && it != "127.0.0.1" }
         val scheme = if (httpsEnabled) "https" else "http"
@@ -2652,9 +2652,9 @@ window.__companionToken = '${sessionToken}';
      * everything else must be `https://` with an FQDN.
      *
      * The companion server listens on all interfaces, so the request's
-     * Host header could be anything: `localhost:19120`, `127.0.0.1:19120`,
-     * the glasses' LAN IP, or `[::1]:19120`. We **always** normalise to
-     * the canonical loopback form `http://127.0.0.1:19120/spotify/callback`
+     * Host header could be anything: `localhost:19110`, `127.0.0.1:19110`,
+     * the glasses' LAN IP, or `[::1]:19110`. We **always** normalise to
+     * the canonical loopback form `http://127.0.0.1:19110/spotify/callback`
      * (or the https equivalent when TLS is enabled) so the value the user
      * pastes into their Spotify app dashboard matches what the server
      * actually sends, regardless of which hostname they used to open the
@@ -3023,7 +3023,7 @@ window.__companionToken = '${sessionToken}';
      */
     private fun spotifyCanonicalRedirectUri(): String {
         val scheme = if (httpsEnabled) "https" else "http"
-        val port = runCatching { listeningPort }.getOrNull()?.takeIf { it > 0 } ?: 19120
+        val port = runCatching { listeningPort }.getOrNull()?.takeIf { it > 0 } ?: 19110
         return "$scheme://127.0.0.1:$port/spotify/callback"
     }
 
@@ -3139,8 +3139,8 @@ window.__companionToken = '${sessionToken}';
         val OWNED_LIBRARY_URLS = setOf(
             "file:///android_asset/library_launcher.html",
             "file:///android_asset/library_local.html",
-            "https://127.0.0.1:19120/library",
-            "http://127.0.0.1:19120/library"
+            "https://127.0.0.1:19110/library",
+            "http://127.0.0.1:19110/library"
         )
         val existingApp = apps.optJSONObject("medialibrary")
         if (existingApp == null) {

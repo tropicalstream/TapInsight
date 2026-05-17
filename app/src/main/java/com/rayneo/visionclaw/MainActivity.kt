@@ -6707,13 +6707,10 @@ class MainActivity : AppCompatActivity() {
                 pingInFlight = false
                 runOnUiThread {
                     chatFragment.clearHeartbeat()
-                    // On the Hermes branch the HUD status icon represents
-                    // Hermes. Leave it alone here so hermesPingRunnable
-                    // keeps coloring it red/green independently. Only hide
-                    // it when BOTH OpenClaw AND Hermes are off.
-                    if (!viewModel.preferences.hermesEnabled) {
-                        chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
-                    }
+                    // OC and Hermes drive separate HUD icons now, so this
+                    // can freely hide its own crab without affecting the
+                    // wings.
+                    chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
                     chatFragment.setStreamActiveIndicator(false)
                 }
                 scheduleNextPing()
@@ -6831,10 +6828,7 @@ class MainActivity : AppCompatActivity() {
                 hermesPingInFlight = false
                 lastHermesGatewayHealthy = false
                 runOnUiThread {
-                    // Only hide if OpenClaw isn't holding the icon either.
-                    if (!prefs.openClawEnabled) {
-                        chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
-                    }
+                    chatFragment.setHermesGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
                 }
                 scheduleNextPing()
                 return
@@ -6844,7 +6838,7 @@ class MainActivity : AppCompatActivity() {
             if (prefs.hermesEndpoint.isBlank() || prefs.hermesApiKey.isBlank()) {
                 lastHermesGatewayHealthy = false
                 runOnUiThread {
-                    chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+                    chatFragment.setHermesGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
                 }
                 scheduleNextPing()
                 return
@@ -6860,7 +6854,7 @@ class MainActivity : AppCompatActivity() {
                     val healthy = result is com.rayneo.visionclaw.core.network.HermesClient.ClawResult.Success
                     lastHermesGatewayHealthy = healthy
                     runOnUiThread {
-                        chatFragment.setOpenClawGatewayStatus(
+                        chatFragment.setHermesGatewayStatus(
                             if (healthy) ChatPanelFragment.OpenClawGatewayStatus.GOOD
                             else ChatPanelFragment.OpenClawGatewayStatus.BAD
                         )
@@ -6868,13 +6862,13 @@ class MainActivity : AppCompatActivity() {
                 } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
                     lastHermesGatewayHealthy = false
                     runOnUiThread {
-                        chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+                        chatFragment.setHermesGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
                     }
                 } catch (e: Exception) {
                     Log.w("HermesPing", "Ping exception", e)
                     lastHermesGatewayHealthy = false
                     runOnUiThread {
-                        chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+                        chatFragment.setHermesGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
                     }
                 } finally {
                     hermesPingInFlight = false
@@ -6891,12 +6885,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun startHermesPing() {
         uiHandler.removeCallbacks(hermesPingRunnable)
-        // Show the icon immediately in "checking" (red) so it's visible
-        // from the moment the HUD draws, instead of waiting for the first
-        // ping result.
+        // Paint the Hermes wings immediately so the user sees it from
+        // the first frame (red = "checking"). Hides itself in the
+        // ping runnable below when the toggle is off.
         runOnUiThread {
             if (viewModel.preferences.hermesEnabled) {
-                chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+                chatFragment.setHermesGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+            } else {
+                chatFragment.setHermesGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
             }
         }
         uiHandler.postDelayed(hermesPingRunnable, 1_500L)

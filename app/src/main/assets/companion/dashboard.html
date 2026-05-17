@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TapHermes Dashboard Editor</title>
+<title>TapInsight Dashboard</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;padding:16px;max-width:720px;margin:0 auto}
@@ -67,7 +67,7 @@
 </head>
 <body>
 
-<h1>TapHermes Dashboard</h1>
+<h1>TapInsight Dashboard</h1>
 <p class="sub">Edit categories &amp; links synced to TapBrowser</p>
 
 <div class="nav">
@@ -76,7 +76,7 @@
   <a href="/dashboard" class="active">Dashboard</a>
   <a href="/radio">TapRadio</a>
   <a href="/library">Library</a>
-  <a href="/openclaw">Hermes</a>
+  <a href="/openclaw">Agents</a>
 </div>
 
 <div id="statusBar" class="status"></div>
@@ -253,8 +253,8 @@ function ensureMediaLibraryMigration(dashboardState) {
   const LIBRARY_OWNED_URLS = new Set([
     'file:///android_asset/library_launcher.html',
     'file:///android_asset/library_local.html',
-    'https://127.0.0.1:19120/library',
-    'http://127.0.0.1:19120/library'
+    'https://127.0.0.1:19110/library',
+    'http://127.0.0.1:19110/library'
   ]);
 
   if (!dashboardState.apps.medialibrary) {
