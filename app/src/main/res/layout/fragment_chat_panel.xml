@@ -421,31 +421,33 @@
     -->
     <androidx.constraintlayout.widget.ConstraintLayout
         android:id="@+id/orbColumn"
-        android:layout_width="112dp"
+        android:layout_width="208dp"
         android:layout_height="0dp"
-        android:layout_marginStart="14dp"
-        android:layout_marginBottom="16dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginBottom="20dp"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/hudContainer">
 
-        <!-- Burgundy-stroked camera frame.  Top-anchored to the orb column
-             (which itself is anchored to the HUD's bottom) with a small
-             explicit top margin so there is always a clear gap between
-             the HUD cards above and the frame — regardless of how tall
-             the HUD stack grows when calendar / news / tasks cards are
-             all populated — while keeping the frame snug against the
-             HUD rather than floating mid-panel.  The orb below sits at
-             the bottom of the column; the space between the frame and
-             the orb is intentional empty breathing room. -->
+        <!-- Burgundy-stroked camera frame. 2× the original 96×72 footprint
+             — gives a much more usable view of what the camera sees while
+             still leaving comfortable margin from the screen edge and
+             enough room beside it for chat content. Top-anchored to the
+             orb column (which itself is anchored to the HUD's bottom)
+             with a small explicit top margin so there is always a clear
+             gap between the HUD cards above and the frame — regardless
+             of how tall the HUD stack grows when calendar / news / tasks
+             cards are all populated. The orb below sits at the bottom of
+             the column; the space between the frame and the orb is
+             intentional empty breathing room. -->
         <FrameLayout
             android:id="@+id/coreEyeContainer"
-            android:layout_width="96dp"
-            android:layout_height="72dp"
-            android:layout_marginTop="2dp"
+            android:layout_width="192dp"
+            android:layout_height="144dp"
+            android:layout_marginTop="4dp"
             android:background="@drawable/bg_camera_frame_burgundy"
-            android:padding="4dp"
+            android:padding="6dp"
             android:visibility="gone"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
@@ -465,8 +467,8 @@
 
             <ImageView
                 android:id="@+id/coreEyeIdleIcon"
-                android:layout_width="26dp"
-                android:layout_height="26dp"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
                 android:layout_gravity="center"
                 android:alpha="0.82"
                 android:contentDescription="Core Eye idle"
