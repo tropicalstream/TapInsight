@@ -55,26 +55,37 @@ button { font: inherit; color: inherit; background: transparent; border: 0; curs
 .header .meta {
   margin-left: auto; font-size: 12px; color: var(--text-dim);
 }
-.header .header-actions {
-  display: flex; align-items: center; gap: 8px;
-  margin-left: 12px;
+/* Grant-permission banner — full-width card pinned to the top of
+   the grid scroll surface. Previously this was a header pill that
+   got clipped by the narrow glasses display when meta text grew.
+   In the new layout the gallery already works without permission
+   for TapInsight's own saves, so the banner is purely "+ also show
+   RayNeo Camera photos" — it should be discoverable but not block
+   the grid. */
+.grant-banner {
+  display: none;
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(0,229,255,0.10), rgba(0,229,255,0.03));
+  border: 1px solid rgba(0,229,255,0.32);
+  align-items: center;
+  gap: 12px;
 }
-/* Always-visible "Grant device photos" pill in the header, distinct
-   from the larger empty-state CTA. Stays in the corner so the user
-   can find it after any failed grant attempt without scrolling. */
-.grant-pill {
+.grant-banner.visible { display: flex; }
+.grant-banner .gb-text { flex: 1; font-size: 12.5px; line-height: 1.5; }
+.grant-banner .gb-title { color: var(--text); font-weight: 600; margin-bottom: 2px; }
+.grant-banner .gb-sub { color: var(--text-dim); font-size: 11.5px; }
+.grant-banner .gb-btn {
   background: var(--accent); color: #001; border: 0;
-  padding: 6px 12px; border-radius: 999px;
-  font-size: 11px; font-weight: 700; letter-spacing: 0.2px;
-  cursor: pointer; display: none; align-items: center; gap: 6px;
+  padding: 9px 14px; border-radius: 8px;
+  font-weight: 700; font-size: 12px;
+  cursor: pointer; flex-shrink: 0;
   box-shadow: 0 0 12px var(--accent-glow);
 }
-.grant-pill.visible { display: inline-flex; }
-.grant-pill .pill-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: #b71c1c; animation: pulse 1.6s ease-in-out infinite;
+.grant-banner .gb-btn:hover, .grant-banner .gb-btn:active {
+  filter: brightness(1.15);
 }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 /* ─── Grid ───────────────────────────────────────────────────────── */
 .grid {
@@ -242,15 +253,20 @@ button { font: inherit; color: inherit; background: transparent; border: 0; curs
 <div class="header">
   <h1><span class="dot"></span>Photos</h1>
   <div class="meta" id="meta">Loading…</div>
-  <div class="header-actions">
-    <button id="grantPill" class="grant-pill" title="Grant access to RayNeo Camera photos">
-      <span class="pill-dot"></span>
-      <span>Grant device photos</span>
-    </button>
-  </div>
 </div>
 
 <div class="grid" id="grid">
+  <!-- Permission banner — full-width, sits above the thumbnail grid.
+       Only TapInsight's own saves show without permission; this
+       banner offers to add RayNeo Camera photos to the gallery
+       when the user grants READ_MEDIA_IMAGES. -->
+  <div class="grant-banner" id="grantBanner">
+    <div class="gb-text">
+      <div class="gb-title">Also show RayNeo Camera photos?</div>
+      <div class="gb-sub">Your TapInsight saves are already showing below. Grant permission to also include photos from the device's native Camera app.</div>
+    </div>
+    <button class="gb-btn" id="grantBtn">Grant</button>
+  </div>
   <div class="grid-inner" id="gridInner"></div>
 </div>
 
@@ -322,7 +338,8 @@ const els = {
   infoBtn: document.getElementById('infoBtn'),
   shareBtn: document.getElementById('shareBtn'),
   deleteBtn: document.getElementById('deleteBtn'),
-  grantPill: document.getElementById('grantPill'),
+  grantBanner: document.getElementById('grantBanner'),
+  grantBtn: document.getElementById('grantBtn'),
   toast: document.getElementById('toast'),
 };
 
@@ -410,58 +427,53 @@ async function loadPhotos() {
   const accessMissing = json.hasMediaPermission === false;
   if (!photos.length) {
     els.meta.textContent = '0 photos';
-    const cta = accessMissing
-      ? '<div style="margin-top:14px"><button onclick="requestMediaAccess()" style="background:var(--accent);color:#001;border:0;padding:10px 18px;border-radius:8px;font-weight:600;cursor:pointer">Grant access to device photos</button></div><div style="margin-top:10px;font-size:11px;color:var(--text-dim)">Required to show photos and videos taken with the RayNeo native Camera.</div>'
-      : '<div>Say <i>"save this photo"</i> to TapInsight while the AR camera is active.</div>';
+    // The new flow: TapInsight saves go to DCIM/TapInsight via MediaStore
+    // and DON'T need permission to read back. So an empty gallery means
+    // the user hasn't actually saved any photos yet. The "Grant access"
+    // banner above the (currently empty) grid handles the optional add-
+    // device-photos path.
+    if (accessMissing) {
+      els.grantBanner.classList.add('visible');
+    }
     els.gridInner.innerHTML =
-      '<div class="empty"><div class="big">No photos yet</div>' + cta + '</div>';
+      '<div class="empty"><div class="big">No photos yet</div>' +
+      '<div>Say <i>"save this photo"</i> to TapInsight while the AR camera is active.</div>' +
+      '</div>';
     return;
   }
-  const libCount = photos.filter(p => p.source !== 'dcim').length;
-  const dcimCount = photos.length - libCount;
-  let metaParts = [photos.length + ' total'];
-  if (dcimCount > 0) metaParts.push(libCount + ' TapInsight · ' + dcimCount + ' device');
-  else if (accessMissing) metaParts.push('device photos hidden');
-  els.meta.textContent = metaParts.join(' · ');
-  // Show the always-on Grant pill whenever permission is missing,
-  // regardless of how many library photos exist. The previous banner
-  // only painted when there were zero photos total OR zero DCIM
-  // photos — both branches had the user stuck if they'd just saved
-  // their first TapInsight photo.
-  if (accessMissing) {
-    els.grantPill.classList.add('visible');
-  } else {
-    els.grantPill.classList.remove('visible');
+  // Tally TapInsight saves (library OR dcim_own) vs device photos
+  // (dcim from other apps). After the MediaStore switch, "own"
+  // entries can live in either source — TapInsight's saves now go
+  // to DCIM/TapInsight via MediaStore (source=dcim_own), with the
+  // app-private Media/Photos (source=library) preserved for any
+  // older saves that pre-date the switch.
+  const ownCount = photos.filter(p =>
+    p.source === 'library' || p.source === 'dcim_own'
+  ).length;
+  const otherCount = photos.length - ownCount;
+  let metaParts = [photos.length + (photos.length === 1 ? ' photo' : ' photos')];
+  if (otherCount > 0) {
+    metaParts.push(ownCount + ' TapInsight · ' + otherCount + ' device');
+  } else if (accessMissing) {
+    metaParts.push('device photos hidden');
   }
-  if (accessMissing && dcimCount === 0) {
-    renderAccessBanner();
+  els.meta.textContent = metaParts.join(' · ');
+  // Show the "+ device photos" banner above the grid whenever the
+  // user hasn't granted permission — even if they already have
+  // library photos. The banner is purely additive now ("also show
+  // RayNeo Camera photos"), so it doesn't block the gallery.
+  if (accessMissing) {
+    els.grantBanner.classList.add('visible');
+  } else {
+    els.grantBanner.classList.remove('visible');
   }
   renderGrid();
   maybeFocusFromQuery();
 }
 
-function renderAccessBanner() {
-  if (document.getElementById('accessBanner')) return;
-  const banner = document.createElement('div');
-  banner.id = 'accessBanner';
-  banner.style.cssText =
-    'margin:0 0 12px;padding:12px 14px;border-radius:10px;' +
-    'background:linear-gradient(135deg,rgba(0,229,255,0.08),rgba(0,229,255,0.02));' +
-    'border:1px solid rgba(0,229,255,0.28);display:flex;align-items:center;gap:12px;';
-  banner.innerHTML =
-    '<div style="flex:1;font-size:12.5px;line-height:1.5">' +
-      '<div style="color:var(--text);font-weight:600;margin-bottom:2px">' +
-        'Show photos from the RayNeo Camera?</div>' +
-      '<div style="color:var(--text-dim);font-size:11.5px">' +
-        'TapInsight needs permission to read /DCIM. ' +
-        'No Settings UI on the glasses — tap to grant directly.</div>' +
-    '</div>' +
-    '<button id="bannerGrantBtn" style="background:var(--accent);color:#001;' +
-      'border:0;padding:9px 14px;border-radius:8px;font-weight:600;font-size:12px;' +
-      'cursor:pointer;flex-shrink:0">Grant</button>';
-  els.grid.insertBefore(banner, els.gridInner);
-  document.getElementById('bannerGrantBtn').addEventListener('click', requestMediaAccess);
-}
+// renderAccessBanner was a dynamically-inserted node that competed
+// with the static .grant-banner above; the static one is the source
+// of truth now and is toggled visible/hidden in loadPhotos.
 
 function requestMediaAccess() {
   if (!window.TapMedia || typeof window.TapMedia.requestMediaPermission !== 'function') {
@@ -520,11 +532,21 @@ function maybeFocusFromQuery() {
   const m = location.search.match(/[?&]focus=([^&]+)/);
   if (!m) return;
   const focus = decodeURIComponent(m[1]);
-  // The `focus` query param is the library relative path; DCIM
-  // entries don't have one, but they're never the focus of a "view
-  // it after save" flow anyway (only TapInsight saves emit
-  // open_taplink with focus). Library entries match on relativePath.
-  const idx = photos.findIndex(p => p.relativePath === focus);
+  // Three focus identifier shapes are supported, in order:
+  //   "dcim:<id>"          — MediaStore-backed save from CameraTool
+  //                          (the new default after the DCIM switch)
+  //   "Photos/<filename>"  — legacy library save (Media/Photos folder)
+  //   anything else        — string-equal match against relativePath
+  //                          for compatibility with older save paths
+  let idx = -1;
+  if (focus.startsWith('dcim:')) {
+    const id = focus.slice(5);
+    idx = photos.findIndex(p => p.source && p.source.indexOf('dcim') === 0 &&
+                                 String(p.dcimId) === id);
+  }
+  if (idx < 0) {
+    idx = photos.findIndex(p => p.relativePath === focus);
+  }
   if (idx >= 0) openLightbox(idx);
 }
 
@@ -564,12 +586,16 @@ function nav(delta) {
 async function rotateBy(deg) {
   const p = photos[lightboxIndex];
   if (!p) return;
-  // DCIM entries belong to the RayNeo native Camera app — we have read
-  // access through the MediaStore proxy, but writing back over the
-  // file would require WRITE_EXTERNAL_STORAGE-equivalent grants the
-  // glasses can't easily surface. View-only is the safer contract.
-  if (p.source === 'dcim') {
-    toast('Device-camera photos are view-only here');
+  // dcim_own (TapInsight's own MediaStore saves) and dcim (other apps')
+  // both lack a Media/Photos relativePath, which is what
+  // bridge.rotateImage operates on. Since the bridge can't take a
+  // MediaStore id yet, both are view-only here. Rotation for own
+  // DCIM saves is doable in a future bridge change (open the URI,
+  // re-encode, update via resolver), but not today.
+  if (p.source === 'dcim' || p.source === 'dcim_own') {
+    toast(p.source === 'dcim_own'
+      ? 'Rotating MediaStore-backed photos is not yet supported'
+      : 'Device-camera photos are view-only here');
     return;
   }
 
@@ -607,6 +633,10 @@ async function rotateBy(deg) {
 async function deletePhoto() {
   const p = photos[lightboxIndex];
   if (!p) return;
+  if (p.source === 'dcim_own') {
+    toast('Delete TapInsight photos via Files / Photos app (MediaStore delete not yet wired in bridge)');
+    return;
+  }
   if (p.source === 'dcim') {
     toast('Delete device-camera photos from the RayNeo Camera app');
     return;
@@ -670,7 +700,11 @@ function showInfo() {
   const p = photos[lightboxIndex];
   if (!p) return;
   const parts = [];
-  parts.push(p.source === 'dcim' ? 'RayNeo Camera' : 'TapInsight');
+  const sourceLabel = p.source === 'dcim'      ? 'RayNeo Camera'
+                    : p.source === 'dcim_own'  ? 'TapInsight (DCIM)'
+                    : p.source === 'library'   ? 'TapInsight (legacy)'
+                    : 'TapInsight';
+  parts.push(sourceLabel);
   if (p.width && p.height) parts.push(p.width + '×' + p.height);
   if (p.sizeBytes) {
     const kb = p.sizeBytes / 1024;
@@ -689,7 +723,7 @@ els.rotRightBtn.addEventListener('click', () => rotateBy(90));
 els.shareBtn.addEventListener('click', copyShareUrl);
 els.infoBtn.addEventListener('click', showInfo);
 els.deleteBtn.addEventListener('click', deletePhoto);
-els.grantPill.addEventListener('click', requestMediaAccess);
+els.grantBtn.addEventListener('click', requestMediaAccess);
 
 document.addEventListener('keydown', (e) => {
   if (!els.lightbox.classList.contains('open')) return;

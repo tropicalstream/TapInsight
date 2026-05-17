@@ -35,6 +35,14 @@ class DcimEnumerator(private val context: Context) {
         /** Path-fragment matched against MediaStore.DATA to scope queries. */
         private const val DCIM_PATH_PREFIX = "/DCIM/"
 
+        /**
+         * DCIM subfolder TapInsight writes into via MediaStore (see
+         * CameraTool.DCIM_SUBFOLDER). Kept as a string constant here so
+         * [listOwn] can filter MediaStore queries down to "files this
+         * app contributed" without depending on the app module.
+         */
+        const val DCIM_OWN_SUBFOLDER = "TapInsight"
+
         fun hasPermission(context: Context): Boolean {
             return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val imagesOk = ContextCompat.checkSelfPermission(
@@ -92,9 +100,40 @@ class DcimEnumerator(private val context: Context) {
             return emptyList()
         }
         val out = mutableListOf<DcimEntry>()
-        queryCollection(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, false, limit, out)
-        queryCollection(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, limit, out)
+        queryCollection(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, false, limit, out, null, null)
+        queryCollection(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, limit, out, null, null)
         // Newest first across both collections.
+        out.sortByDescending { it.dateTakenMs }
+        return if (out.size > limit) out.take(limit) else out
+    }
+
+    /**
+     * Returns DCIM entries this app wrote — specifically the
+     * `DCIM/[DCIM_OWN_SUBFOLDER]/` directory that CameraTool saves
+     * into via MediaStore. Per Android scoped-storage rules, an app
+     * can always read its own MediaStore contributions back without
+     * READ_MEDIA_IMAGES, so this works even when [hasPermission] is
+     * false.
+     *
+     * This is the path that lets the photos gallery show the user's
+     * TapInsight captures without any runtime permission grant.
+     * RayNeo Camera photos still require the full grant — call
+     * [listAll] for that, gated on [hasPermission].
+     */
+    fun listOwn(limit: Int = 500): List<DcimEntry> {
+        val out = mutableListOf<DcimEntry>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+            val args = arrayOf("DCIM/${DCIM_OWN_SUBFOLDER}%")
+            queryCollection(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, false, limit, out, selection, args)
+            queryCollection(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, limit, out, selection, args)
+        } else {
+            @Suppress("DEPRECATION")
+            val selection = "${MediaStore.MediaColumns.DATA} LIKE ?"
+            val args = arrayOf("%/DCIM/${DCIM_OWN_SUBFOLDER}/%")
+            queryCollection(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, false, limit, out, selection, args)
+            queryCollection(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, limit, out, selection, args)
+        }
         out.sortByDescending { it.dateTakenMs }
         return if (out.size > limit) out.take(limit) else out
     }
@@ -103,7 +142,9 @@ class DcimEnumerator(private val context: Context) {
         collection: Uri,
         isVideo: Boolean,
         limit: Int,
-        out: MutableList<DcimEntry>
+        out: MutableList<DcimEntry>,
+        extraSelection: String?,
+        extraArgs: Array<String>?
     ) {
         val projection = mutableListOf(
             MediaStore.MediaColumns._ID,
@@ -124,11 +165,24 @@ class DcimEnumerator(private val context: Context) {
         if (isVideo) projection += MediaStore.Video.Media.DURATION
 
         // Filter to DCIM. On Q+ we use RELATIVE_PATH; pre-Q we LIKE-match DATA.
-        val (selection, args) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        // When the caller passed an extraSelection (used by listOwn to narrow
+        // to our own subfolder), we AND it onto the base DCIM filter so
+        // permission-free queries still pass MediaStore's "only your own
+        // entries" check.
+        val (baseSelection, baseArgs) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?" to arrayOf("DCIM/%")
         } else {
             @Suppress("DEPRECATION")
             "${MediaStore.MediaColumns.DATA} LIKE ?" to arrayOf("%${DCIM_PATH_PREFIX}%")
+        }
+        val selection: String
+        val args: Array<String>
+        if (extraSelection != null && extraArgs != null) {
+            selection = "($baseSelection) AND ($extraSelection)"
+            args = baseArgs + extraArgs
+        } else {
+            selection = baseSelection
+            args = baseArgs
         }
 
         val sortOrder = "${MediaStore.MediaColumns.DATE_ADDED} DESC LIMIT $limit"

@@ -421,38 +421,60 @@ class MediaLibraryBridge(
         }
 
         // ── DCIM (shared storage) entries ──
+        // Two tiers:
+        //   1. listOwn() — TapInsight's own DCIM contributions
+        //      (`DCIM/TapInsight/`). Always queried because MediaStore
+        //      lets an app read its own entries without
+        //      READ_MEDIA_IMAGES. These are the photos the user saved
+        //      via "save this photo" / camera_action.
+        //   2. listAll() — every DCIM image + video from every app
+        //      (RayNeo Camera, screenshots, etc.). Only queried when
+        //      hasMediaPermission is true.
+        //
+        // We tag the merged result with `source` so the gallery can
+        // tell library vs own-dcim vs other-dcim apart for write
+        // permissions (rotate/delete are only allowed on entries the
+        // app actually owns).
         val hasMediaPermission = DcimEnumerator.hasPermission(context)
+        val emittedDcimIds = HashSet<Long>()
+
+        fun emitDcimEntry(d: DcimEnumerator.DcimEntry, source: String) {
+            val dcimId = ContentUris.parseId(d.contentUri)
+            if (!emittedDcimIds.add(dcimId)) return  // de-dupe own ∩ all
+            val kindSeg = if (d.isVideo) "video" else "image"
+            val proxyUrl = "https://$ASSETS_HOST/dcim/$kindSeg/$dcimId"
+            arr.put(
+                JSONObject()
+                    .put("source", source)
+                    .put("name", d.displayName)
+                    .put("dcimId", dcimId)
+                    .put("dcimUri", d.contentUri.toString())
+                    .put("lastModifiedMs", d.dateTakenMs)
+                    .put("sizeBytes", d.sizeBytes)
+                    .put("kind", if (d.isVideo) "VIDEO" else "IMAGE")
+                    .put("mimeType", d.mimeType)
+                    .put("relativeDisplayPath", d.relativeDisplayPath ?: JSONObject.NULL)
+                    .put("fullUrl", proxyUrl)
+                    .put("thumbnailUrl", proxyUrl)
+                    .put("width", d.width)
+                    .put("height", d.height)
+                    .put("durationMs", d.durationMs ?: JSONObject.NULL)
+            )
+        }
+
+        // (1) own entries — always available, no permission needed.
+        try {
+            for (d in dcim.listOwn(limit = 1000)) {
+                emitDcimEntry(d, "dcim_own")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "listOwn DCIM query failed: ${e.message}")
+        }
+
+        // (2) other-app entries — only with permission.
         if (hasMediaPermission) {
             for (d in dcim.listAll(limit = 1000)) {
-                // We route DCIM bytes through MediaFileInterceptor's
-                // /dcim/<kind>/<id> proxy rather than handing the
-                // WebView a raw content:// URI. The WebView on RayNeo
-                // can't reliably load content:// from <img src>, even
-                // with setAllowContentAccess(true) — the resolver
-                // isn't exposed to the renderer process in every OEM
-                // build. The proxy URL lives on the same virtual
-                // https origin as library photos, so the gallery JS
-                // doesn't have to branch.
-                val dcimId = ContentUris.parseId(d.contentUri)
-                val kindSeg = if (d.isVideo) "video" else "image"
-                val proxyUrl = "https://$ASSETS_HOST/dcim/$kindSeg/$dcimId"
-                arr.put(
-                    JSONObject()
-                        .put("source", "dcim")
-                        .put("name", d.displayName)
-                        .put("dcimId", dcimId)
-                        .put("dcimUri", d.contentUri.toString())
-                        .put("lastModifiedMs", d.dateTakenMs)
-                        .put("sizeBytes", d.sizeBytes)
-                        .put("kind", if (d.isVideo) "VIDEO" else "IMAGE")
-                        .put("mimeType", d.mimeType)
-                        .put("relativeDisplayPath", d.relativeDisplayPath ?: JSONObject.NULL)
-                        .put("fullUrl", proxyUrl)
-                        .put("thumbnailUrl", proxyUrl)
-                        .put("width", d.width)
-                        .put("height", d.height)
-                        .put("durationMs", d.durationMs ?: JSONObject.NULL)
-                )
+                emitDcimEntry(d, "dcim")
             }
         }
 
