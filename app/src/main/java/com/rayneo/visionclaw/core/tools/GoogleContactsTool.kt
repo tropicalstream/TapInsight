@@ -13,6 +13,6 @@ class GoogleContactsTool(private val context: Context) : AiTapTool {
         Log.d("GoogleContactsTool", "action=$action name=$name")
 
         // TODO: Implement People API or local ContactsProvider
-        return Result.success("Contacts not yet configured. Please set up in the AITap companion app.")
+        return Result.success("Contacts not yet configured. Please set up in the TapInsight companion app.")
     }
 }

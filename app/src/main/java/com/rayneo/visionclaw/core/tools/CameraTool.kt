@@ -8,7 +8,7 @@ class CameraTool(private val context: Context) : AiTapTool {
 
     override suspend fun execute(args: Map<String, String>): Result<String> {
         val action = args["action"] ?: "save_photo"
-        val title = args["title"] ?: "AITap Photo"
+        val title = args["title"] ?: "TapInsight Photo"
 
         Log.d("CameraTool", "action=$action title=$title")
 

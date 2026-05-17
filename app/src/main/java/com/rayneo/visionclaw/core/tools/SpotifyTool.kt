@@ -17,7 +17,7 @@ import java.net.URLEncoder
 
 /**
  * Spotify tool — wires the client_id / client_secret entered in the
- * AITap companion app through to a Gemini-callable tool on the glasses,
+ * TapInsight companion app through to a Gemini-callable tool on the glasses,
  * and routes playback through the built-in TapRadio media player (the
  * radio.html page in the TapBrowser module, which has the media toolbar,
  * persistent playback state across navigation, and FF/rewind buttons).
@@ -60,7 +60,7 @@ class SpotifyTool(private val context: Context) : AiTapTool {
         val clientSecret = prefs.spotifyClientSecret.trim()
         if (clientId.isEmpty()) {
             return@withContext Result.success(
-                "Spotify isn't configured yet. Open the AITap companion app, " +
+                "Spotify isn't configured yet. Open the TapInsight companion app, " +
                     "scroll to the Spotify step, and paste your Client ID and " +
                     "Client Secret from developer.spotify.com. After saving, " +
                     "click Connect Spotify to log in so we can play full tracks."

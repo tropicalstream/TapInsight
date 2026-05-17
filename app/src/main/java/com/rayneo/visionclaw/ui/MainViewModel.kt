@@ -43,7 +43,7 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * MainViewModel – central state holder for the AITap HUD.
+ * MainViewModel – central state holder for the TapInsight HUD.
  *
  * Responsibilities:
  *   • Coordinates API calls (Gemini, Calendar) and surfaces errors.
@@ -957,7 +957,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Routes queries through Gemini with tool calling.
      */
     /**
-     * AITap: Routes queries through Gemini with tool calling.
+     * TapInsight: Routes queries through Gemini with tool calling.
      * Tool calls are handled natively by ToolDispatcher in MainActivity.
      */
     fun routeWithToolCalls(text: String, frameBase64: String? = null) {
@@ -1089,7 +1089,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * AITap: HUD calendar refresh. Placeholder until google_calendar tool is fully wired.
+     * TapInsight: HUD calendar refresh. Placeholder until google_calendar tool is fully wired.
      */
     fun refreshHudUpcomingCalendar(force: Boolean = false) {
         val now = System.currentTimeMillis()

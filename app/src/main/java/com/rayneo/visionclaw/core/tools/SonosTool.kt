@@ -13,6 +13,6 @@ class SonosTool(private val context: Context) : AiTapTool {
         Log.d("SonosTool", "action=$action room=$room")
 
         // TODO: Implement Sonos Control API
-        return Result.success("Sonos not yet configured. Please connect Sonos in the AITap companion app.")
+        return Result.success("Sonos not yet configured. Please connect Sonos in the TapInsight companion app.")
     }
 }

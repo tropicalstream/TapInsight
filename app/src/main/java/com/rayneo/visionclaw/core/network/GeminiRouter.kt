@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * GeminiRouter – sends prompts to Google's Gemini API and returns
- * structured responses for the AITap AR assistant.
+ * structured responses for the TapInsight AR assistant.
  *
  * Error-handling contract:
  *   • Missing / blank API key → [GeminiResult.ApiKeyMissing] (no crash).
@@ -83,7 +83,7 @@ class GeminiRouter(
         // ── Modular system prompt sections (each editable via companion app) ──
 
         internal const val DEFAULT_IDENTITY =
-            "You are AITap, a proactive AI assistant integrated into RayNeo X3 AR glasses.\n" +
+            "You are TapInsight, a proactive AI assistant integrated into RayNeo X3 AR glasses.\n" +
                 "You can see through the user's camera and hear their voice in real-time."
 
         private const val DEFAULT_CAPABILITIES =
@@ -2703,7 +2703,7 @@ class GeminiRouter(
         return fallbacks.distinct()
     }
 
-    /** Build the AITap native tool declarations for Gemini Live setup. */
+    /** Build the TapInsight native tool declarations for Gemini Live setup. */
     private fun buildAiTapToolDeclarations(includeLearnTool: Boolean = false): JSONArray {
             val tools = JSONArray()
 

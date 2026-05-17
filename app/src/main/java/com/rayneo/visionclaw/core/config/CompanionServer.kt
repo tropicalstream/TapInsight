@@ -47,7 +47,7 @@ import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 
 /**
- * Lightweight HTTPS server that serves the AITap companion configuration pages.
+ * Lightweight HTTPS server that serves the TapInsight companion configuration pages.
  * Uses a self-signed TLS certificate generated via Android KeyStore to enable
  * secure context in browsers (required for Geolocation API / Phone GPS Bridge).
  *
@@ -1312,7 +1312,7 @@ window.__companionToken = '${sessionToken}';
             Log.e(TAG, "OAuth manager not initialized")
             return newFixedLengthResponse(
                 Response.Status.INTERNAL_ERROR, "text/html",
-                oauthResultPage(false, "OAuth manager not ready. Restart AITap and try again.")
+                oauthResultPage(false, "OAuth manager not ready. Restart TapInsight and try again.")
             )
         }
 
@@ -1381,7 +1381,7 @@ window.__companionToken = '${sessionToken}';
                 Log.e(TAG, "OAuth manager not initialized")
                 return newFixedLengthResponse(
                     Response.Status.INTERNAL_ERROR, "application/json",
-                    """{"error":"OAuth manager not ready. Restart AITap and try again."}"""
+                    """{"error":"OAuth manager not ready. Restart TapInsight and try again."}"""
                 )
             }
 

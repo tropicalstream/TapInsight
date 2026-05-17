@@ -276,7 +276,7 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_PERSONALITY, "") ?: ""
         set(value) = prefs.edit().putString(KEY_PERSONALITY, value).apply()
 
-    /** Editable prompt section: Identity (who is AITap). Blank = use default. */
+    /** Editable prompt section: Identity (who is TapInsight). Blank = use default. */
     var promptIdentity: String
         get() = prefs.getString(KEY_PROMPT_IDENTITY, "") ?: ""
         set(value) = prefs.edit().putString(KEY_PROMPT_IDENTITY, value).apply()

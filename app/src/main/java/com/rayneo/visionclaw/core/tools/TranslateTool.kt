@@ -3,7 +3,7 @@ package com.rayneo.visionclaw.core.tools
 import android.util.Log
 
 /**
- * TranslateTool — real-time translation for the AITap AR assistant.
+ * TranslateTool — real-time translation for the TapInsight AR assistant.
  *
  * Triggered via voice commands like:
  *   "translate this to Spanish"

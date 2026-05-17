@@ -111,7 +111,7 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * MainActivity – entry point for AITap on RayNeo X3 Pro.
+ * MainActivity – entry point for TapInsight on RayNeo X3 Pro.
  *
  * Handles: • XR session / origin null-safety checks • Trackpad gesture engine wiring (short /
  * double tap + swipe) • Edge-zone panel switching (5% left/right edges with 20px center movement) •
@@ -122,7 +122,7 @@ import java.util.TimeZone
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        private const val TAG = "AITap"
+        private const val TAG = "TapInsight"
         private const val HUD_NOTIFICATION_DURATION_MS = 3_000L
         private const val HEARTBEAT_UI_INTERVAL_MS = 20_000L
         private const val OPENCLAW_PROGRESS_UI_MIN_INTERVAL_MS = 1_000L
@@ -155,7 +155,7 @@ class MainActivity : AppCompatActivity() {
         private const val GEMINI_BARGE_IN_GRACE_AFTER_OUTPUT_MS = 2_500L
         private const val MULTIMODAL_FRAME_INTERVAL_MS = 2_000L
         private const val CAMERA_IDLE_TIMEOUT_MS = 5_000L
-        // AITap: always use Gemini Live directly for continuous camera + voice.
+        // TapInsight: always use Gemini Live directly for continuous camera + voice.
         // Native STT would kill the camera after each utterance.
         private const val USE_NATIVE_STT = false
         private const val OSCILLOSCOPE_USER_COLOR = 0xFFFF4B52.toInt()
@@ -1070,7 +1070,7 @@ class MainActivity : AppCompatActivity() {
         viewModel.setMultimodalCameraEnabled(false)
         viewModel.setMultimodalTextureReady(false)
 
-        // Start companion config server so phone can configure AITap via WiFi
+        // Start companion config server so phone can configure TapInsight via WiFi
         val serverPort = viewModel.appConfig.debugServerSettings.port
         companionServer = com.rayneo.visionclaw.core.config.CompanionServer(
             this, serverPort, oauthManager,
@@ -1226,7 +1226,7 @@ class MainActivity : AppCompatActivity() {
         // ── Request runtime permissions for mic + camera ─────────────
         requestRequiredPermissions()
 
-        Log.i(TAG, "AITap MainActivity created successfully")
+        Log.i(TAG, "TapInsight MainActivity created successfully")
     }
 
     override fun onResume() {
@@ -2525,7 +2525,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // AITap: OpenClaw bridge infrastructure removed.
+    // TapInsight: OpenClaw bridge infrastructure removed.
     // All tool routing now handled by ToolDispatcher via Gemini native tool calls.
 
     /** Last user transcript from the Live session, used by ToolAssist recovery. */
@@ -2670,7 +2670,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshToolBridgeStatus() {
-        // AITap: No external bridge. Tools are always local.
+        // TapInsight: No external bridge. Tools are always local.
         setHudConnectionStatus(ChatPanelFragment.ConnectionStatus.TOOLS_READY)
     }
 

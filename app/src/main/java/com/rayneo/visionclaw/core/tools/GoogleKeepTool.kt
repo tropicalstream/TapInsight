@@ -31,7 +31,7 @@ class GoogleKeepTool(private val context: Context) : AiTapTool {
 
     override suspend fun execute(args: Map<String, String>): Result<String> {
         val action = args["action"] ?: "create"
-        val title = args["title"] ?: "AITap Note"
+        val title = args["title"] ?: "TapInsight Note"
         val content = args["content"] ?: ""
 
         Log.d(TAG, "action=$action title=$title contentLen=${content.length}")

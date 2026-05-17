@@ -1,7 +1,7 @@
 package com.rayneo.visionclaw.core.tools
 
 /**
- * Interface for all AITap native tool implementations.
+ * Interface for all TapInsight native tool implementations.
  * Each tool is declared to Gemini and executed locally on the device.
  */
 interface AiTapTool {

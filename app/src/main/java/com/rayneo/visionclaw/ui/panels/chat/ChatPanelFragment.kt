@@ -2342,7 +2342,11 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
             coreEyeOrb.clearColorFilter()
         }
 
-        cameraColumn.visibility = View.VISIBLE
+        // Voice activity should light the orb only. The camera column
+        // reserves horizontal chat space, so keep it tied strictly to the
+        // camera preview state; otherwise "listening" can leave old chat
+        // cards indented even after the camera is off.
+        updateOrbColumnVisibility()
         coreEyeOrb.animate().cancel()
         coreEyeOrb.alpha = 1f
 
@@ -2438,6 +2442,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         val cameraTarget = if (cameraVisible) View.VISIBLE else View.GONE
         if (cameraColumn.visibility != cameraTarget) {
             cameraColumn.visibility = cameraTarget
+            chatRecycler.requestLayout()
         }
         if (::orbContainer.isInitialized && orbContainer.visibility != View.VISIBLE) {
             orbContainer.visibility = View.VISIBLE

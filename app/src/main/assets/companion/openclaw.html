@@ -65,6 +65,21 @@ button:active{opacity:.7}
   <label>Endpoint URL</label>
   <input type="text" id="hermesEndpoint" placeholder="https://your-tunnel.trycloudflare.com  or  http://your-mac.local:8642">
   <div class="hint">Where your hermes-agent server is reachable. Defaults to port <code>8642</code>. Bare hostnames assume <code>https://</code>; <code>host:port</code> uses <code>http://</code>. Cloudflare Tunnel URLs work over cell.</div>
+  <details style="margin-top:8px;background:#0d0922;border:1px solid #2a1e54;border-radius:8px;padding:10px 12px;font-size:12px;color:#cfc7ff">
+    <summary style="cursor:pointer;font-weight:600;color:#c9b9ff;outline:none">How do I get a Cloudflare Tunnel URL?</summary>
+    <p style="margin:10px 0 6px 0;color:#bfb6e2">A Cloudflare Tunnel gives your Hermes server a public <code>https://</code> URL so the glasses can reach it from any network (cellular included). One-time setup:</p>
+    <ol style="margin:6px 0 6px 18px;padding:0;line-height:1.55">
+      <li><b>Install <code>cloudflared</code></b> on the Mac running Hermes:
+        <div style="background:#1a1228;padding:6px 8px;border-radius:5px;margin:4px 0;font-family:ui-monospace,Menlo,monospace;color:#e8def8">brew install cloudflared</div>
+      </li>
+      <li><b>Start a quick tunnel</b> (no Cloudflare account required for a temporary URL):
+        <div style="background:#1a1228;padding:6px 8px;border-radius:5px;margin:4px 0;font-family:ui-monospace,Menlo,monospace;color:#e8def8">cloudflared tunnel --url http://localhost:8642</div>
+      </li>
+      <li>It will print a URL like <code style="background:#1a1228;padding:1px 5px;border-radius:3px;color:#9ef3ff">https://random-words-1234.trycloudflare.com</code>. Copy that and paste it into the Endpoint URL field above.</li>
+      <li>The temporary tunnel lasts as long as the <code>cloudflared</code> process is running. For a permanent, custom-domain URL: <code>cloudflared login</code>, then <code>cloudflared tunnel create hermes</code> and follow the prompts.</li>
+    </ol>
+    <p style="margin:8px 0 0 0;color:#a89bc7;font-size:11px">If glasses and Mac are on the same Wi-Fi, you can skip Cloudflare entirely and use <code>http://&lt;mac-lan-ip&gt;:8642</code>.</p>
+  </details>
 
   <label>API Key</label>
   <div style="position:relative">
@@ -133,6 +148,21 @@ button:active{opacity:.7}
   <input type="text" id="openClawEndpoint" placeholder="ws://your-server-ip:18789 or wss://your-tunnel.trycloudflare.com">
   <div class="hint">Local: <code>ws://your-server-ip:18789</code> (same WiFi).<br>
   Remote: <code>wss://your-tunnel.trycloudflare.com</code> (Cloudflare Tunnel — works over cell service).</div>
+  <details style="margin-top:8px;background:#101820;border:1px solid #1f3543;border-radius:8px;padding:10px 12px;font-size:12px;color:#cfe7f5">
+    <summary style="cursor:pointer;font-weight:600;color:#9ef3ff;outline:none">How do I get a Cloudflare Tunnel URL?</summary>
+    <p style="margin:10px 0 6px 0;color:#b6cfdc">A Cloudflare Tunnel gives your TapClaw gateway a public <code>wss://</code> URL so the glasses can reach it from any network (cellular included). One-time setup:</p>
+    <ol style="margin:6px 0 6px 18px;padding:0;line-height:1.55">
+      <li><b>Install <code>cloudflared</code></b> on the Mac running TapClaw:
+        <div style="background:#0a0f14;padding:6px 8px;border-radius:5px;margin:4px 0;font-family:ui-monospace,Menlo,monospace;color:#d4eaf7">brew install cloudflared</div>
+      </li>
+      <li><b>Start a quick tunnel</b> pointed at the TapClaw gateway port (default <code>18789</code>):
+        <div style="background:#0a0f14;padding:6px 8px;border-radius:5px;margin:4px 0;font-family:ui-monospace,Menlo,monospace;color:#d4eaf7">cloudflared tunnel --url http://localhost:18789</div>
+      </li>
+      <li>It will print a URL like <code style="background:#0a0f14;padding:1px 5px;border-radius:3px;color:#9ef3ff">https://random-words-1234.trycloudflare.com</code>. Replace <code>https://</code> with <code>wss://</code> and paste into the Gateway URL field above (TapClaw uses WebSocket, not HTTP).</li>
+      <li>For a permanent named tunnel: <code>cloudflared login</code>, then <code>cloudflared tunnel create tapclaw</code>, then follow the prompts to map a hostname.</li>
+    </ol>
+    <p style="margin:8px 0 0 0;color:#8fa8b8;font-size:11px">Same Wi-Fi as the glasses? Skip Cloudflare and use <code>ws://&lt;mac-lan-ip&gt;:18789</code>.</p>
+  </details>
 
   <label>Gateway Token</label>
   <div style="position:relative">
