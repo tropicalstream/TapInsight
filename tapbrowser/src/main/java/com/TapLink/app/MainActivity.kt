@@ -131,6 +131,11 @@ class MainActivity :
         private const val EXTRA_BROWSER_INITIAL_URL = "tapclaw_initial_url"
         private const val EXTRA_RETURN_TO_CHAT_ON_DOUBLE_TAP =
                 "tapclaw_return_to_chat_double_tap"
+        /** Set by visionclaw MainActivity when it warm-starts us for
+         *  the browser_vision tool. We finish onCreate, attach the
+         *  WebView to BrowserFrameHolder, then push our task to the
+         *  back so the chat panel stays foreground. */
+        private const val EXTRA_BROWSER_WARM_START = "tapclaw_warm_start"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUERY = "tapclaw_youtube_autoplay_query"
         private const val EXTRA_YOUTUBE_AUTOPLAY_MODE = "tapclaw_youtube_autoplay_mode"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUEUE = "tapclaw_youtube_autoplay_queue"
@@ -1813,6 +1818,25 @@ class MainActivity :
         // screenshots on demand without holding a direct reference.
         // Re-attaches on every WebView swap (multi-window cases).
         com.TapLink.app.media.BrowserFrameHolder.attach(webView)
+
+        // If this launch was a warm-start kicked off by visionclaw
+        // MainActivity (purely to make the WebView available for the
+        // browser_vision tool), push our task to the back so the chat
+        // panel stays foreground. The WebView is already attached
+        // above, which is all the warm-start needed. We post the
+        // moveTaskToBack to the WebView's next layout pass so onCreate
+        // has time to wire up the rest of the Activity state before
+        // backgrounding.
+        if (intent.getBooleanExtra(EXTRA_BROWSER_WARM_START, false)) {
+            webView.post {
+                try {
+                    moveTaskToBack(true)
+                    Log.i("WarmStart", "tapbrowser warm-started; sent task to back")
+                } catch (e: Exception) {
+                    Log.w("WarmStart", "moveTaskToBack failed: ${e.message}")
+                }
+            }
+        }
 
         webView.setOnTouchListener { _, event ->
             val isMouseEvent = isMousePointerEvent(event)

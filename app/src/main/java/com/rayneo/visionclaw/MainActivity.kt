@@ -165,6 +165,17 @@ class MainActivity : AppCompatActivity() {
         private const val TAP_BROWSER_ACTIVITY_CLASS = "com.TapLinkX3.app.MainActivity"
         private const val EXTRA_BROWSER_INITIAL_URL = "tapclaw_initial_url"
         private const val EXTRA_RETURN_TO_CHAT_ON_DOUBLE_TAP = "tapclaw_return_to_chat_double_tap"
+        /**
+         * Tells tapbrowser MainActivity that it's being launched purely
+         * to warm up the WebView so the visionclaw-side browser_vision
+         * tool always has something to screenshot. tapbrowser onCreates
+         * fully (so the WebView is attached to BrowserFrameHolder), then
+         * pushes itself behind via moveTaskToBack(true) so visionclaw
+         * stays foreground. Without this flag, the existing launch path
+         * promotes tapbrowser to the front, which would steal focus from
+         * the chat panel on startup.
+         */
+        const val EXTRA_BROWSER_WARM_START = "tapclaw_warm_start"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUERY = "tapclaw_youtube_autoplay_query"
         private const val EXTRA_YOUTUBE_AUTOPLAY_MODE = "tapclaw_youtube_autoplay_mode"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUEUE = "tapclaw_youtube_autoplay_queue"
@@ -1231,6 +1242,59 @@ class MainActivity : AppCompatActivity() {
         requestRequiredPermissions()
 
         Log.i(TAG, "TapInsight MainActivity created successfully")
+
+        // Warm up the tapbrowser WebView in the background so the
+        // browser_vision tool always has something to screenshot.
+        // 2.5 s delay lets visionclaw render + finish heavy startup
+        // first; the brief tapbrowser flash that crosses the screen
+        // before it self-backgrounds is acceptable as a Phase 2 Step 1.
+        uiHandler.postDelayed({ warmStartTapBrowserIfNeeded() }, 2500L)
+    }
+
+    /** One-shot guard so the warm-start fires once per Activity, even
+     *  if onResume / configuration-change paths call back into here. */
+    private var tapBrowserWarmStartAttempted = false
+
+    /**
+     * Best-effort launch of tapbrowser MainActivity so its WebView is
+     * attached to [com.TapLink.app.media.BrowserFrameHolder] before the
+     * user ever asks "what does this say". Tapbrowser cooperatively
+     * sends itself to the back of its task via moveTaskToBack so this
+     * doesn't interrupt the chat panel.
+     *
+     * Skipped when the holder already has a WebView (e.g. tapbrowser
+     * was already running from a previous launch). Also skipped if
+     * tapbrowser was warm-started this Activity lifetime — we don't
+     * need to keep relaunching it on every onResume.
+     */
+    private fun warmStartTapBrowserIfNeeded() {
+        if (tapBrowserWarmStartAttempted) return
+        tapBrowserWarmStartAttempted = true
+        try {
+            if (com.TapLink.app.media.BrowserFrameHolder.hasWebView()) {
+                Log.d(TAG, "warmStartTapBrowser: WebView already attached, skipping launch")
+                return
+            }
+            val intent = Intent().setClassName(this, TAP_BROWSER_ACTIVITY_CLASS).apply {
+                // NEW_TASK + MULTIPLE_TASK so tapbrowser gets its own
+                // task. NO_ANIMATION suppresses the visible transition
+                // animation. Tapbrowser onCreate will detect the warm
+                // flag and immediately moveTaskToBack(true) once setup
+                // is far enough along to have attached the WebView.
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION
+                )
+                putExtra(EXTRA_BROWSER_WARM_START, true)
+            }
+            Log.i(TAG, "warmStartTapBrowser: launching tapbrowser for background WebView attach")
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "warmStartTapBrowser failed: ${e.message}")
+            // Reset the guard so a subsequent visionclaw resume can retry.
+            tapBrowserWarmStartAttempted = false
+        }
     }
 
     override fun onResume() {
