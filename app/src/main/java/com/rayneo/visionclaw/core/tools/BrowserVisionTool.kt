@@ -3,7 +3,7 @@ package com.rayneo.visionclaw.core.tools
 import android.content.Context
 import android.util.Log
 import com.rayneo.visionclaw.BuildConfig
-import com.rayneo.visionclaw.core.config.AppPreferences
+import com.rayneo.visionclaw.core.storage.AppPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
