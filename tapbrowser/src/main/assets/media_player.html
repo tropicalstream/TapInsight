@@ -411,6 +411,20 @@ var mediaType = (params.get('type') || '').toLowerCase();  // text, audio, video
 var mediaTitle = params.get('title') || '';
 var captionUrl = params.get('srt') || params.get('captions') || '';
 
+// Compatibility for sessions/bookmarks created by older builds. Direct DCIM
+// videos used to route through shouldInterceptRequest at /local-video/, but
+// RayNeo's Chromium video pipeline rejects those intercepted 206 tail ranges.
+// Rewrite stale player URLs to the loopback HTTPS media server before the
+// <video> element sees them.
+try {
+  if (mediaUrl.indexOf('/local-video/') !== -1 &&
+      window.TapMedia &&
+      typeof TapMedia.resolveDcimVideoPlaybackUrl === 'function') {
+    var resolvedDcimVideoUrl = TapMedia.resolveDcimVideoPlaybackUrl(mediaUrl);
+    if (resolvedDcimVideoUrl) mediaUrl = resolvedDcimVideoUrl;
+  }
+} catch (_) {}
+
 // Stamp a tiny diagnostic trail onto the spinner so a blank hang is
 // actually debuggable from the glasses — we don't have console access
 // in production, so the only failure signal we've got is the overlay.

@@ -2,11 +2,15 @@ package com.TapLink.app.media
 
 import android.content.ContentUris
 import android.content.Context
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.net.Uri
 import android.util.Log
 import android.webkit.JavascriptInterface
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
@@ -84,12 +88,22 @@ class MediaLibraryBridge(
      */
     var permissionRequester: (() -> Unit)? = null
 
+    /**
+     * Host callback for HEVC/H.265 gallery videos. These can decode audio
+     * through WebView while painting only a black video surface on the X3 Pro,
+     * so the Activity provides an in-app Media3 player fallback.
+     */
+    var nativeVideoOpener: ((uriText: String, mimeType: String?, title: String?) -> String)? = null
+
     companion object {
         private const val TAG = "MediaLibraryBridge"
         /** JS side reads this as `window.TapMedia`. */
         const val JS_NAME = "TapMedia"
         /** Virtual host used by WebViewAssetLoader for media streaming. */
         const val ASSETS_HOST = "appassets.androidplatform.net"
+        private const val PREFS_NAME = "visionclaw_prefs"
+        private const val SESSION_TOKEN_KEY = "companion_session_token"
+        private const val LOOPBACK_MEDIA_BASE = "https://127.0.0.1:19110"
         /**
          * Asset-page filenames that get fast-path trust without needing
          * `currentUrlRef` to be primed yet. Kept for diagnostics / explicit
@@ -115,6 +129,43 @@ class MediaLibraryBridge(
     val service: MediaLibraryService = MediaLibraryService(context).also { it.ensureBootstrap() }
 
     val mediaRoot: File get() = service.mediaRoot
+
+    private fun companionSessionToken(): String {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val existing = prefs.getString(SESSION_TOKEN_KEY, null)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        if (existing != null) return existing
+        val token = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
+        prefs.edit().putString(SESSION_TOKEN_KEY, token).commit()
+        return token
+    }
+
+    private fun toLoopbackDcimVideoUrl(dcimRelativePath: String): String {
+        val cleanPath = dcimRelativePath
+            .replace(File.separatorChar, '/')
+            .trimStart('/')
+        val encodedPath = URLEncoder.encode(cleanPath, "UTF-8").replace("+", "%20")
+        val encodedToken = URLEncoder.encode(companionSessionToken(), "UTF-8")
+        return "$LOOPBACK_MEDIA_BASE/media/dcim-video?path=$encodedPath&token=$encodedToken"
+    }
+
+    @JavascriptInterface
+    fun resolveDcimVideoPlaybackUrl(urlOrPath: String?): String {
+        if (!isTrusted()) return ""
+        val raw = urlOrPath?.trim().orEmpty()
+        if (raw.isBlank()) return ""
+        val marker = "/local-video/"
+        val tail = if (raw.contains(marker)) {
+            raw.substringAfter(marker)
+        } else {
+            raw
+        }.substringBefore('?').substringBefore('#')
+        val decoded = try { URLDecoder.decode(tail, "UTF-8") } catch (_: Exception) { tail }
+        val clean = decoded.replace(File.separatorChar, '/').trimStart('/')
+        if (clean.isBlank() || clean.contains("..") || clean.contains('\\')) return ""
+        return toLoopbackDcimVideoUrl(clean)
+    }
 
     /** Lazy DCIM enumerator — only allocated if the gallery actually
      *  asks for the merged shared-storage view. */
@@ -417,6 +468,15 @@ class MediaLibraryBridge(
                     .put("kind", e.kind.name)
                     .put("fullUrl", toMediaUrl(e.relativePath))
                     .put("thumbnailUrl", toMediaUrl(e.relativePath))
+                    .put(
+                        "nativeVideoUri",
+                        if (e.kind == MediaLibraryService.MediaKind.VIDEO) {
+                            service.resolveSafe(e.relativePath)?.let { Uri.fromFile(it).toString() }
+                                ?: JSONObject.NULL
+                        } else {
+                            JSONObject.NULL
+                        }
+                    )
             )
         }
 
@@ -443,22 +503,31 @@ class MediaLibraryBridge(
             if (!emittedDcimIds.add(dcimId)) return  // de-dupe own ∩ all
             val kindSeg = if (d.isVideo) "video" else "image"
             val proxyUrl = "https://$ASSETS_HOST/dcim/$kindSeg/$dcimId"
+            val dcimVideoUrl = d.relativeDisplayPath
+                ?.takeIf { d.isVideo && it.startsWith("DCIM/") }
+                ?.removePrefix("DCIM/")
+                ?.takeIf { it.isNotBlank() }
+                ?.let { toLoopbackDcimVideoUrl(it) }
+            val fullUrl = dcimVideoUrl ?: proxyUrl
+            val videoCodecMime = if (d.isVideo) detectVideoCodecMime(d.contentUri) else null
             arr.put(
                 JSONObject()
                     .put("source", source)
                     .put("name", d.displayName)
                     .put("dcimId", dcimId)
                     .put("dcimUri", d.contentUri.toString())
+                    .put("nativeVideoUri", if (d.isVideo) d.contentUri.toString() else JSONObject.NULL)
                     .put("lastModifiedMs", d.dateTakenMs)
                     .put("sizeBytes", d.sizeBytes)
                     .put("kind", if (d.isVideo) "VIDEO" else "IMAGE")
                     .put("mimeType", d.mimeType)
                     .put("relativeDisplayPath", d.relativeDisplayPath ?: JSONObject.NULL)
-                    .put("fullUrl", proxyUrl)
+                    .put("fullUrl", fullUrl)
                     .put("thumbnailUrl", proxyUrl)
                     .put("width", d.width)
                     .put("height", d.height)
                     .put("durationMs", d.durationMs ?: JSONObject.NULL)
+                    .put("videoCodecMime", videoCodecMime ?: JSONObject.NULL)
             )
         }
 
@@ -526,9 +595,17 @@ class MediaLibraryBridge(
                             "3gp" -> "video/3gpp"
                             else -> "application/octet-stream"
                         }
-                        val encoded = URLEncoder.encode(f.absolutePath, "UTF-8")
+                        val encodedAbsolute = URLEncoder.encode(f.absolutePath, "UTF-8")
                             .replace("+", "%20")
-                        val proxyUrl = "https://$ASSETS_HOST/local-image/$encoded"
+                        val dcimRelative = f.absolutePath
+                            .removePrefix("/storage/emulated/0/DCIM/")
+                            .split(File.separatorChar)
+                            .filter { it.isNotBlank() }
+                            .joinToString("/")
+                        val imageProxyUrl = "https://$ASSETS_HOST/local-image/$encodedAbsolute"
+                        val videoProxyUrl = toLoopbackDcimVideoUrl(dcimRelative)
+                        val proxyUrl = if (isVideo) videoProxyUrl else imageProxyUrl
+                        val videoCodecMime = if (isVideo) detectVideoCodecMime(f) else null
                         // Videos get a separate thumb URL pointing at
                         // the MediaMetadataRetriever-backed route. The
                         // gallery uses thumbnailUrl in the grid (<img>)
@@ -536,7 +613,7 @@ class MediaLibraryBridge(
                         // for playback. For images both URLs point at
                         // the same content.
                         val thumbUrl = if (isVideo) {
-                            "https://$ASSETS_HOST/local-video-thumb/$encoded"
+                            "https://$ASSETS_HOST/local-video-thumb/$encodedAbsolute"
                         } else proxyUrl
                         val relPath = f.absolutePath.removePrefix("/storage/emulated/0/")
                         arr.put(
@@ -550,9 +627,11 @@ class MediaLibraryBridge(
                                 .put("relativeDisplayPath", relPath)
                                 .put("fullUrl", proxyUrl)
                                 .put("thumbnailUrl", thumbUrl)
+                                .put("nativeVideoUri", if (isVideo) Uri.fromFile(f).toString() else JSONObject.NULL)
                                 .put("width", 0)
                                 .put("height", 0)
                                 .put("durationMs", JSONObject.NULL)
+                                .put("videoCodecMime", videoCodecMime ?: JSONObject.NULL)
                         )
                     }
             }
@@ -570,6 +649,53 @@ class MediaLibraryBridge(
             .put("hasMediaPermission", hasMediaPermission)
             .put("entries", sorted)
             .toString()
+    }
+
+    private fun detectVideoCodecMime(uri: Uri): String? {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(context, uri, null)
+            detectVideoCodecMime(extractor)
+        } catch (e: Exception) {
+            Log.d(TAG, "detectVideoCodecMime failed for $uri: ${e.message}")
+            null
+        } finally {
+            try { extractor.release() } catch (_: Exception) {}
+        }
+    }
+
+    private fun detectVideoCodecMime(file: File): String? {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(file.absolutePath)
+            detectVideoCodecMime(extractor)
+        } catch (e: Exception) {
+            Log.d(TAG, "detectVideoCodecMime failed for ${file.name}: ${e.message}")
+            null
+        } finally {
+            try { extractor.release() } catch (_: Exception) {}
+        }
+    }
+
+    private fun detectVideoCodecMime(extractor: MediaExtractor): String? {
+        for (i in 0 until extractor.trackCount) {
+            val format = extractor.getTrackFormat(i)
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+            if (mime.startsWith("video/", ignoreCase = true)) return mime
+        }
+        return null
+    }
+
+    @JavascriptInterface
+    fun openNativeVideo(dcimUri: String?, mimeType: String?, title: String?): String {
+        if (!isTrusted()) return denied("openNativeVideo")
+        val uriText = dcimUri?.trim().orEmpty()
+        if (uriText.isBlank()) {
+            return JSONObject().put("error", "Missing video URI").toString()
+        }
+        val opener = nativeVideoOpener
+            ?: return JSONObject().put("error", "Native video player unavailable").toString()
+        return opener(uriText, mimeType, title)
     }
 
     /**

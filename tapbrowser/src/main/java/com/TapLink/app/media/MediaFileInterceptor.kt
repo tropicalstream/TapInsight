@@ -91,6 +91,16 @@ class MediaFileInterceptor(
         const val LOCAL_PREFIX = "/local-image/"
 
         /**
+         * Dedicated proxy prefix for direct-filesystem DCIM videos.
+         * Unlike /local-image/, this accepts a path relative to DCIM
+         * instead of an encoded absolute path. Chromium's media loader is
+         * much pickier than <img>; avoiding `%2Fstorage%2F...` absolute
+         * paths keeps local videos on a normal URL shape while preserving
+         * the same DCIM containment and Range-aware streaming.
+         */
+        const val LOCAL_VIDEO_PREFIX = "/local-video/"
+
+        /**
          * Safety: the only filesystem root /local-image/ will read from.
          * Any decoded path must `startsWith` this prefix and must not
          * contain `..` segments. Kept narrow on purpose so the proxy
@@ -133,6 +143,28 @@ class MediaFileInterceptor(
             // the browser shows a generic "Not found" page.
             "photos_gallery.html"
         )
+
+        /**
+         * RayNeo's WebView media stack can fail with net::ERR_FAILED when
+         * Chromium consumes a very small tail Range from a custom
+         * RandomAccessFile-backed WebResourceResponse stream. MP4 playback
+         * probes these tail ranges even when the moov atom is front-loaded.
+         * Buffering small ranges into a ByteArrayInputStream makes those
+         * probes deterministic while keeping large media ranges streaming.
+         */
+        private const val BUFFERED_RANGE_MAX_BYTES = 1 * 1024 * 1024
+
+        /**
+         * DCIM camera clips are usually short. On the RayNeo WebView, direct
+         * local video playback has proved more fragile than library audio:
+         * Chromium's FFmpeg demuxer may issue an initial open-ended
+         * `bytes=0-` request plus tiny tail probes, then report
+         * PIPELINE_ERROR_READ if either response is backed by a live
+         * RandomAccessFile stream. For bounded local camera clips, hand it a
+         * plain ByteArrayInputStream so all reads are deterministic. Larger
+         * files still stream to avoid blowing up memory.
+         */
+        private const val LOCAL_VIDEO_BUFFER_MAX_BYTES = 64 * 1024 * 1024
 
         /** URL of an on-glasses asset page served through this interceptor. */
         fun assetUrl(filename: String): String =
@@ -205,6 +237,16 @@ class MediaFileInterceptor(
                 ?.value
                 ?.trim()
             return handleLocalImageRequest(rawPath.removePrefix(LOCAL_PREFIX), rangeHeader)
+        }
+
+        // ── /local-video/<dcim-relative-path> → direct filesystem video ──
+        if (rawPath.startsWith(LOCAL_VIDEO_PREFIX)) {
+            val rangeHeader = req.requestHeaders
+                ?.entries
+                ?.firstOrNull { it.key.equals("Range", ignoreCase = true) }
+                ?.value
+                ?.trim()
+            return handleLocalVideoRequest(rawPath.removePrefix(LOCAL_VIDEO_PREFIX), rangeHeader)
         }
 
         // ── /local-video-thumb/<encoded-path> → first-frame thumbnail ──
@@ -541,6 +583,77 @@ class MediaFileInterceptor(
         }
     }
 
+    // ── /local-video/<relative-path> → direct File-system video ───────
+
+    /**
+     * Serve a DCIM video by path relative to /storage/emulated/0/DCIM/.
+     * This mirrors [handleLocalImageRequest] but avoids encoded absolute
+     * filesystem paths in the media element's URL, which can confuse the
+     * WebView media pipeline even though thumbnail <img> requests work.
+     */
+    private fun handleLocalVideoRequest(
+        rawTail: String,
+        rangeHeader: String?
+    ): WebResourceResponse {
+        val decoded = try {
+            URLDecoder.decode(rawTail, "UTF-8")
+        } catch (e: Exception) {
+            return errorResponse(400, "Bad path encoding")
+        }
+        val relative = decoded
+            .substringBefore('?')
+            .substringBefore('#')
+            .trimStart('/')
+        if (relative.isBlank() || relative.contains("..") || relative.contains('\\')) {
+            Log.w(TAG, "Rejecting /local-video bad relative path: $relative")
+            return errorResponse(403, "Forbidden")
+        }
+
+        val file = File(LOCAL_ALLOWED_ROOT, relative)
+        val canonical = try { file.canonicalPath } catch (_: Exception) { file.absolutePath }
+        if (!canonical.startsWith(LOCAL_ALLOWED_ROOT)) {
+            Log.w(TAG, "Rejecting /local-video after canonicalize: $canonical")
+            return errorResponse(403, "Forbidden")
+        }
+        if (!file.exists() || !file.isFile) {
+            return errorResponse(404, "Not found")
+        }
+
+        val ext = file.extension.lowercase(Locale.US)
+        val mime = when (ext) {
+            "mp4", "m4v" -> "video/mp4"
+            "webm" -> "video/webm"
+            "mov" -> "video/quicktime"
+            "mkv" -> "video/x-matroska"
+            "3gp" -> "video/3gpp"
+            else -> return errorResponse(415, "Unsupported video type")
+        }
+
+        return try {
+            val length = file.length()
+            Log.d(
+                TAG,
+                "/local-video serving ${file.name} mime=$mime length=$length " +
+                    "range='${rangeHeader ?: ""}'"
+            )
+            if (!rangeHeader.isNullOrEmpty()) {
+                buildPartialResponse(
+                    file = file,
+                    totalLength = length,
+                    rangeHeader = rangeHeader,
+                    mime = mime,
+                    skipBytes = 0L,
+                    bufferedRangeMaxBytes = LOCAL_VIDEO_BUFFER_MAX_BYTES.toLong()
+                ) ?: buildLocalVideoFullResponse(file, length, mime)
+            } else {
+                buildLocalVideoFullResponse(file, length, mime)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to open /local-video $relative: ${e.message}", e)
+            errorResponse(500, "Open failed")
+        }
+    }
+
     /**
      * In-memory LRU of generated video thumbnails. Keyed by absolute
      * file path + mtime, so a file that's overwritten in place produces
@@ -676,7 +789,8 @@ class MediaFileInterceptor(
         totalLength: Long,
         rangeHeader: String,
         mime: String,
-        skipBytes: Long = 0L
+        skipBytes: Long = 0L,
+        bufferedRangeMaxBytes: Long = BUFFERED_RANGE_MAX_BYTES.toLong()
     ): WebResourceResponse? {
         val (start, end) = parseRange(rangeHeader, totalLength) ?: run {
             // Return 416 so the client knows to retry without Range.
@@ -702,7 +816,13 @@ class MediaFileInterceptor(
         // skipBytes + start. The Content-Range we report uses the
         // logical (post-strip) offsets so the client's seek math
         // stays correct.
-        val stream = BoundedFileStream(file, skipBytes + start, contentLength)
+        val absoluteStart = skipBytes + start
+        val stream: InputStream =
+            if (contentLength <= bufferedRangeMaxBytes) {
+                ByteArrayInputStream(readRangeBytes(file, absoluteStart, contentLength))
+            } else {
+                BoundedFileStream(file, absoluteStart, contentLength)
+            }
         val headers = linkedMapOf(
             "Content-Type" to mime,
             "Content-Length" to contentLength.toString(),
@@ -716,6 +836,43 @@ class MediaFileInterceptor(
         resp.responseHeaders = headers
         resp.setStatusCodeAndReasonPhrase(206, "Partial Content")
         return resp
+    }
+
+    private fun buildLocalVideoFullResponse(
+        file: File,
+        length: Long,
+        mime: String
+    ): WebResourceResponse {
+        if (length <= LOCAL_VIDEO_BUFFER_MAX_BYTES) {
+            val bytes = readRangeBytes(file, 0L, length)
+            val headers = linkedMapOf(
+                "Content-Length" to bytes.size.toString(),
+                "Accept-Ranges" to "bytes",
+                "Cache-Control" to "no-store",
+                "Access-Control-Allow-Origin" to "*"
+            )
+            val resp = WebResourceResponse(mime, null, ByteArrayInputStream(bytes))
+            resp.responseHeaders = headers
+            resp.setStatusCodeAndReasonPhrase(200, "OK")
+            return resp
+        }
+        return buildFullResponse(file, length, mime, 0L)
+    }
+
+    private fun readRangeBytes(file: File, startOffset: Long, length: Long): ByteArray {
+        val size = length.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val bytes = ByteArray(size)
+        java.io.RandomAccessFile(file, "r").use { raf ->
+            if (startOffset > 0L) raf.seek(startOffset)
+            var offset = 0
+            while (offset < size) {
+                val read = raf.read(bytes, offset, size - offset)
+                if (read < 0) break
+                offset += read
+            }
+            if (offset == size) return bytes
+            return bytes.copyOf(offset)
+        }
     }
 
     private fun errorResponse(code: Int, reason: String): WebResourceResponse {

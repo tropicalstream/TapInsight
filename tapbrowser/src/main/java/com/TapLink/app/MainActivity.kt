@@ -25,6 +25,8 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
@@ -66,6 +68,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -756,6 +759,9 @@ class MainActivity :
     private var nativeRadioPreparing = false
     private var nativeRadioBuffering = false
     private var nativeRadioError: String? = null
+    private var nativeVideoPlayer: ExoPlayer? = null
+    private var nativeVideoOverlay: FrameLayout? = null
+    private var nativeVideoPlayerView: PlayerView? = null
     private val nativeRadioProgressTicker =
             object : Runnable {
                 override fun run() {
@@ -800,6 +806,9 @@ class MainActivity :
                     when {
                         fullScreenCustomView != null -> {
                             hideFullScreenCustomView()
+                        }
+                        nativeVideoOverlay != null -> {
+                            hideNativeVideoOverlay()
                         }
                         isKeyboardVisible || dualWebViewGroup.isUrlEditing() -> {
                             // Hide keyboard and exit URL editing
@@ -7779,6 +7788,11 @@ class MainActivity :
                 DebugLog.w("MediaPerm", "requestMediaPermission launch failed: ${e.message}")
             }
         }
+        mediaLibraryBridge.nativeVideoOpener = { uriText, mimeType, title ->
+            runOnUiBlockingForBridge {
+                openNativeVideoOverlay(uriText, mimeType, title)
+            }
+        }
         // Add JavaScript interface for custom media handling if needed
         webView.addJavascriptInterface(
                 object {
@@ -7956,6 +7970,168 @@ class MainActivity :
             .remove("tapradio_now_playing_duration_ms")
             .remove("tapradio_now_playing_error")
             .commit()
+    }
+
+    private fun runOnUiBlockingForBridge(block: () -> String): String {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return block()
+        }
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var result = ""
+        runOnUiThread {
+            try {
+                result = block()
+            } catch (e: Exception) {
+                result = JSONObject().put("error", e.localizedMessage ?: "Native video failed").toString()
+            } finally {
+                latch.countDown()
+            }
+        }
+        try {
+            latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: Exception) {}
+        return result.ifBlank {
+            JSONObject().put("error", "Native video player timed out").toString()
+        }
+    }
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun openNativeVideoOverlay(uriText: String, mimeType: String?, title: String?): String {
+        if (!::mainContainer.isInitialized) {
+            return JSONObject().put("error", "Native video player is not ready").toString()
+        }
+        val uri = try {
+            Uri.parse(uriText)
+        } catch (e: Exception) {
+            return JSONObject().put("error", "Bad video URI").toString()
+        }
+        val mime = mimeType?.trim()?.takeIf { it.isNotBlank() } ?: "video/mp4"
+        val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() } ?: "Video"
+
+        DebugLog.d("NativeVideo", "Opening in-app video player title=$cleanTitle mime=$mime uri=$uri")
+        pauseNativeRadioStreamInternal(abandonFocus = true)
+        hideNativeVideoOverlay()
+
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            isClickable = true
+            isFocusable = true
+            isFocusableInTouchMode = true
+        }
+        val playerView = PlayerView(this).apply {
+            setBackgroundColor(Color.BLACK)
+            useController = true
+            controllerAutoShow = true
+            controllerHideOnTouch = false
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+            setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+        }
+        overlay.addView(
+            playerView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        val titleView = TextView(this).apply {
+            text = cleanTitle
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            setBackgroundColor(Color.argb(150, 0, 0, 0))
+            setPadding(14, 8, 58, 8)
+            maxLines = 1
+        }
+        overlay.addView(
+            titleView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
+            )
+        )
+
+        val closeButton = TextView(this).apply {
+            text = "X"
+            setTextColor(Color.WHITE)
+            textSize = 18f
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.argb(190, 20, 20, 20))
+            setOnClickListener { hideNativeVideoOverlay() }
+        }
+        overlay.addView(
+            closeButton,
+            FrameLayout.LayoutParams(52, 52, Gravity.TOP or Gravity.END).apply {
+                topMargin = 4
+                rightMargin = 4
+            }
+        )
+
+        mainContainer.addView(
+            overlay,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        return try {
+            val player = ExoPlayer.Builder(this)
+                .setAudioAttributes(
+                    androidx.media3.common.AudioAttributes.Builder()
+                        .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                        .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+                        .build(),
+                    true
+                )
+                .build()
+            player.addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    DebugLog.w("NativeVideo", "Playback error: ${error.message}")
+                    dualWebViewGroup.showToast(error.message ?: "Video playback failed", 3500L)
+                }
+            })
+            playerView.player = player
+            player.setMediaItem(
+                MediaItem.Builder()
+                    .setUri(uri)
+                    .setMimeType(mime)
+                    .build()
+            )
+            player.prepare()
+            player.playWhenReady = true
+            nativeVideoOverlay = overlay
+            nativeVideoPlayerView = playerView
+            nativeVideoPlayer = player
+            overlay.requestFocus()
+            JSONObject()
+                .put("status", "opened")
+                .put("engine", "media3")
+                .toString()
+        } catch (e: Exception) {
+            DebugLog.w("NativeVideo", "Failed to open $uri: ${e.message}")
+            try { mainContainer.removeView(overlay) } catch (_: Exception) {}
+            JSONObject().put("error", e.localizedMessage ?: "Video playback failed").toString()
+        }
+    }
+
+    private fun hideNativeVideoOverlay() {
+        val player = nativeVideoPlayer
+        val playerView = nativeVideoPlayerView
+        val overlay = nativeVideoOverlay
+        nativeVideoPlayer = null
+        nativeVideoPlayerView = null
+        nativeVideoOverlay = null
+        try {
+            playerView?.player = null
+        } catch (_: Exception) {}
+        try {
+            player?.stop()
+            player?.release()
+        } catch (_: Exception) {}
+        if (overlay != null && ::mainContainer.isInitialized) {
+            try { mainContainer.removeView(overlay) } catch (_: Exception) {}
+        }
     }
 
     private fun buildNativeRadioPlaybackStateJson(): String {
@@ -11422,6 +11598,7 @@ class MainActivity :
         // background after the Activity is destroyed (holds WAKE_MODE_LOCAL lock).
         // On AR glasses with limited RAM, the system frequently destroys TapBrowser
         // when the user switches back to VisionClaw, creating orphaned players.
+        hideNativeVideoOverlay()
         releaseNativeRadioPlayer(clearMetadata = true, abandonFocus = true)
         // Release browser agent resources
         stopBrowserAgent("Activity destroyed")
