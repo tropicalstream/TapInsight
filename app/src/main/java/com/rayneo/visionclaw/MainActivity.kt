@@ -1053,6 +1053,10 @@ class MainActivity : AppCompatActivity() {
             openClawClient = openClawClient,
             hermesClient = hermesClient,
             cameraFrameProvider = { latestFrame },
+            // Pull WebView screenshots on demand from the tapbrowser
+            // module via the cross-Activity holder. Returns null when
+            // the browser isn't currently up.
+            browserFrameProvider = { com.TapLink.app.media.BrowserFrameHolder.captureBase64Jpeg() },
             batteryLevelProvider = { getBatteryLevel() },
             isChargingProvider = { isBatteryCharging() },
             toggleBatterySaver = { enabled -> onBatterySaverToggled(enabled) }
