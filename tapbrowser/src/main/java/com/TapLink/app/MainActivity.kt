@@ -1831,9 +1831,9 @@ class MainActivity :
             webView.post {
                 try {
                     moveTaskToBack(true)
-                    Log.i("WarmStart", "tapbrowser warm-started; sent task to back")
+                    DebugLog.d("WarmStart", "tapbrowser warm-started; sent task to back")
                 } catch (e: Exception) {
-                    Log.w("WarmStart", "moveTaskToBack failed: ${e.message}")
+                    DebugLog.w("WarmStart", "moveTaskToBack failed: ${e.message}")
                 }
             }
         }
