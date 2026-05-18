@@ -1817,6 +1817,12 @@ class MainActivity :
 
         webView = dualWebViewGroup.getWebView()
 
+        // Register with the cross-module BrowserFrameHolder so the
+        // visionclaw tool layer (BrowserVisionTool) can pull viewport
+        // screenshots on demand without holding a direct reference.
+        // Re-attaches on every WebView swap (multi-window cases).
+        com.TapLink.app.media.BrowserFrameHolder.attach(webView)
+
         webView.setOnTouchListener { _, event ->
             val isMouseEvent = isMousePointerEvent(event)
 
@@ -2122,6 +2128,7 @@ class MainActivity :
                     // old pages (CNN, Fox News, etc.) from the back stack.
                     if (isYouTube) {
                         webView = dualWebViewGroup.resetToSingleWindow(loadDefaultUrl = false)
+                        com.TapLink.app.media.BrowserFrameHolder.attach(webView)
                         webView.stopLoading()
                         webView.clearHistory()
                         webView.clearCache(true)
@@ -2228,6 +2235,7 @@ class MainActivity :
             // the new one, which is sufficient.
             if (isYouTube) {
                 webView = dualWebViewGroup.resetToSingleWindow(loadDefaultUrl = false)
+                com.TapLink.app.media.BrowserFrameHolder.attach(webView)
                 // 1. Stop everything
                 webView.stopLoading()
 
@@ -6709,6 +6717,10 @@ class MainActivity :
     override fun onWindowSwitched(webView: WebView) {
         // Update reference
         this.webView = webView
+        // Keep BrowserFrameHolder pointed at the active window so the
+        // browser_vision tool always screenshots whatever the user is
+        // currently looking at, not a stale background window.
+        com.TapLink.app.media.BrowserFrameHolder.attach(webView)
 
         // Ensure the correct touch listener is attached (though configureWebView likely did it)
         attachTouchListener(webView)
@@ -11593,6 +11605,14 @@ class MainActivity :
         if (activeInstanceRef?.get() === this) {
             activeInstanceRef = null
         }
+        // Clear the BrowserFrameHolder so visionclaw-side tools see
+        // "no browser available" instead of trying to capture a
+        // destroyed view. The WeakReference would clear itself
+        // eventually but explicit detach avoids a small flake window
+        // where a captureBase64Jpeg call could find a half-torn view.
+        try {
+            com.TapLink.app.media.BrowserFrameHolder.detach(webView)
+        } catch (_: Exception) {}
         // ── Release native radio ExoPlayer ──
         // Critical: without this, the ExoPlayer continues playing audio in the
         // background after the Activity is destroyed (holds WAKE_MODE_LOCAL lock).

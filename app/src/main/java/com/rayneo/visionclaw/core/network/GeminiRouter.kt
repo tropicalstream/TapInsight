@@ -2871,6 +2871,41 @@ class GeminiRouter(
                             .put("description", "Optional title or label for the saved item.")))
                     .put("required", JSONArray().put("action"))))
 
+            // browser_vision — ask Gemini what the user is looking at
+            // in the on-glasses TapBrowser. Triggered by phrases like
+            // "look at this", "what does this say", "summarize this
+            // page", "read this", "translate this", "explain this",
+            // "what's on screen". Tool captures a JPEG of the browser
+            // viewport, posts image + question to gemini-2.5-flash via
+            // generateContent, returns the answer text.
+            tools.put(JSONObject()
+                .put("name", "browser_vision")
+                .put("description",
+                    "Answer a question about what the user is currently SEEING in their on-glasses browser (TapBrowser). " +
+                        "Use this when the user says any of: " +
+                        "'look at this', 'look at the screen', 'what does this say', 'what's on screen', " +
+                        "'what's on this page', 'summarize this', 'summarize this page', 'read this', " +
+                        "'read this page', 'translate this', 'translate this page', 'explain this', " +
+                        "'what's that', 'tell me about this page', 'what am I looking at', " +
+                        "'what's the price', 'who wrote this', 'when was this published', or any other " +
+                        "question that clearly refers to the visible browser content rather than general knowledge. " +
+                        "DO NOT use this tool when the user is in the chat surface with no browser visible, or " +
+                        "when they're asking a generic knowledge question that doesn't reference the page. " +
+                        "If the browser isn't currently open or the screenshot can't be captured, the tool " +
+                        "returns a clear error — surface that verbatim, don't fabricate a page description.")
+                .put("parameters", JSONObject()
+                    .put("type", "OBJECT")
+                    .put("properties", JSONObject()
+                        .put("question", JSONObject().put("type", "STRING")
+                            .put("description",
+                                "The user's question about the page, with the wake phrase stripped. " +
+                                    "Examples: " +
+                                    "'what's the article saying' (from 'summarize this — what's the article saying'), " +
+                                    "'translate to spanish' (from 'translate this to spanish'), " +
+                                    "'what's the headline' (from 'look at this, what's the headline'). " +
+                                    "Always pass a clean question — never the bare wake phrase.")))
+                    .put("required", JSONArray().put("question"))))
+
             // open_taplink
             tools.put(JSONObject()
                 .put("name", "open_taplink")

@@ -37,6 +37,14 @@ class ToolDispatcher(
     openClawClient: OpenClawClient? = null,
     hermesClient: com.rayneo.visionclaw.core.network.HermesClient? = null,
     cameraFrameProvider: (() -> String?)? = null,
+    /**
+     * Returns a base64-encoded JPEG of the on-glasses TapBrowser
+     * WebView's current viewport, or null if the browser isn't up.
+     * Supplied by [com.TapLink.app.media.BrowserFrameHolder] in
+     * production. Used by [BrowserVisionTool] for voice-triggered
+     * "what does this say" / "summarize this page" prompts.
+     */
+    browserFrameProvider: (() -> String?)? = null,
     batteryLevelProvider: (() -> Int)? = null,
     isChargingProvider: (() -> Boolean)? = null,
     toggleBatterySaver: ((Boolean) -> Unit)? = null
@@ -98,6 +106,10 @@ class ToolDispatcher(
         register(SonosTool(context))
         register(CommunicationTool(context))
         register(CameraTool(context, frameProvider = cameraFrameProvider ?: { null }))
+        register(BrowserVisionTool(
+            context,
+            frameProvider = browserFrameProvider ?: { null }
+        ))
         register(TapLinkTool(context))
         register(SendVideoListTool(context))
         register(SendLinkListTool(context))
