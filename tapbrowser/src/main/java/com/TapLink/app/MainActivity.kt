@@ -1020,43 +1020,13 @@ class MainActivity :
 
         mainContainer = findViewById(R.id.mainContainer)
 
-        // Phase 2 Step 2b: tap-routing probe. The unipanelOverlay is
-        // visible above the WebView; this pill verifies that
-        // clickable=true widgets inside the overlay consume their own
-        // taps while empty (clickable=false) regions fall through to
-        // the WebView. If both work, future chat content can land in
-        // unipanelOverlay safely.
-        //
-        // First attempt had the badge invisible to taps (touches went
-        // straight to the WebView even when over the badge). This
-        // version adds:
-        //   • Bigger dp-padded hit area so we're not missing on the
-        //     binocular right-eye → left-eye coord remap.
-        //   • Touch listener that logs every MotionEvent the badge
-        //     receives. If touches DON'T reach the badge at all, the
-        //     log stays silent → BinocularSbsLayout / DualWebViewGroup
-        //     is stealing them upstream and we need to dig there.
-        //   • Click listener still toasts on success.
-        findViewById<View?>(R.id.unipanelStep2bProbe)?.let { probe ->
-            probe.setOnTouchListener { _, ev ->
-                DebugLog.d(
-                    "Unipanel",
-                    "Step 2b probe touch: action=${ev.actionMasked} " +
-                        "x=${ev.x} y=${ev.y} rawX=${ev.rawX} rawY=${ev.rawY}"
-                )
-                // Return false so the click listener still gets to
-                // process the event normally — we're only spying.
-                false
-            }
-            probe.setOnClickListener {
-                DebugLog.d("Unipanel", "Step 2b probe CLICKED — overlay touch consumption OK")
-                android.widget.Toast.makeText(
-                    this,
-                    "Step 2b: overlay tap works",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
-            }
-        }
+        // Phase 2 Step 2c.1: HUD clock ticker. unipanelHudTime is a
+        // TextView at the top-center of unipanelOverlay; this runnable
+        // refreshes it every 30s with the current HH:MM. First real
+        // piece of chat-HUD content rendered over the browser. Future
+        // steps add AI status, battery, calendar, etc. to the same
+        // strip and migrate to the live MainViewModel-driven values.
+        startUnipanelHudClockTicker()
 
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
@@ -5782,6 +5752,34 @@ class MainActivity :
 
     private fun suppressImmediateWebClickLeak() {
         suppressWebClickUntil = SystemClock.uptimeMillis() + 250L
+    }
+
+    /**
+     * Phase 2 Step 2c.1: drives the unipanel HUD clock.
+     *
+     * Refreshes the unipanelHudTime TextView every 30 s with the
+     * current local time in HH:MM. Lightweight by design — no
+     * BroadcastReceiver, no allocations on tick. Posts itself
+     * recursively via uiHandler so the loop stops cleanly when the
+     * Activity goes away (no explicit cancel needed; the Handler is
+     * already main-thread-bound).
+     *
+     * Future Step 2c migrations will subscribe this surface to live
+     * data from the shared MainViewModel rather than just rendering
+     * the wall clock.
+     */
+    private fun startUnipanelHudClockTicker() {
+        val tv = findViewById<android.widget.TextView?>(R.id.unipanelHudTime) ?: return
+        val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+        val ticker = object : Runnable {
+            override fun run() {
+                try {
+                    tv.text = fmt.format(java.util.Date())
+                } catch (_: Exception) {}
+                uiHandler.postDelayed(this, 30_000L)
+            }
+        }
+        uiHandler.post(ticker)
     }
 
     /**

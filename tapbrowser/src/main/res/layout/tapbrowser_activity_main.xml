@@ -1,5 +1,6 @@
 <com.TapLink.app.BinocularSbsLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#000000">
@@ -23,17 +24,17 @@
             android:fitsSystemWindows="true"
             android:background="#000000" />
 
-        <!-- Z-LAYER 1: the chat-panel overlay. Hosts the migrated
-             visionclaw chat ViewPager + HUD + camera preview as
-             children in Step 2d+. Stays transparent and
+        <!-- Z-LAYER 1: the unipanel chat-panel overlay. Hosts the
+             migrated visionclaw chat ViewPager + HUD + camera
+             preview as children. The container stays transparent +
              clickable=false so empty regions pass touches through
-             to the WebView underneath; individual chat widgets
-             consume their own taps via their own clickable=true.
+             to the WebView underneath; individual widgets consume
+             their own taps via clickable=true (routed through the
+             cursor-tap pipeline by dispatchUnipanelOverlayTouchIfHit).
 
-             Step 2b: shown with a single test pill (top-right) so
-             we can verify the tap-consume / tap-passthrough
-             contract works correctly before piping real chat
-             content in. -->
+             Step 2c.1: hosts a simple HUD strip at the top showing
+             the current time. Read-only, no interaction. First
+             real piece of chat HUD rendered over the browser. -->
         <FrameLayout
             android:id="@+id/unipanelOverlay"
             android:layout_width="match_parent"
@@ -43,31 +44,39 @@
             android:focusable="false"
             android:visibility="visible">
 
-            <!-- Step 2b probe pill. clickable=true so this widget
-                 consumes taps on its own bounds. Anywhere else
-                 in unipanelOverlay (clickable=false) falls through
-                 to the WebView. If you can scroll the browser
-                 around this pill, touch routing is correct. -->
-            <!-- Made significantly larger + dp-padded so it's
-                 unambiguously hittable through the binocular
-                 right-eye → left-eye remap. -->
-            <TextView
-                android:id="@+id/unipanelStep2bProbe"
+            <!-- Step 2c.1 HUD strip. Semi-transparent dark
+                 background so it stays readable over any browser
+                 page; pinned to the top so it doesn't cover
+                 article content the user is reading. Width caps
+                 at 320dp so it doesn't span the full eye in the
+                 binocular display and feel oppressive. -->
+            <LinearLayout
+                android:id="@+id/unipanelHudStrip"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="top|center_horizontal"
-                android:layout_marginTop="24dp"
-                android:paddingHorizontal="28dp"
-                android:paddingVertical="18dp"
-                android:background="#E0007ACC"
-                android:clickable="true"
-                android:focusable="true"
-                android:text="STEP 2B — tap me"
-                android:textColor="#FFFFFFFF"
-                android:textSize="18sp"
-                android:textStyle="bold"
-                android:fontFamily="sans-serif-medium"
-                android:elevation="12dp" />
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="14dp"
+                android:paddingVertical="6dp"
+                android:background="#B3000000"
+                android:elevation="8dp"
+                android:clickable="false"
+                android:focusable="false">
+
+                <TextView
+                    android:id="@+id/unipanelHudTime"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="--:--"
+                    android:textColor="#FFE0F4FF"
+                    android:textSize="13sp"
+                    android:letterSpacing="0.06"
+                    tools:ignore="UnusedAttribute" />
+
+            </LinearLayout>
 
         </FrameLayout>
 
