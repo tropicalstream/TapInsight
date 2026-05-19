@@ -9664,16 +9664,23 @@ class MainActivity : AppCompatActivity() {
                                                 startGeminiAudioStreaming()
                                             }
                                             touchGeminiLiveActivity(force = true)
+                                            // Phase 2 Step 2f.2-fix: the
+                                            // pendingUnipanelReturnToBrowserAfterVoiceStart
+                                            // bounce-back to tapbrowser is now a no-op in
+                                            // practice — the unipanel trigger path was
+                                            // switched from "REORDER_TO_FRONT visionclaw
+                                            // then return" to "publish requestNewGemini-
+                                            // Chat via ChatCardBridge," which never brings
+                                            // visionclaw foreground. The flag is left in
+                                            // place as defensive code in case a legacy
+                                            // intent path resurfaces, but the launchTap-
+                                            // Browser side-effect would itself flash
+                                            // tapbrowser foreground unnecessarily, so it's
+                                            // disabled. If the flag is set we just clear
+                                            // it.
                                             if (pendingUnipanelReturnToBrowserAfterVoiceStart) {
                                                 pendingUnipanelReturnToBrowserAfterVoiceStart = false
-                                                uiHandler.postDelayed({
-                                                    if (viewModel.voiceAssistantActive.value == true &&
-                                                        liveState != GeminiLiveState.IDLE
-                                                    ) {
-                                                        Log.d(TAG, "Unipanel Gemini session ready; returning to browser")
-                                                        launchTapBrowser()
-                                                    }
-                                                }, 450L)
+                                                Log.d(TAG, "Unipanel Gemini session ready; leaving tapbrowser foreground untouched (FGS path)")
                                             }
                                             // Deferred: bridge-reachability ping is cosmetic —
                                             // run it after the session is fully streaming.

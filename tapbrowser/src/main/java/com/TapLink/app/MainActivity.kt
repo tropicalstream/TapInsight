@@ -5808,11 +5808,30 @@ class MainActivity :
     private fun requestUnipanelGeminiNewChat() {
         DebugLog.d("Unipanel", "HUD tap requested new Gemini chat")
         showUnipanelHudStatus("Listening", 2_000L)
-        if (!launchVisionclawForUnipanelGeminiChat()) {
-            com.TapLink.app.unipanel.ChatCardBridge.requestNewGeminiChat("browser_hud_fallback")
-        }
+        // Phase 2 Step 2f.2-fix: previously this path launched
+        // visionclaw foreground via REORDER_TO_FRONT + NO_ANIMATION
+        // (see launchVisionclawForUnipanelGeminiChat below) so the
+        // pre-FGS Activity-must-be-foreground-for-mic rule was
+        // satisfied. With the foreground microphone Service in
+        // place (GeminiSessionForegroundService), visionclaw can
+        // stay backgrounded; bringing it forward now just renders
+        // the headless 0×0 activity_main stub as a black screen
+        // for ~1-3 s while the Gemini Live session connects, then
+        // launchTapBrowser() bounces back to the browser. Use the
+        // bridge directly — visionclaw's existing
+        // observeNewGeminiChat listener calls activateChatVoice-
+        // Assistant() in the background.
+        com.TapLink.app.unipanel.ChatCardBridge.requestNewGeminiChat("browser_hud")
     }
 
+    /**
+     * Legacy pre-FGS path: bring visionclaw to the front so its
+     * Activity could legally claim the microphone. Now superseded
+     * by [GeminiSessionForegroundService]; kept as a fallback so
+     * a future cleanup can decide whether to delete entirely.
+     * Currently unreferenced.
+     */
+    @Suppress("unused")
     private fun launchVisionclawForUnipanelGeminiChat(): Boolean {
         val requestId = SystemClock.uptimeMillis()
         return try {
@@ -12246,11 +12265,21 @@ class MainActivity :
     }
 
     override fun onChatPressed() {
-        launchVisionclawChat("btnChat")
+        // Phase 2 Step 2f.2-fix: in-browser Groq chat view is toggled
+        // by DualWebViewGroup before this listener runs (the "chat"
+        // nav-button dispatch early-returns there), so this override
+        // is effectively dead code. If something does call it now,
+        // route through the bridge instead of bringing visionclaw
+        // foreground — visionclaw foreground = black 0×0 stub.
+        com.TapLink.app.unipanel.ChatCardBridge.requestNewGeminiChat("btnChat_fallback")
     }
 
     override fun onQuitPressed() {
-        launchVisionclawChat("btnQuit")
+        // btnQuit was deleted from the nav bar in the Step 2g sweep,
+        // so this override is unreachable today. Same defensive
+        // routing as onChatPressed: never bring visionclaw foreground
+        // — it would render as a black screen.
+        com.TapLink.app.unipanel.ChatCardBridge.requestNewGeminiChat("btnQuit_fallback")
     }
 
     private fun launchVisionclawChat(source: String) {
