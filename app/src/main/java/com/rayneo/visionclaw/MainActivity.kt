@@ -1248,12 +1248,17 @@ class MainActivity : AppCompatActivity() {
 
         Log.i(TAG, "TapInsight MainActivity created successfully")
 
-        // Warm up the tapbrowser WebView in the background so the
-        // browser_vision tool always has something to screenshot.
-        // 2.5 s delay lets visionclaw render + finish heavy startup
-        // first; the brief tapbrowser flash that crosses the screen
-        // before it self-backgrounds is acceptable as a Phase 2 Step 1.
-        uiHandler.postDelayed({ warmStartTapBrowserIfNeeded() }, 2500L)
+        // Step 1 warm-start disabled per user request — the brief
+        // tapbrowser → moveTaskToBack flash on cold launch was
+        // disruptive. The browser_vision tool will populate
+        // BrowserFrameHolder lazily on the user's first explicit
+        // browser visit (double-tap → tapbrowser onCreate attaches
+        // the WebView). The trade-off: asking "look at this" before
+        // ever visiting the browser returns "I can't see the
+        // browser right now" instead of a screenshot.
+        //
+        // To re-enable, uncomment:
+        //   uiHandler.postDelayed({ warmStartTapBrowserIfNeeded() }, 2500L)
 
         // Phase 2 Step 2c.3: feed the chat conversation state into
         // the tapbrowser overlay so the mini chat-card stack over
