@@ -1272,6 +1272,24 @@ class MainActivity : AppCompatActivity() {
                         timestampMs = it.timestampMs
                     )
                 }
+                // Diagnostic log so we can verify the publish stream
+                // matches MainViewModel.messages when the unipanel
+                // mini-card stack shows something unexpected. Sample
+                // each card's role + first 28 chars of text so the log
+                // line stays grep-friendly.
+                if (cards.isNotEmpty()) {
+                    val sample = cards.takeLast(5).joinToString(
+                        prefix = "[", postfix = "]", separator = ", "
+                    ) { c ->
+                        val role = if (c.fromUser) "U" else "A"
+                        val snippet = c.text.take(28).replace('\n', ' ')
+                        "$role:\"$snippet\""
+                    }
+                    Log.d(
+                        TAG,
+                        "ChatCardBridge publish size=${cards.size} tail=$sample"
+                    )
+                }
                 com.TapLink.app.unipanel.ChatCardBridge.publish(cards)
             }
         }
