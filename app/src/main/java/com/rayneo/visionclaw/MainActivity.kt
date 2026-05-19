@@ -1270,12 +1270,10 @@ class MainActivity : AppCompatActivity() {
 
         // Phase 2 Step 2f: when tapbrowser warm-starts us (it's the
         // launcher now), self-background so the user sees the
-        // browser, not visionclaw. Heavy onCreate work above has
-        // already wired up the ChatCardBridge + CameraStateBridge
-        // publishers, so the unipanel overlays have live data from
-        // this point on even though visionclaw is invisible.
-        // moveTaskToBack is posted to the next layout pass so the
-        // post-onCreate observers settle first.
+        // browser, not visionclaw. Currently DORMANT because the
+        // tapbrowser-side trigger is disabled after a crash on first
+        // test — kept in place so re-enabling is a one-line change
+        // upstream once the crash is diagnosed.
         if (intent.getBooleanExtra(EXTRA_TAPCLAW_WARM_START, false)) {
             uiHandler.post {
                 runCatching {

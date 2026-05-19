@@ -1877,17 +1877,18 @@ class MainActivity :
                     DebugLog.w("WarmStart", "moveTaskToBack failed: ${e.message}")
                 }
             }
-        } else {
-            // Phase 2 Step 2f: when tapbrowser is the launcher (cold
-            // launch from the home screen, no warm-start flag), we
-            // spawn visionclaw in the background so its ChatCardBridge
-            // + CameraStateBridge publishers come alive and the
-            // unipanel overlays get live data even though the user is
-            // looking at the browser. 2.5 s delay lets the WebView
-            // settle first; the brief visionclaw flash that crosses
-            // the screen before it self-backgrounds is acceptable.
-            uiHandler.postDelayed({ warmStartVisionclawIfNeeded() }, 2500L)
         }
+        // Phase 2 Step 2f: the reverse warm-start (tapbrowser →
+        // visionclaw) crashed on first test — visionclaw fell over
+        // shortly after the cold-launch flash to chat. Pending an
+        // adb-logcat capture identifying the cause, the auto-warm-
+        // start is disabled. Chat is reachable on-demand via the X
+        // button (btnQuit → REORDER_TO_FRONT + NEW_TASK starts a
+        // visionclaw instance lazily); the unipanel mini-card stack
+        // + CAM chip stay empty until that first chat launch, but
+        // that's a strictly cosmetic regression vs. a crash.
+        // To re-enable, uncomment:
+        //   uiHandler.postDelayed({ warmStartVisionclawIfNeeded() }, 2500L)
 
         webView.setOnTouchListener { _, event ->
             val isMouseEvent = isMousePointerEvent(event)
