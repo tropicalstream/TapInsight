@@ -9770,6 +9770,18 @@ class MainActivity : AppCompatActivity() {
                                     override fun onTurnComplete(finishReason: String?) {
                                         if (!isCurrentSession()) return
                                         viewModel.commitLiveAssistantStreamIfNeeded()
+                                        // Phase 2 Step 2c.3.3: drop the accumulated output
+                                        // transcript at turn boundary. Without this, the
+                                        // next turn's first chunk gets mergeLiveTranscript-
+                                        // concatenated with the PRIOR turn's full reply,
+                                        // and upsertLiveAssistantWorkingCard sees an empty
+                                        // liveAssistantWorkingTurn (correctly reset by the
+                                        // commit above) → it appends a NEW assistant card
+                                        // whose first ~all-of-prior-answer chars duplicate
+                                        // the just-committed card. Logs showed _messages
+                                        // jumping size=2 → size=3 with the duplicate before
+                                        // appendUserUtterance even ran for the next turn.
+                                        latestLiveOutputTranscript = ""
                                         awaitingServerTurnComplete = false
                                         liveState = GeminiLiveState.FOLLOW_UP
                                         uiHandler.removeCallbacks(settledLiveInputRunnable)
