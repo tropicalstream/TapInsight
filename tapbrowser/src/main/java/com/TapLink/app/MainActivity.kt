@@ -1028,6 +1028,13 @@ class MainActivity :
         // already loaded into MainViewModel).
         startUnipanelMiniCardObserver()
 
+        // Phase 2 Step 2c.4: subscribe to CameraStateBridge so the
+        // top-right CAM chip shows/hides in sync with visionclaw's
+        // voiceAssistantActive LiveData. Read-only status indicator
+        // — the live camera frames stay in the visionclaw chat panel
+        // for now; this just tells the user "yes, Gemini is watching".
+        startUnipanelCameraChipObserver()
+
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
         // Add this to disable default keyboard
@@ -5828,6 +5835,38 @@ class MainActivity :
         unipanelChatCardSubscription =
             com.TapLink.app.unipanel.ChatCardBridge.observe { cards ->
                 uiHandler.post { renderUnipanelMiniCards(slots, cards) }
+            }
+    }
+
+    /**
+     * Phase 2 Step 2c.4: subscribe the top-right CAM chip to
+     * [com.TapLink.app.unipanel.CameraStateBridge] so it reflects
+     * visionclaw's voiceAssistantActive LiveData (camera streaming
+     * to Gemini Live). Read-only status surface — no live camera
+     * frames mirrored here, that's a future enhancement.
+     *
+     * Lifetime mirrors the mini-card subscription: bridge listener
+     * fires on the publisher's thread; we hop to uiHandler before
+     * touching the View, and the subscription is closed in
+     * onDestroy so a recreated Activity doesn't double-listen.
+     */
+    private var unipanelCameraChipSubscription: AutoCloseable? = null
+
+    private fun startUnipanelCameraChipObserver() {
+        val chip = findViewById<View?>(R.id.unipanelCameraChip)
+        if (chip == null) {
+            DebugLog.w(
+                "Unipanel",
+                "Camera chip observer: chip view missing, skipping subscription"
+            )
+            return
+        }
+        unipanelCameraChipSubscription?.runCatching { close() }
+        unipanelCameraChipSubscription =
+            com.TapLink.app.unipanel.CameraStateBridge.observe { active ->
+                uiHandler.post {
+                    chip.visibility = if (active) View.VISIBLE else View.GONE
+                }
             }
     }
 
@@ -11774,6 +11813,12 @@ class MainActivity :
             unipanelChatCardSubscription?.close()
         } catch (_: Exception) {}
         unipanelChatCardSubscription = null
+        // Phase 2 Step 2c.4: same pattern for the camera chip
+        // subscription.
+        try {
+            unipanelCameraChipSubscription?.close()
+        } catch (_: Exception) {}
+        unipanelCameraChipSubscription = null
         // ── Release native radio ExoPlayer ──
         // Critical: without this, the ExoPlayer continues playing audio in the
         // background after the Activity is destroyed (holds WAKE_MODE_LOCAL lock).
