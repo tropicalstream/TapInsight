@@ -573,6 +573,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastUserSpeechActivityMs = 0L
     @Volatile private var lastGeminiOutputActivityMs = 0L
     @Volatile private var currentGeminiOutputTurnStartedMs = 0L
+    @Volatile private var dropOutputTranscriptionUntilNextInput = false
     @Volatile private var forceDirectGeminiLive = true
     @Volatile private var lastVoiceActivationMs = 0L
     /** Monotonically increasing counter to detect stale WebSocket callbacks from old sessions. */
@@ -9246,6 +9247,7 @@ class MainActivity : AppCompatActivity() {
         lastUserSpeechActivityMs = SystemClock.uptimeMillis()
         lastGeminiOutputActivityMs = 0L
         currentGeminiOutputTurnStartedMs = 0L
+        dropOutputTranscriptionUntilNextInput = false
         resetFollowUpSpeechTracking()
         awaitingServerTurnComplete = true
         disarmSilenceWatchdog()
@@ -9454,9 +9456,12 @@ class MainActivity : AppCompatActivity() {
                                         // Symptom that drove this fix: turn N said "podcasts",
                                         // turn N+2 said "play Pale Blue Dot" with a YouTube URL,
                                         // and the YouTube open was rejected as a podcast mismatch.
-                                        val startingFreshTurn = !awaitingServerTurnComplete
+                                        val startingFreshTurn =
+                                                !awaitingServerTurnComplete ||
+                                                        dropOutputTranscriptionUntilNextInput
                                         liveState = GeminiLiveState.LISTENING
                                         awaitingServerTurnComplete = true
+                                        dropOutputTranscriptionUntilNextInput = false
                                         markUserSpeechActivity()
                                         if (startingFreshTurn) {
                                             // Clear the Hermes-follow-up tag on every fresh user
@@ -9670,6 +9675,13 @@ class MainActivity : AppCompatActivity() {
                                         val safe = text.trim()
                                         if (safe.isBlank()) return
                                         if (maybeRecoverFromGeminiFallback(safe)) return
+                                        if (dropOutputTranscriptionUntilNextInput) {
+                                            Log.d(
+                                                TAG,
+                                                "Dropping late Gemini outputTranscription after turnComplete: '${safe.take(120)}'"
+                                            )
+                                            return
+                                        }
 
                                         liveState = GeminiLiveState.THINKING
                                         awaitingServerTurnComplete = true
@@ -9691,6 +9703,13 @@ class MainActivity : AppCompatActivity() {
                                     override fun onModelText(text: String) {
                                         if (!isCurrentSession() || isGeminiOutputSuppressed()) return
                                         if (maybeRecoverFromGeminiFallback(text)) return
+                                        if (dropOutputTranscriptionUntilNextInput) {
+                                            Log.d(
+                                                TAG,
+                                                "Dropping late Gemini modelText after turnComplete: '${text.take(120)}'"
+                                            )
+                                            return
+                                        }
 
                                         liveState = GeminiLiveState.THINKING
                                         awaitingServerTurnComplete = true
@@ -9782,6 +9801,7 @@ class MainActivity : AppCompatActivity() {
                                         // jumping size=2 → size=3 with the duplicate before
                                         // appendUserUtterance even ran for the next turn.
                                         latestLiveOutputTranscript = ""
+                                        dropOutputTranscriptionUntilNextInput = true
                                         awaitingServerTurnComplete = false
                                         liveState = GeminiLiveState.FOLLOW_UP
                                         uiHandler.removeCallbacks(settledLiveInputRunnable)
@@ -10213,6 +10233,7 @@ class MainActivity : AppCompatActivity() {
         lastUserSpeechActivityMs = 0L
         lastGeminiOutputActivityMs = 0L
         currentGeminiOutputTurnStartedMs = 0L
+        dropOutputTranscriptionUntilNextInput = false
 
         // Bump the epoch so stale callbacks from the dying session are ignored.
         geminiSessionEpoch++
