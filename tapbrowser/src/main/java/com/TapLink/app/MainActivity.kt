@@ -5780,23 +5780,32 @@ class MainActivity :
      * dispatch — it builds a known list of custom UI surfaces, hit-
      * tests each, and falls through to the WebView when nothing
      * matches. The unipanel overlay (FrameLayout @+id/unipanelOverlay)
-     * was added in Step 2a but isn't on that list, so clickable
-     * widgets inside it never receive taps even though they're
-     * visually on top of the WebView.
+     * was added in Step 2a but isn't on that list, so widgets inside
+     * it never see taps even though they're visually on top of the
+     * WebView.
      *
-     * This routine walks the overlay's view tree, finds a CLICKABLE
-     * + VISIBLE descendant whose screen rect contains the cursor,
-     * and dispatches a synthetic DOWN+UP MotionEvent pair to that
-     * descendant. Returns true if it dispatched; false otherwise.
+     * Step 2b.2 added interactive routing. Step 2c.2.1 (this) adds
+     * the third state — inert visual surfaces. There are now three
+     * categories of hit inside the overlay:
      *
-     * Why "clickable" not "any child": we want empty transparent
-     * regions of the overlay to fall through to the WebView so the
-     * user can still scroll the browser through chat-mode dead space.
-     * `isClickable` only returns true for widgets explicitly marked
-     * clickable=true (or with an onClickListener, which Android
-     * silently flips clickable to true). The unipanelOverlay
-     * FrameLayout itself stays clickable=false, so iterating its
-     * children correctly skips its own bounds.
+     *   1. Empty transparent region   → fall through to WebView.
+     *   2. Inert visual surface       → consume the tap, do nothing.
+     *      (e.g. HUD strip, read-only chat-card placeholders)
+     *   3. Interactive widget         → dispatch synthetic DOWN+UP.
+     *
+     * Without state (2), tapping on a chat card whose `clickable=false`
+     * would fall through to whatever link/button the browser drew at
+     * the same coordinates underneath — visually the card is opaque,
+     * but logically the router sees nothing there. Codex caught this
+     * the first time we shipped non-clickable cards in Step 2c.2.
+     *
+     * The signal we use to detect inert surfaces is "has a non-
+     * transparent background drawable." That matches the natural
+     * authoring idiom — if the layout draws a coloured pill/card
+     * background, the designer wants it to read as solid, and taps
+     * on it should not punch through to whatever's beneath. The
+     * overlay container itself uses `@android:color/transparent`,
+     * which we explicitly treat as still pass-through.
      *
      * Hit-test uses screen coordinates because the cursor pipeline
      * already converted [interactionX]/[interactionY] to absolute
@@ -5810,55 +5819,96 @@ class MainActivity :
     ): Boolean {
         val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return false
         if (overlay.visibility != View.VISIBLE) return false
-        val target = findClickableDescendantAt(overlay, interactionX, interactionY) ?: return false
+        val hit = findUnipanelHitAt(overlay, interactionX, interactionY) ?: return false
+
+        if (!hit.isInteractive) {
+            DebugLog.d(
+                "Unipanel",
+                "Overlay consumed (inert) tap on ${hit.view.javaClass.simpleName} id=" +
+                    "${try { resources.getResourceEntryName(hit.view.id) } catch (_: Exception) { "?" }} " +
+                    "screen=($interactionX,$interactionY)"
+            )
+            return true
+        }
 
         val targetLocation = IntArray(2)
-        target.getLocationOnScreen(targetLocation)
+        hit.view.getLocationOnScreen(targetLocation)
         val localX = interactionX - targetLocation[0]
         val localY = interactionY - targetLocation[1]
         val now = SystemClock.uptimeMillis()
         val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, localX, localY, 0)
         val up = MotionEvent.obtain(now, now + 1L, MotionEvent.ACTION_UP, localX, localY, 0)
         try {
-            target.dispatchTouchEvent(down)
-            target.dispatchTouchEvent(up)
+            hit.view.dispatchTouchEvent(down)
+            hit.view.dispatchTouchEvent(up)
         } finally {
             down.recycle()
             up.recycle()
         }
         DebugLog.d(
             "Unipanel",
-            "Overlay hit-test dispatched to ${target.javaClass.simpleName} id=" +
-                "${try { resources.getResourceEntryName(target.id) } catch (_: Exception) { "?" }} " +
+            "Overlay dispatched (interactive) to ${hit.view.javaClass.simpleName} id=" +
+                "${try { resources.getResourceEntryName(hit.view.id) } catch (_: Exception) { "?" }} " +
                 "screen=($interactionX,$interactionY) local=($localX,$localY)"
         )
         return true
     }
 
     /**
-     * Depth-first search of [root]'s view tree for a clickable view
-     * whose on-screen bounds contain (x, y). Walks children in
-     * REVERSE order so visually-on-top siblings win when they overlap
-     * (matches normal Android hit-test semantics).
+     * Result of an overlay hit-test. [isInteractive] is true when the
+     * resolved view is `clickable=true` (or has an OnClickListener,
+     * which Android auto-flips to clickable). When false, the view is
+     * an inert visual surface — consume the tap, do nothing.
      */
-    private fun findClickableDescendantAt(
+    private data class UnipanelHit(val view: View, val isInteractive: Boolean)
+
+    /**
+     * Depth-first search of [overlay]'s descendants for a view whose
+     * on-screen bounds contain (x, y) AND that should consume the tap
+     * (either clickable or a non-transparent surface). Walks children
+     * in REVERSE order so visually-on-top siblings win when they
+     * overlap (matches normal Android hit-test semantics).
+     *
+     * The [overlay] root itself is never returned — only descendants.
+     * The container is supposed to be transparent everywhere it isn't
+     * decorated by a child.
+     */
+    private fun findUnipanelHitAt(
+        overlay: View,
+        screenX: Float,
+        screenY: Float
+    ): UnipanelHit? {
+        if (overlay !is android.view.ViewGroup) return null
+        if (overlay.visibility != View.VISIBLE) return null
+        for (i in overlay.childCount - 1 downTo 0) {
+            val child = overlay.getChildAt(i) ?: continue
+            val hit = findUnipanelHitDescendant(child, screenX, screenY)
+            if (hit != null) return hit
+        }
+        return null
+    }
+
+    /**
+     * Recursive helper for [findUnipanelHitAt]. Returns a hit if [root]
+     * (or any of its descendants) is a valid claim target whose bounds
+     * contain the cursor.
+     */
+    private fun findUnipanelHitDescendant(
         root: View,
         screenX: Float,
         screenY: Float
-    ): View? {
+    ): UnipanelHit? {
         if (root.visibility != View.VISIBLE) return null
         if (root is android.view.ViewGroup) {
-            // Reverse order: top-of-z-stack siblings get first refusal.
             for (i in root.childCount - 1 downTo 0) {
                 val child = root.getChildAt(i) ?: continue
-                val hit = findClickableDescendantAt(child, screenX, screenY)
+                val hit = findUnipanelHitDescendant(child, screenX, screenY)
                 if (hit != null) return hit
             }
         }
-        // Only a clickable LEAF (or any explicitly-clickable view) is a
-        // valid hit target. We don't return non-clickable ViewGroups
-        // because that would block legitimate pass-through.
-        if (!root.isClickable) return null
+        val clickable = root.isClickable
+        val surface = root.background?.let { !isTransparentBackground(it) } ?: false
+        if (!clickable && !surface) return null
         val loc = IntArray(2)
         root.getLocationOnScreen(loc)
         val left = loc[0].toFloat()
@@ -5868,7 +5918,24 @@ class MainActivity :
         if (screenX < left || screenX >= right || screenY < top || screenY >= bottom) {
             return null
         }
-        return root
+        return UnipanelHit(root, isInteractive = clickable)
+    }
+
+    /**
+     * Returns true when the supplied background drawable resolves to
+     * "no visible pixels" — i.e. a ColorDrawable with alpha 0 (which
+     * is how `@android:color/transparent` decodes). Treated as still
+     * pass-through so the overlay root, which uses that exact value
+     * to stay invisible, doesn't accidentally swallow every tap.
+     */
+    private fun isTransparentBackground(bg: android.graphics.drawable.Drawable): Boolean {
+        if (bg is android.graphics.drawable.ColorDrawable) {
+            // The high byte is the alpha channel of the colour. A
+            // fully-transparent colour means the drawable contributes
+            // nothing visible.
+            return ((bg.color ushr 24) and 0xFF) == 0
+        }
+        return false
     }
 
     private fun dispatchTouchEventAtCursor() {
@@ -6065,10 +6132,13 @@ class MainActivity :
         // this block, clickable widgets in unipanelOverlay never
         // receive taps (the cursor reaches the WebView path first).
         //
-        // We hit-test only EXPLICITLY clickable children. Empty
-        // transparent regions of the overlay are non-clickable and
-        // therefore fall through to the WebView naturally, preserving
-        // the "browser scrolls in empty space" contract.
+        // Three-state routing (see dispatchUnipanelOverlayTouchIfHit):
+        //   1. Empty transparent region → fall through to WebView.
+        //   2. Inert visual surface (HUD, read-only card) → consume.
+        //   3. Interactive widget → dispatch synthetic DOWN+UP.
+        // State (2) is what prevents cards from leaking taps to the
+        // browser link underneath when they're visually opaque but
+        // not clickable.
         if (dispatchUnipanelOverlayTouchIfHit(interactionX, interactionY)) {
             suppressImmediateWebClickLeak()
             return
