@@ -54,6 +54,13 @@
         <!-- Removed ar_mode to enable binocular (both lenses) display.
              ar_mode restricts rendering to left lens only. -->
 
+        <!-- Phase 2 Step 2f: launcher intent filter moved to the
+             tapbrowser module's MainActivity so the browser is the
+             entry point (unipanel design). visionclaw stays
+             exported=true so the new btnQuit-launches-chat path
+             from tapbrowser can REORDER_TO_FRONT this Activity, and
+             the reverse warm-start can spawn it in the background
+             on cold launch. -->
         <activity
             android:name=".MainActivity"
             android:configChanges="density|orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation"
@@ -61,13 +68,7 @@
             android:launchMode="singleTask"
             android:screenOrientation="landscape"
             android:windowSoftInputMode="adjustNothing"
-            android:theme="@style/Theme.VisionClawRayNeo">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="com.rayneo.intent.category.AR_APP" />
-            </intent-filter>
-        </activity>
+            android:theme="@style/Theme.VisionClawRayNeo" />
 
     </application>
 

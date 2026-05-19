@@ -31,13 +31,26 @@
             android:name="com.rayneo.mercury.app"
             android:value="true" />
 
+        <!-- Phase 2 Step 2f: tapbrowser becomes the launcher Activity.
+             exported=true so the Android launcher can start it.
+             launchMode=singleTask mirrors visionclaw's old setup so
+             re-launches don't stack new instances. AR_APP category
+             keeps the RayNeo launcher integration that used to live
+             on visionclaw. -->
         <activity
             android:name="com.TapLinkX3.app.MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
-            android:exported="false"
+            android:exported="true"
             android:hardwareAccelerated="true"
+            android:launchMode="singleTask"
             android:theme="@style/AppTheme.NoActionBar"
-            android:windowSoftInputMode="adjustNothing" />
+            android:windowSoftInputMode="adjustNothing">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="com.rayneo.intent.category.AR_APP" />
+            </intent-filter>
+        </activity>
 
         <provider
             android:name="androidx.core.content.FileProvider"

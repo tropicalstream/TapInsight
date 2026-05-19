@@ -176,6 +176,16 @@ class MainActivity : AppCompatActivity() {
          * the chat panel on startup.
          */
         const val EXTRA_BROWSER_WARM_START = "tapclaw_warm_start"
+        /**
+         * Phase 2 Step 2f: set by tapbrowser when it launches this
+         * Activity in the background during its own cold-launch flow,
+         * so visionclaw's heavy startup work (ViewModel hydration,
+         * OAuth setup, MediaScanner attach, etc.) happens up front
+         * and the unipanel mini-card stack + CAM chip have a live
+         * publisher even while the user is still in the browser.
+         * onCreate calls moveTaskToBack(true) once it sees this flag.
+         */
+        const val EXTRA_TAPCLAW_WARM_START = "visionclaw_warm_start"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUERY = "tapclaw_youtube_autoplay_query"
         private const val EXTRA_YOUTUBE_AUTOPLAY_MODE = "tapclaw_youtube_autoplay_mode"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUEUE = "tapclaw_youtube_autoplay_queue"
@@ -1258,11 +1268,34 @@ class MainActivity : AppCompatActivity() {
 
         Log.i(TAG, "TapInsight MainActivity created successfully")
 
+        // Phase 2 Step 2f: when tapbrowser warm-starts us (it's the
+        // launcher now), self-background so the user sees the
+        // browser, not visionclaw. Heavy onCreate work above has
+        // already wired up the ChatCardBridge + CameraStateBridge
+        // publishers, so the unipanel overlays have live data from
+        // this point on even though visionclaw is invisible.
+        // moveTaskToBack is posted to the next layout pass so the
+        // post-onCreate observers settle first.
+        if (intent.getBooleanExtra(EXTRA_TAPCLAW_WARM_START, false)) {
+            uiHandler.post {
+                runCatching {
+                    moveTaskToBack(true)
+                    Log.d(TAG, "visionclaw warm-started; sent task to back")
+                }.onFailure { e ->
+                    Log.w(TAG, "moveTaskToBack failed: ${e.message}")
+                }
+            }
+        }
+
         // Warm up the tapbrowser WebView in the background so the
         // browser_vision tool always has something to screenshot.
         // 2.5 s delay lets visionclaw render + finish heavy startup
         // first; the brief tapbrowser flash that crosses the screen
         // before it self-backgrounds is acceptable as a Phase 2 Step 1.
+        // Phase 2 Step 2f: this is largely redundant once tapbrowser
+        // is the launcher (its WebView is already up), but the guard
+        // inside warmStartTapBrowserIfNeeded short-circuits when the
+        // BrowserFrameHolder already has a WebView so it stays cheap.
         uiHandler.postDelayed({ warmStartTapBrowserIfNeeded() }, 2500L)
 
         // Phase 2 Step 2c.3: feed the chat conversation state into

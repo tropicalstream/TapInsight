@@ -139,6 +139,16 @@ class MainActivity :
          *  WebView to BrowserFrameHolder, then push our task to the
          *  back so the chat panel stays foreground. */
         private const val EXTRA_BROWSER_WARM_START = "tapclaw_warm_start"
+        /**
+         * Phase 2 Step 2f: passed to visionclaw when we (the new
+         * launcher) warm-start it in the background on cold launch.
+         * Visionclaw's onCreate reads this and calls moveTaskToBack
+         * so it self-backgrounds; meanwhile its ChatCardBridge +
+         * CameraStateBridge publishers run, populating our overlays
+         * with live data even though the user only ever sees the
+         * browser.
+         */
+        private const val EXTRA_TAPCLAW_WARM_START = "visionclaw_warm_start"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUERY = "tapclaw_youtube_autoplay_query"
         private const val EXTRA_YOUTUBE_AUTOPLAY_MODE = "tapclaw_youtube_autoplay_mode"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUEUE = "tapclaw_youtube_autoplay_queue"
@@ -1867,6 +1877,16 @@ class MainActivity :
                     DebugLog.w("WarmStart", "moveTaskToBack failed: ${e.message}")
                 }
             }
+        } else {
+            // Phase 2 Step 2f: when tapbrowser is the launcher (cold
+            // launch from the home screen, no warm-start flag), we
+            // spawn visionclaw in the background so its ChatCardBridge
+            // + CameraStateBridge publishers come alive and the
+            // unipanel overlays get live data even though the user is
+            // looking at the browser. 2.5 s delay lets the WebView
+            // settle first; the brief visionclaw flash that crosses
+            // the screen before it self-backgrounds is acceptable.
+            uiHandler.postDelayed({ warmStartVisionclawIfNeeded() }, 2500L)
         }
 
         webView.setOnTouchListener { _, event ->
@@ -5822,6 +5842,45 @@ class MainActivity :
      * touching the View tree.
      */
     private var unipanelChatCardSubscription: AutoCloseable? = null
+
+    /** Phase 2 Step 2f one-shot guard so the reverse warm-start fires
+     *  once per Activity lifetime, even if onResume re-enters the
+     *  cold-launch path somehow. */
+    private var visionclawWarmStartAttempted = false
+
+    /**
+     * Phase 2 Step 2f: launch visionclaw in the background with the
+     * EXTRA_TAPCLAW_WARM_START flag so it can hydrate its ViewModel
+     * and start publishing chat + camera state to the unipanel
+     * bridges, then self-background via moveTaskToBack. Inverts
+     * Step 1's pattern (which had visionclaw warming up tapbrowser).
+     *
+     * Safe to call repeatedly: the guard above short-circuits after
+     * the first attempt, and the EXTRA_TAPCLAW_WARM_START handler on
+     * the visionclaw side is also idempotent — re-firing the intent
+     * on an already-warm visionclaw just lands on a no-op (the
+     * singleTask launchMode + duplicate-detect means we don't pile
+     * up Activities).
+     */
+    private fun warmStartVisionclawIfNeeded() {
+        if (visionclawWarmStartAttempted) return
+        visionclawWarmStartAttempted = true
+        try {
+            val intent = Intent().setClassName(this, "com.rayneo.visionclaw.MainActivity").apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION
+                )
+                putExtra("visionclaw_warm_start", true)
+            }
+            DebugLog.d("WarmStart", "warmStartVisionclaw: launching for background ViewModel attach")
+            startActivity(intent)
+        } catch (e: Exception) {
+            DebugLog.w("WarmStart", "warmStartVisionclaw failed: ${e.message}")
+            visionclawWarmStartAttempted = false
+        }
+    }
 
     private fun startUnipanelMiniCardObserver() {
         val card1 = findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)
@@ -11965,7 +12024,34 @@ class MainActivity :
     }
 
     override fun onQuitPressed() {
-        finish()
+        // Phase 2 Step 2f: the X button is repurposed from "close
+        // the Activity" to "switch to visionclaw chat." Before the
+        // launcher swap, finish() reliably returned to chat because
+        // visionclaw was the launcher and sat underneath tapbrowser
+        // in the task stack. After 2f, finish() just exits the app,
+        // so we explicitly launch visionclaw with REORDER_TO_FRONT
+        // so a backgrounded instance is promoted (or a fresh one
+        // started if none exists). Tapbrowser stays alive in the
+        // background — the user can swap back via cyclePanelVia-
+        // DoubleTap from visionclaw, and the unipanel chrome state
+        // is preserved.
+        try {
+            val intent = Intent()
+                .setClassName(this, "com.rayneo.visionclaw.MainActivity")
+                .addFlags(
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_NEW_TASK
+                )
+            startActivity(intent)
+            DebugLog.d("DoubleTapDebug", "btnQuit → launched visionclaw chat (X repurpose)")
+        } catch (e: Exception) {
+            DebugLog.w("DoubleTapDebug", "btnQuit launch-chat failed: ${e.message}")
+            // Belt-and-suspenders: if the launch failed for any
+            // reason, fall back to the old finish() behaviour so the
+            // user isn't stranded on the browser.
+            finish()
+        }
     }
 
     override fun onDestroy() {
