@@ -1044,18 +1044,6 @@ class MainActivity :
         // for now; this just tells the user "yes, Gemini is watching".
         startUnipanelCameraChipObserver()
 
-        // Phase 2 Step 2e: mirror nav-bar visibility into the
-        // unipanel overlay so every "collapse chrome" entry-point
-        // (btnHide nav button, double-tap, btnShowNavBars restore)
-        // hides/shows the HUD + mini cards + CAM chip in lockstep
-        // with the toggle bar + nav bar. One source of truth.
-        dualWebViewGroup.onNavBarsHiddenChanged = { hidden ->
-            uiHandler.post {
-                findViewById<View?>(R.id.unipanelOverlay)?.visibility =
-                    if (hidden) View.INVISIBLE else View.VISIBLE
-            }
-        }
-
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
         // Add this to disable default keyboard
@@ -1086,6 +1074,20 @@ class MainActivity :
         dualWebViewGroup.maskToggleListener = this
         dualWebViewGroup.windowCallback = this
         dualWebViewGroup.restoreState()
+
+        // Phase 2 Step 2e: mirror nav-bar visibility into the
+        // unipanel overlay so every "collapse chrome" entry-point
+        // (btnHide nav button, double-tap, btnShowNavBars restore)
+        // hides/shows the HUD + mini cards + CAM chip in lockstep
+        // with the toggle bar + nav bar. One source of truth.
+        // MUST be registered AFTER dualWebViewGroup is assigned —
+        // setting before would throw UninitializedPropertyAccess.
+        dualWebViewGroup.onNavBarsHiddenChanged = { hidden ->
+            uiHandler.post {
+                findViewById<View?>(R.id.unipanelOverlay)?.visibility =
+                    if (hidden) View.INVISIBLE else View.VISIBLE
+            }
+        }
 
         // Load saved anchored mode state
         isAnchored =
