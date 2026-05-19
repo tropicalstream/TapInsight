@@ -1028,6 +1028,15 @@ class MainActivity :
         // strip and migrate to the live MainViewModel-driven values.
         startUnipanelHudClockTicker()
 
+        // Phase 2 Step 2c.3: subscribe to ChatCardBridge so the mini
+        // chat-card stack reflects the visionclaw conversation in
+        // real time. The bridge fires the listener immediately with
+        // its current snapshot, then again on every publish, so the
+        // stack renders correctly even when this Activity is the
+        // user's entry point (cold launch with prior chat history
+        // already loaded into MainViewModel).
+        startUnipanelMiniCardObserver()
+
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
         // Add this to disable default keyboard
@@ -5780,6 +5789,82 @@ class MainActivity :
             }
         }
         uiHandler.post(ticker)
+    }
+
+    /**
+     * Phase 2 Step 2c.3: subscribe the mini chat-card stack to the
+     * shared [com.TapLink.app.unipanel.ChatCardBridge] so the three
+     * TextViews above the WebView reflect the live visionclaw chat.
+     *
+     * Render order: the bottom of the stack is the OLDEST visible
+     * card and the top is the NEWEST. visionclaw publishes its
+     * `messages` list oldest-first, matching how its chat panel
+     * renders, so we walk it from the end and assign:
+     *   • cards[N-1] → unipanelMiniCard1 (top, most recent)
+     *   • cards[N-2] → unipanelMiniCard2
+     *   • cards[N-3] → unipanelMiniCard3 (bottom, oldest visible)
+     *
+     * Each row's background switches at runtime between the
+     * assistant / user drawable so the colour follows the speaker
+     * — Step 2c.2's XML defaults are just placeholders.
+     *
+     * Empty slots (less than 3 messages in history) are hidden via
+     * View.GONE so the stack collapses gracefully instead of
+     * showing blank pills.
+     *
+     * Listener fires on the publisher's thread (visionclaw's main
+     * scope dispatcher); we hop to [uiHandler] to be safe before
+     * touching the View tree.
+     */
+    private var unipanelChatCardSubscription: AutoCloseable? = null
+
+    private fun startUnipanelMiniCardObserver() {
+        val card1 = findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)
+        val card2 = findViewById<android.widget.TextView?>(R.id.unipanelMiniCard2)
+        val card3 = findViewById<android.widget.TextView?>(R.id.unipanelMiniCard3)
+        if (card1 == null || card2 == null || card3 == null) {
+            DebugLog.w(
+                "Unipanel",
+                "Mini card observer: stack TextViews missing, skipping subscription"
+            )
+            return
+        }
+        val slots = arrayOf(card1, card2, card3)
+
+        // Drop any prior subscription if we're being called again
+        // (configuration change, re-init path, etc.).
+        unipanelChatCardSubscription?.runCatching { close() }
+        unipanelChatCardSubscription =
+            com.TapLink.app.unipanel.ChatCardBridge.observe { cards ->
+                uiHandler.post { renderUnipanelMiniCards(slots, cards) }
+            }
+    }
+
+    /**
+     * Pure function over a snapshot — assigns the three slots from
+     * the tail of [cards] (newest at index 0). Called only on the
+     * UI thread by [startUnipanelMiniCardObserver].
+     */
+    private fun renderUnipanelMiniCards(
+        slots: Array<android.widget.TextView>,
+        cards: List<com.TapLink.app.unipanel.ChatCardBridge.Card>
+    ) {
+        val n = cards.size
+        for (i in slots.indices) {
+            val tv = slots[i]
+            val srcIndex = n - 1 - i
+            if (srcIndex < 0) {
+                tv.visibility = View.GONE
+                continue
+            }
+            val card = cards[srcIndex]
+            tv.text = card.text
+            tv.setBackgroundResource(
+                if (card.fromUser) R.drawable.bg_unipanel_mini_card_user
+                else R.drawable.bg_unipanel_mini_card_assistant
+            )
+            tv.visibility = View.VISIBLE
+        }
     }
 
     /**
@@ -11858,6 +11943,13 @@ class MainActivity :
         try {
             com.TapLink.app.media.BrowserFrameHolder.detach(webView)
         } catch (_: Exception) {}
+        // Phase 2 Step 2c.3: drop our ChatCardBridge listener so a
+        // recreated Activity instance doesn't double-subscribe and
+        // a stale Activity reference doesn't keep getting fired.
+        try {
+            unipanelChatCardSubscription?.close()
+        } catch (_: Exception) {}
+        unipanelChatCardSubscription = null
         // ── Release native radio ExoPlayer ──
         // Critical: without this, the ExoPlayer continues playing audio in the
         // background after the Activity is destroyed (holds WAKE_MODE_LOCAL lock).
