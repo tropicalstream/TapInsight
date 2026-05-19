@@ -136,6 +136,13 @@ class MainActivity :
          *  WebView to BrowserFrameHolder, then push our task to the
          *  back so the chat panel stays foreground. */
         private const val EXTRA_BROWSER_WARM_START = "tapclaw_warm_start"
+        /** Unipanel v2 — flag we pass back to visionclaw when WE
+         *  warm-start IT. Must match the value in
+         *  com.rayneo.visionclaw.MainActivity.EXTRA_TAPCLAW_WARM_START.
+         *  We declare a parallel copy here because the module
+         *  dependency runs visionclaw → tapbrowser, so tapbrowser
+         *  can't reference visionclaw classes at compile time. */
+        private const val EXTRA_TAPCLAW_WARM_START = "visionclaw_warm_start"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUERY = "tapclaw_youtube_autoplay_query"
         private const val EXTRA_YOUTUBE_AUTOPLAY_MODE = "tapclaw_youtube_autoplay_mode"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUEUE = "tapclaw_youtube_autoplay_queue"
@@ -1851,7 +1858,9 @@ class MainActivity :
         // moveTaskToBack to the WebView's next layout pass so onCreate
         // has time to wire up the rest of the Activity state before
         // backgrounding.
-        if (intent.getBooleanExtra(EXTRA_BROWSER_WARM_START, false)) {
+        val warmStartedByVisionclaw =
+                intent.getBooleanExtra(EXTRA_BROWSER_WARM_START, false)
+        if (warmStartedByVisionclaw) {
             webView.post {
                 try {
                     moveTaskToBack(true)
@@ -1859,6 +1868,45 @@ class MainActivity :
                 } catch (e: Exception) {
                     DebugLog.w("WarmStart", "moveTaskToBack failed: ${e.message}")
                 }
+            }
+        } else {
+            // Unipanel v2 — reverse warm-start. tapbrowser is now the
+            // launcher, so on its cold (non-warm-start) launch we kick
+            // visionclaw to onCreate. visionclaw needs to be alive in
+            // the background so:
+            //   • Gemini Live / mic / AudioRecord can spin up when the
+            //     user activates voice from the overlay,
+            //   • ChatCardBridge / HudStateBridge / CameraStateBridge
+            //     have a publisher feeding them,
+            //   • the foreground-service mic privilege has a host
+            //     process attached.
+            // We pass EXTRA_TAPCLAW_WARM_START so visionclaw onCreate
+            // sets a translucent theme and moveTaskToBack(true)s itself
+            // — no flash, browser stays the visible canvas. Skipped
+            // when we were ourselves warm-started so the two Activities
+            // don't ping-pong each other into existence forever.
+            try {
+                val visionclawIntent = Intent().setClassName(
+                    this,
+                    TAPCLAW_MAIN_ACTIVITY
+                ).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_NO_ANIMATION
+                    )
+                    putExtra(EXTRA_TAPCLAW_WARM_START, true)
+                }
+                startActivity(visionclawIntent)
+                DebugLog.d(
+                    "WarmStart",
+                    "Unipanel v2: kicked visionclaw warm-start from tapbrowser"
+                )
+            } catch (e: Exception) {
+                DebugLog.w(
+                    "WarmStart",
+                    "Unipanel v2: visionclaw warm-start failed: ${e.message}"
+                )
             }
         }
 

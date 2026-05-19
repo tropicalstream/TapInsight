@@ -176,6 +176,17 @@ class MainActivity : AppCompatActivity() {
          * the chat panel on startup.
          */
         const val EXTRA_BROWSER_WARM_START = "tapclaw_warm_start"
+        /**
+         * Unipanel v2 — reverse warm-start direction. tapbrowser is the
+         * launcher; on cold launch it kicks visionclaw to onCreate so the
+         * mic / Gemini / chat-state stack is ready, then visionclaw
+         * cooperatively moveTaskToBack(true)s itself so tapbrowser stays
+         * in front. Without this flag visionclaw would keep its launcher-
+         * brought-to-front semantics and steal the screen back from the
+         * browser canvas. We also set a translucent theme on the warm
+         * path so even the brief inflate flash is invisible.
+         */
+        private const val EXTRA_TAPCLAW_WARM_START = "visionclaw_warm_start"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUERY = "tapclaw_youtube_autoplay_query"
         private const val EXTRA_YOUTUBE_AUTOPLAY_MODE = "tapclaw_youtube_autoplay_mode"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUEUE = "tapclaw_youtube_autoplay_queue"
@@ -738,6 +749,21 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         // Initialize Mercury SDK for binocular (both lenses) display — must be before super.
         runCatching { com.ffalcon.mercury.android.sdk.MercurySDK.init(application) }
+
+        // Unipanel v2: warm-start path. tapbrowser is the launcher, and on
+        // cold launch it kicks visionclaw onCreate so the chat / Gemini /
+        // mic stack is alive in the background. We don't want the user to
+        // see a flash of visionclaw's chat UI before moveTaskToBack lands,
+        // so the theme is swapped to fully translucent for this one
+        // lifecycle. Must come BEFORE super.onCreate so the theme actually
+        // applies to the inflate. The post-attach moveTaskToBack call
+        // lives just after setContentView below.
+        val isUnipanelWarmStart = intent?.getBooleanExtra(EXTRA_TAPCLAW_WARM_START, false) == true
+        if (isUnipanelWarmStart) {
+            @Suppress("DEPRECATION")
+            setTheme(android.R.style.Theme_Translucent_NoTitleBar)
+        }
+
         super.onCreate(savedInstanceState)
         configureDnsCaching()
         bindProcessToValidatedWifi()
@@ -750,6 +776,24 @@ class MainActivity : AppCompatActivity() {
         )
 
         setContentView(R.layout.activity_main)
+
+        // Unipanel v2: if we were warm-started by tapbrowser, send the
+        // visionclaw task to the back as soon as the window has a
+        // decorView. moveTaskToBack from inside onCreate before the
+        // first measurement pass tends to be ignored; posting on the
+        // decorView fires after attachInfo arrives but before the user
+        // sees anything visible thanks to the translucent theme set
+        // above. The user perceives only the browser ever loading.
+        if (isUnipanelWarmStart) {
+            window.decorView.post {
+                runCatching {
+                    moveTaskToBack(true)
+                    Log.d(TAG, "Unipanel v2: visionclaw warm-started; sent task to back")
+                }.onFailure { e ->
+                    Log.w(TAG, "Unipanel v2: moveTaskToBack failed: ${e.message}")
+                }
+            }
+        }
 
         // ── Bind views (null-safe) ───────────────────────────────────
         viewPager = findViewById(R.id.view_pager)
@@ -1478,6 +1522,24 @@ class MainActivity : AppCompatActivity() {
         if (!locationPermissionGranted) {
             needed.add(Manifest.permission.ACCESS_FINE_LOCATION)
             needed.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+
+        // Unipanel v2: POST_NOTIFICATIONS is the gatekeeper for the
+        // foreground-service notification that keeps the AudioRecord
+        // alive on Android 11+. Without an actually-posted notification
+        // the FGS counts as silently-killed, the OS yanks our mic
+        // privilege, and Gemini sits forever in "listening" with no
+        // audio reaching it. Runtime grant is required on Android 13+
+        // (TIRAMISU); older builds get the permission at install time
+        // via the manifest entry.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                needed.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
         }
 
         if (needed.isNotEmpty()) {
@@ -2561,6 +2623,17 @@ class MainActivity : AppCompatActivity() {
         nativeSttFallbackTriggered = false
         pendingCameraStart = false
         assistantSessionStartsAudioOnly = true
+
+        // Unipanel v2: pin the microphone-typed foreground service
+        // BEFORE we touch the audio pipeline. After the launcher swap
+        // visionclaw normally runs backgrounded; without an FGS attached
+        // to the process Android 11+ revokes our AudioRecord and Gemini
+        // sits in "listening" with no frames ever reaching it. Direct
+        // call (not via voiceAssistantActive LiveData) because that
+        // LiveData is lifecycle-aware and won't fire while visionclaw
+        // is STOPPED — which is exactly when we need the service most.
+        com.rayneo.visionclaw.core.session.GeminiSessionForegroundService.start(this)
+
         viewModel.activateVoiceAssistant()
         if (locationPermissionGranted) {
             refreshLocationSnapshot(force = true)
@@ -9229,6 +9302,14 @@ class MainActivity : AppCompatActivity() {
         disarmSilenceWatchdog()
         awaitingServerTurnComplete = false
         releaseGeminiAudioCapture(cancelOnly = true)
+
+        // Unipanel v2: tear down the microphone-typed FGS as part of
+        // session shutdown. Mirrors the direct .start(this) call from
+        // activateChatVoiceAssistant — bypasses LiveData so it fires
+        // even while visionclaw is STOPPED (i.e. the normal background
+        // case after the launcher swap). Idempotent inside the service.
+        com.rayneo.visionclaw.core.session.GeminiSessionForegroundService.stop(this)
+
         viewModel.deactivateVoiceAssistant()
         showListeningOverlay(false)
         clearLiveSpeechPreview()

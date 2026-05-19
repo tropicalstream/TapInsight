@@ -12,6 +12,16 @@
 
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
+    <!-- Unipanel v2: foreground service permissions for the
+         GeminiSessionForegroundService. FOREGROUND_SERVICE_MICROPHONE
+         is the Android 14+ flavour required to keep the AudioRecord
+         open while visionclaw is backgrounded (which is its normal
+         state after the launcher swap below). POST_NOTIFICATIONS is
+         requested at runtime in MainActivity.onCreate. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-permission android:name="android.permission.READ_CALENDAR" />
 
     <!--
@@ -54,6 +64,12 @@
         <!-- Removed ar_mode to enable binocular (both lenses) display.
              ar_mode restricts rendering to left lens only. -->
 
+        <!-- Unipanel v2: visionclaw no longer holds the launcher
+             intent filter — tapbrowser does. visionclaw is still
+             exported so tapbrowser can warm-start it with
+             EXTRA_TAPCLAW_WARM_START, and so the chat-side can be
+             brought to the front explicitly if a future commit
+             wires that path. -->
         <activity
             android:name=".MainActivity"
             android:configChanges="density|orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation"
@@ -61,13 +77,16 @@
             android:launchMode="singleTask"
             android:screenOrientation="landscape"
             android:windowSoftInputMode="adjustNothing"
-            android:theme="@style/Theme.VisionClawRayNeo">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="com.rayneo.intent.category.AR_APP" />
-            </intent-filter>
-        </activity>
+            android:theme="@style/Theme.VisionClawRayNeo" />
+
+        <!-- Unipanel v2: foreground service that keeps the Gemini
+             Live AudioRecord alive while visionclaw is in the
+             background. Type=microphone is mandatory on Android
+             14+. -->
+        <service
+            android:name=".core.session.GeminiSessionForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
     </application>
 
