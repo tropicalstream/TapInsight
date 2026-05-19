@@ -574,6 +574,16 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastGeminiOutputActivityMs = 0L
     @Volatile private var currentGeminiOutputTurnStartedMs = 0L
     @Volatile private var dropOutputTranscriptionUntilNextInput = false
+    /**
+     * Phase 2 Step 2f.1: latched briefly during launchTapBrowser so
+     * the subsequent onPause skips its explicit Gemini audio
+     * teardown. Lets the WebSocket + AudioRecord continue running in
+     * the background while tapbrowser is foreground, so the unipanel
+     * mini-card stack keeps showing live chat. Auto-clears on the
+     * next onResume — if the user comes back to visionclaw, the
+     * normal audio-release semantics resume.
+     */
+    @Volatile private var pendingTapBrowserHandoff = false
     @Volatile private var forceDirectGeminiLive = true
     @Volatile private var lastVoiceActivationMs = 0L
     /** Monotonically increasing counter to detect stale WebSocket callbacks from old sessions. */
@@ -1345,6 +1355,11 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         bindProcessToValidatedWifi()
+        // Phase 2 Step 2f.1: clear the handoff flag. If the user
+        // came back to visionclaw (mode-swap, btnChat in tapbrowser,
+        // etc.) we want the NEXT onPause to follow the normal
+        // audio-release semantics.
+        pendingTapBrowserHandoff = false
         // ── Silence any TapRadio that slipped past the exit handoff ──
         // The chat / HUD screen must never have a radio station playing in
         // the background. This is a safety net for paths that don't flow
@@ -1400,7 +1415,20 @@ class MainActivity : AppCompatActivity() {
         uiHandler.removeCallbacks(hudStatePushRunnable)
         pendingCameraStart = false
         assistantSessionStartsAudioOnly = false
-        releaseGeminiAudioCapture(cancelOnly = true)
+        // Phase 2 Step 2f.1: skip the explicit Gemini audio teardown
+        // when we're handing off to tapbrowser. We want the
+        // WebSocket + AudioRecord to keep running in the background
+        // so the unipanel mini-card stack stays live and voice keeps
+        // listening while the user is in the browser. Android's
+        // background-mic policy may still kill the AudioRecord on
+        // its own — if so, the next iteration migrates audio capture
+        // to a foreground Service. Other pauses (screen off, true
+        // backgrounding) still release audio.
+        if (!pendingTapBrowserHandoff) {
+            releaseGeminiAudioCapture(cancelOnly = true)
+        } else {
+            Log.d(TAG, "onPause: skipping Gemini audio release — tapbrowser handoff in progress")
+        }
         stopAllSpeechPlayback()
         hideCustomKeyboard(clearFocus = true)
         stopCameraCapture()
@@ -2240,19 +2268,14 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val geminiActive = viewModel.voiceAssistantActive.value == true
-
-        if (geminiActive) {
-            // Gemini active → end the session. Camera state doesn't matter;
-            // shutdownMultimodalSession will tear down the frame pipeline
-            // along with the WebSocket. (Left-arm single-tap is the
-            // camera-toggle gesture; right-arm double-tap is the close
-            // gesture.)
-            shutdownMultimodalSession("Session ended.")
-            return
-        }
-
-        // Not active → launch TapBrowser
+        // Phase 2 Step 2f.1: double-tap always launches tapbrowser
+        // now. The legacy "Gemini active → end the session" branch
+        // is removed because the unipanel design wants chat to
+        // survive the browser swap (mini-card stack keeps streaming
+        // live updates, voice keeps listening). The
+        // pendingTapBrowserHandoff flag set in launchTapBrowser gates
+        // onPause's audio release so the WebSocket + AudioRecord
+        // continue across the Activity hand-off.
         launchTapBrowser()
     }
 
@@ -2319,6 +2342,12 @@ class MainActivity : AppCompatActivity() {
         // before launching TapBrowser (same APK = shared CookieManager).
         injectSavedBrowserCookies()
         pendingFocusNewChatOnResume = true
+        // Phase 2 Step 2f.1: latch the handoff flag so the upcoming
+        // onPause skips the explicit Gemini audio teardown. If
+        // Gemini Live isn't actually active right now this is a
+        // no-op — onPause's existing release call already short-
+        // circuits on a quiescent session.
+        pendingTapBrowserHandoff = true
 
         // Record the URL we are about to open as "ground truth" so tools
         // downstream (tapclaw_agent email/share flows) can substitute it in
