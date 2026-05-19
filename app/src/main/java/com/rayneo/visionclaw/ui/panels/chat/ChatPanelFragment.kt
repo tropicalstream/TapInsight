@@ -37,8 +37,15 @@ import com.rayneo.visionclaw.ui.panels.TrackpadPanel
  *    `Fragment` lifecycle still completes cleanly even though
  *    `MainActivity` never actually displays this fragment.
  *
- * If a future cleanup pass deletes the `MainPagerAdapter` /
- * `view_pager` host outright, this whole file can also be deleted.
+ * The `MainPagerAdapter` and sibling Web/Settings panel fragments were
+ * deleted in a follow-up sweep. The `view_pager` ID in
+ * `activity_main.xml` still resolves to a 0×0 GONE `ViewPager2` stub
+ * (with no adapter), since `MainActivity` still calls `currentItem` /
+ * `setCurrentItem` against it; those calls are safe no-ops. This
+ * fragment is no longer attached anywhere — it is instantiated by
+ * `MainActivity` only because the headless `chatFragment` field type
+ * is referenced from several call sites. The file can be deleted once
+ * those direct references are also removed.
  */
 class ChatPanelFragment : Fragment(), TrackpadPanel {
 

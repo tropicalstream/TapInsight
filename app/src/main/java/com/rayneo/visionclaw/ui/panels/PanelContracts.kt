@@ -2,7 +2,10 @@ package com.rayneo.visionclaw.ui.panels
 
 /**
  * Contract for HUD panels that receive trackpad and head-tracking input.
- * Implemented by ChatPanelFragment and WebPanelFragment.
+ *
+ * After the Phase 2 unipanel sweep, visionclaw runs headless and the only
+ * implementer is the (no-op) ChatPanelFragment shim. The interface is kept
+ * because MainActivity's trackpad routing still casts through it.
  */
 interface TrackpadPanel {
     /** Scroll the panel content. Returns true if consumed. */
@@ -30,15 +33,3 @@ interface TrackpadPanel {
     fun getReadableText(): String
 }
 
-/** Contracts for TapClaw panels. */
-interface PanelContracts {
-
-    interface WebPanel {
-        fun loadUrl(url: String)
-        fun goBack(): Boolean
-        fun goForward(): Boolean
-        fun reload()
-        fun getCurrentUrl(): String?
-        fun getTitle(): String?
-    }
-}

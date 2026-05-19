@@ -79,7 +79,6 @@ import com.rayneo.visionclaw.core.network.ActiveNetworkHttp
 import com.rayneo.visionclaw.core.storage.AppPreferences
 import com.rayneo.visionclaw.core.storage.ReadableArtifactStore
 import com.rayneo.visionclaw.core.tools.ToolDispatcher
-import com.rayneo.visionclaw.ui.MainPagerAdapter
 import com.rayneo.visionclaw.ui.MainViewModel
 import com.rayneo.visionclaw.ui.CustomKeyboardView
 import com.rayneo.visionclaw.ui.VoiceOscilloscopeView
@@ -118,7 +117,7 @@ import java.util.TimeZone
  * double tap + swipe) • Edge-zone panel switching (5% left/right edges with 20px center movement) •
  * Speech input & TTS audio output integration • Frame capture for vision-based queries • HUD panel
  * anchoring for the 6 000-nit MicroLED binocular display • API-key-required notification overlay •
- * ViewPager2 hosting Chat HUD (browser launches to original TAPLINKX3 activity)
+ * Headless host post-unipanel: visible chat/HUD/browser surface lives in tapbrowser
  */
 class MainActivity : AppCompatActivity() {
 
@@ -438,7 +437,7 @@ class MainActivity : AppCompatActivity() {
                     if (!normalized.isNullOrBlank()) {
                         Log.d(TAG, "ToolAssist [${assist.toolName}] auto-opening URL: $normalized")
                         // file:///android_asset/ URLs must go through TapBrowser
-                        // (WebPanelFragment has allowFileAccess=false)
+                        // (the visionclaw host has no in-process WebView anymore)
                         runOnUiThread {
                             if (normalized.startsWith("file:///android_asset/")) {
                                 launchTapBrowser(initialUrl = normalized)
@@ -1373,12 +1372,39 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         handleUnipanelControlIntent(intent)
+        handleOpenSettingsIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         handleUnipanelControlIntent(intent)
+        handleOpenSettingsIntent(intent)
+    }
+
+    /**
+     * Handles `Intent.putExtra("open_settings", true)` from tapbrowser's
+     * long-press-on-gear gesture. Post-unipanel there is no in-process
+     * settings UI to surface, so we show a transient Toast pointing the
+     * user at the companion app and immediately pop visionclaw back
+     * behind tapbrowser. Without this handler, the long-press would just
+     * bring up an invisible 0×0 visionclaw stub and look like a freeze.
+     */
+    private fun handleOpenSettingsIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra("open_settings", false) != true) return
+        // For now, show a simple Toast indicating the settings surface
+        // hasn't been wired into the unipanel design yet. A future commit
+        // can replace this with a proper settings overlay (companion
+        // app remains the primary settings UI in the meantime).
+        runOnUiThread {
+            android.widget.Toast.makeText(
+                this,
+                "Settings are currently only available via the companion app",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            // Don't keep visionclaw foreground — pop back to tapbrowser.
+            moveTaskToBack(true)
+        }
     }
 
     private fun handleUnipanelControlIntent(intent: Intent?) {
@@ -2187,7 +2213,9 @@ class MainActivity : AppCompatActivity() {
     /**
      * Applies the given brightness to this window immediately and persists
      * it to preferences so subsequent launches start at the same level.
-     * The SettingsPanelFragment slider funnels through here.
+     * (Historically the SettingsPanelFragment slider funnelled through
+     * here; that fragment has been retired post-unipanel — companion app
+     * is now the brightness UI.)
      *
      * @param value 0.05f–1.0f. Values outside the range are clamped.
      */
@@ -2340,41 +2368,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // ViewPager (Chat HUD host)
+    // ViewPager (Chat HUD host) — headless after unipanel sweep
     // ══════════════════════════════════════════════════════════════════════
+    //
+    // Post-unipanel, visionclaw never renders a UI surface: the visible
+    // chat/HUD/browser surface lives entirely in tapbrowser. The
+    // ViewPager2 in `activity_main.xml` is a 0×0 GONE stub kept only so
+    // `findViewById(R.id.view_pager)` resolves to a non-null View for the
+    // (unchanged) call sites elsewhere in this file (`viewPager?.current-
+    // Item`, `viewPager?.setCurrentItem(...)`). Attaching a real adapter
+    // / page-change callback would be pure dead weight.
+    //
+    // `setupViewPager` and `applyInitialPageSelection` are kept as
+    // call-shaped no-ops so the `onCreate`/`onResume` call sites don't
+    // churn. `setActivePanel(PANEL_CHAT)` is still published to the
+    // ViewModel so downstream observers see a consistent "chat is
+    // active" baseline.
 
     private fun setupViewPager() {
-        val pager =
-                viewPager
-                        ?: run {
-                            Log.e(TAG, "ViewPager is null — cannot set up panels")
-                            return
-                        }
-
-        pager.adapter = MainPagerAdapter(this, chatFragment)
-        pager.offscreenPageLimit = 1
-        pager.isUserInputEnabled = false
-        pager.isSaveEnabled = false
-
-        pager.registerOnPageChangeCallback(
-                object : ViewPager2.OnPageChangeCallback() {
-                    override fun onPageSelected(position: Int) {
-                        viewModel.setActivePanel(position)
-                        handlePanelChanged(position)
-                    }
-                }
-        )
+        // Intentionally empty: see header comment.
     }
 
     private fun applyInitialPageSelection() {
-        val pager = viewPager ?: return
-        pager.setCurrentItem(MainViewModel.PANEL_CHAT, false)
         viewModel.setActivePanel(MainViewModel.PANEL_CHAT)
-        pager.post {
-            pager.setCurrentItem(MainViewModel.PANEL_CHAT, false)
-            viewModel.setActivePanel(MainViewModel.PANEL_CHAT)
-            handlePanelChanged(MainViewModel.PANEL_CHAT)
-        }
+        handlePanelChanged(MainViewModel.PANEL_CHAT)
     }
 
     private fun handlePanelChanged(position: Int) {
@@ -4062,7 +4079,7 @@ class MainActivity : AppCompatActivity() {
                         )
                     } else if (openUrl.startsWith("file:///android_asset/")) {
                         // Asset URLs (ar_nav.html, etc.) must go through TapBrowser
-                        // because WebPanelFragment has allowFileAccess=false
+                        // because the visionclaw host no longer owns a WebView
                         launchTapBrowser(initialUrl = openUrl)
                     } else {
                         viewModel.openUrl(openUrl)
