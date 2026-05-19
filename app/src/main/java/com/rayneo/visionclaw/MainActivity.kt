@@ -317,6 +317,10 @@ class MainActivity : AppCompatActivity() {
 
         lastHandledLiveInputTranscript = safe
         lastToolAssistTranscript = safe
+        // Phase 2 Step 2c.3.1: surface the finalized user turn as
+        // an in-memory ChatMessage so the unipanel mini-card stack
+        // and any other StateFlow observer can render it.
+        viewModel.appendUserUtterance(safe)
         toolAssistRecoveryFired = false
         mediaPlaybackRecoveryFired = false
 
@@ -3750,6 +3754,9 @@ class MainActivity : AppCompatActivity() {
                         // Cancel the settle timer to prevent double-launch
                         uiHandler.removeCallbacks(settledLiveInputRunnable)
                         lastHandledLiveInputTranscript = pendingLiveInputTranscript.trim()
+                        // Phase 2 Step 2c.3.1: surface the finalized user turn
+                        // for the unipanel mini-card stack.
+                        viewModel.appendUserUtterance(lastHandledLiveInputTranscript)
 
                         val uri = android.net.Uri.parse(openUrl)
                         val path = uri.path.orEmpty()
@@ -9502,6 +9509,9 @@ class MainActivity : AppCompatActivity() {
                                             uiHandler.removeCallbacks(settledLiveInputRunnable)
                                             lastHandledLiveInputTranscript = latestLiveTranscript
                                             lastToolAssistTranscript = latestLiveTranscript
+                                            // Phase 2 Step 2c.3.1: surface the finalized user
+                                            // turn for the unipanel mini-card stack.
+                                            viewModel.appendUserUtterance(latestLiveTranscript)
                                             runOnUiThread {
                                                 showHudNotification("Preparing status…")
                                                 chatFragment.setStreamActiveIndicator(true)
@@ -9547,6 +9557,9 @@ class MainActivity : AppCompatActivity() {
                                             uiHandler.removeCallbacks(settledLiveInputRunnable)
                                             lastHandledLiveInputTranscript = latestLiveTranscript
                                             lastToolAssistTranscript = latestLiveTranscript
+                                            // Phase 2 Step 2c.3.1: surface the finalized user
+                                            // turn for the unipanel mini-card stack.
+                                            viewModel.appendUserUtterance(latestLiveTranscript)
                                             val learnPrompt = AssistantIntentParser.extractExplicitLearnPrompt(latestLiveTranscript)
                                                 ?.ifBlank { "continue on the previous problem" }
                                                 ?: latestLiveTranscript
@@ -10546,7 +10559,15 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { showHudNotification(message) }
     }
 
-    // Intentionally no-op for privacy: user speech transcripts are not shown in chat/HUD.
+    // Kept as a no-op for the legacy HUD/chat preview surface — that
+    // surface was deliberately silent for privacy. Phase 2 Step 2c.3.1
+    // *does* surface finalized user transcripts as ChatMessage cards
+    // (visionclaw chat + the tapbrowser unipanel mini-card stack), but
+    // those are committed once per finalized turn via
+    // viewModel.appendUserUtterance() rather than mid-utterance previews,
+    // and are session-only (not persisted to assistant history or the
+    // previous-conversation prefs cache). This function is still here
+    // so callers don't need to know whether the preview surface exists.
     private fun showLiveSpeechPreview(text: String) = Unit
 
     private fun clearLiveSpeechPreview() {
