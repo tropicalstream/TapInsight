@@ -1030,6 +1030,32 @@ class MainActivity :
 
         mainContainer = findViewById(R.id.mainContainer)
 
+        // Phase 2 Step 2f-fix: initialize dualWebViewGroup FIRST,
+        // before any of the unipanel observers / ticker. Codex caught
+        // a UninitializedPropertyAccessException on the launcher-swap
+        // path traced to dualWebViewGroup being touched during the
+        // early-onCreate observer setup window. Moving the assignment
+        // up here removes the ordering hazard regardless of which
+        // exact callback path was firing.
+        dualWebViewGroup = findViewById(R.id.dualWebViewGroup)
+        dualWebViewGroup.listener = this
+        dualWebViewGroup.navigationListener = this
+        dualWebViewGroup.maskToggleListener = this
+        dualWebViewGroup.windowCallback = this
+        dualWebViewGroup.restoreState()
+
+        // Phase 2 Step 2e: mirror nav-bar visibility into the
+        // unipanel overlay so every "collapse chrome" entry-point
+        // (btnHide nav button, double-tap, btnShowNavBars restore)
+        // hides/shows the HUD + mini cards + CAM chip in lockstep
+        // with the toggle bar + nav bar. One source of truth.
+        dualWebViewGroup.onNavBarsHiddenChanged = { hidden ->
+            uiHandler.post {
+                findViewById<View?>(R.id.unipanelOverlay)?.visibility =
+                    if (hidden) View.INVISIBLE else View.VISIBLE
+            }
+        }
+
         // Phase 2 Step 2c.1: HUD clock ticker. unipanelHudTime is a
         // TextView at the top-center of unipanelOverlay; this runnable
         // refreshes it every 30s with the current HH:MM. First real
@@ -1077,27 +1103,10 @@ class MainActivity :
                     }
                 }
 
-        // Initialize DualWebViewGroup first
-        dualWebViewGroup = findViewById(R.id.dualWebViewGroup)
-        dualWebViewGroup.listener = this
-        dualWebViewGroup.navigationListener = this
-        dualWebViewGroup.maskToggleListener = this
-        dualWebViewGroup.windowCallback = this
-        dualWebViewGroup.restoreState()
-
-        // Phase 2 Step 2e: mirror nav-bar visibility into the
-        // unipanel overlay so every "collapse chrome" entry-point
-        // (btnHide nav button, double-tap, btnShowNavBars restore)
-        // hides/shows the HUD + mini cards + CAM chip in lockstep
-        // with the toggle bar + nav bar. One source of truth.
-        // MUST be registered AFTER dualWebViewGroup is assigned —
-        // setting before would throw UninitializedPropertyAccess.
-        dualWebViewGroup.onNavBarsHiddenChanged = { hidden ->
-            uiHandler.post {
-                findViewById<View?>(R.id.unipanelOverlay)?.visibility =
-                    if (hidden) View.INVISIBLE else View.VISIBLE
-            }
-        }
+        // dualWebViewGroup is initialized earlier in onCreate now
+        // (Phase 2 Step 2f-fix); the legacy "Initialize DualWebView-
+        // Group first" block that used to live here has been
+        // hoisted above to run before the unipanel observers.
 
         // Load saved anchored mode state
         isAnchored =
@@ -1877,18 +1886,16 @@ class MainActivity :
                     DebugLog.w("WarmStart", "moveTaskToBack failed: ${e.message}")
                 }
             }
+        } else {
+            // Phase 2 Step 2f-fix: re-enable the reverse warm-start
+            // after the onCreate ordering fix. The original crash
+            // was the dualWebViewGroup uninit access — moved up
+            // above. Flags also cleaned up below (no MULTIPLE_TASK)
+            // and visionclaw skips its secondary warm-start when
+            // it sees EXTRA_TAPCLAW_WARM_START, so we don't ping-
+            // pong activities.
+            uiHandler.postDelayed({ warmStartVisionclawIfNeeded() }, 2500L)
         }
-        // Phase 2 Step 2f: the reverse warm-start (tapbrowser →
-        // visionclaw) crashed on first test — visionclaw fell over
-        // shortly after the cold-launch flash to chat. Pending an
-        // adb-logcat capture identifying the cause, the auto-warm-
-        // start is disabled. Chat is reachable on-demand via the X
-        // button (btnQuit → REORDER_TO_FRONT + NEW_TASK starts a
-        // visionclaw instance lazily); the unipanel mini-card stack
-        // + CAM chip stay empty until that first chat launch, but
-        // that's a strictly cosmetic regression vs. a crash.
-        // To re-enable, uncomment:
-        //   uiHandler.postDelayed({ warmStartVisionclawIfNeeded() }, 2500L)
 
         webView.setOnTouchListener { _, event ->
             val isMouseEvent = isMousePointerEvent(event)
@@ -5868,9 +5875,16 @@ class MainActivity :
         visionclawWarmStartAttempted = true
         try {
             val intent = Intent().setClassName(this, "com.rayneo.visionclaw.MainActivity").apply {
+                // Phase 2 Step 2f-fix: codex flagged that MULTIPLE_TASK
+                // combined with singleTask launchMode produces a fresh
+                // visionclaw task even when one already exists,
+                // setting up the launch ping-pong that contributed to
+                // the crash. NEW_TASK | SINGLE_TOP | NO_ANIMATION
+                // routes a duplicate launch through onNewIntent on the
+                // existing instance instead.
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
                         Intent.FLAG_ACTIVITY_NO_ANIMATION
                 )
                 putExtra("visionclaw_warm_start", true)
