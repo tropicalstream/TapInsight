@@ -5784,6 +5784,104 @@ class MainActivity :
         suppressWebClickUntil = SystemClock.uptimeMillis() + 250L
     }
 
+    /**
+     * Phase 2 unipanel overlay hit-test.
+     *
+     * The cursor-tap pipeline above bypasses normal Android view-tree
+     * dispatch — it builds a known list of custom UI surfaces, hit-
+     * tests each, and falls through to the WebView when nothing
+     * matches. The unipanel overlay (FrameLayout @+id/unipanelOverlay)
+     * was added in Step 2a but isn't on that list, so clickable
+     * widgets inside it never receive taps even though they're
+     * visually on top of the WebView.
+     *
+     * This routine walks the overlay's view tree, finds a CLICKABLE
+     * + VISIBLE descendant whose screen rect contains the cursor,
+     * and dispatches a synthetic DOWN+UP MotionEvent pair to that
+     * descendant. Returns true if it dispatched; false otherwise.
+     *
+     * Why "clickable" not "any child": we want empty transparent
+     * regions of the overlay to fall through to the WebView so the
+     * user can still scroll the browser through chat-mode dead space.
+     * `isClickable` only returns true for widgets explicitly marked
+     * clickable=true (or with an onClickListener, which Android
+     * silently flips clickable to true). The unipanelOverlay
+     * FrameLayout itself stays clickable=false, so iterating its
+     * children correctly skips its own bounds.
+     *
+     * Hit-test uses screen coordinates because the cursor pipeline
+     * already converted [interactionX]/[interactionY] to absolute
+     * screen space via the WebView's getLocationOnScreen offset.
+     * `view.getLocationOnScreen()` returns the same coordinate
+     * space, so a direct rect check works.
+     */
+    private fun dispatchUnipanelOverlayTouchIfHit(
+        interactionX: Float,
+        interactionY: Float
+    ): Boolean {
+        val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return false
+        if (overlay.visibility != View.VISIBLE) return false
+        val target = findClickableDescendantAt(overlay, interactionX, interactionY) ?: return false
+
+        val targetLocation = IntArray(2)
+        target.getLocationOnScreen(targetLocation)
+        val localX = interactionX - targetLocation[0]
+        val localY = interactionY - targetLocation[1]
+        val now = SystemClock.uptimeMillis()
+        val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, localX, localY, 0)
+        val up = MotionEvent.obtain(now, now + 1L, MotionEvent.ACTION_UP, localX, localY, 0)
+        try {
+            target.dispatchTouchEvent(down)
+            target.dispatchTouchEvent(up)
+        } finally {
+            down.recycle()
+            up.recycle()
+        }
+        DebugLog.d(
+            "Unipanel",
+            "Overlay hit-test dispatched to ${target.javaClass.simpleName} id=" +
+                "${try { resources.getResourceEntryName(target.id) } catch (_: Exception) { "?" }} " +
+                "screen=($interactionX,$interactionY) local=($localX,$localY)"
+        )
+        return true
+    }
+
+    /**
+     * Depth-first search of [root]'s view tree for a clickable view
+     * whose on-screen bounds contain (x, y). Walks children in
+     * REVERSE order so visually-on-top siblings win when they overlap
+     * (matches normal Android hit-test semantics).
+     */
+    private fun findClickableDescendantAt(
+        root: View,
+        screenX: Float,
+        screenY: Float
+    ): View? {
+        if (root.visibility != View.VISIBLE) return null
+        if (root is android.view.ViewGroup) {
+            // Reverse order: top-of-z-stack siblings get first refusal.
+            for (i in root.childCount - 1 downTo 0) {
+                val child = root.getChildAt(i) ?: continue
+                val hit = findClickableDescendantAt(child, screenX, screenY)
+                if (hit != null) return hit
+            }
+        }
+        // Only a clickable LEAF (or any explicitly-clickable view) is a
+        // valid hit target. We don't return non-clickable ViewGroups
+        // because that would block legitimate pass-through.
+        if (!root.isClickable) return null
+        val loc = IntArray(2)
+        root.getLocationOnScreen(loc)
+        val left = loc[0].toFloat()
+        val top = loc[1].toFloat()
+        val right = left + root.width
+        val bottom = top + root.height
+        if (screenX < left || screenX >= right || screenY < top || screenY >= bottom) {
+            return null
+        }
+        return root
+    }
+
     private fun dispatchTouchEventAtCursor() {
 
         if (isSimulatingTouchEvent || cursorJustAppeared || isToggling) {
@@ -5967,6 +6065,23 @@ class MainActivity :
         if (dualWebViewGroup.isPointInScrollbar(interactionX, interactionY)) {
             suppressImmediateWebClickLeak()
             dualWebViewGroup.dispatchScrollbarTouch(interactionX, interactionY)
+            return
+        }
+
+        // ── Phase 2 unipanel overlay hit-test ──
+        // The unipanel overlay sits above the WebView in z-order but
+        // the cursor-tap pipeline above bypasses the normal Android
+        // view tree — it routes taps directly to known custom UI
+        // surfaces and otherwise falls through to the WebView. Without
+        // this block, clickable widgets in unipanelOverlay never
+        // receive taps (the cursor reaches the WebView path first).
+        //
+        // We hit-test only EXPLICITLY clickable children. Empty
+        // transparent regions of the overlay are non-clickable and
+        // therefore fall through to the WebView naturally, preserving
+        // the "browser scrolls in empty space" contract.
+        if (dispatchUnipanelOverlayTouchIfHit(interactionX, interactionY)) {
+            suppressImmediateWebClickLeak()
             return
         }
 
