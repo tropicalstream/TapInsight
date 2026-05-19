@@ -1020,6 +1020,21 @@ class MainActivity :
 
         mainContainer = findViewById(R.id.mainContainer)
 
+        // Phase 2 Step 2b: tap-routing probe. The unipanelOverlay is
+        // visible above the WebView; this pill verifies that
+        // clickable=true widgets inside the overlay consume their own
+        // taps while empty (clickable=false) regions fall through to
+        // the WebView. If both work, future chat content can land in
+        // unipanelOverlay safely. Toast on tap proves consumption.
+        findViewById<View?>(R.id.unipanelStep2bProbe)?.setOnClickListener {
+            DebugLog.d("Unipanel", "Step 2b probe tapped — overlay touch consumption OK")
+            android.widget.Toast.makeText(
+                this,
+                "Step 2b: overlay tap works",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
         // Add this to disable default keyboard

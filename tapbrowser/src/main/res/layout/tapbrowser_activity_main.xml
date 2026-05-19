@@ -25,15 +25,15 @@
 
         <!-- Z-LAYER 1: the chat-panel overlay. Hosts the migrated
              visionclaw chat ViewPager + HUD + camera preview as
-             children once Step 2c lands. Stays transparent and
+             children in Step 2d+. Stays transparent and
              clickable=false so empty regions pass touches through
              to the WebView underneath; individual chat widgets
-             added at runtime consume their own taps.
+             consume their own taps via their own clickable=true.
 
-             Initially android:visibility="gone" so this commit is a
-             pure scaffolding change — no visible difference vs
-             the prior layout. Step 2c flips it to "visible" once
-             content is migrated in. -->
+             Step 2b: shown with a single test pill (top-right) so
+             we can verify the tap-consume / tap-passthrough
+             contract works correctly before piping real chat
+             content in. -->
         <FrameLayout
             android:id="@+id/unipanelOverlay"
             android:layout_width="match_parent"
@@ -41,7 +41,32 @@
             android:background="@android:color/transparent"
             android:clickable="false"
             android:focusable="false"
-            android:visibility="gone" />
+            android:visibility="visible">
+
+            <!-- Step 2b probe pill. clickable=true so this widget
+                 consumes taps on its own bounds. Anywhere else
+                 in unipanelOverlay (clickable=false) falls through
+                 to the WebView. If you can scroll the browser
+                 around this pill, touch routing is correct. -->
+            <TextView
+                android:id="@+id/unipanelStep2bProbe"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|end"
+                android:layout_marginTop="12dp"
+                android:layout_marginEnd="12dp"
+                android:paddingHorizontal="14px"
+                android:paddingVertical="8px"
+                android:background="#CC003B5C"
+                android:clickable="true"
+                android:focusable="true"
+                android:text="step 2b"
+                android:textColor="#FF9EF3FF"
+                android:textSize="12sp"
+                android:fontFamily="sans-serif-medium"
+                android:elevation="6dp" />
+
+        </FrameLayout>
 
     </FrameLayout>
 
