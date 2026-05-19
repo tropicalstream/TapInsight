@@ -2785,6 +2785,18 @@ class MainActivity : AppCompatActivity() {
         nativeSttFallbackTriggered = false
         pendingCameraStart = false
         assistantSessionStartsAudioOnly = true
+        // Phase 2 Step 2f.2-fix-2: start the foreground microphone
+        // Service DIRECTLY here, not via the voiceAssistantActive
+        // LiveData observer. The observer is lifecycle-aware and
+        // doesn't fire while visionclaw is STOPPED (which it is
+        // after the Step 2f warm-start's moveTaskToBack), so the
+        // FGS never started → Android killed the AudioRecord →
+        // Gemini got no audio → no response. Calling start() here
+        // guarantees the FGS attaches FOREGROUND_SERVICE_TYPE_-
+        // MICROPHONE to the process before startGeminiAudioCapture
+        // tries to claim the mic. Idempotent — repeat starts are
+        // safe.
+        com.rayneo.visionclaw.core.session.GeminiSessionForegroundService.start(this)
         viewModel.activateVoiceAssistant()
         if (locationPermissionGranted) {
             refreshLocationSnapshot(force = true)
@@ -9453,6 +9465,11 @@ class MainActivity : AppCompatActivity() {
         disarmSilenceWatchdog()
         awaitingServerTurnComplete = false
         releaseGeminiAudioCapture(cancelOnly = true)
+        // Phase 2 Step 2f.2-fix-2: stop the FGS directly so the
+        // notification clears and the mic privilege is released
+        // even when the voiceAssistantActive LiveData observer
+        // isn't firing (visionclaw STOPPED while backgrounded).
+        com.rayneo.visionclaw.core.session.GeminiSessionForegroundService.stop(this)
         viewModel.deactivateVoiceAssistant()
         showListeningOverlay(false)
         clearLiveSpeechPreview()
