@@ -32,9 +32,10 @@
              their own taps via clickable=true (routed through the
              cursor-tap pipeline by dispatchUnipanelOverlayTouchIfHit).
 
-             Step 2c.1: hosts a simple HUD strip at the top showing
-             the current time. Read-only, no interaction. First
-             real piece of chat HUD rendered over the browser. -->
+             Step 2c.1: HUD strip at the top showing the current
+             time. Step 2c.2: a stack of compact mini chat cards
+             sits beneath the HUD strip. Both are read-only;
+             live data wiring comes in Step 2c.3. -->
         <FrameLayout
             android:id="@+id/unipanelOverlay"
             android:layout_width="match_parent"
@@ -75,6 +76,91 @@
                     android:textSize="13sp"
                     android:letterSpacing="0.06"
                     tools:ignore="UnusedAttribute" />
+
+            </LinearLayout>
+
+            <!-- Step 2c.2 mini chat-card stack. Three compact rows
+                 stacked vertically directly under the HUD strip.
+                 Alternates assistant / user tinting so the layout
+                 reads as a real conversation at a glance. The
+                 outer LinearLayout is clickable=false: empty space
+                 between cards still falls through to the browser
+                 (taps on the cards themselves do nothing yet —
+                 these are read-only placeholders; Step 2c.3 wires
+                 them to MainViewModel chat events and adds focus +
+                 voice routing). Width capped at 340dp so even on a
+                 single eye of the binocular display, the cards
+                 don't span edge-to-edge. -->
+            <LinearLayout
+                android:id="@+id/unipanelMiniCardStack"
+                android:layout_width="340dp"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="44dp"
+                android:orientation="vertical"
+                android:clickable="false"
+                android:focusable="false"
+                android:elevation="8dp">
+
+                <!-- Card 1 — assistant. Top of the stack (most
+                     recent assistant reply once 2c.3 lights this
+                     up). Placeholder text shows the visual at
+                     full-size so we can confirm sizing before any
+                     real wiring. -->
+                <TextView
+                    android:id="@+id/unipanelMiniCard1"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_unipanel_mini_card_assistant"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="8dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp"
+                    android:lineSpacingExtra="1dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:text="Mini card · assistant placeholder. Live chat content lands here in 2c.3."
+                    android:clickable="false"
+                    android:focusable="false" />
+
+                <!-- Card 2 — user. -->
+                <TextView
+                    android:id="@+id/unipanelMiniCard2"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:background="@drawable/bg_unipanel_mini_card_user"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="8dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp"
+                    android:lineSpacingExtra="1dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:text="Mini card · user placeholder. Your last spoken query will show here."
+                    android:clickable="false"
+                    android:focusable="false" />
+
+                <!-- Card 3 — assistant (older). -->
+                <TextView
+                    android:id="@+id/unipanelMiniCard3"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:background="@drawable/bg_unipanel_mini_card_assistant"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="8dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp"
+                    android:lineSpacingExtra="1dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:text="Mini card · older assistant reply. Stack scrolls older entries down out of frame."
+                    android:clickable="false"
+                    android:focusable="false" />
 
             </LinearLayout>
 
