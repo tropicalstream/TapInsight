@@ -48,23 +48,26 @@
                  in unipanelOverlay (clickable=false) falls through
                  to the WebView. If you can scroll the browser
                  around this pill, touch routing is correct. -->
+            <!-- Made significantly larger + dp-padded so it's
+                 unambiguously hittable through the binocular
+                 right-eye → left-eye remap. -->
             <TextView
                 android:id="@+id/unipanelStep2bProbe"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="top|end"
-                android:layout_marginTop="12dp"
-                android:layout_marginEnd="12dp"
-                android:paddingHorizontal="14px"
-                android:paddingVertical="8px"
-                android:background="#CC003B5C"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="24dp"
+                android:paddingHorizontal="28dp"
+                android:paddingVertical="18dp"
+                android:background="#E0007ACC"
                 android:clickable="true"
                 android:focusable="true"
-                android:text="step 2b"
-                android:textColor="#FF9EF3FF"
-                android:textSize="12sp"
+                android:text="STEP 2B — tap me"
+                android:textColor="#FFFFFFFF"
+                android:textSize="18sp"
+                android:textStyle="bold"
                 android:fontFamily="sans-serif-medium"
-                android:elevation="6dp" />
+                android:elevation="12dp" />
 
         </FrameLayout>
 

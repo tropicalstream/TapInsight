@@ -1025,14 +1025,37 @@ class MainActivity :
         // clickable=true widgets inside the overlay consume their own
         // taps while empty (clickable=false) regions fall through to
         // the WebView. If both work, future chat content can land in
-        // unipanelOverlay safely. Toast on tap proves consumption.
-        findViewById<View?>(R.id.unipanelStep2bProbe)?.setOnClickListener {
-            DebugLog.d("Unipanel", "Step 2b probe tapped — overlay touch consumption OK")
-            android.widget.Toast.makeText(
-                this,
-                "Step 2b: overlay tap works",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
+        // unipanelOverlay safely.
+        //
+        // First attempt had the badge invisible to taps (touches went
+        // straight to the WebView even when over the badge). This
+        // version adds:
+        //   • Bigger dp-padded hit area so we're not missing on the
+        //     binocular right-eye → left-eye coord remap.
+        //   • Touch listener that logs every MotionEvent the badge
+        //     receives. If touches DON'T reach the badge at all, the
+        //     log stays silent → BinocularSbsLayout / DualWebViewGroup
+        //     is stealing them upstream and we need to dig there.
+        //   • Click listener still toasts on success.
+        findViewById<View?>(R.id.unipanelStep2bProbe)?.let { probe ->
+            probe.setOnTouchListener { _, ev ->
+                DebugLog.d(
+                    "Unipanel",
+                    "Step 2b probe touch: action=${ev.actionMasked} " +
+                        "x=${ev.x} y=${ev.y} rawX=${ev.rawX} rawY=${ev.rawY}"
+                )
+                // Return false so the click listener still gets to
+                // process the event normally — we're only spying.
+                false
+            }
+            probe.setOnClickListener {
+                DebugLog.d("Unipanel", "Step 2b probe CLICKED — overlay touch consumption OK")
+                android.widget.Toast.makeText(
+                    this,
+                    "Step 2b: overlay tap works",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
         }
 
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
