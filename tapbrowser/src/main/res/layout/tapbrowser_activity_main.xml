@@ -1,5 +1,6 @@
 <com.TapLink.app.BinocularSbsLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#000000">
@@ -23,17 +24,17 @@
             android:fitsSystemWindows="true"
             android:background="#000000" />
 
-        <!-- Z-LAYER 1: the chat-panel overlay. Hosts the migrated
-             visionclaw chat ViewPager + HUD + camera preview as
-             children once Step 2c lands. Stays transparent and
+        <!-- Z-LAYER 1: the unipanel chat-panel overlay. Hosts the
+             migrated visionclaw chat ViewPager + HUD + camera
+             preview as children. The container stays transparent +
              clickable=false so empty regions pass touches through
-             to the WebView underneath; individual chat widgets
-             added at runtime consume their own taps.
+             to the WebView underneath; individual widgets consume
+             their own taps via clickable=true (routed through the
+             cursor-tap pipeline by dispatchUnipanelOverlayTouchIfHit).
 
-             Initially android:visibility="gone" so this commit is a
-             pure scaffolding change — no visible difference vs
-             the prior layout. Step 2c flips it to "visible" once
-             content is migrated in. -->
+             Step 2c.1: hosts a simple HUD strip at the top showing
+             the current time. Read-only, no interaction. First
+             real piece of chat HUD rendered over the browser. -->
         <FrameLayout
             android:id="@+id/unipanelOverlay"
             android:layout_width="match_parent"
@@ -41,7 +42,43 @@
             android:background="@android:color/transparent"
             android:clickable="false"
             android:focusable="false"
-            android:visibility="gone" />
+            android:visibility="visible">
+
+            <!-- Step 2c.1 HUD strip. Semi-transparent dark
+                 background so it stays readable over any browser
+                 page; pinned to the top so it doesn't cover
+                 article content the user is reading. Width caps
+                 at 320dp so it doesn't span the full eye in the
+                 binocular display and feel oppressive. -->
+            <LinearLayout
+                android:id="@+id/unipanelHudStrip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="14dp"
+                android:paddingVertical="6dp"
+                android:background="#B3000000"
+                android:elevation="8dp"
+                android:clickable="false"
+                android:focusable="false">
+
+                <TextView
+                    android:id="@+id/unipanelHudTime"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="--:--"
+                    android:textColor="#FFE0F4FF"
+                    android:textSize="13sp"
+                    android:letterSpacing="0.06"
+                    tools:ignore="UnusedAttribute" />
+
+            </LinearLayout>
+
+        </FrameLayout>
 
     </FrameLayout>
 

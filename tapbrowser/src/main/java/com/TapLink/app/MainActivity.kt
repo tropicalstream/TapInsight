@@ -1011,6 +1011,14 @@ class MainActivity :
 
         mainContainer = findViewById(R.id.mainContainer)
 
+        // Phase 2 Step 2c.1: HUD clock ticker. unipanelHudTime is a
+        // TextView at the top-center of unipanelOverlay; this runnable
+        // refreshes it every 30s with the current HH:MM. First real
+        // piece of chat-HUD content rendered over the browser. Future
+        // steps add AI status, battery, calendar, etc. to the same
+        // strip and migrate to the live MainViewModel-driven values.
+        startUnipanelHudClockTicker()
+
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
         // Add this to disable default keyboard
@@ -5735,6 +5743,34 @@ class MainActivity :
 
     private fun suppressImmediateWebClickLeak() {
         suppressWebClickUntil = SystemClock.uptimeMillis() + 250L
+    }
+
+    /**
+     * Phase 2 Step 2c.1: drives the unipanel HUD clock.
+     *
+     * Refreshes the unipanelHudTime TextView every 30 s with the
+     * current local time in HH:MM. Lightweight by design — no
+     * BroadcastReceiver, no allocations on tick. Posts itself
+     * recursively via uiHandler so the loop stops cleanly when the
+     * Activity goes away (no explicit cancel needed; the Handler is
+     * already main-thread-bound).
+     *
+     * Future Step 2c migrations will subscribe this surface to live
+     * data from the shared MainViewModel rather than just rendering
+     * the wall clock.
+     */
+    private fun startUnipanelHudClockTicker() {
+        val tv = findViewById<android.widget.TextView?>(R.id.unipanelHudTime) ?: return
+        val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+        val ticker = object : Runnable {
+            override fun run() {
+                try {
+                    tv.text = fmt.format(java.util.Date())
+                } catch (_: Exception) {}
+                uiHandler.postDelayed(this, 30_000L)
+            }
+        }
+        uiHandler.post(ticker)
     }
 
     /**
