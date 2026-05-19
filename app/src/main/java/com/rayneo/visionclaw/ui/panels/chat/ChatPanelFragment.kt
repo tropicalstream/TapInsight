@@ -691,17 +691,15 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         val lastContent = adapter.getLastContentPosition()
         val current = coerceFocusedIndex()
 
-        // ── Dark mode activation: double swipe-down while New Chat focused ──
-        if (direction == 1 && adapter.isNewChatCard(current)) {
-            if (now - lastSwipeDownStepMs < DARK_MODE_DOUBLE_SWIPE_WINDOW_MS) {
-                setBatterySavingDarkMode(true)
-                lastSwipeDownStepMs = 0L
-                return true
-            }
-            lastSwipeDownStepMs = now
-        } else {
-            lastSwipeDownStepMs = 0L  // reset if user swipes up or moves off New Chat
-        }
+        // Phase 2 Step 2e: the legacy "double swipe-down while New
+        // Chat focused triggers battery-saving dark mode" gesture is
+        // retired. The eye-icon dim mode in the browser nav bar is
+        // the canonical dim entry-point now; the chat-side variant
+        // was redundant and conflicted with the unipanel design's
+        // single-toggle model. lastSwipeDownStepMs is left as an
+        // unused field for now to avoid touching the gesture state
+        // machine more than necessary; Step 2g will sweep it.
+        lastSwipeDownStepMs = 0L
 
         val next = (current + direction).coerceIn(firstContent, lastContent)
         if (next == current) return true

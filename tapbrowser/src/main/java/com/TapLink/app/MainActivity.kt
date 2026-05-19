@@ -1044,6 +1044,18 @@ class MainActivity :
         // for now; this just tells the user "yes, Gemini is watching".
         startUnipanelCameraChipObserver()
 
+        // Phase 2 Step 2e: mirror nav-bar visibility into the
+        // unipanel overlay so every "collapse chrome" entry-point
+        // (btnHide nav button, double-tap, btnShowNavBars restore)
+        // hides/shows the HUD + mini cards + CAM chip in lockstep
+        // with the toggle bar + nav bar. One source of truth.
+        dualWebViewGroup.onNavBarsHiddenChanged = { hidden ->
+            uiHandler.post {
+                findViewById<View?>(R.id.unipanelOverlay)?.visibility =
+                    if (hidden) View.INVISIBLE else View.VISIBLE
+            }
+        }
+
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
         // Add this to disable default keyboard
@@ -1689,54 +1701,29 @@ class MainActivity :
                                     return
                                 }
                                 if (returnToChatOnDoubleTap) {
-                                    // Explicitly stop any media (YouTube or generic
-                                    // HTML5 <video>/<audio>) BEFORE handing control
-                                    // back to TapClaw. onPause() alone is not
-                                    // sufficient here: when FLAG_ACTIVITY_REORDER_TO_FRONT
-                                    // brings TapClaw up, TapBrowser's Activity can
-                                    // remain in a paused-but-visible state where
-                                    // the onPause pause-media guard may have already
-                                    // been bypassed (e.g. screen-masked branch), so
-                                    // YouTube keeps pumping audio. Stopping media
-                                    // here makes the return-to-chat gesture silence
-                                    // playback unconditionally.
-                                    if (::dualWebViewGroup.isInitialized) {
-                                        runCatching {
-                                            dualWebViewGroup.pauseYouTubeMediaAcrossAllWindows(
-                                                resetTracking = false
-                                            )
-                                        }
-                                        runCatching { dualWebViewGroup.pauseAllWindowsMedia() }
-                                        runCatching { dualWebViewGroup.clearTrackedMediaPlayback() }
-                                        // The dark visualizer / masked YouTube path can keep audio
-                                        // alive inside iframe-backed players even after the softer
-                                        // pause hooks run. Use the stronger kill path before
-                                        // returning to chat so playback is always silenced.
-                                        runCatching { killAllWebViewAudio(resumeWebViewsAfterKill = false) }
-                                    }
-                                    runCatching { stopNativeRadioStream() }
-                                    runCatching { clearTapRadioPlaybackPrefs() }
-                                    // Nuclear purge: also navigates any radio.html /
-                                    // podcasts.html / spotify.html WebView to
-                                    // about:blank and scrubs `BrowserPrefs.last_url`
-                                    // + `webview_state` so a later cold start (AR
-                                    // glasses can aggressively kill backgrounded
-                                    // Activities to reclaim RAM) cannot resurrect
-                                    // the stream via tryRestoreSession().
+                                    // Phase 2 Step 2e: the unipanel design's
+                                    // double-tap semantic is "collapse / expand
+                                    // the overlay layer" — same function as the
+                                    // box-button-between-refresh-and-X (btnHide,
+                                    // setNavBarsHidden). The chat button in the
+                                    // nav bar (btnChat → toggleChat) is now the
+                                    // explicit return-to-chat path; double-tap
+                                    // no longer kills media or hands control
+                                    // back to TapClaw.
+                                    //
+                                    // The onNavBarsHiddenChanged callback wired
+                                    // in onCreate mirrors the new state into the
+                                    // unipanel overlay (HUD clock + mini-card
+                                    // stack + CAM chip), so all chrome toggles
+                                    // in lockstep regardless of entry-point.
+                                    val newHidden =
+                                        !dualWebViewGroup.isNavBarsHidden()
+                                    DebugLog.d(
+                                        "DoubleTapDebug",
+                                        "Toggling unipanel chrome via double-tap → hidden=$newHidden"
+                                    )
                                     runCatching {
-                                        stopOrphanedNativeRadioPlayer(this@MainActivity)
-                                    }
-                                    try {
-                                        startActivity(
-                                            Intent().setClassName(this@MainActivity, TAPCLAW_MAIN_ACTIVITY)
-                                                .addFlags(
-                                                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                                                        Intent.FLAG_ACTIVITY_SINGLE_TOP
-                                                )
-                                        )
-                                    } catch (e: Exception) {
-                                        DebugLog.e("DoubleTapDebug", "Failed to return to TapClaw", e)
-                                        finish()
+                                        dualWebViewGroup.setNavBarsHidden(newHidden)
                                     }
                                     return
                                 }

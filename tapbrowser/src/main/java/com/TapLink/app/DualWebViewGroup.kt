@@ -8378,9 +8378,21 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
      * Hides or shows the navigation bars without affecting scroll mode. When hidden, cursor remains
      * visible and movable (unlike scroll mode).
      */
+    /**
+     * Phase 2 Step 2e: callback fired whenever nav-bar visibility
+     * toggles. Hosts (the tapbrowser Activity) register here to
+     * mirror the state into the unipanel overlay (HUD clock, mini
+     * chat-card stack, CAM chip) so the double-tap "collapse all
+     * chrome" gesture is consistent — both nav bars AND overlays
+     * hide/show together, regardless of which entry-point fired
+     * (btnHide, btnShowNavBars, or the Activity-level double-tap).
+     */
+    var onNavBarsHiddenChanged: ((Boolean) -> Unit)? = null
+
     fun setNavBarsHidden(hidden: Boolean) {
         if (isNavBarsHidden == hidden) return
         isNavBarsHidden = hidden
+        runCatching { onNavBarsHiddenChanged?.invoke(hidden) }
 
         if (hidden) {
             // Immediately disable touch interception before animating
