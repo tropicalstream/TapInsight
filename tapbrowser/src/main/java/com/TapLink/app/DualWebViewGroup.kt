@@ -2995,8 +2995,14 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             addView(chatView)
             chatView.disableSystemKeyboard()
 
-            // Setup listener for Chat button
-            leftNavigationBar.findViewById<View>(R.id.btnChat)?.setOnClickListener { toggleChat() }
+            // Long-press keeps the legacy in-browser chat available for
+            // debugging, while a normal press is routed through
+            // NavigationListener as the unipanel "return to TapInsight chat"
+            // action.
+            leftNavigationBar.findViewById<View>(R.id.btnChat)?.setOnLongClickListener {
+                toggleChat()
+                true
+            }
             postDelayed(
                     {
                         initializeToggleButtons()
@@ -6944,7 +6950,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             return
         }
         if (key == "chat") {
-            toggleChat()
+            navigationListener?.onChatPressed() ?: toggleChat()
             return
         }
         navigationListener?.let { listener ->

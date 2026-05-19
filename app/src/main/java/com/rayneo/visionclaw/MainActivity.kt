@@ -183,9 +183,16 @@ class MainActivity : AppCompatActivity() {
          * OAuth setup, MediaScanner attach, etc.) happens up front
          * and the unipanel mini-card stack + CAM chip have a live
          * publisher even while the user is still in the browser.
-         * onCreate calls moveTaskToBack(true) once it sees this flag.
+         * onCreate restores tapbrowser to the foreground once it sees
+         * this flag.
          */
         const val EXTRA_TAPCLAW_WARM_START = "visionclaw_warm_start"
+        private const val EXTRA_UNIPANEL_START_GEMINI_CHAT =
+                "unipanel_start_gemini_chat"
+        private const val EXTRA_UNIPANEL_RETURN_TO_BROWSER =
+                "unipanel_return_to_browser"
+        private const val EXTRA_UNIPANEL_REQUEST_ID =
+                "unipanel_request_id"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUERY = "tapclaw_youtube_autoplay_query"
         private const val EXTRA_YOUTUBE_AUTOPLAY_MODE = "tapclaw_youtube_autoplay_mode"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUEUE = "tapclaw_youtube_autoplay_queue"
@@ -594,6 +601,10 @@ class MainActivity : AppCompatActivity() {
      * normal audio-release semantics resume.
      */
     @Volatile private var pendingTapBrowserHandoff = false
+    private var unipanelCardFocusSubscription: AutoCloseable? = null
+    private var unipanelNewChatSubscription: AutoCloseable? = null
+    private var pendingUnipanelReturnToBrowserAfterVoiceStart = false
+    private var lastHandledUnipanelGeminiRequestId = 0L
     @Volatile private var forceDirectGeminiLive = true
     @Volatile private var lastVoiceActivationMs = 0L
     /** Monotonically increasing counter to detect stale WebSocket callbacks from old sessions. */
@@ -1269,10 +1280,12 @@ class MainActivity : AppCompatActivity() {
         Log.i(TAG, "TapInsight MainActivity created successfully")
 
         // Phase 2 Step 2f-fix: when tapbrowser warm-starts us (it's
-        // the launcher now), self-background so the user sees the
-        // browser, not visionclaw. Codex suggested decorView.post so
-        // the moveTaskToBack fires after layout, not from a Handler
-        // queued possibly before the window is attached.
+        // the launcher now), let visionclaw finish enough startup to
+        // hydrate/publish bridge state, then bring the already-running
+        // tapbrowser Activity back to the front. Do not call
+        // moveTaskToBack(true) here: both Activities share the same
+        // task, so that backgrounds the browser too and looks like an
+        // app crash/return-to-launcher.
         //
         // We ALSO skip the secondary warmStartTapBrowserIfNeeded
         // below to break the ping-pong: tapbrowser is already alive
@@ -1282,14 +1295,21 @@ class MainActivity : AppCompatActivity() {
         val warmStartedByTapBrowser =
             intent.getBooleanExtra(EXTRA_TAPCLAW_WARM_START, false)
         if (warmStartedByTapBrowser) {
-            window.decorView.post {
+            window.decorView.postDelayed({
                 runCatching {
-                    moveTaskToBack(true)
-                    Log.d(TAG, "visionclaw warm-started; sent task to back")
+                    val restoreBrowserIntent = Intent()
+                        .setClassName(this, TAP_BROWSER_ACTIVITY_CLASS)
+                        .addFlags(
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                Intent.FLAG_ACTIVITY_NO_ANIMATION
+                        )
+                    startActivity(restoreBrowserIntent)
+                    Log.d(TAG, "visionclaw warm-started; restored tapbrowser foreground")
                 }.onFailure { e ->
-                    Log.w(TAG, "moveTaskToBack failed: ${e.message}")
+                    Log.w(TAG, "restore tapbrowser foreground failed: ${e.message}")
                 }
-            }
+            }, 250L)
         }
 
         if (!warmStartedByTapBrowser) {
@@ -1324,6 +1344,55 @@ class MainActivity : AppCompatActivity() {
                 }
                 com.TapLink.app.unipanel.ChatCardBridge.publish(cards)
             }
+        }
+        unipanelCardFocusSubscription?.close()
+        unipanelCardFocusSubscription =
+            com.TapLink.app.unipanel.ChatCardBridge.observeFocus { focus ->
+                if (focus.fromUser) return@observeFocus
+                runOnUiThread {
+                    chatFragment.focusCardMatchingSnapshot(
+                        text = focus.text,
+                        timestampMs = focus.timestampMs,
+                        animate = false
+                    )
+                }
+            }
+        unipanelNewChatSubscription?.close()
+        unipanelNewChatSubscription =
+            com.TapLink.app.unipanel.ChatCardBridge.observeNewGeminiChat { request ->
+                runOnUiThread {
+                    Log.d(
+                        TAG,
+                        "Unipanel requested new Gemini chat: source=${request.source} id=${request.requestId}"
+                    )
+                    com.TapLink.app.unipanel.ChatCardBridge.consumeNewGeminiChatRequest(
+                        request.requestId
+                    )
+                    activateChatVoiceAssistant()
+                }
+            }
+        handleUnipanelControlIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleUnipanelControlIntent(intent)
+    }
+
+    private fun handleUnipanelControlIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_UNIPANEL_START_GEMINI_CHAT, false) != true) return
+        val requestId = intent.getLongExtra(
+            EXTRA_UNIPANEL_REQUEST_ID,
+            SystemClock.uptimeMillis()
+        )
+        if (requestId == lastHandledUnipanelGeminiRequestId) return
+        lastHandledUnipanelGeminiRequestId = requestId
+        pendingUnipanelReturnToBrowserAfterVoiceStart =
+            intent.getBooleanExtra(EXTRA_UNIPANEL_RETURN_TO_BROWSER, true)
+        Log.d(TAG, "Unipanel intent requested Gemini chat id=$requestId")
+        uiHandler.post {
+            activateChatVoiceAssistant()
         }
     }
 
@@ -1462,6 +1531,14 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         companionServer?.stopServer()
         companionServer = null
+        try {
+            unipanelCardFocusSubscription?.close()
+        } catch (_: Exception) {}
+        unipanelCardFocusSubscription = null
+        try {
+            unipanelNewChatSubscription?.close()
+        } catch (_: Exception) {}
+        unipanelNewChatSubscription = null
         gestureEngine.release()
         chatFragment.setCoreEyeSurfaceListener(null)
         chatFragment.setCardActionListener(null)
@@ -1950,7 +2027,65 @@ class MainActivity : AppCompatActivity() {
             airQualityState = airQualityState,
             radioState = radioState
         )
+
+        // Phase 2 Step 2h: mirror the same snapshot into the
+        // tapbrowser unipanel HUD via HudStateBridge. The renderer
+        // shows a compact (3-pill) form; we pre-shorten the
+        // multi-line calendar/news/tasks strings to their first
+        // non-blank line here so the bridge surface stays cheap.
+        com.TapLink.app.unipanel.HudStateBridge.publish(
+            com.TapLink.app.unipanel.HudStateBridge.Snapshot(
+                time = "",
+                date = computeCompactDate(),
+                batteryPct = readBatteryPercentCompactly(),
+                batteryCharging = readBatteryChargingCompactly(),
+                aqi = airQualityState?.let { aq ->
+                    aq.aqi?.let { "AQI $it" } ?: aq.text.orEmpty()
+                }.orEmpty(),
+                calendar = firstNonBlankLine(calendarSummary),
+                news = firstNonBlankLine(newsSummary),
+                status = ""
+            )
+        )
     }
+
+    /** Phase 2 Step 2h helper: short "Tue May 19" date label for the
+     *  compact unipanel HUD pill. Locale-aware. */
+    private fun computeCompactDate(): String = runCatching {
+        java.text.SimpleDateFormat("EEE MMM d", java.util.Locale.getDefault())
+            .format(java.util.Date())
+    }.getOrDefault("")
+
+    /** Phase 2 Step 2h helper: read battery % via the same sticky
+     *  ACTION_BATTERY_CHANGED broadcast ChatPanelFragment uses, so
+     *  the bridge value matches the chat-side HUD. Cheap to call
+     *  every push because the broadcast is sticky (no real I/O). */
+    private fun readBatteryPercentCompactly(): Int? = runCatching {
+        val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            ?: return null
+        val level = intent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+        val scale = intent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100)
+            .coerceAtLeast(1)
+        if (level < 0) null else ((level * 100f) / scale).toInt().coerceIn(0, 100)
+    }.getOrNull()
+
+    private fun readBatteryChargingCompactly(): Boolean = runCatching {
+        val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            ?: return false
+        val status = intent.getIntExtra(
+            android.os.BatteryManager.EXTRA_STATUS,
+            android.os.BatteryManager.BATTERY_STATUS_UNKNOWN
+        )
+        val plugged = intent.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0
+        status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == android.os.BatteryManager.BATTERY_STATUS_FULL ||
+            plugged
+    }.getOrDefault(false)
+
+    /** Phase 2 Step 2h helper: pull the first non-blank line out of a
+     *  multi-line HUD summary so the compact pill stays single-line. */
+    private fun firstNonBlankLine(text: String?): String =
+        text?.lineSequence()?.map { it.trim() }?.firstOrNull { it.isNotBlank() }.orEmpty()
 
     private fun syncTapRadioHudStateFromPrefs() {
         // The chat / HUD screen intentionally never surfaces the TapRadio
@@ -9503,6 +9638,17 @@ class MainActivity : AppCompatActivity() {
                                                 startGeminiAudioStreaming()
                                             }
                                             touchGeminiLiveActivity(force = true)
+                                            if (pendingUnipanelReturnToBrowserAfterVoiceStart) {
+                                                pendingUnipanelReturnToBrowserAfterVoiceStart = false
+                                                uiHandler.postDelayed({
+                                                    if (viewModel.voiceAssistantActive.value == true &&
+                                                        liveState != GeminiLiveState.IDLE
+                                                    ) {
+                                                        Log.d(TAG, "Unipanel Gemini session ready; returning to browser")
+                                                        launchTapBrowser()
+                                                    }
+                                                }, 450L)
+                                            }
                                             // Deferred: bridge-reachability ping is cosmetic —
                                             // run it after the session is fully streaming.
                                             uiHandler.postDelayed({ refreshToolBridgeStatus() }, 800L)
@@ -10029,6 +10175,7 @@ class MainActivity : AppCompatActivity() {
         keepLearnLmSessionAliveUntilManualClose = false
         learnLmToolCallActive = false
         assistantSessionStartsAudioOnly = false
+        pendingUnipanelReturnToBrowserAfterVoiceStart = false
         if (suppressGeminiOutputUntilMs == Long.MAX_VALUE) {
             suppressGeminiOutputUntilMs = 0L
         }

@@ -34,8 +34,7 @@
 
              Step 2c.1: HUD strip at the top showing the current
              time. Step 2c.2: a stack of compact mini chat cards
-             sits beneath the HUD strip. Both are read-only;
-             live data wiring comes in Step 2c.3. -->
+             sits beneath the HUD strip. -->
         <FrameLayout
             android:id="@+id/unipanelOverlay"
             android:layout_width="match_parent"
@@ -45,36 +44,132 @@
             android:focusable="false"
             android:visibility="visible">
 
-            <!-- Step 2c.1 HUD strip. Semi-transparent dark
-                 background so it stays readable over any browser
-                 page; pinned to the top so it doesn't cover
-                 article content the user is reading. Width caps
-                 at 320dp so it doesn't span the full eye in the
-                 binocular display and feel oppressive. -->
+            <!-- Step 2h: compact HUD stack. Vertical wrapper of up
+                 to three single-line pills:
+                   • Row 1 (always visible): clock + date +
+                     battery. Width grows naturally; pinned center.
+                   • Row 2 (visible while non-blank): calendar.
+                   • Row 3 (visible while non-blank): news headline.
+                 All three pills share the same dark semi-
+                 transparent treatment so they read as one HUD
+                 surface. The wrapper itself stays transparent +
+                 clickable=false so gaps between pills pass touches
+                 through to the WebView; individual pills consume
+                 taps via the three-state hit-test (Step 2c.2.1). -->
             <LinearLayout
-                android:id="@+id/unipanelHudStrip"
+                android:id="@+id/unipanelHudStack"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="top|center_horizontal"
                 android:layout_marginTop="8dp"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:paddingHorizontal="14dp"
-                android:paddingVertical="6dp"
-                android:background="#B3000000"
+                android:orientation="vertical"
+                android:gravity="center_horizontal"
                 android:elevation="8dp"
                 android:clickable="false"
                 android:focusable="false">
 
-                <TextView
-                    android:id="@+id/unipanelHudTime"
+                <!-- Row 1: clock + date + battery. The id
+                     unipanelHudStrip is kept for back-compat with
+                     the Step 2c.1 ticker reference; unipanelHudTime
+                     keeps driving the clock from the existing
+                     ticker code path. The other TextViews are
+                     populated by HudStateBridge.observe. -->
+                <LinearLayout
+                    android:id="@+id/unipanelHudStrip"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingHorizontal="14dp"
+                    android:paddingVertical="6dp"
+                    android:background="#B3000000">
+
+                    <TextView
+                        android:id="@+id/unipanelHudTime"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-medium"
+                        android:text="--:--"
+                        android:textColor="#FFE0F4FF"
+                        android:textSize="13sp"
+                        android:letterSpacing="0.06"
+                        tools:ignore="UnusedAttribute" />
+
+                    <TextView
+                        android:id="@+id/unipanelHudDate"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:fontFamily="sans-serif-medium"
+                        android:textColor="#CCFFFFFF"
+                        android:textSize="12sp"
+                        android:visibility="gone"
+                        tools:ignore="UnusedAttribute" />
+
+                    <TextView
+                        android:id="@+id/unipanelHudBattery"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:fontFamily="sans-serif-medium"
+                        android:textColor="#FFE0F4FF"
+                        android:textSize="12sp"
+                        android:visibility="gone"
+                        tools:ignore="UnusedAttribute" />
+
+                    <TextView
+                        android:id="@+id/unipanelHudAqi"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:fontFamily="sans-serif-medium"
+                        android:textColor="#CCFFFFFF"
+                        android:textSize="12sp"
+                        android:visibility="gone"
+                        tools:ignore="UnusedAttribute" />
+
+                </LinearLayout>
+
+                <!-- Row 2: calendar pill. Cyan tint matches the
+                     Hermes-branch hudCalendar colour so glances
+                     between the two stays consistent. Width caps
+                     at 320dp; multiline collapses to single line
+                     with end-ellipsis. -->
+                <TextView
+                    android:id="@+id/unipanelHudCalendar"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:maxWidth="320dp"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="5dp"
+                    android:background="#B3000000"
                     android:fontFamily="sans-serif-medium"
-                    android:text="--:--"
-                    android:textColor="#FFE0F4FF"
-                    android:textSize="13sp"
-                    android:letterSpacing="0.06"
+                    android:textColor="#FF6EE7FF"
+                    android:textSize="12sp"
+                    android:maxLines="1"
+                    android:ellipsize="end"
+                    android:visibility="gone"
+                    tools:ignore="UnusedAttribute" />
+
+                <!-- Row 3: news headline pill. Warm orange tint
+                     matches Hermes-branch hudNews. Same width +
+                     ellipsis treatment as calendar. -->
+                <TextView
+                    android:id="@+id/unipanelHudNews"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:maxWidth="320dp"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="5dp"
+                    android:background="#B3000000"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="#FFFFB14A"
+                    android:textSize="12sp"
+                    android:maxLines="1"
+                    android:ellipsize="end"
+                    android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
             </LinearLayout>
@@ -96,7 +191,7 @@
                 android:layout_width="340dp"
                 android:layout_height="wrap_content"
                 android:layout_gravity="top|center_horizontal"
-                android:layout_marginTop="44dp"
+                android:layout_marginTop="108dp"
                 android:orientation="vertical"
                 android:clickable="false"
                 android:focusable="false"

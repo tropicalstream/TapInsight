@@ -1375,6 +1375,25 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         focusCard(adapter.getLastContentPosition(), animate = animate)
     }
 
+    fun focusCardMatchingSnapshot(
+        text: String,
+        timestampMs: Long,
+        animate: Boolean = true
+    ): Boolean {
+        if (adapter.itemCount <= 0) return false
+        val normalized = text.trim()
+        if (normalized.isBlank()) return false
+        val position = renderedAssistantMessages.indexOfLast { message ->
+            message.timestampMs == timestampMs || message.text.trim() == normalized
+        }
+        if (position < 0) return false
+        if (readerModeActive) {
+            exitReaderMode(animated = false)
+        }
+        focusCard(position, animate = animate)
+        return true
+    }
+
     fun prepareForAssistantLaunch() {
         if (readerModeActive) {
             exitReaderMode(animated = false)

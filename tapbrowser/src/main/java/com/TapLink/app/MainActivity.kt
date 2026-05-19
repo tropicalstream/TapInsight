@@ -101,6 +101,7 @@ import org.json.JSONObject
 interface NavigationListener {
     fun onNavigationBackPressed()
     fun onNavigationForwardPressed()
+    fun onChatPressed()
     fun onQuitPressed()
     fun onSettingsPressed()
     fun onRefreshPressed()
@@ -149,6 +150,12 @@ class MainActivity :
          * browser.
          */
         private const val EXTRA_TAPCLAW_WARM_START = "visionclaw_warm_start"
+        private const val EXTRA_UNIPANEL_START_GEMINI_CHAT =
+                "unipanel_start_gemini_chat"
+        private const val EXTRA_UNIPANEL_RETURN_TO_BROWSER =
+                "unipanel_return_to_browser"
+        private const val EXTRA_UNIPANEL_REQUEST_ID =
+                "unipanel_request_id"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUERY = "tapclaw_youtube_autoplay_query"
         private const val EXTRA_YOUTUBE_AUTOPLAY_MODE = "tapclaw_youtube_autoplay_mode"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUEUE = "tapclaw_youtube_autoplay_queue"
@@ -351,6 +358,10 @@ class MainActivity :
     private lateinit var gestureDetector: GestureDetector
     private lateinit var templeDoubleTapDetector: GestureDetector
     private var pendingMaskSingleTapRunnable: Runnable? = null
+    private var unipanelMiniCardSlots: Array<android.widget.TextView>? = null
+    private var lastRenderedMiniCards: List<com.TapLink.app.unipanel.ChatCardBridge.Card> = emptyList()
+    private var focusedMiniCardTimestampMs: Long? = null
+    private var unipanelHudStatusUntilMs = 0L
 
     private fun cancelPendingMaskSingleTap() {
         pendingMaskSingleTapRunnable?.let { uiHandler.removeCallbacks(it) }
@@ -1080,6 +1091,13 @@ class MainActivity :
         // for now; this just tells the user "yes, Gemini is watching".
         startUnipanelCameraChipObserver()
 
+        // Phase 2 Step 2h: subscribe to HudStateBridge so the
+        // compact HUD pills (date / battery / AQI / calendar /
+        // news) populate from visionclaw's HUD snapshot. Each pill
+        // shows or hides per-field based on whether the snapshot
+        // value is blank.
+        startUnipanelHudSnapshotObserver()
+
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
         // Add this to disable default keyboard
@@ -1514,6 +1532,10 @@ class MainActivity :
 
                                 handleUserInteraction()
 
+                                if (tryHandleRawUnipanelHudSingleTap(e)) {
+                                    return true
+                                }
+
                                 // If the touch interaction started on the bookmarks view, consume
                                 // the tap here
                                 // to prevent it from propagating to the WebView (even if bookmarks
@@ -1613,14 +1635,6 @@ class MainActivity :
                                         """onDoubleTap called. isProcessingDoubleTap: $isProcessingDoubleTap, isInScrollMode: $isInScrollMode"""
                                 )
 
-                                if (isInScrollMode) {
-                                    DebugLog.d(
-                                            "DoubleTapDebug",
-                                            "Double tap ignored because in scroll mode"
-                                    )
-                                    return true
-                                }
-
                                 synchronized(doubleTapLock) {
                                     // Safety check: Reset if flag has been stuck for too long
                                     // (>500ms)
@@ -1703,78 +1717,7 @@ class MainActivity :
                             }
 
                             private fun performDoubleTapBackNavigation() {
-                                // Dim-mode exit short-circuit. When the user is
-                                // in the minimal dim overlay, double-tap is the
-                                // documented "exit dim mode" gesture — it must
-                                // not fall through into the return-to-TapClaw
-                                // path (which would shut down audio + switch
-                                // panels) or the browser-back path. We just
-                                // unmask and stay where we are; media keeps
-                                // playing because we don't pause anything.
-                                if (::dualWebViewGroup.isInitialized &&
-                                    dualWebViewGroup.isScreenMasked()
-                                ) {
-                                    DebugLog.d(
-                                        "DoubleTapDebug",
-                                        "Dim-mode active — double-tap exits dim mode only"
-                                    )
-                                    runCatching { dualWebViewGroup.unmaskScreen() }
-                                    return
-                                }
-                                if (returnToChatOnDoubleTap) {
-                                    // Phase 2 Step 2e: the unipanel design's
-                                    // double-tap semantic is "collapse / expand
-                                    // the overlay layer" — same function as the
-                                    // box-button-between-refresh-and-X (btnHide,
-                                    // setNavBarsHidden). Double-tap no longer
-                                    // kills media or hands control back to
-                                    // TapClaw.
-                                    //
-                                    // To return to chat, the user uses the X
-                                    // button (btnQuit → finish()) which closes
-                                    // this Activity; visionclaw is underneath
-                                    // in the task stack and comes forward. The
-                                    // in-nav-bar btnChat is a SEPARATE feature
-                                    // — it toggles an in-browser Groq chat view
-                                    // (see DualWebViewGroup.toggleChat), not a
-                                    // return-to-TapClaw shortcut. An explicit
-                                    // "return to chat" button is a candidate
-                                    // for a future commit.
-                                    //
-                                    // The onNavBarsHiddenChanged callback wired
-                                    // in onCreate mirrors the new state into the
-                                    // unipanel overlay (HUD clock + mini-card
-                                    // stack + CAM chip), so all chrome toggles
-                                    // in lockstep regardless of entry-point.
-                                    val newHidden =
-                                        !dualWebViewGroup.isNavBarsHidden()
-                                    DebugLog.d(
-                                        "DoubleTapDebug",
-                                        "Toggling unipanel chrome via double-tap → hidden=$newHidden"
-                                    )
-                                    runCatching {
-                                        dualWebViewGroup.setNavBarsHidden(newHidden)
-                                    }
-                                    return
-                                }
-
-                                val isScreenMasked = dualWebViewGroup.isScreenMasked()
-                                val hasHistory = webView.canGoBack()
-
-                                DebugLog.d(
-                                        "DoubleTapDebug",
-                                        """Double tap confirmed. isScreenMasked=$isScreenMasked, isKeyboardVisible=$isKeyboardVisible, canGoBack=$hasHistory"""
-                                )
-
-                                if (!hasHistory) {
-                                    DebugLog.d(
-                                            "DoubleTapDebug",
-                                            "No history entry available for goBack()"
-                                    )
-                                    return
-                                }
-
-                                onNavigationBackPressed()
+                                toggleUnipanelChromeFromGesture("main double-tap")
                             }
                         }
                 )
@@ -2407,6 +2350,35 @@ class MainActivity :
             startupUrlOverride = null
         }
         syncTapRadioPlaybackUi()
+    }
+
+    /**
+     * Unipanel browser gesture policy: a double tap inside the browser
+     * collapses or restores the chrome layer. It must never fall back to
+     * WebView history navigation, because on browser-first launches that
+     * looked like a random page reload/back action.
+     */
+    private fun toggleUnipanelChromeFromGesture(source: String) {
+        if (!::dualWebViewGroup.isInitialized) return
+        if (isKeyboardVisible) {
+            DebugLog.d("DoubleTapDebug", "$source ignored because keyboard is visible")
+            return
+        }
+        if (dualWebViewGroup.isScreenMasked()) {
+            DebugLog.d("DoubleTapDebug", "Dim-mode active — $source exits dim mode only")
+            runCatching { dualWebViewGroup.unmaskScreen() }
+            return
+        }
+
+        val newHidden = !dualWebViewGroup.isNavBarsHidden()
+        DebugLog.d(
+            "DoubleTapDebug",
+            "Toggling unipanel chrome via $source -> hidden=$newHidden"
+        )
+        runCatching { dualWebViewGroup.setNavBarsHidden(newHidden) }
+            .onFailure { e ->
+                DebugLog.w("DoubleTapDebug", "$source chrome toggle failed: ${e.message}")
+            }
     }
 
     private fun parseTapClawLaunchIntent(intent: Intent?) {
@@ -5806,22 +5778,121 @@ class MainActivity :
      * Activity goes away (no explicit cancel needed; the Handler is
      * already main-thread-bound).
      *
-     * Future Step 2c migrations will subscribe this surface to live
-     * data from the shared MainViewModel rather than just rendering
-     * the wall clock.
+     * Single-tap on the strip intentionally starts a fresh Gemini chat
+     * session through the same bridge used by the mini cards; it should
+     * never leak through to the WebView under the HUD.
      */
     private fun startUnipanelHudClockTicker() {
         val tv = findViewById<android.widget.TextView?>(R.id.unipanelHudTime) ?: return
+        val strip = findViewById<View?>(R.id.unipanelHudStrip)
+        strip?.apply {
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Start new Gemini chat"
+            setOnClickListener { requestUnipanelGeminiNewChat() }
+        }
         val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
         val ticker = object : Runnable {
             override fun run() {
                 try {
-                    tv.text = fmt.format(java.util.Date())
+                    if (SystemClock.uptimeMillis() >= unipanelHudStatusUntilMs) {
+                        tv.text = fmt.format(java.util.Date())
+                    }
                 } catch (_: Exception) {}
                 uiHandler.postDelayed(this, 30_000L)
             }
         }
         uiHandler.post(ticker)
+    }
+
+    private fun requestUnipanelGeminiNewChat() {
+        DebugLog.d("Unipanel", "HUD tap requested new Gemini chat")
+        showUnipanelHudStatus("Listening", 2_000L)
+        if (!launchVisionclawForUnipanelGeminiChat()) {
+            com.TapLink.app.unipanel.ChatCardBridge.requestNewGeminiChat("browser_hud_fallback")
+        }
+    }
+
+    private fun launchVisionclawForUnipanelGeminiChat(): Boolean {
+        val requestId = SystemClock.uptimeMillis()
+        return try {
+            val intent = Intent()
+                .setClassName(this, "com.rayneo.visionclaw.MainActivity")
+                .addFlags(
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION
+                )
+                .putExtra(EXTRA_UNIPANEL_START_GEMINI_CHAT, true)
+                .putExtra(EXTRA_UNIPANEL_RETURN_TO_BROWSER, true)
+                .putExtra(EXTRA_UNIPANEL_REQUEST_ID, requestId)
+            startActivity(intent)
+            DebugLog.d("Unipanel", "HUD tap launched visionclaw for Gemini request id=$requestId")
+            true
+        } catch (e: Exception) {
+            DebugLog.w("Unipanel", "HUD tap launch visionclaw failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun showUnipanelHudStatus(text: String, durationMs: Long) {
+        val tv = findViewById<android.widget.TextView?>(R.id.unipanelHudTime) ?: return
+        unipanelHudStatusUntilMs = SystemClock.uptimeMillis() + durationMs
+        tv.text = text
+        uiHandler.postDelayed({
+            if (SystemClock.uptimeMillis() >= unipanelHudStatusUntilMs) {
+                val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+                tv.text = fmt.format(java.util.Date())
+            }
+        }, durationMs + 40L)
+    }
+
+    private fun tryHandleUnipanelHudActionTap(
+        screenX: Float,
+        screenY: Float,
+        source: String
+    ): Boolean {
+        if (!isPointInUnipanelHudActionZone(screenX, screenY)) return false
+        DebugLog.d("Unipanel", "HUD action tap via $source at ($screenX,$screenY)")
+        requestUnipanelGeminiNewChat()
+        return true
+    }
+
+    private fun isPointInUnipanelHudActionZone(screenX: Float, screenY: Float): Boolean {
+        val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return false
+        if (overlay.visibility != View.VISIBLE) return false
+        val strip = findViewById<View?>(R.id.unipanelHudStrip)
+        if (strip != null && strip.visibility == View.VISIBLE && strip.width > 0 && strip.height > 0) {
+            val loc = IntArray(2)
+            strip.getLocationOnScreen(loc)
+            val slopX = 42f
+            val slopY = 24f
+            val left = loc[0] - slopX
+            val top = loc[1] - slopY
+            val right = loc[0] + strip.width + slopX
+            val bottom = loc[1] + strip.height + slopY
+            if (screenX >= left && screenX < right && screenY >= top && screenY < bottom) {
+                return true
+            }
+        }
+
+        // Fallback for glasses/ADB paths where the logical 640px eye is
+        // mirrored into a 1280px surface and raw taps do not line up with
+        // the Android view's reported bounds.
+        val heightLimit = 72f
+        if (screenY < 0f || screenY > heightLimit) return false
+        val centers = floatArrayOf(320f, 640f, 960f)
+        return centers.any { center -> abs(screenX - center) <= 150f }
+    }
+
+    private fun tryHandleRawUnipanelHudSingleTap(e: MotionEvent): Boolean {
+        val name = e.device?.name.orEmpty()
+        if (name.contains("cyttsp5", ignoreCase = true) ||
+            name.contains("cyttsp6", ignoreCase = true)
+        ) {
+            return false
+        }
+        return tryHandleUnipanelHudActionTap(e.rawX, e.rawY, "raw single-tap")
     }
 
     /**
@@ -5909,6 +5980,7 @@ class MainActivity :
             return
         }
         val slots = arrayOf(card1, card2, card3)
+        unipanelMiniCardSlots = slots
 
         // Drop any prior subscription if we're being called again
         // (configuration change, re-init path, etc.).
@@ -5952,6 +6024,86 @@ class MainActivity :
     }
 
     /**
+     * Phase 2 Step 2h: subscribe the compact HUD pills (date,
+     * battery, AQI, calendar headline, news headline) to
+     * [com.TapLink.app.unipanel.HudStateBridge]. Each pill shows
+     * itself only when the corresponding snapshot field is non-
+     * blank — empty/null values keep the row hidden so the HUD
+     * stays as small as it can. The wall-clock pill keeps running
+     * off the local clock ticker; the bridge intentionally never
+     * publishes time so timezone / 12h-24h preferences stay local
+     * to the browser.
+     *
+     * Same listener-cleanup contract as the chat-card and camera-
+     * chip observers — close in onDestroy.
+     */
+    private var unipanelHudSnapshotSubscription: AutoCloseable? = null
+
+    private fun startUnipanelHudSnapshotObserver() {
+        val dateTv = findViewById<android.widget.TextView?>(R.id.unipanelHudDate)
+        val batteryTv = findViewById<android.widget.TextView?>(R.id.unipanelHudBattery)
+        val aqiTv = findViewById<android.widget.TextView?>(R.id.unipanelHudAqi)
+        val calendarTv = findViewById<android.widget.TextView?>(R.id.unipanelHudCalendar)
+        val newsTv = findViewById<android.widget.TextView?>(R.id.unipanelHudNews)
+        if (dateTv == null || batteryTv == null || aqiTv == null ||
+            calendarTv == null || newsTv == null
+        ) {
+            DebugLog.w(
+                "Unipanel",
+                "HUD snapshot observer: pill views missing, skipping subscription"
+            )
+            return
+        }
+        unipanelHudSnapshotSubscription?.runCatching { close() }
+        unipanelHudSnapshotSubscription =
+            com.TapLink.app.unipanel.HudStateBridge.observe { snapshot ->
+                uiHandler.post {
+                    // Date pill
+                    if (snapshot.date.isNotBlank()) {
+                        dateTv.text = snapshot.date
+                        dateTv.visibility = View.VISIBLE
+                    } else {
+                        dateTv.visibility = View.GONE
+                    }
+
+                    // Battery pill (with charging mark)
+                    val pct = snapshot.batteryPct
+                    if (pct != null) {
+                        val prefix = if (snapshot.batteryCharging) "⚡" else ""
+                        batteryTv.text = "$prefix$pct%"
+                        batteryTv.visibility = View.VISIBLE
+                    } else {
+                        batteryTv.visibility = View.GONE
+                    }
+
+                    // AQI pill
+                    if (snapshot.aqi.isNotBlank()) {
+                        aqiTv.text = snapshot.aqi
+                        aqiTv.visibility = View.VISIBLE
+                    } else {
+                        aqiTv.visibility = View.GONE
+                    }
+
+                    // Calendar pill
+                    if (snapshot.calendar.isNotBlank()) {
+                        calendarTv.text = snapshot.calendar
+                        calendarTv.visibility = View.VISIBLE
+                    } else {
+                        calendarTv.visibility = View.GONE
+                    }
+
+                    // News pill
+                    if (snapshot.news.isNotBlank()) {
+                        newsTv.text = snapshot.news
+                        newsTv.visibility = View.VISIBLE
+                    } else {
+                        newsTv.visibility = View.GONE
+                    }
+                }
+            }
+    }
+
+    /**
      * Pure function over a snapshot — assigns the three slots from
      * the tail of [cards] (newest at index 0). Called only on the
      * UI thread by [startUnipanelMiniCardObserver].
@@ -5960,21 +6112,52 @@ class MainActivity :
         slots: Array<android.widget.TextView>,
         cards: List<com.TapLink.app.unipanel.ChatCardBridge.Card>
     ) {
+        lastRenderedMiniCards = cards
+        focusedMiniCardTimestampMs =
+            focusedMiniCardTimestampMs?.takeIf { focusedTs ->
+                cards.any { it.timestampMs == focusedTs }
+            }
+
         val n = cards.size
         for (i in slots.indices) {
             val tv = slots[i]
             val srcIndex = n - 1 - i
             if (srcIndex < 0) {
+                tv.setOnClickListener(null)
+                tv.isClickable = false
+                tv.isFocusable = false
                 tv.visibility = View.GONE
                 continue
             }
             val card = cards[srcIndex]
+            val focused = focusedMiniCardTimestampMs == card.timestampMs
             tv.text = card.text
             tv.setBackgroundResource(
-                if (card.fromUser) R.drawable.bg_unipanel_mini_card_user
-                else R.drawable.bg_unipanel_mini_card_assistant
+                when {
+                    focused && card.fromUser -> R.drawable.bg_unipanel_mini_card_user_focused
+                    focused -> R.drawable.bg_unipanel_mini_card_assistant_focused
+                    card.fromUser -> R.drawable.bg_unipanel_mini_card_user
+                    else -> R.drawable.bg_unipanel_mini_card_assistant
+                }
             )
+            tv.isClickable = true
+            tv.isFocusable = true
+            tv.setOnClickListener { focusUnipanelMiniCard(card) }
             tv.visibility = View.VISIBLE
+        }
+    }
+
+    private fun focusUnipanelMiniCard(
+        card: com.TapLink.app.unipanel.ChatCardBridge.Card
+    ) {
+        focusedMiniCardTimestampMs = card.timestampMs
+        DebugLog.d(
+            "Unipanel",
+            "Mini card focused from browser overlay; fromUser=${card.fromUser} ts=${card.timestampMs}"
+        )
+        com.TapLink.app.unipanel.ChatCardBridge.focus(card)
+        unipanelMiniCardSlots?.let { slots ->
+            renderUnipanelMiniCards(slots, lastRenderedMiniCards)
         }
     }
 
@@ -6195,6 +6378,11 @@ class MainActivity :
         if (dualWebViewGroup.isFullScreenOverlayVisible()) {
             suppressImmediateWebClickLeak()
             dualWebViewGroup.dispatchFullScreenOverlayTouch(interactionX, interactionY)
+            return
+        }
+
+        if (tryHandleUnipanelHudActionTap(interactionX, interactionY, "cursor single-tap")) {
+            suppressImmediateWebClickLeak()
             return
         }
 
@@ -6841,6 +7029,15 @@ class MainActivity :
         if (!::dualWebViewGroup.isInitialized) return false
         if (dualWebViewGroup.isScreenMasked()) return true
         if (dualWebViewGroup.isFullScreenOverlayVisible()) return true
+        if (isPointInUnipanelHudActionZone(screenX, screenY)) return true
+        if (findUnipanelHitAt(
+                findViewById<View?>(R.id.unipanelOverlay) ?: return false,
+                screenX,
+                screenY
+            ) != null
+        ) {
+            return true
+        }
         if (dualWebViewGroup.isDialogAction(screenX, screenY)) return true
 
         if (dualWebViewGroup.isSettingsVisible()) {
@@ -6977,6 +7174,16 @@ class MainActivity :
         if (dualWebViewGroup.isFullScreenOverlayVisible()) {
             suppressImmediateWebClickLeak()
             dualWebViewGroup.dispatchFullScreenOverlayTouch(rawScreenX, rawScreenY)
+            return true
+        }
+
+        if (tryHandleUnipanelHudActionTap(rawScreenX, rawScreenY, "mouse/custom-ui tap")) {
+            suppressImmediateWebClickLeak()
+            return true
+        }
+
+        if (dispatchUnipanelOverlayTouchIfHit(rawScreenX, rawScreenY)) {
+            suppressImmediateWebClickLeak()
             return true
         }
 
@@ -12038,7 +12245,15 @@ class MainActivity :
         dualWebViewGroup.invalidate()
     }
 
+    override fun onChatPressed() {
+        launchVisionclawChat("btnChat")
+    }
+
     override fun onQuitPressed() {
+        launchVisionclawChat("btnQuit")
+    }
+
+    private fun launchVisionclawChat(source: String) {
         // Phase 2 Step 2f: the X button is repurposed from "close
         // the Activity" to "switch to visionclaw chat." Before the
         // launcher swap, finish() reliably returned to chat because
@@ -12057,11 +12272,11 @@ class MainActivity :
                     Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
                         Intent.FLAG_ACTIVITY_SINGLE_TOP or
                         Intent.FLAG_ACTIVITY_NEW_TASK
-                )
+            )
             startActivity(intent)
-            DebugLog.d("DoubleTapDebug", "btnQuit → launched visionclaw chat (X repurpose)")
+            DebugLog.d("DoubleTapDebug", "$source -> launched visionclaw chat")
         } catch (e: Exception) {
-            DebugLog.w("DoubleTapDebug", "btnQuit launch-chat failed: ${e.message}")
+            DebugLog.w("DoubleTapDebug", "$source launch-chat failed: ${e.message}")
             // Belt-and-suspenders: if the launch failed for any
             // reason, fall back to the old finish() behaviour so the
             // user isn't stranded on the browser.
@@ -12088,12 +12303,21 @@ class MainActivity :
             unipanelChatCardSubscription?.close()
         } catch (_: Exception) {}
         unipanelChatCardSubscription = null
+        unipanelMiniCardSlots = null
+        lastRenderedMiniCards = emptyList()
+        focusedMiniCardTimestampMs = null
         // Phase 2 Step 2c.4: same pattern for the camera chip
         // subscription.
         try {
             unipanelCameraChipSubscription?.close()
         } catch (_: Exception) {}
         unipanelCameraChipSubscription = null
+        // Phase 2 Step 2h: same pattern for the HUD snapshot
+        // subscription.
+        try {
+            unipanelHudSnapshotSubscription?.close()
+        } catch (_: Exception) {}
+        unipanelHudSnapshotSubscription = null
         // ── Release native radio ExoPlayer ──
         // Critical: without this, the ExoPlayer continues playing audio in the
         // background after the Activity is destroyed (holds WAKE_MODE_LOCAL lock).
