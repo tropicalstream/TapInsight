@@ -119,18 +119,4 @@
         android:clickable="true"
         android:focusable="true"/>
 
-    <com.TapLinkX3.app.FontIconView
-        android:id="@+id/btnQuit"
-        android:layout_width="0dp"
-        android:layout_height="match_parent"
-        android:layout_weight="1"
-        android:gravity="center"
-        android:text="@string/fa_xmark"
-        android:background="@drawable/nav_button_background"
-        android:contentDescription="Open chat"
-        android:textColor="#FFFFFF"
-        android:textSize="14sp"
-        android:clickable="true"
-        android:focusable="true"/>
-
 </LinearLayout>

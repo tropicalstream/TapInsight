@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -2783,11 +2784,6 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                         left = leftNavigationBar.findViewById(R.id.btnHide),
                                         right = leftNavigationBar.findViewById(R.id.btnHide)
                                 ),
-                        "quit" to
-                                NavButton(
-                                        left = leftNavigationBar.findViewById(R.id.btnQuit),
-                                        right = leftNavigationBar.findViewById(R.id.btnQuit)
-                                ),
                         "chat" to
                                 NavButton(
                                         left = leftNavigationBar.findViewById(R.id.btnChat),
@@ -2815,6 +2811,39 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             navButton.left.setOnClickListener { triggerNavigationAction(key, navButton) }
             if (navButton.right !== navButton.left) {
                 navButton.right.setOnClickListener { triggerNavigationAction(key, navButton) }
+            }
+        }
+
+        // Phase 2 final (unipanel sweep): the visionclaw settings surface
+        // is reachable via long-press on the existing nav-bar gear icon.
+        // Short tap still opens browser settings (the existing path). The
+        // legacy btnQuit was removed entirely — there is no visionclaw
+        // chat UI to open anymore.
+        navButtons["settings"]?.let { settingsBtn ->
+            val longPressHandler = View.OnLongClickListener {
+                showButtonClickFeedback(settingsBtn.left)
+                showButtonClickFeedback(settingsBtn.right)
+                try {
+                    val intent = Intent()
+                        .setClassName(context, "com.rayneo.visionclaw.MainActivity")
+                        .putExtra("open_settings", true)
+                        .addFlags(
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                Intent.FLAG_ACTIVITY_NEW_TASK
+                        )
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    DebugLog.w(
+                        "Navigation",
+                        "btnSettings long-press: failed to launch visionclaw settings: ${e.message}"
+                    )
+                }
+                true
+            }
+            settingsBtn.left.setOnLongClickListener(longPressHandler)
+            if (settingsBtn.right !== settingsBtn.left) {
+                settingsBtn.right.setOnLongClickListener(longPressHandler)
             }
         }
 
@@ -6961,7 +6990,6 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 "link" -> listener.onHyperlinkPressed()
                 "settings" -> listener.onSettingsPressed()
                 "refresh" -> listener.onRefreshPressed()
-                "quit" -> listener.onQuitPressed()
             }
         }
     }
