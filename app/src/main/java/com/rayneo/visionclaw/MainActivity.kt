@@ -10534,6 +10534,10 @@ class MainActivity : AppCompatActivity() {
         viewModel.voiceAssistantActive.observe(this) { active ->
             showListeningOverlay(active)
             syncCameraToGeminiState(active)
+            // Phase 2 Step 2c.4: mirror the camera-on state into the
+            // tapbrowser overlay's status chip. Bridge dedupes, so
+            // repeat publishes with the same value are cheap no-ops.
+            com.TapLink.app.unipanel.CameraStateBridge.publish(active == true)
         }
 
         viewModel.youtubePlaybackEvent.observe(this) { event ->
