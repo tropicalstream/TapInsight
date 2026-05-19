@@ -295,7 +295,11 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
     // ── Battery-saving dark mode state ──────────────────────────────────
     private var batterySavingDarkMode = false
     private var darkModeCameraActive = false
-    private var lastSwipeDownStepMs = 0L   // for double-swipe-down detection
+    // Phase 2 Step 2e/2g: lastSwipeDownStepMs is gone — the
+    // chat-side swipe-down-twice dim entry-point was retired in
+    // favour of the browser nav-bar eye-icon. lastSwipeUpStepMs
+    // stays because it still drives the EXIT-dim-mode gesture from
+    // within battery-saving dark mode (see line ~744).
     private var lastSwipeUpStepMs = 0L     // for double-swipe-up detection
     private var isSettled = true
     private var lastScrollSampleMs = 0L
@@ -691,15 +695,11 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         val lastContent = adapter.getLastContentPosition()
         val current = coerceFocusedIndex()
 
-        // Phase 2 Step 2e: the legacy "double swipe-down while New
-        // Chat focused triggers battery-saving dark mode" gesture is
+        // Phase 2 Step 2e: legacy "double swipe-down while New Chat
+        // focused triggers battery-saving dark mode" gesture is
         // retired. The eye-icon dim mode in the browser nav bar is
-        // the canonical dim entry-point now; the chat-side variant
-        // was redundant and conflicted with the unipanel design's
-        // single-toggle model. lastSwipeDownStepMs is left as an
-        // unused field for now to avoid touching the gesture state
-        // machine more than necessary; Step 2g will sweep it.
-        lastSwipeDownStepMs = 0L
+        // the canonical dim entry-point now. Step 2g removed the
+        // dead lastSwipeDownStepMs tracker entirely.
 
         val next = (current + direction).coerceIn(firstContent, lastContent)
         if (next == current) return true
@@ -2088,8 +2088,9 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
             applyFocusVisuals(animate = false)
         }
 
-        // Reset double-swipe trackers
-        lastSwipeDownStepMs = 0L
+        // Reset double-swipe tracker (only the up-stepper remains
+        // post-Step-2g; the down-stepper was retired with the
+        // chat-side dim mode).
         lastSwipeUpStepMs = 0L
 
         // Notify the host activity so it can enable/disable backend

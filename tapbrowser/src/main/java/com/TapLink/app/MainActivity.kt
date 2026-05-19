@@ -5878,22 +5878,6 @@ class MainActivity :
         cards: List<com.TapLink.app.unipanel.ChatCardBridge.Card>
     ) {
         val n = cards.size
-        // Diagnostic log: dump exactly what we're about to render so we
-        // can correlate the visible stack with the bridge publish log
-        // on the visionclaw side. Same format (role + 28 chars).
-        if (n > 0) {
-            val sample = cards.takeLast(5).joinToString(
-                prefix = "[", postfix = "]", separator = ", "
-            ) { c ->
-                val role = if (c.fromUser) "U" else "A"
-                val snippet = c.text.take(28).replace('\n', ' ')
-                "$role:\"$snippet\""
-            }
-            DebugLog.d(
-                "Unipanel",
-                "Mini-card render size=$n tail=$sample"
-            )
-        }
         for (i in slots.indices) {
             val tv = slots[i]
             val srcIndex = n - 1 - i
