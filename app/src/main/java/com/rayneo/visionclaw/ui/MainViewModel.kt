@@ -1131,6 +1131,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return appendAssistantInteraction(mergedTurn)
     }
 
+    /**
+     * Phase 2 Step 2c.3.1: append a finalized user utterance as a
+     * chat card so the unipanel mini-card stack (and any other
+     * surface that observes [messages]) can render it.
+     *
+     * Idempotent: if the most-recent message already matches the
+     * supplied text from the same speaker, the call is a no-op.
+     * That lets MainActivity hook this into every "we just settled
+     * a user turn" branch — settledLiveInputRunnable plus the
+     * status / learnlm / youtube fast-path intercepts — without
+     * worrying about a single transcript double-appending.
+     *
+     * Session-only: deliberately NOT persisted to the chat-history
+     * DB or the previous-conversation prefs cache. The pre-2c.3
+     * behaviour was to suppress user transcripts entirely for
+     * privacy reasons; this restores them only to the in-memory
+     * `_messages` StateFlow so they survive a panel swap but not a
+     * process restart.
+     *
+     * Preserves oldest-first ordering — the new card is appended
+     * to the end, and the list is then trimmed to the same
+     * [MAX_ASSISTANT_CHAT_CARDS] cap that assistant cards use.
+     * The unipanel renderer maps tail entries to the top slots, so
+     * "newest at top" is upheld.
+     */
+    fun appendUserUtterance(text: String) {
+        val entry = text.trim()
+        if (entry.isBlank()) return
+        val snapshot = _messages.value
+        val last = snapshot.lastOrNull()
+        if (last != null && last.fromUser && last.text == entry) {
+            // Already on the end — keep the StateFlow quiet.
+            return
+        }
+        val updated = snapshot.toMutableList().apply {
+            add(ChatMessage(text = entry, fromUser = true))
+        }
+        _messages.value = updated.takeLast(MAX_ASSISTANT_CHAT_CARDS)
+        // Intentionally no persistAssistantEntry() — see kdoc.
+    }
+
     private fun appendAssistantInteraction(interactionText: String): String {
         val entry = interactionText.trim()
         if (entry.isBlank()) return currentAssistantVisibleLog()
