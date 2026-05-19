@@ -11,6 +11,9 @@
         android:layout_height="match_parent"
         android:background="#000000">
 
+        <!-- Z-LAYER 0: the WebView. Bottom of the stack. Always
+             visible and always interactive (after Phase 2 touch
+             routing) for browser scrolling / link tapping. -->
         <com.TapLinkX3.app.DualWebViewGroup
             android:id="@+id/dualWebViewGroup"
             android:layout_width="match_parent"
@@ -19,6 +22,26 @@
             android:layout_margin="0dp"
             android:fitsSystemWindows="true"
             android:background="#000000" />
+
+        <!-- Z-LAYER 1: the chat-panel overlay. Hosts the migrated
+             visionclaw chat ViewPager + HUD + camera preview as
+             children once Step 2c lands. Stays transparent and
+             clickable=false so empty regions pass touches through
+             to the WebView underneath; individual chat widgets
+             added at runtime consume their own taps.
+
+             Initially android:visibility="gone" so this commit is a
+             pure scaffolding change — no visible difference vs
+             the prior layout. Step 2c flips it to "visible" once
+             content is migrated in. -->
+        <FrameLayout
+            android:id="@+id/unipanelOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@android:color/transparent"
+            android:clickable="false"
+            android:focusable="false"
+            android:visibility="gone" />
 
     </FrameLayout>
 
