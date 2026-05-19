@@ -1707,11 +1707,20 @@ class MainActivity :
                                     // double-tap semantic is "collapse / expand
                                     // the overlay layer" — same function as the
                                     // box-button-between-refresh-and-X (btnHide,
-                                    // setNavBarsHidden). The chat button in the
-                                    // nav bar (btnChat → toggleChat) is now the
-                                    // explicit return-to-chat path; double-tap
-                                    // no longer kills media or hands control
-                                    // back to TapClaw.
+                                    // setNavBarsHidden). Double-tap no longer
+                                    // kills media or hands control back to
+                                    // TapClaw.
+                                    //
+                                    // To return to chat, the user uses the X
+                                    // button (btnQuit → finish()) which closes
+                                    // this Activity; visionclaw is underneath
+                                    // in the task stack and comes forward. The
+                                    // in-nav-bar btnChat is a SEPARATE feature
+                                    // — it toggles an in-browser Groq chat view
+                                    // (see DualWebViewGroup.toggleChat), not a
+                                    // return-to-TapClaw shortcut. An explicit
+                                    // "return to chat" button is a candidate
+                                    // for a future commit.
                                     //
                                     // The onNavBarsHiddenChanged callback wired
                                     // in onCreate mirrors the new state into the
