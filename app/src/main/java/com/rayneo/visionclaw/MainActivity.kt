@@ -1249,6 +1249,28 @@ class MainActivity : AppCompatActivity() {
         // first; the brief tapbrowser flash that crosses the screen
         // before it self-backgrounds is acceptable as a Phase 2 Step 1.
         uiHandler.postDelayed({ warmStartTapBrowserIfNeeded() }, 2500L)
+
+        // Phase 2 Step 2c.3: feed the chat conversation state into
+        // the tapbrowser overlay so the mini chat-card stack over
+        // the WebView reflects the real chat. visionclaw is the
+        // source of truth — _messages is the StateFlow the chat
+        // panel itself renders from. We translate each ChatMessage
+        // into a transport-friendly ChatCardBridge.Card so the
+        // tapbrowser module doesn't need to depend on visionclaw's
+        // package layout. Subscribers in tapbrowser pick up the
+        // publish synchronously and hop to their own UI thread.
+        lifecycleScope.launch {
+            viewModel.messages.collect { messages ->
+                val cards = messages.map {
+                    com.TapLink.app.unipanel.ChatCardBridge.Card(
+                        text = it.text,
+                        fromUser = it.fromUser,
+                        timestampMs = it.timestampMs
+                    )
+                }
+                com.TapLink.app.unipanel.ChatCardBridge.publish(cards)
+            }
+        }
     }
 
     /** One-shot guard so the warm-start fires once per Activity, even
