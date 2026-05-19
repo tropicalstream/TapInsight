@@ -12,6 +12,19 @@
 
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
+    <!--
+      Phase 2 Step 2f.2: foreground service permissions for the
+      GeminiSessionForegroundService. FOREGROUND_SERVICE is needed
+      since Android 9 (API 28); FOREGROUND_SERVICE_MICROPHONE is the
+      Android 14+ (API 34) granular flavour required to keep the
+      AudioRecord open while visionclaw is backgrounded. POST_-
+      NOTIFICATIONS is needed since Android 13 (API 33) for the FGS
+      notification to actually show.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-permission android:name="android.permission.READ_CALENDAR" />
 
     <!--
@@ -69,6 +82,19 @@
             android:screenOrientation="landscape"
             android:windowSoftInputMode="adjustNothing"
             android:theme="@style/Theme.VisionClawRayNeo" />
+
+        <!--
+          Phase 2 Step 2f.2: foreground service that keeps the
+          Gemini Live AudioRecord alive when visionclaw is in the
+          background. Type=microphone is mandatory on Android 14+
+          for any FGS that wants ongoing mic capture. exported=false
+          because the service is only started/stopped by visionclaw
+          MainActivity from inside the app.
+        -->
+        <service
+            android:name=".core.session.GeminiSessionForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
     </application>
 

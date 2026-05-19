@@ -1558,6 +1558,14 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         companionServer?.stopServer()
         companionServer = null
+        // Phase 2 Step 2f.2: belt-and-suspenders FGS shutdown so the
+        // notification doesn't outlive the Activity if the
+        // voiceAssistantActive observer's stop call didn't fire (e.g.
+        // session ended via shutdownMultimodalSession on a path that
+        // doesn't reach the LiveData).
+        try {
+            com.rayneo.visionclaw.core.session.GeminiSessionForegroundService.stop(this)
+        } catch (_: Exception) {}
         try {
             unipanelCardFocusSubscription?.close()
         } catch (_: Exception) {}
@@ -10753,6 +10761,19 @@ class MainActivity : AppCompatActivity() {
             // tapbrowser overlay's status chip. Bridge dedupes, so
             // repeat publishes with the same value are cheap no-ops.
             com.TapLink.app.unipanel.CameraStateBridge.publish(active == true)
+            // Phase 2 Step 2f.2: start the foreground microphone
+            // service while a Gemini Live session is active, stop it
+            // once the session ends. The Service exists purely to
+            // attach FOREGROUND_SERVICE_TYPE_MICROPHONE to the process
+            // so Android keeps the AudioRecord open even when this
+            // Activity is backgrounded (which is the normal state
+            // after the Step 2f launcher swap). It does NOT own the
+            // audio pipeline — that stays in MainActivity.
+            if (active == true) {
+                com.rayneo.visionclaw.core.session.GeminiSessionForegroundService.start(this)
+            } else {
+                com.rayneo.visionclaw.core.session.GeminiSessionForegroundService.stop(this)
+            }
         }
 
         viewModel.youtubePlaybackEvent.observe(this) { event ->
