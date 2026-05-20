@@ -221,6 +221,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private val navBarHeightPx = 32.dp()
     private val toggleBarWidthPx = 32.dp()
     private val toggleButtonSizePx = toggleBarWidthPx
+    private val unipanelTopReservePx = 136.dp()
 
     val keyboardContainer: FrameLayout =
             FrameLayout(context).apply {
@@ -920,6 +921,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
         // Base dimensions
         val containerWidth = 640
+        val topReserve = unipanelTopReservePx
         val baseLeftMargin = if (isScrollModeActive) 0 else toggleBarWidthPx
         val rawBottomMargin = if (isScrollModeActive) 0 else navBarHeightPx
         val keyboardVisible = keyboardContainer.visibility == View.VISIBLE
@@ -954,10 +956,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 var targetHeight: Int
                 if (isScrollModeActive) {
                     targetWidth = containerWidth
-                    targetHeight = (480 - keyboardHeight).coerceAtLeast(0)
+                    targetHeight = (480 - topReserve - keyboardHeight).coerceAtLeast(0)
                 } else {
                     targetWidth = containerWidth - baseLeftMargin
-                    targetHeight = (480 - baseBottomMargin - keyboardHeight).coerceAtLeast(0)
+                    targetHeight = (480 - topReserve - baseBottomMargin - keyboardHeight).coerceAtLeast(0)
                 }
 
                 var changed = false
@@ -965,6 +967,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 if (p.height != targetHeight) changed = true
                 val targetGravity = Gravity.TOP or Gravity.START
                 if (p.leftMargin != baseLeftMargin) changed = true
+                if (p.topMargin != topReserve) changed = true
                 if (p.rightMargin != 0) changed = true
                 if (p.bottomMargin != baseBottomMargin) changed = true
                 if (p.gravity != targetGravity) changed = true
@@ -973,6 +976,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     p.width = targetWidth
                     p.height = targetHeight
                     p.leftMargin = baseLeftMargin
+                    p.topMargin = topReserve
                     p.rightMargin = 0
                     p.bottomMargin = baseBottomMargin
                     p.gravity = targetGravity
@@ -990,11 +994,12 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             verticalScrollBar.visibility = View.GONE
             (webViewsContainer.layoutParams as? FrameLayout.LayoutParams)?.let { p ->
                 val targetWidth = if (isScrollModeActive) containerWidth else containerWidth - baseLeftMargin
-                val targetHeight = (480 - baseBottomMargin - keyboardHeight).coerceAtLeast(0)
+                val targetHeight = (480 - topReserve - baseBottomMargin - keyboardHeight).coerceAtLeast(0)
                 val targetGravity = Gravity.TOP or Gravity.START
                 if (p.width != targetWidth ||
                     p.height != targetHeight ||
                     p.leftMargin != baseLeftMargin ||
+                    p.topMargin != topReserve ||
                     p.rightMargin != 0 ||
                     p.bottomMargin != baseBottomMargin ||
                     p.gravity != targetGravity
@@ -1002,6 +1007,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     p.width = targetWidth
                     p.height = targetHeight
                     p.leftMargin = baseLeftMargin
+                    p.topMargin = topReserve
                     p.rightMargin = 0
                     p.bottomMargin = baseBottomMargin
                     p.gravity = targetGravity
@@ -1059,14 +1065,16 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             var targetWidth: Int
             var targetHeight: Int
             var targetLeftMargin: Int
+            var targetTopMargin: Int
             var targetBottomMargin: Int
             var targetRightMargin: Int
 
             if (isScrollModeActive) {
                 // Scroll Mode: 640 total width
                 targetWidth = 640 - rightMarginShift
-                targetHeight = (480 - bottomMarginShift - keyboardHeight).coerceAtLeast(0)
+                targetHeight = (480 - topReserve - bottomMarginShift - keyboardHeight).coerceAtLeast(0)
                 targetLeftMargin = 0
+                targetTopMargin = topReserve
                 targetRightMargin = rightMarginShift
                 targetBottomMargin = bottomMarginShift
             } else {
@@ -1077,11 +1085,12 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 // Height: 480 total - nav bar - margin
                 // We must be explicit here so onMeasure picks it up
                 targetHeight =
-                        (480 - baseBottomMargin - bottomMarginShift - keyboardHeight).coerceAtLeast(
+                        (480 - topReserve - baseBottomMargin - bottomMarginShift - keyboardHeight).coerceAtLeast(
                                 0
                         )
 
                 targetLeftMargin = baseLeftMargin
+                targetTopMargin = topReserve
                 targetRightMargin = rightMarginShift
                 targetBottomMargin = baseBottomMargin + bottomMarginShift
             }
@@ -1091,6 +1100,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             if (p.height != targetHeight) changed = true
             val targetGravity = Gravity.TOP or Gravity.START
             if (p.leftMargin != targetLeftMargin) changed = true
+            if (p.topMargin != targetTopMargin) changed = true
             if (p.rightMargin != targetRightMargin) changed = true
             if (p.bottomMargin != targetBottomMargin) changed = true
             if (p.gravity != targetGravity) changed = true
@@ -1099,6 +1109,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 p.width = targetWidth
                 p.height = targetHeight
                 p.leftMargin = targetLeftMargin
+                p.topMargin = targetTopMargin
                 p.rightMargin = targetRightMargin
                 p.bottomMargin = targetBottomMargin
                 p.gravity = targetGravity
@@ -2960,6 +2971,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     FrameLayout.LayoutParams(640 - toggleBarWidthPx, LayoutParams.MATCH_PARENT)
                             .apply {
                                 leftMargin = toggleBarWidthPx // Position after toggle bar
+                                topMargin = unipanelTopReservePx // Reserve native HUD + chat-card lane
                                 bottomMargin = navBarHeightPx // Account for nav bar
                                 gravity = Gravity.TOP or Gravity.START
                             }
@@ -4740,9 +4752,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         val navBarHeight = navBarHeightPx
 
         // Ensure toggle bar is measured correctly
+        val topReserve = unipanelTopReservePx.coerceAtMost((eyeHeight - navBarHeight).coerceAtLeast(0))
+
         leftToggleBar.measure(
                 MeasureSpec.makeMeasureSpec(toggleBarWidth, MeasureSpec.EXACTLY),
-                MeasureSpec.makeMeasureSpec(eyeHeight - navBarHeight, MeasureSpec.EXACTLY)
+                MeasureSpec.makeMeasureSpec((eyeHeight - navBarHeight - topReserve).coerceAtLeast(0), MeasureSpec.EXACTLY)
         )
         if (!isInScrollMode && !isNavBarsHidden) {
             if (leftToggleBar.visibility != View.VISIBLE) {
@@ -4779,15 +4793,15 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     if (isKeyboardVisible) {
                         eyeHeight - keyboardHeight // Shrink to fit above keyboard
                     } else {
-                        480
+                        eyeHeight
                     }
             // Respect proper measurement which accounts for margins (scrollbars)
-            val measuredBottom = 0 + webViewsContainer.measuredHeight
-            val adjustedKeyboardLimit = (keyboardLimit - horizontalReserve).coerceAtLeast(0)
+            val measuredBottom = topReserve + webViewsContainer.measuredHeight
+            val adjustedKeyboardLimit = (keyboardLimit - horizontalReserve).coerceAtLeast(topReserve)
 
             webViewsContainer.layout(
                     0, // No left margin in scroll mode
-                    0,
+                    topReserve,
                     0 + webViewsContainer.measuredWidth, // Full width minus margins
                     minOf(adjustedKeyboardLimit, measuredBottom)
             )
@@ -4801,12 +4815,12 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         navBarTop // Default bottom for 30px nav bar
                     }
             // Respect proper measurement which accounts for margins (scrollbars)
-            val measuredBottom = 0 + webViewsContainer.measuredHeight
-            val adjustedKeyboardLimit = (keyboardLimit - horizontalReserve).coerceAtLeast(0)
+            val measuredBottom = topReserve + webViewsContainer.measuredHeight
+            val adjustedKeyboardLimit = (keyboardLimit - horizontalReserve).coerceAtLeast(topReserve)
 
             webViewsContainer.layout(
                     toggleBarWidth, // Account for toggle bar
-                    0,
+                    topReserve,
                     toggleBarWidth +
                             webViewsContainer.measuredWidth, // Standard width + toggle bar offset
                     minOf(adjustedKeyboardLimit, measuredBottom)
@@ -4816,10 +4830,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // Calculate available content height based on keyboard visibility
         val contentHeight =
                 if (keyboardContainer.visibility == View.VISIBLE) {
-                    eyeHeight - keyboardHeight
+                    eyeHeight - keyboardHeight - topReserve
                 } else {
-                    eyeHeight - navBarHeight
-                }
+                    eyeHeight - navBarHeight - topReserve
+                }.coerceAtLeast(0)
 
         // Layout the clip parent - hardcoded 640x480
         leftEyeClipParent.layout(
@@ -4839,8 +4853,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // REFACTORED: rightEyeView layout no longer needed - single viewport mode
         // rightEyeView.layout(eyeWidth, 0, eyeWidth * 2, eyeHeight)
 
-        // Layout toggle bar - height is eyeHeight minus navBarHeight
-        leftToggleBar.layout(0, 0, toggleBarWidth, eyeHeight - navBarHeight)
+        // Layout toggle bar below the native unipanel lane so browser chrome
+        // never sits behind the clock / voice HUD / mini chat card overlay.
+        leftToggleBar.layout(0, topReserve, toggleBarWidth, eyeHeight - navBarHeight)
         //            DebugLog.d("ToggleBarDebug", """
         //        Toggle Bar Layout:
         //        Visibility: ${leftToggleBar.visibility}
@@ -5109,7 +5124,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         if (verticalScrollBar.visibility == View.VISIBLE) {
             val vScrollWidth = 20
             val vScrollRight = halfWidth // Align to right edge
-            val vScrollTop = 0 // Start from top
+            val vScrollTop = topReserve // Start below the unipanel HUD/card lane
 
             // In scroll mode, stop above eye button. Normal mode, stop at nav bar.
             val vScrollBottom =
@@ -5484,6 +5499,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         val halfWidth = widthSize
         val navBarHeight = navBarHeightPx
         val toggleBarWidth = toggleBarWidthPx
+        val topReserve = unipanelTopReservePx.coerceAtMost((heightSize - navBarHeight).coerceAtLeast(0))
         val keyboardWidth = halfWidth - toggleBarWidth
 
         // Measure keyboard container first to get its actual height
@@ -5496,11 +5512,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 if (keyboardContainer.measuredHeight > 0) keyboardContainer.measuredHeight else 160
 
         val contentHeight =
-                if (keyboardContainer.visibility == View.VISIBLE) {
-                    heightSize - keyboardHeight
+                (if (keyboardContainer.visibility == View.VISIBLE) {
+                    heightSize - keyboardHeight - topReserve
                 } else {
-                    heightSize - navBarHeight
-                }
+                    heightSize - navBarHeight - topReserve
+                }).coerceAtLeast(0)
 
         // Measure WebView with different dimensions based on scroll mode
         // FIX: Respect the LayoutParams set by updateScrollBarsVisibility
@@ -5508,7 +5524,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
         if (isInScrollMode || isNavBarsHidden) {
             val targetWidth = if (lp != null && lp.width > 0) lp.width else 640
-            val targetHeight = if (lp != null && lp.height > 0) lp.height else 480
+            val targetHeight = if (lp != null && lp.height > 0) lp.height else (heightSize - topReserve).coerceAtLeast(0)
 
             webViewsContainer.measure(
                     MeasureSpec.makeMeasureSpec(targetWidth, MeasureSpec.EXACTLY),
@@ -5542,6 +5558,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         leftNavigationBar.measure(
                 MeasureSpec.makeMeasureSpec(halfWidth, MeasureSpec.EXACTLY),
                 MeasureSpec.makeMeasureSpec(navBarHeight, MeasureSpec.EXACTLY)
+        )
+
+        leftToggleBar.measure(
+                MeasureSpec.makeMeasureSpec(toggleBarWidth, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec((heightSize - navBarHeight - topReserve).coerceAtLeast(0), MeasureSpec.EXACTLY)
         )
 
         // keyboardContainer is already measured above, but we can measure it again with EXACTLY if

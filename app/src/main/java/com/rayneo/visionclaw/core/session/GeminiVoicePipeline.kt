@@ -1,7 +1,9 @@
 package com.rayneo.visionclaw.core.session
 
 import android.Manifest
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -11,9 +13,13 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.TapLink.app.unipanel.HudStateBridge
 import com.rayneo.visionclaw.VisionClawApp
+import com.rayneo.visionclaw.core.assistant.AssistantIntentParser
 import com.rayneo.visionclaw.core.audio.GeminiAudioPlayer
 import com.rayneo.visionclaw.core.network.GeminiRouter
+import com.rayneo.visionclaw.core.network.HermesClient
+import com.rayneo.visionclaw.core.storage.AppPreferences
 import com.rayneo.visionclaw.core.tools.BrowserVisionTool
+import com.rayneo.visionclaw.core.tools.ToolDispatcher
 import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -82,6 +88,8 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var captureActive: Boolean = false
     @Volatile private var audioRecord: AudioRecord? = null
     @Volatile private var audioThread: Thread? = null
+    @Volatile private var latestInputTranscript: String = ""
+    @Volatile private var latestCameraFrame: String? = null
 
     /** Audio playback for Gemini's model audio responses. Lazy so we
      *  only allocate the AudioTrack when voice actually activates. */
@@ -100,6 +108,33 @@ class GeminiVoicePipeline(context: Context) {
         BrowserVisionTool(
             context = appContext,
             frameProvider = ::captureWebViewBase64Logged
+        )
+    }
+
+    /** Phase 4i — full Hermes-era native tools in the Service path.
+     *
+     * The old Activity Live pipeline routed every Gemini tool call through
+     * ToolDispatcher. The unipanel Service path had regressed to
+     * browser_vision-only, which made routes like open_taplink,
+     * send_video_list, tapradio, ask_maps, and hermes_agent look "gone"
+     * even though their declarations were still in GeminiRouter. */
+    private val toolDispatcher: ToolDispatcher by lazy {
+        val prefs = AppPreferences(appContext)
+        val hermesClient = HermesClient(
+            endpointUrlProvider = { prefs.hermesEndpoint.trim().takeIf { it.isNotBlank() } },
+            apiKeyProvider = { prefs.hermesApiKey.trim().takeIf { it.isNotBlank() } },
+            sessionIdProvider = { prefs.hermesSessionId.trim().takeIf { it.isNotBlank() } ?: "main" },
+            timeoutMsProvider = {
+                val seconds = prefs.hermesTimeoutSeconds.takeIf { it > 0 } ?: 30
+                seconds.coerceAtLeast(5) * 1000
+            }
+        )
+        ToolDispatcher(
+            context = appContext,
+            recentCardsProvider = { viewModel.getAssistantCardsSnapshot().map { it.text } },
+            hermesClient = hermesClient,
+            cameraFrameProvider = { latestCameraFrame },
+            browserFrameProvider = ::captureWebViewBase64Logged
         )
     }
 
@@ -265,6 +300,7 @@ class GeminiVoicePipeline(context: Context) {
      * just drop the frame.
      */
     fun sendCameraFrame(base64: String) {
+        latestCameraFrame = base64.takeIf { it.isNotBlank() }
         if (!liveSessionReady) return
         if (base64.isBlank()) return
         runCatching {
@@ -293,6 +329,7 @@ class GeminiVoicePipeline(context: Context) {
 
             override fun onInputTranscription(text: String) {
                 if (text.isBlank()) return
+                latestInputTranscript = text
                 Log.d(TAG, "onInputTranscription partial='${text.take(120)}'")
                 // Live partial transcript — surface in HUD so the user
                 // sees what Gemini heard. Final commit to viewModel
@@ -332,21 +369,7 @@ class GeminiVoicePipeline(context: Context) {
                 Log.i(TAG, "onToolCall: callId=$callId name=$name args=${args.take(160)}")
                 when (name) {
                     "browser_vision" -> dispatchBrowserVision(callId, name, args)
-                    else -> {
-                        // Phase 4b ships browser_vision only. Other tools
-                        // (calendar, places, maps, news, etc.) need the
-                        // full ToolDispatcher / ToolAssistEngine wiring
-                        // from visionclaw MainActivity. Reply with a
-                        // human-friendly stub so Gemini doesn't hang
-                        // waiting for a result.
-                        Log.w(TAG, "onToolCall: $name not yet wired in Service")
-                        runCatching {
-                            liveSession?.sendToolResponse(
-                                callId, name,
-                                "Tool '$name' isn't available in the unipanel build yet."
-                            )
-                        }
-                    }
+                    else -> dispatchNativeTool(callId, name, args)
                 }
             }
 
@@ -382,6 +405,44 @@ class GeminiVoicePipeline(context: Context) {
                 // No-op for the audio-only path; URL grounding only matters
                 // for tool-call-driven research turns which are Phase 4b.
             }
+        }
+    }
+
+    /**
+     * Phase 4i — restore the Hermes-era tool surface for the unipanel
+     * Service voice path. Tool declarations already come from
+     * GeminiRouter; this executes the matching local tool and sends the
+     * result back to Gemini Live. URL-opening tools are also applied
+     * locally so Gemini cannot swallow or mangle taplink:// results.
+     */
+    private fun dispatchNativeTool(callId: String, name: String, args: String) {
+        val toolName = name.trim()
+        if (toolName.isBlank()) return
+        Log.i(TAG, "native tool dispatch: callId=$callId name=$toolName args=${args.take(160)}")
+
+        if (!toolDispatcher.isSupported(toolName)) {
+            Log.w(TAG, "native tool unsupported in Service: $toolName")
+            runCatching {
+                liveSession?.sendToolResponse(callId, toolName, "Unknown tool: $toolName")
+            }
+            return
+        }
+
+        scope.launch {
+            HudStateBridge.update { it.copy(notification = "Running $toolName…") }
+            val result = toolDispatcher.dispatch(toolName, args)
+            val resultText = result.getOrElse { err ->
+                Log.w(TAG, "native tool failed name=$toolName: ${err.message}")
+                err.message?.trim().takeUnless { it.isNullOrBlank() }
+                    ?: "Tool $toolName is unavailable right now."
+            }
+            Log.i(TAG, "native tool result name=$toolName text='${resultText.take(180)}'")
+            maybeOpenTapLinkResult(toolName, resultText)
+            val ok = runCatching {
+                liveSession?.sendToolResponse(callId, toolName, resultText) == true
+            }.getOrDefault(false)
+            Log.i(TAG, "native tool sendToolResponse returned $ok name=$toolName callId=$callId")
+            HudStateBridge.update { it.copy(notification = null) }
         }
     }
 
@@ -502,6 +563,69 @@ class GeminiVoicePipeline(context: Context) {
             }.getOrDefault(false)
             Log.i(TAG, "sendClientText (localRegex fallback) returned $ok")
         }
+    }
+
+    private fun maybeOpenTapLinkResult(toolName: String, resultText: String) {
+        val openUrl = when {
+            toolName in setOf("open_taplink", "send_video_list", "send_link_list") ->
+                AssistantIntentParser.extractTapLinkUrl(resultText)
+            resultText.contains("open_taplink:", ignoreCase = true) ->
+                resultText.substringAfter("open_taplink:", "")
+                    .substringBefore('\n')
+                    .trim()
+                    .let { AssistantIntentParser.normalizeTapLinkUrl(it) }
+            else -> null
+        }?.takeIf { it.isNotBlank() } ?: return
+
+        launchTapBrowserFromService(openUrl)
+    }
+
+    private fun launchTapBrowserFromService(openUrl: String) {
+        val initialUrl = openUrl.removePrefix("taplink://").trim().ifBlank { return }
+        val intent = Intent().apply {
+            component = ComponentName("com.rayneo.visionclaw", TAPBROWSER_ACTIVITY)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(EXTRA_BROWSER_INITIAL_URL, initialUrl)
+        }
+
+        val lower = initialUrl.lowercase()
+        if (lower.contains("youtube.com") || lower.contains("youtu.be")) {
+            val spec = AssistantIntentParser.parseExplicitYouTubePlaybackRequest(latestInputTranscript)
+            val query = spec?.items?.firstOrNull()?.takeIf { it.isNotBlank() }
+                ?: extractYouTubeSearchQuery(initialUrl)
+            val mode = spec?.mode
+                ?: if (latestInputTranscript.contains("music", ignoreCase = true) ||
+                    latestInputTranscript.contains("song", ignoreCase = true)
+                ) "music" else "video"
+            if (!query.isNullOrBlank()) {
+                putYouTubeAutoplayExtras(intent, query, mode, spec?.items.orEmpty())
+            }
+        }
+
+        Log.i(TAG, "Launching TapBrowser from Service url=${initialUrl.take(180)}")
+        runCatching { appContext.startActivity(intent) }
+            .onFailure { Log.w(TAG, "TapBrowser launch failed: ${it.message}") }
+    }
+
+    private fun putYouTubeAutoplayExtras(
+        intent: Intent,
+        query: String,
+        mode: String,
+        queue: List<String>
+    ) {
+        intent.putExtra(EXTRA_YOUTUBE_AUTOPLAY_QUERY, query)
+        intent.putExtra(EXTRA_YOUTUBE_AUTOPLAY_MODE, mode)
+        if (queue.size > 1) {
+            intent.putExtra(EXTRA_YOUTUBE_AUTOPLAY_QUEUE, org.json.JSONArray(queue).toString())
+        }
+    }
+
+    private fun extractYouTubeSearchQuery(url: String): String? {
+        val uri = runCatching { android.net.Uri.parse(url) }.getOrNull() ?: return null
+        return sequenceOf(
+            uri.getQueryParameter("search_query"),
+            uri.getQueryParameter("q")
+        ).firstOrNull { !it.isNullOrBlank() }?.trim()
     }
 
     /**
@@ -663,6 +787,11 @@ class GeminiVoicePipeline(context: Context) {
     companion object {
         private const val TAG = "GeminiVoicePipe"
         private const val SAMPLE_RATE_HZ = 16_000
+        private const val TAPBROWSER_ACTIVITY = "com.TapLinkX3.app.MainActivity"
+        private const val EXTRA_BROWSER_INITIAL_URL = "tapclaw_initial_url"
+        private const val EXTRA_YOUTUBE_AUTOPLAY_QUERY = "tapclaw_youtube_autoplay_query"
+        private const val EXTRA_YOUTUBE_AUTOPLAY_MODE = "tapclaw_youtube_autoplay_mode"
+        private const val EXTRA_YOUTUBE_AUTOPLAY_QUEUE = "tapclaw_youtube_autoplay_queue"
         private const val DEFAULT_VISION_QUESTION =
             "Describe what's currently on the screen in plain English."
 
