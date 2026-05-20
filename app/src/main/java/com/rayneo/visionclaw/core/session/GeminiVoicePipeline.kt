@@ -111,6 +111,18 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var lastLocalVisionTriggerMs: Long = 0L
     @Volatile private var visionInFlight: Boolean = false
 
+    /** Phase 4e — callback the Service installs so the pipeline can
+     *  ask it to auto-start CameraX when a vision phrase fires. Set
+     *  by [setAutoCameraEnabler] in Service.onCreate. */
+    @Volatile private var autoCameraEnabler: (() -> Unit)? = null
+
+    /** Service installs this so the pipeline can request a camera
+     *  warmup when the user's voice triggers a vision phrase. Idempotent
+     *  on the Service side. */
+    fun setAutoCameraEnabler(enabler: () -> Unit) {
+        autoCameraEnabler = enabler
+    }
+
     /**
      * Begin a voice session. Connects the WebSocket; AudioRecord opens
      * after [GeminiRouter.LiveSessionListener.onSessionReady] fires so
@@ -423,6 +435,12 @@ class GeminiVoicePipeline(context: Context) {
         lastLocalVisionTriggerMs = now
         visionInFlight = true
         Log.i(TAG, "browser_vision trigger source=localRegex transcript='${transcript.take(80)}'")
+        // Phase 4e — auto-start CameraX so Gemini also has real-world
+        // visual context for the rest of this voice session. Service-
+        // side toggle is idempotent: a second call is a no-op while
+        // the camera is already streaming. Red dot in the HUD
+        // reflects this via CameraStateBridge.
+        runCatching { autoCameraEnabler?.invoke() }
         scope.launch {
             try {
                 runBrowserVisionAndDeliver(

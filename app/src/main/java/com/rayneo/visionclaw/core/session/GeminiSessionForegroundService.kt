@@ -84,6 +84,18 @@ class GeminiSessionForegroundService : LifecycleService() {
     @Volatile
     private var cameraOn: Boolean = false
 
+    override fun onCreate() {
+        super.onCreate()
+        // Phase 4e — install the pipeline's auto-camera hook now that
+        // the Service is constructed. When the user says a vision
+        // phrase ("look at this", etc.) the pipeline calls this hook
+        // and we turn the camera on for the rest of the session.
+        // Idempotent: subsequent invocations while cameraOn=true no-op.
+        pipeline.setAutoCameraEnabler {
+            if (!cameraOn) toggleCamera()
+        }
+    }
+
     override fun onBind(intent: Intent): IBinder {
         Log.d(TAG, "onBind — issuing LocalBinder")
         // LifecycleService's onBind drives its internal lifecycle.

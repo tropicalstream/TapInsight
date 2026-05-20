@@ -1058,9 +1058,10 @@ class MainActivity :
         // Pipeline still Phase 4; today's tap just bounces Service
         // state through the bridge so Mars can verify the bind path.
         startUnipanelVoicePill()
-        // Phase 4d — CAM pill: tap to toggle CameraX streaming via
-        // the Service. Subscribes to CameraStateBridge for on/off tint.
-        startUnipanelCameraPill()
+        // Phase 4d (Mars revision) — passive red-dot indicator.
+        // Lights up when CameraX or browser_vision is active. The
+        // manual CAM toggle button is gone; vision is voice-triggered.
+        startUnipanelVisionDotObserver()
 
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
@@ -1706,21 +1707,21 @@ class MainActivity :
                                     runCatching { dualWebViewGroup.unmaskScreen() }
                                     return
                                 }
-                                // Phase 4d — double-tap toggles the unipanel HUD
-                                // overlay visibility (full-browser mode). When the
-                                // overlay is showing (default), this hides it so
-                                // the user sees only the WebView. When it's hidden,
-                                // this restores it. Back-navigation has moved to a
-                                // future dedicated trigger; the previous return-to-
-                                // chat path below is unreachable in unipanel mode
-                                // since there's no chat panel to return to.
+                                // Phase 4d (Mars revision) — double-tap now toggles
+                                // tapbrowser's OWN side + bottom nav bars (same
+                                // toggle the bottom-right "box" button performs).
+                                // The unipanel HUD overlay (clock / MIC / mini
+                                // cards / vision dot) stays visible the whole
+                                // time — it's never the thing the user wants to
+                                // hide. Back-navigation moved to a future
+                                // dedicated trigger; the legacy path below is
+                                // unreachable in unipanel mode since there's no
+                                // chat panel to return to.
                                 DebugLog.d(
                                     "DoubleTapDebug",
-                                    "Toggling unipanel overlay visibility (was=${
-                                        if (unipanelOverlayHidden) "hidden" else "visible"
-                                    })"
+                                    "Toggling browser nav bars via setNavBarsHidden"
                                 )
-                                toggleUnipanelOverlayVisibility()
+                                toggleBrowserNavBars()
                                 return
                             }
 
@@ -5943,21 +5944,20 @@ class MainActivity :
      */
     private var unipanelChatCardSubscription: AutoCloseable? = null
 
-    /** Phase 4d — full-browser mode. When true, the unipanel overlay
-     *  (HUD strip / mini cards / CAM chip) is hidden so the user sees
-     *  only the WebView. Toggled by double-tap. */
-    @Volatile
-    private var unipanelOverlayHidden: Boolean = false
-
-    /** Phase 4d — flip the overlay visibility. Called by the
-     *  double-tap handler. */
-    private fun toggleUnipanelOverlayVisibility() {
-        val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return
-        unipanelOverlayHidden = !unipanelOverlayHidden
-        overlay.visibility = if (unipanelOverlayHidden) View.GONE else View.VISIBLE
+    /** Phase 4d (Mars revision) — double-tap now toggles tapbrowser's
+     *  OWN side + bottom navigation bars via the existing
+     *  [DualWebViewGroup.setNavBarsHidden] path (same toggle the
+     *  bottom-right corner "box" button performs). The unipanel HUD
+     *  overlay (clock / MIC / mini cards / vision dot) stays visible
+     *  the whole time. */
+    private fun toggleBrowserNavBars() {
+        if (!::dualWebViewGroup.isInitialized) return
+        val currentlyHidden = runCatching { dualWebViewGroup.isNavBarsHidden() }
+            .getOrDefault(false)
+        runCatching { dualWebViewGroup.setNavBarsHidden(!currentlyHidden) }
         DebugLog.d(
-            "UnipanelToggle",
-            "Overlay now ${if (unipanelOverlayHidden) "HIDDEN (full-browser mode)" else "VISIBLE"}"
+            "DoubleTapToggle",
+            "Browser nav bars now ${if (!currentlyHidden) "HIDDEN" else "VISIBLE"}"
         )
     }
 
@@ -6183,32 +6183,19 @@ class MainActivity :
             }
     }
 
-    /** Phase 4d — CAM pill. Toggles Service-side CameraX streaming
-     *  into Gemini Live. Tinted from CameraStateBridge so the pill
-     *  reflects the on/off state. */
-    private var unipanelCameraPillSubscription: AutoCloseable? = null
+    /** Phase 4d (Mars revision) — replaces the manual CAM pill with
+     *  a passive red-dot indicator. Lights up while CameraX is
+     *  streaming frames into the Live session OR while browser_vision
+     *  is in flight. No tap handler — vision is voice-triggered now. */
+    private var unipanelVisionDotSubscription: AutoCloseable? = null
 
-    private fun startUnipanelCameraPill() {
-        val pill = findViewById<android.widget.TextView?>(R.id.unipanelCameraPill) ?: return
-        pill.setOnClickListener {
-            val api = voiceServiceApi
-            if (api == null) {
-                DebugLog.w("CamBind", "Pill tap: voiceServiceApi is null — bind not ready")
-                return@setOnClickListener
-            }
-            DebugLog.d("CamBind", "CAM pill tap → toggleCamera (was=${api.isCameraOn()})")
-            api.toggleCamera()
-        }
-        unipanelCameraPillSubscription?.runCatching { close() }
-        unipanelCameraPillSubscription =
+    private fun startUnipanelVisionDotObserver() {
+        val dot = findViewById<View?>(R.id.unipanelVisionDot) ?: return
+        unipanelVisionDotSubscription?.runCatching { close() }
+        unipanelVisionDotSubscription =
             com.TapLink.app.unipanel.CameraStateBridge.observe { on ->
                 uiHandler.post {
-                    val tint = if (on) 0xFF34D399.toInt()    // green when streaming
-                               else 0xFF5577AA.toInt()       // blue-grey when off
-                    runCatching {
-                        pill.backgroundTintList =
-                            android.content.res.ColorStateList.valueOf(tint)
-                    }
+                    dot.visibility = if (on) View.VISIBLE else View.GONE
                 }
             }
     }
@@ -12199,11 +12186,11 @@ class MainActivity :
             unipanelVoicePillSubscription?.close()
         } catch (_: Exception) {}
         unipanelVoicePillSubscription = null
-        // Phase 4d — drop the camera pill bridge subscription.
+        // Phase 4d (Mars revision) — drop the vision dot subscription.
         try {
-            unipanelCameraPillSubscription?.close()
+            unipanelVisionDotSubscription?.close()
         } catch (_: Exception) {}
-        unipanelCameraPillSubscription = null
+        unipanelVisionDotSubscription = null
         // Phase 4b: unregister the battery receiver so a config change
         // / Activity recreate doesn't leak it.
         try {

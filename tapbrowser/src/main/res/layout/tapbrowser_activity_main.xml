@@ -138,27 +138,26 @@
                     android:contentDescription="Toggle Gemini voice"
                     tools:ignore="UnusedAttribute" />
 
-                <!-- Phase 4d — CAM toggle pill. Streams CameraX
-                     frames into the active Gemini Live session when
-                     ON. Same 36dp footprint as MIC, sits beside it.
-                     Tinted from CameraStateBridge (green when on,
-                     blue-grey when off). -->
-                <TextView
-                    android:id="@+id/unipanelCameraPill"
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
-                    android:layout_marginStart="6dp"
-                    android:background="@drawable/bg_unipanel_voice_pill"
-                    android:gravity="center"
-                    android:text="CAM"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="11sp"
-                    android:textStyle="bold"
-                    android:fontFamily="sans-serif-medium"
-                    android:letterSpacing="0.08"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:contentDescription="Toggle Gemini camera"
+                <!-- Phase 4d (Mars revision) — manual CAM toggle
+                     removed. Vision is now voice-triggered: when the
+                     user says "look at this" / "what does this say" /
+                     etc., the pipeline fires browser_vision against
+                     the WebView screenshot AND auto-starts CameraX
+                     for the rest of the voice session so Gemini has
+                     real-world visual context. The red dot below
+                     replaces the CAM button — it lights up while
+                     vision is active and turns off otherwise.
+
+                     The 8dp × 8dp dot uses the existing camera-dot
+                     drawable. Visible only when HudStateBridge says
+                     screen-look or camera is active. -->
+                <View
+                    android:id="@+id/unipanelVisionDot"
+                    android:layout_width="8dp"
+                    android:layout_height="8dp"
+                    android:layout_marginStart="10dp"
+                    android:background="@drawable/bg_unipanel_camera_dot"
+                    android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
             </LinearLayout>
