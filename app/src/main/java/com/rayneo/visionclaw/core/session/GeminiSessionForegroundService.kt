@@ -64,6 +64,12 @@ class GeminiSessionForegroundService : Service() {
     @Volatile
     private var foregroundActive: Boolean = false
 
+    /** The real Gemini Live voice pipeline. Phase 4 — runs AudioRecord
+     *  + GeminiRouter.startLiveAudioSession + GeminiAudioPlayer entirely
+     *  inside this Service, no Activity dependency. Lazy so we don't
+     *  allocate the audio stack until voice actually activates. */
+    private val pipeline: GeminiVoicePipeline by lazy { GeminiVoicePipeline(this) }
+
     override fun onBind(intent: Intent?): IBinder {
         Log.d(TAG, "onBind — issuing LocalBinder")
         return binder
@@ -79,6 +85,11 @@ class GeminiSessionForegroundService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "onDestroy")
+        // Release the live pipeline FIRST so AudioRecord / WebSocket
+        // / AudioTrack are all torn down cleanly before the process
+        // event ends. The pipeline's release() is idempotent and
+        // tolerates being called when it's already idle.
+        runCatching { pipeline.release() }
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -96,42 +107,33 @@ class GeminiSessionForegroundService : Service() {
     // ────────────────────────────────────────────────────────────────
 
     /**
-     * Phase 3 stub. Publishes a LISTENING phase to HudStateBridge and
-     * promotes the Service to foreground so the mic privilege is
-     * attached when Phase 4 wires the real pipeline. No AudioRecord
-     * yet, no WebSocket yet — those land in Phase 4.
+     * Phase 4 — drive the real Gemini Live voice pipeline.
+     *
+     * Order matters:
+     *   1. Promote to foreground BEFORE the AudioRecord opens. Android
+     *      11+ revokes the mic the instant an FGS misses its foreground
+     *      window, and the AudioRecord constructor would throw
+     *      SecurityException without the privilege already attached.
+     *   2. Then [GeminiVoicePipeline.activate] starts the WebSocket;
+     *      AudioRecord opens after onSessionReady fires (see the
+     *      pipeline's startAudioStreaming).
      */
     private fun activateVoice() {
-        Log.i(TAG, "activateVoice() — Phase 3 stub")
+        Log.i(TAG, "activateVoice()")
         startForegroundIfNeeded()
-        HudStateBridge.update {
-            it.copy(
-                phase = HudStateBridge.VoicePhase.LISTENING,
-                connection = HudStateBridge.ConnectionStatus.CONNECTING,
-                notification = "Voice service alive (Phase 3 stub — Phase 4 adds pipeline)"
-            )
-        }
+        pipeline.activate()
     }
 
     /**
-     * Phase 3 stub. Restores IDLE state and drops the FGS. Phase 4
-     * will additionally close the WebSocket, stop AudioRecord, and
-     * release audio effects.
+     * Phase 4 — tear down the live voice session. The pipeline shuts
+     * down AudioRecord + WebSocket + AudioTrack and publishes IDLE
+     * state. After that we drop the FGS notification but keep the
+     * Service alive so a subsequent activateVoice() can re-promote
+     * without paying the bindService round-trip.
      */
     private fun shutdownVoice() {
-        Log.i(TAG, "shutdownVoice() — Phase 3 stub")
-        HudStateBridge.update {
-            it.copy(
-                phase = HudStateBridge.VoicePhase.IDLE,
-                connection = HudStateBridge.ConnectionStatus.IDLE,
-                transcript = null,
-                oscilloscopeLevel = 0f,
-                notification = null
-            )
-        }
-        // Drop the FGS notification but keep the Service alive so a
-        // subsequent activateVoice() can re-promote without paying the
-        // bindService round-trip.
+        Log.i(TAG, "shutdownVoice()")
+        pipeline.shutdown(reason = null)
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)

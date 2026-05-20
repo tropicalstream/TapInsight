@@ -63,8 +63,8 @@
                 android:paddingVertical="6dp"
                 android:background="#B3000000"
                 android:elevation="8dp"
-                android:clickable="false"
-                android:focusable="false">
+                android:clickable="true"
+                android:focusable="true">
 
                 <TextView
                     android:id="@+id/unipanelHudTime"
@@ -77,28 +77,37 @@
                     android:letterSpacing="0.06"
                     tools:ignore="UnusedAttribute" />
 
-                <!-- Phase 6 voice-toggle pill. Lives inside the HUD
-                     strip so it's always reachable but never covers
-                     the dashboard tiles underneath. Tap = toggle the
-                     Gemini voice session via the bound voice Service.
-                     Color is mutated at runtime from
-                     HudStateBridge.VoicePhase:
-                       - IDLE       → muted blue-grey (default fill)
-                       - LISTENING  → red
-                       - THINKING   → amber
-                       - FOLLOW_UP  → soft red
-                     Phase 4 will move the real audio pipeline behind
-                     this; Phase 3 stub on the Service just bounces a
-                     state change so Mars can verify the bind path. -->
-                <View
+                <!-- Phase 4 — real MIC button (was a 14dp dot in
+                     Phase 6 essentials). 36dp tap target with the
+                     "MIC" label so it's professional and unambiguous
+                     instead of a tiny unlabeled pill. Tap = toggle a
+                     real Gemini Live voice session via the bound
+                     GeminiVoiceService → GeminiVoicePipeline. The
+                     parent HUD strip is also clickable as a generous
+                     fallback so a tap anywhere on the clock/strip
+                     area still activates voice. Color tints at
+                     runtime from HudStateBridge.VoicePhase:
+                       IDLE       → muted blue-grey
+                       LISTENING  → red
+                       THINKING   → amber
+                       FOLLOW_UP  → soft red -->
+                <TextView
                     android:id="@+id/unipanelVoicePill"
-                    android:layout_width="14dp"
-                    android:layout_height="14dp"
-                    android:layout_marginStart="10dp"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="12dp"
                     android:background="@drawable/bg_unipanel_voice_pill"
+                    android:gravity="center"
+                    android:text="MIC"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.08"
                     android:clickable="true"
                     android:focusable="true"
-                    android:contentDescription="Toggle voice assistant" />
+                    android:contentDescription="Toggle Gemini voice"
+                    tools:ignore="UnusedAttribute" />
 
             </LinearLayout>
 

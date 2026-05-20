@@ -6040,7 +6040,7 @@ class MainActivity :
     private var unipanelVoicePillSubscription: AutoCloseable? = null
 
     private fun startUnipanelVoicePill() {
-        val pill = findViewById<View?>(R.id.unipanelVoicePill)
+        val pill = findViewById<android.widget.TextView?>(R.id.unipanelVoicePill)
         if (pill == null) {
             DebugLog.w(
                 "Unipanel",
@@ -6048,24 +6048,34 @@ class MainActivity :
             )
             return
         }
-        pill.setOnClickListener {
+        // Generous tap surface: the MIC pill AND the entire HUD strip
+        // both fire the same toggle. Codex's spec: "Make the whole
+        // unipanelHudStrip, or at least a professional 36-44dp visible
+        // MIC/listening control beside the clock, clickable" — we
+        // satisfy both ends. The pill consumes its own taps first; the
+        // strip's onClick only fires when the tap lands on the clock
+        // or padding around it.
+        val toggleHandler = View.OnClickListener {
             val api = voiceServiceApi
             if (api == null) {
                 DebugLog.w(
                     "VoiceBind",
-                    "Pill tap: voiceServiceApi is null — bind not ready"
+                    "Voice toggle tap: voiceServiceApi is null — bind not ready"
                 )
-                return@setOnClickListener
+                return@OnClickListener
             }
             val phase = com.TapLink.app.unipanel.HudStateBridge.current().phase
             if (phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE) {
-                DebugLog.d("VoiceBind", "Pill tap: activateVoice()")
+                DebugLog.d("VoiceBind", "Voice toggle: activateVoice()")
                 api.activateVoice()
             } else {
-                DebugLog.d("VoiceBind", "Pill tap (phase=$phase): shutdownVoice()")
+                DebugLog.d("VoiceBind", "Voice toggle (phase=$phase): shutdownVoice()")
                 api.shutdownVoice()
             }
         }
+        pill.setOnClickListener(toggleHandler)
+        findViewById<View?>(R.id.unipanelHudStrip)?.setOnClickListener(toggleHandler)
+
         unipanelVoicePillSubscription?.runCatching { close() }
         unipanelVoicePillSubscription =
             com.TapLink.app.unipanel.HudStateBridge.observe { state ->
@@ -6075,7 +6085,7 @@ class MainActivity :
 
     /** Pure view update. Called on the UI thread by the bridge subscriber. */
     private fun renderUnipanelVoicePill(
-        pill: View,
+        pill: android.widget.TextView,
         state: com.TapLink.app.unipanel.HudStateBridge.State
     ) {
         val tint = when (state.phase) {
