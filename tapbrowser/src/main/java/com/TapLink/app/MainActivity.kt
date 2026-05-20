@@ -1869,46 +1869,26 @@ class MainActivity :
                     DebugLog.w("WarmStart", "moveTaskToBack failed: ${e.message}")
                 }
             }
-        } else {
-            // Unipanel v2 — reverse warm-start. tapbrowser is now the
-            // launcher, so on its cold (non-warm-start) launch we kick
-            // visionclaw to onCreate. visionclaw needs to be alive in
-            // the background so:
-            //   • Gemini Live / mic / AudioRecord can spin up when the
-            //     user activates voice from the overlay,
-            //   • ChatCardBridge / HudStateBridge / CameraStateBridge
-            //     have a publisher feeding them,
-            //   • the foreground-service mic privilege has a host
-            //     process attached.
-            // We pass EXTRA_TAPCLAW_WARM_START so visionclaw onCreate
-            // sets a translucent theme and moveTaskToBack(true)s itself
-            // — no flash, browser stays the visible canvas. Skipped
-            // when we were ourselves warm-started so the two Activities
-            // don't ping-pong each other into existence forever.
-            try {
-                val visionclawIntent = Intent().setClassName(
-                    this,
-                    TAPCLAW_MAIN_ACTIVITY
-                ).apply {
-                    addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                            Intent.FLAG_ACTIVITY_NO_ANIMATION
-                    )
-                    putExtra(EXTRA_TAPCLAW_WARM_START, true)
-                }
-                startActivity(visionclawIntent)
-                DebugLog.d(
-                    "WarmStart",
-                    "Unipanel v2: kicked visionclaw warm-start from tapbrowser"
-                )
-            } catch (e: Exception) {
-                DebugLog.w(
-                    "WarmStart",
-                    "Unipanel v2: visionclaw warm-start failed: ${e.message}"
-                )
-            }
         }
+        // Unipanel v2 reverse warm-start: DISABLED. The previous attempt
+        // here would, on tapbrowser cold launch, kick visionclaw to
+        // onCreate and have visionclaw moveTaskToBack(true) itself. The
+        // intent flag combo (NEW_TASK | SINGLE_TOP) was supposed to land
+        // visionclaw in its own task; in practice both Activities have
+        // the default taskAffinity (= application's packageName), so
+        // Android reused tapbrowser's task instead of creating a new
+        // one. visionclaw's moveTaskToBack then backgrounded the WHOLE
+        // shared task — including tapbrowser — and the RayNeo launcher
+        // killed com.rayneo.visionclaw for losing foreground.
+        //
+        // For now the browser launches alone; visionclaw doesn't run on
+        // cold start. The user-visible consequence is that voice
+        // activation from the overlay won't work until visionclaw is
+        // running — followup needs a Service-based voice path (so
+        // there's no Activity-task fight) or a separate taskAffinity
+        // on visionclaw + an explicit REORDER_TO_FRONT bounce back to
+        // tapbrowser after visionclaw onCreates. Both are non-trivial
+        // and worth doing in their own commit with logcat verification.
 
         webView.setOnTouchListener { _, event ->
             val isMouseEvent = isMousePointerEvent(event)
