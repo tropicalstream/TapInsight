@@ -5866,6 +5866,66 @@ class MainActivity :
         }
         uiHandler.post(ticker)
         startUnipanelHudBatteryReceiver()
+        startUnipanelHudNetworkObserver()
+    }
+
+    /**
+     * Phase 4f — connectivity indicator. Registers a
+     * [ConnectivityManager.NetworkCallback] for the default network
+     * and tags the type (Wi-Fi / cellular / offline). Colors mimic
+     * the system status-bar convention: amber for Wi-Fi, blue for
+     * cellular, red for offline. Updates fire on bind so the field
+     * is correct on first paint.
+     */
+    private var unipanelHudNetworkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
+    private fun startUnipanelHudNetworkObserver() {
+        val tv = findViewById<android.widget.TextView?>(R.id.unipanelHudNetwork) ?: return
+        val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+            as? android.net.ConnectivityManager ?: return
+        val render = { label: String, color: Int ->
+            uiHandler.post {
+                tv.text = label
+                runCatching { tv.setTextColor(color) }
+            }
+        }
+        val classify: (android.net.NetworkCapabilities?) -> Unit = { caps ->
+            when {
+                caps == null ||
+                    !caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) ->
+                        render("OFF", 0xFFE57373.toInt())
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ->
+                        render("WIFI", 0xFFFFB347.toInt())
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ->
+                        render("CELL", 0xFF7EC8E3.toInt())
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) ->
+                        render("ETH", 0xFFB7CEDE.toInt())
+                else -> render("NET", 0xFFB7CEDE.toInt())
+            }
+        }
+        // Seed from the current active network so the first paint is
+        // correct without waiting for an onAvailable callback.
+        runCatching { classify(cm.getNetworkCapabilities(cm.activeNetwork)) }
+
+        val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                runCatching { classify(cm.getNetworkCapabilities(network)) }
+            }
+            override fun onCapabilitiesChanged(
+                network: android.net.Network,
+                caps: android.net.NetworkCapabilities
+            ) {
+                classify(caps)
+            }
+            override fun onLost(network: android.net.Network) {
+                runCatching { classify(cm.getNetworkCapabilities(cm.activeNetwork)) }
+                    .onFailure { render("OFF", 0xFFE57373.toInt()) }
+            }
+        }
+        runCatching {
+            cm.registerDefaultNetworkCallback(callback)
+            unipanelHudNetworkCallback = callback
+        }
     }
 
     /**
@@ -6086,35 +6146,19 @@ class MainActivity :
     }
 
     /**
-     * Phase 2 Step 2c.4: subscribe the top-right CAM chip to
-     * [com.TapLink.app.unipanel.CameraStateBridge] so it reflects
-     * visionclaw's voiceAssistantActive LiveData (camera streaming
-     * to Gemini Live). Read-only status surface — no live camera
-     * frames mirrored here, that's a future enhancement.
+     * Phase 4f (Mars revision) — the legacy top-right CAM chip is
+     * gone (Mars: "two red dots, only the single red dot should
+     * appear"). The Phase 4e [startUnipanelVisionDotObserver] subscriber
+     * on the HUD-strip dot is the sole vision-active indicator now.
      *
-     * Lifetime mirrors the mini-card subscription: bridge listener
-     * fires on the publisher's thread; we hop to uiHandler before
-     * touching the View, and the subscription is closed in
-     * onDestroy so a recreated Activity doesn't double-listen.
+     * Field + stub are kept so the onCreate / onDestroy bookkeeping
+     * sites that reference them don't need to be torn out; both
+     * resolve cleanly and the unsubscribe in onDestroy is a no-op.
      */
     private var unipanelCameraChipSubscription: AutoCloseable? = null
 
     private fun startUnipanelCameraChipObserver() {
-        val chip = findViewById<View?>(R.id.unipanelCameraChip)
-        if (chip == null) {
-            DebugLog.w(
-                "Unipanel",
-                "Camera chip observer: chip view missing, skipping subscription"
-            )
-            return
-        }
-        unipanelCameraChipSubscription?.runCatching { close() }
-        unipanelCameraChipSubscription =
-            com.TapLink.app.unipanel.CameraStateBridge.observe { active ->
-                uiHandler.post {
-                    chip.visibility = if (active) View.VISIBLE else View.GONE
-                }
-            }
+        // No-op — chip View deleted from layout in Phase 4f.
     }
 
     /**
@@ -12197,6 +12241,15 @@ class MainActivity :
             unipanelHudBatteryReceiver?.let { unregisterReceiver(it) }
         } catch (_: Exception) {}
         unipanelHudBatteryReceiver = null
+        // Phase 4f: unregister the network callback so a recreated
+        // Activity doesn't accumulate dead listeners.
+        try {
+            unipanelHudNetworkCallback?.let { cb ->
+                (getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+                    as? android.net.ConnectivityManager)?.unregisterNetworkCallback(cb)
+            }
+        } catch (_: Exception) {}
+        unipanelHudNetworkCallback = null
         // Unipanel v2 Phase 3: drop the voice Service binding so an
         // Activity-recreate doesn't leak a ServiceConnection or
         // double-bind on the next onCreate.

@@ -106,6 +106,23 @@
                     android:letterSpacing="0.04"
                     tools:ignore="UnusedAttribute" />
 
+                <!-- Phase 4f: connectivity indicator. ConnectivityManager
+                     callbacks drive this — "WIFI" / "CELL" / "OFF"
+                     reflect the current process-active network. Wi-Fi
+                     amber, cellular blue, offline red — matches the
+                     status-bar convention. -->
+                <TextView
+                    android:id="@+id/unipanelHudNetwork"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="—"
+                    android:textColor="#FFB7CEDE"
+                    android:textSize="11sp"
+                    android:letterSpacing="0.06"
+                    tools:ignore="UnusedAttribute" />
+
                 <!-- Phase 4 — real MIC button (was a 14dp dot in
                      Phase 6 essentials). 36dp tap target with the
                      "MIC" label so it's professional and unambiguous
@@ -247,50 +264,12 @@
 
             </LinearLayout>
 
-            <!-- Step 2c.4 camera-status chip. Pinned top-right so it
-                 doesn't crowd the HUD clock at top-center. Visible
-                 only while voiceAssistantActive is true (Gemini Live
-                 listening + camera on). Same dark semi-transparent
-                 background as the HUD strip so the two reads as the
-                 same surface family. The red dot is a separate View
-                 with bg_unipanel_camera_dot so it stays unambiguous
-                 even when small. Read-only; the three-state hit-
-                 test (Step 2c.2.1) keeps it from leaking taps to
-                 browser controls beneath. -->
-            <LinearLayout
-                android:id="@+id/unipanelCameraChip"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="top|end"
-                android:layout_marginTop="8dp"
-                android:layout_marginEnd="14dp"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="5dp"
-                android:background="#B3000000"
-                android:elevation="8dp"
-                android:clickable="false"
-                android:focusable="false"
-                android:visibility="gone">
-
-                <View
-                    android:layout_width="8dp"
-                    android:layout_height="8dp"
-                    android:layout_marginEnd="6dp"
-                    android:background="@drawable/bg_unipanel_camera_dot" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:fontFamily="sans-serif-medium"
-                    android:text="CAM"
-                    android:textColor="#FFE0F4FF"
-                    android:textSize="11sp"
-                    android:letterSpacing="0.12"
-                    tools:ignore="UnusedAttribute" />
-
-            </LinearLayout>
+            <!-- Phase 4f (Mars revision) — legacy top-right CAM chip
+                 deleted. The unipanelVisionDot inside the HUD strip
+                 (added Phase 4e) is now the sole vision-active
+                 indicator. Two dots firing off the same
+                 CameraStateBridge publish read as a bug; one is
+                 enough. -->
 
         </FrameLayout>
 
