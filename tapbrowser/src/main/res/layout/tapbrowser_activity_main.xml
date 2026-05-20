@@ -152,8 +152,9 @@
                     android:background="@drawable/bg_unipanel_voice_pill"
                     tools:ignore="UnusedAttribute" />
 
-                <!-- AQI text — placeholder "AQI --" until a follow-up
-                     wires viewModel.airQualityClient polling. -->
+                <!-- AQI text — placeholder until a follow-up wires
+                     viewModel.airQualityClient polling. The literal
+                     value shown by default is in android:text below. -->
                 <TextView
                     android:id="@+id/unipanelHudAqi"
                     android:layout_width="wrap_content"
