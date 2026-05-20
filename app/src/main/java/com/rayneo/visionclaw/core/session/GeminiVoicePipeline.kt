@@ -13,6 +13,8 @@ import com.TapLink.app.unipanel.HudStateBridge
 import com.rayneo.visionclaw.VisionClawApp
 import com.rayneo.visionclaw.core.audio.GeminiAudioPlayer
 import com.rayneo.visionclaw.core.network.GeminiRouter
+import com.rayneo.visionclaw.core.tools.BrowserVisionTool
+import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -84,6 +86,18 @@ class GeminiVoicePipeline(context: Context) {
     /** Audio playback for Gemini's model audio responses. Lazy so we
      *  only allocate the AudioTrack when voice actually activates. */
     private val audioPlayer: GeminiAudioPlayer by lazy { GeminiAudioPlayer(appContext) }
+
+    /** Phase 4b — browser_vision tool. Captures the WebView frame via
+     *  the cross-module [com.TapLink.app.media.BrowserFrameHolder]
+     *  (publisher: tapbrowser MainActivity) and asks Gemini's REST
+     *  vision endpoint about it. Lazy so we don't pay the OkHttp init
+     *  cost until Gemini actually calls the tool. */
+    private val browserVisionTool: BrowserVisionTool by lazy {
+        BrowserVisionTool(
+            context = appContext,
+            frameProvider = { com.TapLink.app.media.BrowserFrameHolder.captureBase64Jpeg() }
+        )
+    }
 
     /**
      * Begin a voice session. Connects the WebSocket; AudioRecord opens
@@ -265,17 +279,24 @@ class GeminiVoicePipeline(context: Context) {
             }
 
             override fun onToolCall(callId: String, name: String, args: String) {
-                // Phase 4a — tool calls deferred. The full ToolDispatcher /
-                // ToolAssistEngine wiring lives in visionclaw MainActivity
-                // and needs more plumbing to run from a Service. Reply with
-                // a stub so Gemini doesn't block on the tool result.
-                Log.w(TAG, "onToolCall ignored (Phase 4a): callId=$callId name=$name")
-                runCatching {
-                    liveSession?.sendToolResponse(
-                        callId, name,
-                        "Tool not yet available in unipanel voice service. " +
-                            "Please continue without it."
-                    )
+                Log.i(TAG, "onToolCall: callId=$callId name=$name args=${args.take(160)}")
+                when (name) {
+                    "browser_vision" -> dispatchBrowserVision(callId, name, args)
+                    else -> {
+                        // Phase 4b ships browser_vision only. Other tools
+                        // (calendar, places, maps, news, etc.) need the
+                        // full ToolDispatcher / ToolAssistEngine wiring
+                        // from visionclaw MainActivity. Reply with a
+                        // human-friendly stub so Gemini doesn't hang
+                        // waiting for a result.
+                        Log.w(TAG, "onToolCall: $name not yet wired in Service")
+                        runCatching {
+                            liveSession?.sendToolResponse(
+                                callId, name,
+                                "Tool '$name' isn't available in the unipanel build yet."
+                            )
+                        }
+                    }
                 }
             }
 
@@ -312,6 +333,51 @@ class GeminiVoicePipeline(context: Context) {
                 // for tool-call-driven research turns which are Phase 4b.
             }
         }
+    }
+
+    /**
+     * Phase 4b — run browser_vision off the listener thread. Captures
+     * the WebView frame, asks Gemini's REST vision endpoint about it,
+     * then returns the answer through [GeminiRouter.LiveSessionHandle
+     * .sendToolResponse] so the Live model can speak it.
+     *
+     * Args from Gemini come as a JSON string. We accept "question",
+     * "query", or "prompt" — same aliases the tool's own [BrowserVision
+     * Tool.execute] accepts — and fall back to a generic describe-this
+     * prompt if none of them landed (which can happen if Gemini calls
+     * the tool with no parameters; we don't want to error out).
+     */
+    private fun dispatchBrowserVision(callId: String, name: String, args: String) {
+        scope.launch {
+            val question = parseQuestionArg(args)
+            HudStateBridge.update {
+                it.copy(notification = "Looking at the screen…")
+            }
+            val result = runCatching {
+                browserVisionTool.execute(mapOf("question" to question))
+            }
+            val responseText = result.getOrNull()?.getOrElse { err ->
+                Log.w(TAG, "browser_vision failed: ${err.message}")
+                "I couldn't read the screen: ${err.message ?: "unknown error"}"
+            } ?: run {
+                val ex = result.exceptionOrNull()
+                Log.w(TAG, "browser_vision threw: ${ex?.message}")
+                "I couldn't read the screen: ${ex?.message ?: "unknown error"}"
+            }
+            Log.d(TAG, "browser_vision response: ${responseText.take(200)}")
+            HudStateBridge.update { it.copy(notification = null) }
+            runCatching {
+                liveSession?.sendToolResponse(callId, name, responseText)
+            }
+        }
+    }
+
+    private fun parseQuestionArg(args: String): String {
+        val parsed = runCatching { JSONObject(args) }.getOrNull() ?: return DEFAULT_VISION_QUESTION
+        val q = parsed.optString("question").trim()
+            .ifBlank { parsed.optString("query").trim() }
+            .ifBlank { parsed.optString("prompt").trim() }
+        return q.ifBlank { DEFAULT_VISION_QUESTION }
     }
 
     private fun startAudioStreaming() {
@@ -430,5 +496,7 @@ class GeminiVoicePipeline(context: Context) {
     companion object {
         private const val TAG = "GeminiVoicePipe"
         private const val SAMPLE_RATE_HZ = 16_000
+        private const val DEFAULT_VISION_QUESTION =
+            "Describe what's currently on the screen in plain English."
     }
 }

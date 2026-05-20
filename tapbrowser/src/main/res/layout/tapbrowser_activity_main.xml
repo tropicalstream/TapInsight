@@ -48,19 +48,18 @@
             <!-- Step 2c.1 HUD strip. Semi-transparent dark
                  background so it stays readable over any browser
                  page; pinned to the top so it doesn't cover
-                 article content the user is reading. Width caps
-                 at 320dp so it doesn't span the full eye in the
-                 binocular display and feel oppressive. -->
+                 article content the user is reading. Width matches
+                 the mini-card stack so moving the pointer into the
+                 HUD lane and tapping is enough to toggle voice. -->
             <LinearLayout
                 android:id="@+id/unipanelHudStrip"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_width="340dp"
+                android:layout_height="48dp"
                 android:layout_gravity="top|center_horizontal"
                 android:layout_marginTop="8dp"
                 android:orientation="horizontal"
-                android:gravity="center_vertical"
+                android:gravity="center"
                 android:paddingHorizontal="14dp"
-                android:paddingVertical="6dp"
                 android:background="#B3000000"
                 android:elevation="8dp"
                 android:clickable="true"
@@ -75,6 +74,36 @@
                     android:textColor="#FFE0F4FF"
                     android:textSize="13sp"
                     android:letterSpacing="0.06"
+                    tools:ignore="UnusedAttribute" />
+
+                <!-- Date + day-of-week. Updated on the same 30s tick
+                     as the clock. Format: "Mon · May 19". Compact so
+                     the HUD strip stays narrow. -->
+                <TextView
+                    android:id="@+id/unipanelHudDate"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:fontFamily="sans-serif"
+                    android:text="—"
+                    android:textColor="#FFB7CEDE"
+                    android:textSize="11sp"
+                    android:letterSpacing="0.04"
+                    tools:ignore="UnusedAttribute" />
+
+                <!-- Battery %. Updated on ACTION_BATTERY_CHANGED
+                     broadcasts (sticky intent on Android, so we get
+                     the current value at registration time too). -->
+                <TextView
+                    android:id="@+id/unipanelHudBattery"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="—"
+                    android:textColor="#FF9FE6B0"
+                    android:textSize="11sp"
+                    android:letterSpacing="0.04"
                     tools:ignore="UnusedAttribute" />
 
                 <!-- Phase 4 — real MIC button (was a 14dp dot in
@@ -128,7 +157,7 @@
                 android:layout_width="340dp"
                 android:layout_height="wrap_content"
                 android:layout_gravity="top|center_horizontal"
-                android:layout_marginTop="44dp"
+                android:layout_marginTop="64dp"
                 android:orientation="vertical"
                 android:clickable="false"
                 android:focusable="false"

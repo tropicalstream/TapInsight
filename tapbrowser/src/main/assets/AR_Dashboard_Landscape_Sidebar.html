@@ -19,6 +19,7 @@
       --radius: 18px;
       --icon-size: 22px;
       --shadow: 0 8px 24px rgba(0, 0, 0, .6), inset 0 1px 0 rgba(255, 255, 255, .02);
+      --native-hud-reserve: 64px;
     }
 
     html,
@@ -94,12 +95,14 @@
       overflow-x: hidden;
       scroll-behavior: smooth;
       filter: brightness(var(--brightness));
-      transform: scale(var(--scale));
-      /* Pin the scale pivot so --scale drifting from 1.0 does not shift
-         the rendered box horizontally (default origin of 50% 50% caused
-         the dashboard to drift right on some frames, hiding the scrollbar). */
-      transform-origin: 50% 0%;
-      padding: 0 8px 16px;
+      /* IMPORTANT: do NOT put `transform: scale(...)` on <body>. Any
+         non-`none` transform on an ancestor creates a containing block
+         that breaks `position: sticky` on descendants — that's what
+         was making `.topbar` (QR Scanner / Edit Links / Add Link)
+         scroll away with the page content. --scale is always 1 today
+         anyway; if a future build needs to scale the dashboard, do it
+         on an inner wrapper that does NOT contain the sticky topbar. */
+      padding: var(--native-hud-reserve) 8px 16px;
       box-sizing: border-box;
       /* touch-action: none; removed to allow scrolling */
     }
@@ -117,7 +120,7 @@
       background: rgba(255, 255, 255, .05);
       border-bottom: 1px solid rgba(255, 255, 255, .08);
       position: sticky;
-      top: 0;
+      top: var(--native-hud-reserve);
       backdrop-filter: blur(10px);
       z-index: 5;
       flex-wrap: wrap;

@@ -5821,17 +5821,71 @@ class MainActivity :
      * the wall clock.
      */
     private fun startUnipanelHudClockTicker() {
-        val tv = findViewById<android.widget.TextView?>(R.id.unipanelHudTime) ?: return
-        val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+        val timeTv = findViewById<android.widget.TextView?>(R.id.unipanelHudTime) ?: return
+        val dateTv = findViewById<android.widget.TextView?>(R.id.unipanelHudDate)
+        val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+        val dateFmt = java.text.SimpleDateFormat("EEE · MMM d", java.util.Locale.US)
         val ticker = object : Runnable {
             override fun run() {
                 try {
-                    tv.text = fmt.format(java.util.Date())
+                    val now = java.util.Date()
+                    timeTv.text = timeFmt.format(now)
+                    dateTv?.text = dateFmt.format(now)
                 } catch (_: Exception) {}
                 uiHandler.postDelayed(this, 30_000L)
             }
         }
         uiHandler.post(ticker)
+        startUnipanelHudBatteryReceiver()
+    }
+
+    /**
+     * Phase 4b — battery indicator in the HUD strip. Registers a
+     * receiver for ACTION_BATTERY_CHANGED (sticky broadcast on
+     * Android, so registerReceiver(null, ...) returns the latest
+     * value immediately — no need to wait for the first change).
+     */
+    private var unipanelHudBatteryReceiver: android.content.BroadcastReceiver? = null
+
+    private fun startUnipanelHudBatteryReceiver() {
+        val tv = findViewById<android.widget.TextView?>(R.id.unipanelHudBattery) ?: return
+        val render = { intent: android.content.Intent? ->
+            try {
+                if (intent != null) {
+                    val level = intent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+                    val scale = intent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
+                    val pct = if (level >= 0 && scale > 0) (level * 100 / scale) else -1
+                    val status = intent.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1)
+                    val charging = status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
+                        status == android.os.BatteryManager.BATTERY_STATUS_FULL
+                    val pillSymbol = if (charging) "⚡" else "▮"
+                    tv.text = if (pct >= 0) "$pillSymbol $pct%" else "— %"
+                }
+            } catch (_: Exception) {}
+        }
+        // Seed with the current sticky broadcast (no listener registration
+        // needed for this — passing null receiver returns the latest intent).
+        runCatching {
+            render(
+                registerReceiver(
+                    null,
+                    android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)
+                )
+            )
+        }
+        // Subscribe to live changes so the indicator stays current.
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+                render(intent)
+            }
+        }
+        runCatching {
+            registerReceiver(
+                receiver,
+                android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)
+            )
+            unipanelHudBatteryReceiver = receiver
+        }
     }
 
     /**
@@ -6175,9 +6229,7 @@ class MainActivity :
         interactionX: Float,
         interactionY: Float
     ): Boolean {
-        val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return false
-        if (overlay.visibility != View.VISIBLE) return false
-        val hit = findUnipanelHitAt(overlay, interactionX, interactionY) ?: return false
+        val hit = findUnipanelHit(interactionX, interactionY) ?: return false
 
         if (!hit.isInteractive) {
             DebugLog.d(
@@ -6210,6 +6262,12 @@ class MainActivity :
                 "screen=($interactionX,$interactionY) local=($localX,$localY)"
         )
         return true
+    }
+
+    private fun findUnipanelHit(screenX: Float, screenY: Float): UnipanelHit? {
+        val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return null
+        if (overlay.visibility != View.VISIBLE) return null
+        return findUnipanelHitAt(overlay, screenX, screenY)
     }
 
     /**
@@ -7024,6 +7082,7 @@ class MainActivity :
             return true
         }
         if (dualWebViewGroup.isPointInScrollbar(screenX, screenY)) return true
+        if (findUnipanelHit(screenX, screenY) != null) return true
         return false
     }
 
@@ -7130,6 +7189,11 @@ class MainActivity :
         if (dualWebViewGroup.isFullScreenOverlayVisible()) {
             suppressImmediateWebClickLeak()
             dualWebViewGroup.dispatchFullScreenOverlayTouch(rawScreenX, rawScreenY)
+            return true
+        }
+
+        if (dispatchUnipanelOverlayTouchIfHit(rawScreenX, rawScreenY)) {
+            suppressImmediateWebClickLeak()
             return true
         }
 
@@ -12059,6 +12123,12 @@ class MainActivity :
             unipanelVoicePillSubscription?.close()
         } catch (_: Exception) {}
         unipanelVoicePillSubscription = null
+        // Phase 4b: unregister the battery receiver so a config change
+        // / Activity recreate doesn't leak it.
+        try {
+            unipanelHudBatteryReceiver?.let { unregisterReceiver(it) }
+        } catch (_: Exception) {}
+        unipanelHudBatteryReceiver = null
         // Unipanel v2 Phase 3: drop the voice Service binding so an
         // Activity-recreate doesn't leak a ServiceConnection or
         // double-bind on the next onCreate.
