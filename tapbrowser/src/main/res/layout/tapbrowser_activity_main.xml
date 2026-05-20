@@ -52,16 +52,28 @@
                  the mini-card stack so moving the pointer into the
                  HUD lane and tapping is enough to toggle voice. -->
             <LinearLayout
+                android:id="@+id/unipanelTopHudRow"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_gravity="top|start"
+                android:layout_marginStart="8dp"
+                android:layout_marginTop="6dp"
+                android:layout_marginEnd="10dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:elevation="8dp"
+                android:clickable="false"
+                android:focusable="false">
+
+            <LinearLayout
                 android:id="@+id/unipanelHudStrip"
-                android:layout_width="340dp"
-                android:layout_height="48dp"
-                android:layout_gravity="top|center_horizontal"
-                android:layout_marginTop="8dp"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
                 android:orientation="horizontal"
                 android:gravity="center"
-                android:paddingHorizontal="14dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="8dp"
                 android:background="#B3000000"
-                android:elevation="8dp"
                 android:clickable="true"
                 android:focusable="true">
 
@@ -178,6 +190,21 @@
                     android:background="@drawable/bg_unipanel_camera_dot"
                     android:visibility="visible" />
 
+                <TextView
+                    android:id="@+id/unipanelHudHermesBadge"
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:layout_marginStart="6dp"
+                    android:gravity="center"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="H"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:background="@drawable/bg_unipanel_voice_pill"
+                    android:visibility="gone"
+                    tools:ignore="UnusedAttribute" />
+
                 <!-- Phase 4 — real MIC button (was a 14dp dot in
                      Phase 6 essentials). 36dp tap target with the
                      "MIC" label so it's professional and unambiguous
@@ -234,6 +261,51 @@
 
             </LinearLayout>
 
+            <LinearLayout
+                android:id="@+id/unipanelHudFeedStrip"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="10dp"
+                android:background="#B3000000"
+                android:clickable="false"
+                android:focusable="false">
+
+                <TextView
+                    android:id="@+id/unipanelHudHeartbeatText"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:fontFamily="sans-serif-medium"
+                    android:maxLines="1"
+                    android:scrollHorizontally="true"
+                    android:singleLine="true"
+                    android:textColor="#FFFF5252"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/unipanelHudSummaryText"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:ellipsize="end"
+                    android:fontFamily="sans-serif"
+                    android:maxLines="1"
+                    android:singleLine="true"
+                    android:text="Events --   Tasks --   News --"
+                    android:textColor="#FFB7CEDE"
+                    android:textSize="11sp"
+                    tools:ignore="UnusedAttribute" />
+
+            </LinearLayout>
+
+            </LinearLayout>
+
             <!-- Step 2c.2 mini chat-card stack. Three compact rows
                  stacked vertically directly under the HUD strip.
                  Alternates assistant / user tinting so the layout
@@ -262,7 +334,7 @@
                 android:layout_width="340dp"
                 android:layout_height="wrap_content"
                 android:layout_gravity="top|center_horizontal"
-                android:layout_marginTop="52dp"
+                android:layout_marginTop="50dp"
                 android:orientation="vertical"
                 android:clickable="false"
                 android:focusable="false"

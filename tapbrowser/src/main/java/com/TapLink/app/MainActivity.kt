@@ -156,6 +156,8 @@ class MainActivity :
         private const val EXTRA_YOUTUBE_AUTOPLAY_MODE = "tapclaw_youtube_autoplay_mode"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUEUE = "tapclaw_youtube_autoplay_queue"
         private const val TAPCLAW_MAIN_ACTIVITY = "com.rayneo.visionclaw.MainActivity"
+        private const val UNIPANEL_ASSISTANT_CARD_DISPLAY_MS = 6_000L
+        private const val UNIPANEL_HEARTBEAT_DISPLAY_MS = 6_000L
         private var activeInstanceRef: WeakReference<MainActivity>? = null
 
         // ── Static ExoPlayer reference ──
@@ -1071,6 +1073,10 @@ class MainActivity :
         // Phase 4h — AI status badge ("G") tints from HudStateBridge
         // connection status so it tracks the Gemini Live state.
         startUnipanelHudAiBadgeObserver()
+        // Hermes HUD bridge: live events/tasks/news, AQI, heartbeat
+        // ticker, and the OpenClaw/Hermes gateway badges all share
+        // the same process-local state as the Service voice path.
+        startUnipanelHudStateObserver()
         // Phase 4g — configure the burgundy preview frame's
         // PreviewView and seed its SurfaceProvider into the Service.
         startUnipanelCameraPreviewBinding()
@@ -6015,6 +6021,12 @@ class MainActivity :
      * touching the View tree.
      */
     private var unipanelChatCardSubscription: AutoCloseable? = null
+    private val hideUnipanelAssistantCardRunnable = Runnable {
+        findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)?.let { card ->
+            card.text = ""
+            card.visibility = View.GONE
+        }
+    }
 
     /**
      * Phase 4g — left-arm (cyttsp6_mt) SHORT-TAP detection. Ported
@@ -6270,11 +6282,17 @@ class MainActivity :
     ) {
         val latestAssistant = cards.lastOrNull { !it.fromUser }?.text?.takeIf { it.isNotBlank() }
         if (latestAssistant == null) {
+            uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
             card.text = ""
             card.visibility = View.GONE
         } else {
+            uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
             card.text = latestAssistant
             card.visibility = View.VISIBLE
+            uiHandler.postDelayed(
+                hideUnipanelAssistantCardRunnable,
+                UNIPANEL_ASSISTANT_CARD_DISPLAY_MS
+            )
         }
     }
 
@@ -6352,6 +6370,8 @@ class MainActivity :
         }
         pill.setOnClickListener(toggleHandler)
         findViewById<View?>(R.id.unipanelHudStrip)?.setOnClickListener(toggleHandler)
+        findViewById<View?>(R.id.unipanelHudFeedStrip)?.setOnClickListener(toggleHandler)
+        findViewById<View?>(R.id.unipanelTopHudRow)?.setOnClickListener(toggleHandler)
 
         unipanelVoicePillSubscription?.runCatching { close() }
         unipanelVoicePillSubscription =
@@ -6395,6 +6415,173 @@ class MainActivity :
                             android.content.res.ColorStateList.valueOf(tint)
                     }
                 }
+            }
+    }
+
+    private var unipanelHudStateSubscription: AutoCloseable? = null
+    private var unipanelHeartbeatScrollAnimator: android.animation.ValueAnimator? = null
+    private var unipanelHeartbeatClearRunnable: Runnable? = null
+
+    private val hideUnipanelHeartbeatRunnable = Runnable {
+        val tv = findViewById<android.widget.TextView?>(R.id.unipanelHudHeartbeatText) ?: return@Runnable
+        unipanelHeartbeatScrollAnimator?.cancel()
+        unipanelHeartbeatScrollAnimator = null
+        tv.animate().cancel()
+        tv.visibility = View.GONE
+        tv.alpha = 1f
+        tv.scrollX = 0
+    }
+
+    private fun startUnipanelHudStateObserver() {
+        unipanelHudStateSubscription?.runCatching { close() }
+        unipanelHudStateSubscription =
+            com.TapLink.app.unipanel.HudStateBridge.observe { state ->
+                uiHandler.post { renderUnipanelHudState(state) }
+            }
+    }
+
+    private fun renderUnipanelHudState(
+        state: com.TapLink.app.unipanel.HudStateBridge.State
+    ) {
+        findViewById<android.widget.TextView?>(R.id.unipanelHudSummaryText)?.text =
+            buildUnipanelHudSummary(state)
+
+        findViewById<android.widget.TextView?>(R.id.unipanelHudAqi)?.let { aqi ->
+            val text = state.airQualityText?.trim().orEmpty()
+            aqi.text = if (text.isBlank()) "AQI --" else text
+            aqi.setTextColor(colorForUnipanelAqi(state.airQualityValue))
+        }
+
+        renderUnipanelGatewayBadge(
+            dot = findViewById(R.id.unipanelHudHermesDot),
+            badge = findViewById(R.id.unipanelHudHermesBadge),
+            status = state.hermesStatus
+        )
+        renderUnipanelHeartbeat(state)
+    }
+
+    private fun buildUnipanelHudSummary(
+        state: com.TapLink.app.unipanel.HudStateBridge.State
+    ): String {
+        val events = compactUnipanelHudField("Events", state.calendarSummary)
+        val tasks = compactUnipanelHudField("Tasks", state.tasksSummary)
+        val news = compactUnipanelHudField("News", state.newsSummary)
+        val radio = state.radioStation
+            ?.takeIf { state.radioPlaying }
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "Radio ${it.take(36)}" }
+        return listOfNotNull(events, tasks, news, radio).joinToString("   ")
+    }
+
+    private fun compactUnipanelHudField(label: String, raw: String): String {
+        val body = raw
+            .replace('\n', ' ')
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .removePrefix("$label:")
+            .removePrefix(label.uppercase(Locale.US) + ":")
+            .trim()
+        return if (body.isBlank()) "$label --" else "$label ${body.take(48)}"
+    }
+
+    private fun colorForUnipanelAqi(aqi: Int?): Int {
+        val value = aqi ?: return 0xCCFFFFFF.toInt()
+        return when {
+            value <= 50 -> 0xFF00E676.toInt()
+            value <= 100 -> 0xFFFFD54F.toInt()
+            value <= 150 -> 0xFFFF9800.toInt()
+            else -> 0xFFFF5252.toInt()
+        }
+    }
+
+    private fun renderUnipanelGatewayBadge(
+        dot: View?,
+        badge: android.widget.TextView?,
+        status: com.TapLink.app.unipanel.HudStateBridge.GatewayStatus
+    ) {
+        val visible = status != com.TapLink.app.unipanel.HudStateBridge.GatewayStatus.HIDDEN
+        val tint = when (status) {
+            com.TapLink.app.unipanel.HudStateBridge.GatewayStatus.GOOD -> 0xFF00E676.toInt()
+            com.TapLink.app.unipanel.HudStateBridge.GatewayStatus.BAD -> 0xFFFF5B5B.toInt()
+            com.TapLink.app.unipanel.HudStateBridge.GatewayStatus.HIDDEN -> 0x00000000
+        }
+        dot?.visibility = if (visible) View.VISIBLE else View.GONE
+        badge?.visibility = if (visible) View.VISIBLE else View.GONE
+        runCatching {
+            dot?.backgroundTintList = android.content.res.ColorStateList.valueOf(tint)
+            badge?.backgroundTintList = android.content.res.ColorStateList.valueOf(tint)
+        }
+    }
+
+    private fun renderUnipanelHeartbeat(
+        state: com.TapLink.app.unipanel.HudStateBridge.State
+    ) {
+        val tv = findViewById<android.widget.TextView?>(R.id.unipanelHudHeartbeatText) ?: return
+        val notification = state.notification?.trim().takeUnless { it.isNullOrBlank() }
+        val bridgeMessage = state.heartbeatMessage?.trim().takeUnless { it.isNullOrBlank() }
+        val text = notification ?: bridgeMessage
+        uiHandler.removeCallbacks(hideUnipanelHeartbeatRunnable)
+        unipanelHeartbeatClearRunnable?.let { uiHandler.removeCallbacks(it) }
+        unipanelHeartbeatClearRunnable = null
+        if (text.isNullOrBlank()) {
+            hideUnipanelHeartbeatRunnable.run()
+            return
+        }
+
+        tv.text = "HEART $text"
+        tv.visibility = View.VISIBLE
+        tv.alpha = 1f
+        tv.scrollX = 0
+        unipanelHeartbeatScrollAnimator?.cancel()
+        unipanelHeartbeatScrollAnimator = null
+        val shouldScroll = notification != null || state.heartbeatShouldScroll
+        if (shouldScroll) tv.post { startUnipanelHeartbeatScroll(tv) }
+        val transient = notification != null || !state.heartbeatPersistent
+        if (transient) {
+            val clearRunnable = Runnable {
+                val current = com.TapLink.app.unipanel.HudStateBridge.current()
+                when {
+                    notification != null && current.notification?.trim() == notification ->
+                        com.TapLink.app.unipanel.HudStateBridge.update {
+                            it.copy(notification = null)
+                        }
+                    notification == null &&
+                        !current.heartbeatPersistent &&
+                        current.heartbeatMessage?.trim() == bridgeMessage ->
+                            com.TapLink.app.unipanel.HudStateBridge.update {
+                                it.copy(heartbeatMessage = null)
+                            }
+                    else -> hideUnipanelHeartbeatRunnable.run()
+                }
+            }
+            unipanelHeartbeatClearRunnable = clearRunnable
+            uiHandler.postDelayed(clearRunnable, UNIPANEL_HEARTBEAT_DISPLAY_MS)
+        }
+    }
+
+    private fun startUnipanelHeartbeatScroll(tv: android.widget.TextView) {
+        if (tv.visibility != View.VISIBLE) return
+        val innerWidth = tv.width - tv.paddingLeft - tv.paddingRight
+        if (innerWidth <= 0) return
+        val textWidth = tv.paint.measureText(tv.text?.toString().orEmpty())
+        val scrollEnd = (textWidth - innerWidth).toInt()
+        if (scrollEnd <= 0) {
+            tv.scrollX = 0
+            return
+        }
+        val pxPerSecond = (30f * resources.displayMetrics.density).coerceAtLeast(40f)
+        unipanelHeartbeatScrollAnimator =
+            android.animation.ValueAnimator.ofInt(0, scrollEnd).apply {
+                duration = ((scrollEnd / pxPerSecond) * 1000f)
+                    .toLong()
+                    .coerceIn(1500L, 20_000L)
+                startDelay = 600L
+                interpolator = android.view.animation.LinearInterpolator()
+                addUpdateListener { anim ->
+                    tv.scrollX = anim.animatedValue as Int
+                }
+                start()
             }
     }
 
@@ -12447,6 +12634,16 @@ class MainActivity :
             unipanelHudAiBadgeSubscription?.close()
         } catch (_: Exception) {}
         unipanelHudAiBadgeSubscription = null
+        try {
+            unipanelHudStateSubscription?.close()
+        } catch (_: Exception) {}
+        unipanelHudStateSubscription = null
+        unipanelHeartbeatScrollAnimator?.cancel()
+        unipanelHeartbeatScrollAnimator = null
+        uiHandler.removeCallbacks(hideUnipanelHeartbeatRunnable)
+        unipanelHeartbeatClearRunnable?.let { uiHandler.removeCallbacks(it) }
+        unipanelHeartbeatClearRunnable = null
+        uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
         // Phase 4b: unregister the battery receiver so a config change
         // / Activity recreate doesn't leak it.
         try {

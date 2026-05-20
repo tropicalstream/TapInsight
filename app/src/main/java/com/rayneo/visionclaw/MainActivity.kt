@@ -2003,6 +2003,65 @@ class MainActivity : AppCompatActivity() {
             airQualityState = airQualityState,
             radioState = radioState
         )
+        publishUnipanelHudSnapshot(
+            calendarSummary = calendarSummary,
+            tasksSummary = tasksSummary,
+            newsSummary = newsSummary,
+            airQualityState = airQualityState,
+            radioState = radioState
+        )
+    }
+
+    private fun publishUnipanelHudSnapshot(
+        calendarSummary: String,
+        tasksSummary: String,
+        newsSummary: String,
+        airQualityState: MainViewModel.AirQualityHudState?,
+        radioState: MainViewModel.RadioHudState? = null
+    ) {
+        com.TapLink.app.unipanel.HudStateBridge.update { state ->
+            state.copy(
+                calendarSummary = calendarSummary,
+                tasksSummary = tasksSummary,
+                newsSummary = newsSummary,
+                airQualityText = airQualityState?.text,
+                airQualityValue = airQualityState?.aqi,
+                radioStation = radioState?.stationName,
+                radioPlaying = radioState?.playing == true
+            )
+        }
+    }
+
+    private fun publishUnipanelGatewayStatus(
+        hermes: Boolean,
+        status: ChatPanelFragment.OpenClawGatewayStatus
+    ) {
+        val bridgeStatus = when (status) {
+            ChatPanelFragment.OpenClawGatewayStatus.HIDDEN ->
+                com.TapLink.app.unipanel.HudStateBridge.GatewayStatus.HIDDEN
+            ChatPanelFragment.OpenClawGatewayStatus.GOOD ->
+                com.TapLink.app.unipanel.HudStateBridge.GatewayStatus.GOOD
+            ChatPanelFragment.OpenClawGatewayStatus.BAD ->
+                com.TapLink.app.unipanel.HudStateBridge.GatewayStatus.BAD
+        }
+        com.TapLink.app.unipanel.HudStateBridge.update { state ->
+            if (hermes) state.copy(hermesStatus = bridgeStatus)
+            else state.copy(openClawStatus = bridgeStatus)
+        }
+    }
+
+    private fun publishUnipanelHeartbeat(
+        label: String?,
+        persistent: Boolean,
+        scroll: Boolean
+    ) {
+        com.TapLink.app.unipanel.HudStateBridge.update { state ->
+            state.copy(
+                heartbeatMessage = label,
+                heartbeatPersistent = persistent,
+                heartbeatShouldScroll = scroll
+            )
+        }
     }
 
     private fun syncTapRadioHudStateFromPrefs() {
@@ -6902,16 +6961,21 @@ class MainActivity : AppCompatActivity() {
         if (label.isNullOrBlank()) {
             chatFragment.clearHeartbeat()
             chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
+            publishUnipanelHeartbeat(null, persistent = false, scroll = true)
+            publishUnipanelGatewayStatus(
+                hermes = false,
+                ChatPanelFragment.OpenClawGatewayStatus.HIDDEN
+            )
             return
         }
         if (transient) {
-            chatFragment.showHeartbeat(
-                formatOpenClawTicker(label),
-                OPENCLAW_PROGRESS_TICKER_DISPLAY_MS,
-                scroll = true
-            )
+            val ticker = formatOpenClawTicker(label)
+            chatFragment.showHeartbeat(ticker, OPENCLAW_PROGRESS_TICKER_DISPLAY_MS, scroll = true)
+            publishUnipanelHeartbeat(ticker, persistent = false, scroll = true)
         } else {
-            chatFragment.showHeartbeat(formatHudFunctionTicker(label), 0L, scroll = false)
+            val ticker = formatHudFunctionTicker(label)
+            chatFragment.showHeartbeat(ticker, 0L, scroll = false)
+            publishUnipanelHeartbeat(ticker, persistent = true, scroll = false)
         }
         val status = if (gatewayHealthy) {
             ChatPanelFragment.OpenClawGatewayStatus.GOOD
@@ -6919,12 +6983,18 @@ class MainActivity : AppCompatActivity() {
             ChatPanelFragment.OpenClawGatewayStatus.BAD
         }
         chatFragment.setOpenClawGatewayStatus(status)
+        publishUnipanelGatewayStatus(hermes = false, status)
     }
 
     private fun restoreOpenClawTicker() {
         if (!viewModel.preferences.openClawEnabled) {
             chatFragment.clearHeartbeat()
             chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
+            publishUnipanelHeartbeat(null, persistent = false, scroll = true)
+            publishUnipanelGatewayStatus(
+                hermes = false,
+                ChatPanelFragment.OpenClawGatewayStatus.HIDDEN
+            )
             return
         }
         val stickyLabel = lastHudFunctionTickerLabel
@@ -6959,6 +7029,11 @@ class MainActivity : AppCompatActivity() {
                     // can freely hide its own crab without affecting the
                     // wings.
                     chatFragment.setOpenClawGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
+                    publishUnipanelHeartbeat(null, persistent = false, scroll = true)
+                    publishUnipanelGatewayStatus(
+                        hermes = false,
+                        ChatPanelFragment.OpenClawGatewayStatus.HIDDEN
+                    )
                     chatFragment.setStreamActiveIndicator(false)
                 }
                 scheduleNextPing()
@@ -7077,6 +7152,10 @@ class MainActivity : AppCompatActivity() {
                 lastHermesGatewayHealthy = false
                 runOnUiThread {
                     chatFragment.setHermesGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
+                    publishUnipanelGatewayStatus(
+                        hermes = true,
+                        ChatPanelFragment.OpenClawGatewayStatus.HIDDEN
+                    )
                 }
                 scheduleNextPing()
                 return
@@ -7087,6 +7166,10 @@ class MainActivity : AppCompatActivity() {
                 lastHermesGatewayHealthy = false
                 runOnUiThread {
                     chatFragment.setHermesGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+                    publishUnipanelGatewayStatus(
+                        hermes = true,
+                        ChatPanelFragment.OpenClawGatewayStatus.BAD
+                    )
                 }
                 scheduleNextPing()
                 return
@@ -7102,21 +7185,30 @@ class MainActivity : AppCompatActivity() {
                     val healthy = result is com.rayneo.visionclaw.core.network.HermesClient.ClawResult.Success
                     lastHermesGatewayHealthy = healthy
                     runOnUiThread {
-                        chatFragment.setHermesGatewayStatus(
+                        val status =
                             if (healthy) ChatPanelFragment.OpenClawGatewayStatus.GOOD
                             else ChatPanelFragment.OpenClawGatewayStatus.BAD
-                        )
+                        chatFragment.setHermesGatewayStatus(status)
+                        publishUnipanelGatewayStatus(hermes = true, status)
                     }
                 } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
                     lastHermesGatewayHealthy = false
                     runOnUiThread {
                         chatFragment.setHermesGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+                        publishUnipanelGatewayStatus(
+                            hermes = true,
+                            ChatPanelFragment.OpenClawGatewayStatus.BAD
+                        )
                     }
                 } catch (e: Exception) {
                     Log.w("HermesPing", "Ping exception", e)
                     lastHermesGatewayHealthy = false
                     runOnUiThread {
                         chatFragment.setHermesGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+                        publishUnipanelGatewayStatus(
+                            hermes = true,
+                            ChatPanelFragment.OpenClawGatewayStatus.BAD
+                        )
                     }
                 } finally {
                     hermesPingInFlight = false
@@ -7139,8 +7231,16 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread {
             if (viewModel.preferences.hermesEnabled) {
                 chatFragment.setHermesGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.BAD)
+                publishUnipanelGatewayStatus(
+                    hermes = true,
+                    ChatPanelFragment.OpenClawGatewayStatus.BAD
+                )
             } else {
                 chatFragment.setHermesGatewayStatus(ChatPanelFragment.OpenClawGatewayStatus.HIDDEN)
+                publishUnipanelGatewayStatus(
+                    hermes = true,
+                    ChatPanelFragment.OpenClawGatewayStatus.HIDDEN
+                )
             }
         }
         uiHandler.postDelayed(hermesPingRunnable, 1_500L)
@@ -8547,6 +8647,11 @@ class MainActivity : AppCompatActivity() {
         chatFragment.showHeartbeat(
             "TapClaw result ready - full response saved in chat.",
             12_000L,
+            scroll = false
+        )
+        publishUnipanelHeartbeat(
+            "TapClaw result ready - full response saved in chat.",
+            persistent = false,
             scroll = false
         )
         showHudNotification(
@@ -10688,6 +10793,12 @@ class MainActivity : AppCompatActivity() {
                         arrayOf(calendar, tasks, news, airQuality)
                     }.collect { values ->
                         chatFragment.syncHudSnapshot(
+                            calendarSummary = values[0] as String,
+                            tasksSummary = values[1] as String,
+                            newsSummary = values[2] as String,
+                            airQualityState = values[3] as? MainViewModel.AirQualityHudState
+                        )
+                        publishUnipanelHudSnapshot(
                             calendarSummary = values[0] as String,
                             tasksSummary = values[1] as String,
                             newsSummary = values[2] as String,

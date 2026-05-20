@@ -132,6 +132,38 @@ class GeminiSessionForegroundService : LifecycleService() {
                 Log.w(TAG, "messages → ChatCardBridge bridge failed: ${e.message}", e)
             }
         }
+        lifecycleScope.launch {
+            try {
+                val vm = (applicationContext as com.rayneo.visionclaw.VisionClawApp).viewModel
+                kotlinx.coroutines.flow.combine(
+                    vm.calendarSummary,
+                    vm.tasksSummary,
+                    vm.newsSummary,
+                    vm.airQualitySummary,
+                    vm.radioSummary
+                ) { calendar, tasks, news, airQuality, radio ->
+                    arrayOf(calendar, tasks, news, airQuality, radio)
+                }.collect { values ->
+                    val airQuality =
+                        values[3] as? com.rayneo.visionclaw.ui.MainViewModel.AirQualityHudState
+                    val radio =
+                        values[4] as? com.rayneo.visionclaw.ui.MainViewModel.RadioHudState
+                    HudStateBridge.update { state ->
+                        state.copy(
+                            calendarSummary = values[0] as String,
+                            tasksSummary = values[1] as String,
+                            newsSummary = values[2] as String,
+                            airQualityText = airQuality?.text,
+                            airQualityValue = airQuality?.aqi,
+                            radioStation = radio?.stationName,
+                            radioPlaying = radio?.playing == true
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "HUD flows → HudStateBridge bridge failed: ${e.message}", e)
+            }
+        }
     }
 
     override fun onBind(intent: Intent): IBinder {

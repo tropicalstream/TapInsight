@@ -66,6 +66,8 @@ object HudStateBridge {
         ERROR
     }
 
+    enum class GatewayStatus { HIDDEN, GOOD, BAD }
+
     /**
      * Snapshot of everything the overlay needs to render the voice /
      * Live HUD. Immutable; mutate by publishing a new [State].
@@ -89,7 +91,19 @@ object HudStateBridge {
         val oscilloscopeLevel: Float = 0f,
         val oscilloscopeChannel: OscilloscopeChannel = OscilloscopeChannel.USER,
         val connection: ConnectionStatus = ConnectionStatus.IDLE,
-        val notification: String? = null
+        val notification: String? = null,
+        val calendarSummary: String = "",
+        val tasksSummary: String = "",
+        val newsSummary: String = "",
+        val airQualityText: String? = null,
+        val airQualityValue: Int? = null,
+        val radioStation: String? = null,
+        val radioPlaying: Boolean = false,
+        val heartbeatMessage: String? = null,
+        val heartbeatPersistent: Boolean = false,
+        val heartbeatShouldScroll: Boolean = true,
+        val openClawStatus: GatewayStatus = GatewayStatus.HIDDEN,
+        val hermesStatus: GatewayStatus = GatewayStatus.HIDDEN
     )
 
     private val state = AtomicReference(State())
