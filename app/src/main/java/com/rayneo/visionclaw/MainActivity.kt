@@ -754,14 +754,22 @@ class MainActivity : AppCompatActivity() {
         // cold launch it kicks visionclaw onCreate so the chat / Gemini /
         // mic stack is alive in the background. We don't want the user to
         // see a flash of visionclaw's chat UI before moveTaskToBack lands,
-        // so the theme is swapped to fully translucent for this one
+        // so the theme is swapped to a translucent variant for this one
         // lifecycle. Must come BEFORE super.onCreate so the theme actually
-        // applies to the inflate. The post-attach moveTaskToBack call
-        // lives just after setContentView below.
+        // applies to the inflate.
+        //
+        // IMPORTANT — the theme MUST descend from Theme.VisionClawRayNeo
+        // (which extends MaterialComponents/AppCompat). The v1 attempt
+        // used android.R.style.Theme_Translucent_NoTitleBar which is a
+        // bare-framework theme; AppCompatActivity hard-crashes mid-onCreate
+        // with "You need to use a Theme.AppCompat theme (or descendant)"
+        // when the active theme lacks AppCompat's required attributes.
+        // Theme.VisionClawRayNeo.Headless inherits everything from the
+        // main theme and only adds windowIsTranslucent + null window
+        // animations, so AppCompat is satisfied and the window is invisible.
         val isUnipanelWarmStart = intent?.getBooleanExtra(EXTRA_TAPCLAW_WARM_START, false) == true
         if (isUnipanelWarmStart) {
-            @Suppress("DEPRECATION")
-            setTheme(android.R.style.Theme_Translucent_NoTitleBar)
+            setTheme(R.style.Theme_VisionClawRayNeo_Headless)
         }
 
         super.onCreate(savedInstanceState)
@@ -777,14 +785,23 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
 
-        // Unipanel v2: if we were warm-started by tapbrowser, send the
-        // visionclaw task to the back as soon as the window has a
-        // decorView. moveTaskToBack from inside onCreate before the
-        // first measurement pass tends to be ignored; posting on the
-        // decorView fires after attachInfo arrives but before the user
-        // sees anything visible thanks to the translucent theme set
-        // above. The user perceives only the browser ever loading.
+        // Unipanel v2: if we were warm-started by tapbrowser, pin the
+        // entire activity_main hierarchy to INVISIBLE the instant it's
+        // inflated. Even though the translucent theme makes the window
+        // transparent, individual views (BinocularSbsLayout backgrounds,
+        // the chat ViewPager, etc.) still paint themselves and produce a
+        // visible flash before moveTaskToBack lands. Pinning android.R.id
+        // .content to INVISIBLE here short-circuits the entire draw pass
+        // — the system's layout / measure still runs (so fragments attach
+        // normally and lifecycle proceeds), but nothing reaches the
+        // screen. The user perceives only tapbrowser drawing during launch.
+        //
+        // moveTaskToBack happens on the decorView's first post so it
+        // arrives after onAttachedToWindow, which is when Android is
+        // actually willing to background the task. Setting it from
+        // inside onCreate too early gets silently ignored.
         if (isUnipanelWarmStart) {
+            findViewById<View>(android.R.id.content)?.visibility = View.INVISIBLE
             window.decorView.post {
                 runCatching {
                     moveTaskToBack(true)
