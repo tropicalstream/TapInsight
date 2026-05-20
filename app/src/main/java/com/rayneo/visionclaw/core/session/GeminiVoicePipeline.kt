@@ -90,14 +90,26 @@ class GeminiVoicePipeline(context: Context) {
     /** Phase 4b — browser_vision tool. Captures the WebView frame via
      *  the cross-module [com.TapLink.app.media.BrowserFrameHolder]
      *  (publisher: tapbrowser MainActivity) and asks Gemini's REST
-     *  vision endpoint about it. Lazy so we don't pay the OkHttp init
-     *  cost until Gemini actually calls the tool. */
+     *  vision endpoint about it.
+     *
+     *  Phase 4c — the frameProvider now uses captureBase64JpegWithStats
+     *  so we can log non-black sample counts and prove the screenshot
+     *  isn't a blank ARGB_8888 bitmap (the known View.draw hardware-
+     *  accelerated WebView failure mode codex called out). */
     private val browserVisionTool: BrowserVisionTool by lazy {
         BrowserVisionTool(
             context = appContext,
-            frameProvider = { com.TapLink.app.media.BrowserFrameHolder.captureBase64Jpeg() }
+            frameProvider = ::captureWebViewBase64Logged
         )
     }
+
+    /** Phase 4c — debounce + in-flight guard for the local-regex
+     *  trigger path. When Gemini Live doesn't elect to call the
+     *  browser_vision tool itself (Live tool dispatch can be flaky
+     *  in 3.1), we sniff the input transcript for vision-intent
+     *  phrases and call BrowserVisionTool directly. */
+    @Volatile private var lastLocalVisionTriggerMs: Long = 0L
+    @Volatile private var visionInFlight: Boolean = false
 
     /**
      * Begin a voice session. Connects the WebSocket; AudioRecord opens
@@ -251,10 +263,18 @@ class GeminiVoicePipeline(context: Context) {
 
             override fun onInputTranscription(text: String) {
                 if (text.isBlank()) return
+                Log.d(TAG, "onInputTranscription partial='${text.take(120)}'")
                 // Live partial transcript — surface in HUD so the user
                 // sees what Gemini heard. Final commit to viewModel
                 // happens on turnComplete to avoid mid-utterance noise.
                 HudStateBridge.update { it.copy(transcript = text) }
+                // Phase 4c (codex) — deterministic browser_vision trigger.
+                // Gemini Live doesn't always pick the browser_vision
+                // tool even when the user clearly asks "look at this" /
+                // "what does this say". Sniff the partial transcript
+                // and fire the tool ourselves with the latest text as
+                // the question.
+                maybeTriggerBrowserVisionLocally(text)
             }
 
             override fun onOutputTranscription(text: String) {
@@ -336,40 +356,151 @@ class GeminiVoicePipeline(context: Context) {
     }
 
     /**
-     * Phase 4b — run browser_vision off the listener thread. Captures
-     * the WebView frame, asks Gemini's REST vision endpoint about it,
-     * then returns the answer through [GeminiRouter.LiveSessionHandle
-     * .sendToolResponse] so the Live model can speak it.
-     *
-     * Args from Gemini come as a JSON string. We accept "question",
-     * "query", or "prompt" — same aliases the tool's own [BrowserVision
-     * Tool.execute] accepts — and fall back to a generic describe-this
-     * prompt if none of them landed (which can happen if Gemini calls
-     * the tool with no parameters; we don't want to error out).
+     * Phase 4b — run browser_vision off the listener thread.
+     * Phase 4c (codex) — added end-to-end instrumentation so we can
+     * prove the screenshot is real and that the tool response gets
+     * back to Gemini. Logs ["browser_vision trigger source=..."],
+     * ["BrowserVisionTool result success/failure"], and
+     * ["sendToolResponse returned true/false"].
      */
     private fun dispatchBrowserVision(callId: String, name: String, args: String) {
+        Log.i(TAG, "browser_vision trigger source=toolCall callId=$callId")
         scope.launch {
             val question = parseQuestionArg(args)
-            HudStateBridge.update {
-                it.copy(notification = "Looking at the screen…")
-            }
-            val result = runCatching {
-                browserVisionTool.execute(mapOf("question" to question))
-            }
-            val responseText = result.getOrNull()?.getOrElse { err ->
-                Log.w(TAG, "browser_vision failed: ${err.message}")
-                "I couldn't read the screen: ${err.message ?: "unknown error"}"
-            } ?: run {
-                val ex = result.exceptionOrNull()
-                Log.w(TAG, "browser_vision threw: ${ex?.message}")
-                "I couldn't read the screen: ${ex?.message ?: "unknown error"}"
-            }
-            Log.d(TAG, "browser_vision response: ${responseText.take(200)}")
-            HudStateBridge.update { it.copy(notification = null) }
-            runCatching {
-                liveSession?.sendToolResponse(callId, name, responseText)
+            runBrowserVisionAndDeliver(
+                question = question,
+                callId = callId,
+                toolName = name
+            )
+        }
+    }
+
+    /**
+     * Phase 4c (codex) — local-regex fallback for the case where
+     * Gemini Live doesn't pick the browser_vision tool itself.
+     *
+     * Sniffs the partial input transcript for vision-intent phrases.
+     * Debounces with [MIN_LOCAL_VISION_INTERVAL_MS] (so a single
+     * spoken utterance only fires once even though
+     * onInputTranscription emits multiple partials) plus an in-flight
+     * guard ([visionInFlight]) so we don't stack overlapping
+     * captures.
+     *
+     * When triggered, runs the tool directly and injects the result
+     * back into the Live session via [GeminiRouter.LiveSessionHandle
+     * .sendClientText] — there's no Gemini-issued callId for this
+     * path, so sendToolResponse isn't applicable. The injected text
+     * tells Gemini what the screen says and instructs it to answer
+     * the user briefly out loud.
+     */
+    private fun maybeTriggerBrowserVisionLocally(transcript: String) {
+        val now = System.currentTimeMillis()
+        if (visionInFlight) return
+        if (now - lastLocalVisionTriggerMs < MIN_LOCAL_VISION_INTERVAL_MS) return
+        if (liveSession == null) return
+        val lower = transcript.lowercase().trim()
+        val matched = VISION_TRIGGER_PHRASES.any { phrase -> lower.contains(phrase) }
+        if (!matched) return
+
+        lastLocalVisionTriggerMs = now
+        visionInFlight = true
+        Log.i(TAG, "browser_vision trigger source=localRegex transcript='${transcript.take(80)}'")
+        scope.launch {
+            try {
+                runBrowserVisionAndDeliver(
+                    question = transcript.ifBlank { DEFAULT_VISION_QUESTION },
+                    callId = null,
+                    toolName = null
+                )
+            } finally {
+                visionInFlight = false
             }
         }
+    }
+
+    /**
+     * Phase 4c — the shared body for both trigger paths. Captures
+     * via [captureWebViewBase64Logged] (which logs nonblack pixel
+     * count), runs [BrowserVisionTool], and delivers the result.
+     *
+     * If [callId] is non-null we route via sendToolResponse (the
+     * Gemini Live tool-call path). If null we route via
+     * sendClientText (the local-regex fallback path) — Gemini reads
+     * the injected text on its next turn and synthesises a spoken
+     * answer.
+     */
+    private suspend fun runBrowserVisionAndDeliver(
+        question: String,
+        callId: String?,
+        toolName: String?
+    ) {
+        HudStateBridge.update {
+            it.copy(notification = "Looking at the screen…")
+        }
+        val result = runCatching {
+            browserVisionTool.execute(mapOf("question" to question))
+        }
+        val responseText = result.getOrNull()?.getOrElse { err ->
+            Log.w(TAG, "BrowserVisionTool failure: ${err.message}")
+            "I couldn't read the screen: ${err.message ?: "unknown error"}"
+        } ?: run {
+            val ex = result.exceptionOrNull()
+            Log.w(TAG, "BrowserVisionTool threw: ${ex?.message}")
+            "I couldn't read the screen: ${ex?.message ?: "unknown error"}"
+        }
+        Log.i(TAG, "BrowserVisionTool result success=${result.getOrNull()?.isSuccess == true} " +
+            "text='${responseText.take(160)}'")
+        HudStateBridge.update { it.copy(notification = null) }
+
+        if (callId != null && toolName != null) {
+            val ok = runCatching {
+                liveSession?.sendToolResponse(callId, toolName, responseText) == true
+            }.getOrDefault(false)
+            Log.i(TAG, "sendToolResponse returned $ok (callId=$callId)")
+        } else {
+            val injection = "The user just asked about what's on screen. " +
+                "Vision tool result: $responseText. " +
+                "Answer the user's question briefly out loud based on that."
+            val ok = runCatching {
+                liveSession?.sendClientText(injection) == true
+            }.getOrDefault(false)
+            Log.i(TAG, "sendClientText (localRegex fallback) returned $ok")
+        }
+    }
+
+    /**
+     * Phase 4c — capture wrapper used as the BrowserVisionTool
+     * frame-provider. Logs hasWebView / width / height / base64
+     * length / non-black pixel count so we can prove the screenshot
+     * isn't blank before it goes over the wire to Gemini.
+     */
+    private fun captureWebViewBase64Logged(): String? {
+        val stats = com.TapLink.app.media.BrowserFrameHolder.captureStats()
+        val captured = com.TapLink.app.media.BrowserFrameHolder.captureBase64JpegWithStats()
+        if (captured == null) {
+            Log.w(
+                TAG,
+                "BrowserFrameHolder: hasWebView=${stats.hasWebView} " +
+                    "w=${stats.width} h=${stats.height} base64=null (capture failed)"
+            )
+            return null
+        }
+        Log.i(
+            TAG,
+            "BrowserFrameHolder: hasWebView=${stats.hasWebView} " +
+                "w=${captured.width} h=${captured.height} " +
+                "base64Len=${captured.base64.length} " +
+                "nonBlack=${captured.nonBlackSamples}/${captured.sampledPixels}"
+        )
+        if (captured.nonBlackSamples * 100 < captured.sampledPixels) {
+            Log.w(
+                TAG,
+                "BrowserFrameHolder: capture looks BLANK (only " +
+                    "${captured.nonBlackSamples}/${captured.sampledPixels} non-black). " +
+                    "View.draw on a hardware-accelerated WebView may be the cause."
+            )
+        }
+        return captured.base64
     }
 
     private fun parseQuestionArg(args: String): String {
@@ -498,5 +629,32 @@ class GeminiVoicePipeline(context: Context) {
         private const val SAMPLE_RATE_HZ = 16_000
         private const val DEFAULT_VISION_QUESTION =
             "Describe what's currently on the screen in plain English."
+
+        /** Minimum gap between local-regex browser_vision triggers,
+         *  so a single 2-3-second utterance (which emits many partials)
+         *  doesn't fire the tool more than once. */
+        private const val MIN_LOCAL_VISION_INTERVAL_MS = 3_000L
+
+        /** Phrases that locally trigger browser_vision when Gemini
+         *  Live doesn't elect to call the tool itself. All matched
+         *  case-insensitively as substrings, so "what does this say
+         *  here" / "could you look at this" / etc. also match. */
+        private val VISION_TRIGGER_PHRASES = listOf(
+            "look at this",
+            "what does this say",
+            "what's on screen",
+            "what is on screen",
+            "what's on the screen",
+            "what is on the screen",
+            "read this",
+            "read the screen",
+            "summarize this page",
+            "summarise this page",
+            "summarize the screen",
+            "summarise the screen",
+            "describe the screen",
+            "describe this page",
+            "what am i looking at"
+        )
     }
 }
