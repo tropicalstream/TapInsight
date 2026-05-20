@@ -6674,29 +6674,26 @@ class MainActivity :
     private fun repositionUnipanelCameraPreview() {
         val preview = findViewById<View?>(R.id.unipanelCameraPreviewFrame) ?: return
         if (preview.visibility != View.VISIBLE) return
-        val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return
         val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText)
-        val hudRow = findViewById<View?>(R.id.unipanelTopHudRow)
-        val anchor = when {
-            heartbeat != null && heartbeat.visibility == View.VISIBLE -> heartbeat
-            hudRow != null -> hudRow
-            else -> return
-        }
-        preview.post {
-            if (preview.visibility != View.VISIBLE) return@post
-            val anchorLoc = IntArray(2)
-            val overlayLoc = IntArray(2)
-            anchor.getLocationInWindow(anchorLoc)
-            overlay.getLocationInWindow(overlayLoc)
-            val anchorBottomInOverlay = (anchorLoc[1] - overlayLoc[1]) + anchor.height
-            val gap = (8f * resources.displayMetrics.density).toInt()
-            val newTop = (anchorBottomInOverlay + gap).coerceAtLeast(0)
-            val lp = preview.layoutParams as? android.widget.FrameLayout.LayoutParams
-                ?: return@post
-            if (lp.topMargin != newTop) {
-                lp.topMargin = newTop
-                preview.layoutParams = lp
-            }
+        // Phase 4k.2 — fixed, layout-space (dp) margins. The previous
+        // getLocationInWindow math mixed coordinate spaces: the unipanel
+        // overlay lives under BinocularSbsLayout's scale transform, so
+        // window coordinates are post-scale while topMargin is applied
+        // pre-scale. That inflated the margin enormously and dropped the
+        // preview ~⅓ of the way down the screen, overlapping the
+        // dashboard tiles. dp constants computed against the known HUD
+        // band are scale-correct because layout happens before the SBS
+        // transform. The HUD clock row sits at 6dp + 40dp = 46dp; we
+        // tuck the preview just under it, dropping a little further only
+        // while the heartbeat bar is actually showing.
+        val density = resources.displayMetrics.density
+        val heartbeatShown = heartbeat != null && heartbeat.visibility == View.VISIBLE
+        val topDp = if (heartbeatShown) 78f else 50f
+        val newTop = (topDp * density).toInt()
+        val lp = preview.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
+        if (lp.topMargin != newTop) {
+            lp.topMargin = newTop
+            preview.layoutParams = lp
         }
     }
 

@@ -224,6 +224,25 @@ class GeminiSessionForegroundService : LifecycleService() {
         // OAuth / location / camera providers stay null (their endpoints
         // simply report unconfigured) to avoid an Activity dependency.
         startCompanionServerIfNeeded()
+        // Phase 4k.2 — populate the calendar / tasks / news / air-quality
+        // HUD feeds in unipanel mode. The viewModel fires its refreshes in
+        // init(), but calendar and tasks need OAuth-backed clients that
+        // only visionclaw MainActivity used to install — so in unipanel
+        // mode those feeds stayed blank ("Events --  Tasks --"). Install
+        // the OAuth clients here and keep the feeds fresh on a timer.
+        setupUnipanelHudDataFeeds()
+    }
+
+    /**
+     * Phase 4k.2 — shared GoogleOAuthManager for the companion server's
+     * OAuth callback AND the calendar / tasks HUD clients. Built lazily
+     * from prefs + the application context (no Activity dependency).
+     */
+    private val oauthManager by lazy {
+        com.rayneo.visionclaw.core.network.GoogleOAuthManager(
+            com.rayneo.visionclaw.core.storage.AppPreferences(applicationContext),
+            applicationContext
+        )
     }
 
     /** Phase 4k — companion config/HTTP server (port 19110), Service-owned. */
@@ -235,14 +254,6 @@ class GeminiSessionForegroundService : LifecycleService() {
             val vm = (applicationContext as com.rayneo.visionclaw.VisionClawApp).viewModel
             val port = runCatching { vm.appConfig.debugServerSettings.port }
                 .getOrDefault(19110)
-            // Phase 4k fix — the OAuth callback endpoints need a live
-            // GoogleOAuthManager. Without it the companion "Complete
-            // Authorization" step reports "OAuth manager not ready". The
-            // manager is just prefs + context, so build one here.
-            val oauthManager = com.rayneo.visionclaw.core.network.GoogleOAuthManager(
-                com.rayneo.visionclaw.core.storage.AppPreferences(applicationContext),
-                applicationContext
-            )
             val server = com.rayneo.visionclaw.core.config.CompanionServer(
                 applicationContext,
                 port,
@@ -258,6 +269,55 @@ class GeminiSessionForegroundService : LifecycleService() {
             Log.i(TAG, "Companion server started on port $port (unipanel Service-owned)")
         } catch (e: Exception) {
             Log.w(TAG, "Companion server start failed: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Phase 4k.2 — install OAuth-backed calendar + tasks clients (and the
+     * air-quality client) on the Application-scoped viewModel, then keep
+     * the calendar / tasks / news / AQI HUD feeds refreshed on a timer.
+     * setCalendarClient / setTasksClient / setAirQualityClient each force
+     * an immediate refresh; the loop below covers ongoing updates the way
+     * the Activity's onResume used to. News uses the viewModel's built-in
+     * client and needs no auth.
+     */
+    private fun setupUnipanelHudDataFeeds() {
+        try {
+            val app = applicationContext as com.rayneo.visionclaw.VisionClawApp
+            val vm = app.viewModel
+            val prefs = com.rayneo.visionclaw.core.storage.AppPreferences(applicationContext)
+            val calendarClient = com.rayneo.visionclaw.core.network.GoogleCalendarClient(
+                apiKeyProvider = { prefs.calendarApiKey },
+                accessTokenProvider = {
+                    kotlinx.coroutines.runBlocking { oauthManager.getValidAccessToken() }
+                },
+                context = applicationContext
+            )
+            vm.setCalendarClient(calendarClient)
+            val tasksClient = com.rayneo.visionclaw.core.network.GoogleTasksClient(
+                accessTokenProvider = {
+                    kotlinx.coroutines.runBlocking { oauthManager.getValidAccessToken() }
+                },
+                context = applicationContext
+            )
+            vm.setTasksClient(tasksClient)
+            val airQualityClient = com.rayneo.visionclaw.core.network.GoogleAirQualityClient(
+                apiKeyProvider = { prefs.googleMapsApiKey },
+                context = applicationContext
+            )
+            vm.setAirQualityClient(airQualityClient)
+
+            lifecycleScope.launch {
+                while (true) {
+                    kotlinx.coroutines.delay(5 * 60 * 1000L)
+                    runCatching { vm.refreshHudUpcomingCalendar(force = true) }
+                    runCatching { vm.refreshHudTasks(force = true) }
+                    runCatching { vm.refreshHudNews(force = true) }
+                    runCatching { vm.refreshHudAirQuality(force = true) }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Unipanel HUD data feed setup failed: ${e.message}", e)
         }
     }
 
