@@ -1725,21 +1725,28 @@ class MainActivity :
                                     runCatching { dualWebViewGroup.unmaskScreen() }
                                     return
                                 }
-                                // Phase 4d (Mars revision) — double-tap now toggles
-                                // tapbrowser's OWN side + bottom nav bars (same
-                                // toggle the bottom-right "box" button performs).
-                                // The unipanel HUD overlay (clock / MIC / mini
-                                // cards / vision dot) stays visible the whole
-                                // time — it's never the thing the user wants to
-                                // hide. Back-navigation moved to a future
-                                // dedicated trigger; the legacy path below is
-                                // unreachable in unipanel mode since there's no
-                                // chat panel to return to.
-                                DebugLog.d(
-                                    "DoubleTapDebug",
-                                    "Toggling browser nav bars via setNavBarsHidden"
-                                )
-                                toggleBrowserNavBars()
+                                // Phase 4k (Mars revision) — double-tap is now the
+                                // "bring the browser back" gesture. After a single
+                                // tap on empty space collapses the browser to a
+                                // HUD+chat-only view, double-tapping restores the
+                                // WebView + nav bars. When the browser is already
+                                // visible, double-tap keeps its prior meaning and
+                                // toggles tapbrowser's own side/bottom nav bars.
+                                // The unipanel HUD overlay stays visible the whole
+                                // time — it's never the thing being hidden.
+                                if (browserPanelHidden) {
+                                    DebugLog.d(
+                                        "DoubleTapDebug",
+                                        "Restoring browser portion (was focus-hidden)"
+                                    )
+                                    showBrowserPanel()
+                                } else {
+                                    DebugLog.d(
+                                        "DoubleTapDebug",
+                                        "Toggling browser nav bars via setNavBarsHidden"
+                                    )
+                                    toggleBrowserNavBars()
+                                }
                                 return
                             }
 
@@ -6105,6 +6112,40 @@ class MainActivity :
         )
     }
 
+    /**
+     * Phase 4k (Mars revision) — "focus mode" for the browser portion.
+     *
+     * Tapping empty space in the browser collapses the whole browser
+     * (WebView content + the side/bottom nav bars) so only the unipanel
+     * HUD strip and the chat card float over black. Double-tap brings
+     * the browser back.
+     *
+     * Implementation note: the cursor views and the unipanel overlay
+     * are siblings of [dualWebViewGroup] under mainContainer, so setting
+     * the group INVISIBLE hides the web content + nav bars in one move
+     * while leaving the cursor and HUD/chat fully visible and tappable.
+     * INVISIBLE (not GONE) preserves the page + WebView state and avoids
+     * a relayout, so restore is instant.
+     */
+    @Volatile
+    private var browserPanelHidden = false
+
+    private fun hideBrowserPanel() {
+        if (!::dualWebViewGroup.isInitialized) return
+        if (browserPanelHidden) return
+        browserPanelHidden = true
+        runCatching { dualWebViewGroup.visibility = View.INVISIBLE }
+        DebugLog.d("BrowserFocus", "Browser portion hidden — HUD + chat only")
+    }
+
+    private fun showBrowserPanel() {
+        if (!::dualWebViewGroup.isInitialized) return
+        if (!browserPanelHidden) return
+        browserPanelHidden = false
+        runCatching { dualWebViewGroup.visibility = View.VISIBLE }
+        DebugLog.d("BrowserFocus", "Browser portion restored")
+    }
+
     // ──────────────────────────────────────────────────────────────────
     // Unipanel v2 Phase 3 — GeminiVoiceService binding
     //
@@ -6335,21 +6376,17 @@ class MainActivity :
     private var unipanelVoicePillSubscription: AutoCloseable? = null
 
     private fun startUnipanelVoicePill() {
-        val pill = findViewById<android.widget.TextView?>(R.id.unipanelVoicePill)
-        if (pill == null) {
+        // Phase 4k — the "MIC" pill became the Hermes-style avatar orb.
+        // The orb container owns the tap; the rest of the HUD strip is
+        // still a generous fallback tap surface for the same toggle.
+        val orb = findViewById<View?>(R.id.unipanelVoiceOrb)
+        if (orb == null) {
             DebugLog.w(
                 "Unipanel",
-                "Voice pill: view missing, skipping subscription"
+                "Voice orb: view missing, skipping subscription"
             )
             return
         }
-        // Generous tap surface: the MIC pill AND the entire HUD strip
-        // both fire the same toggle. Codex's spec: "Make the whole
-        // unipanelHudStrip, or at least a professional 36-44dp visible
-        // MIC/listening control beside the clock, clickable" — we
-        // satisfy both ends. The pill consumes its own taps first; the
-        // strip's onClick only fires when the tap lands on the clock
-        // or padding around it.
         val toggleHandler = View.OnClickListener {
             val api = voiceServiceApi
             if (api == null) {
@@ -6368,16 +6405,51 @@ class MainActivity :
                 api.shutdownVoice()
             }
         }
-        pill.setOnClickListener(toggleHandler)
+        orb.setOnClickListener(toggleHandler)
         findViewById<View?>(R.id.unipanelHudStrip)?.setOnClickListener(toggleHandler)
         findViewById<View?>(R.id.unipanelHudFeedStrip)?.setOnClickListener(toggleHandler)
         findViewById<View?>(R.id.unipanelTopHudRow)?.setOnClickListener(toggleHandler)
 
+        // Load the avatar image (custom orb if the user uploaded one via
+        // the companion app, else the default earth orb) and clip round.
+        applyUnipanelVoiceOrbImage()
+
         unipanelVoicePillSubscription?.runCatching { close() }
         unipanelVoicePillSubscription =
             com.TapLink.app.unipanel.HudStateBridge.observe { state ->
-                uiHandler.post { renderUnipanelVoicePill(pill, state) }
+                uiHandler.post { renderUnipanelVoiceOrb(state) }
             }
+    }
+
+    /**
+     * Phase 4k — load the avatar orb bitmap and apply a circular clip.
+     * The custom orb PNG lives in the application's private filesDir
+     * (written by the companion server's /api/orb/upload). tapbrowser
+     * can't import visionclaw's OrbImageStore, but both modules run in
+     * the same process so `filesDir` resolves to the same directory —
+     * we read the file path directly. Falls back to the bundled earth
+     * orb vector when no custom image is present.
+     */
+    private fun applyUnipanelVoiceOrbImage() {
+        val img = findViewById<android.widget.ImageView?>(R.id.unipanelVoiceOrbImage) ?: return
+        img.outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: android.graphics.Outline) {
+                outline.setOval(0, 0, view.width, view.height)
+            }
+        }
+        img.clipToOutline = true
+        val custom = java.io.File(filesDir, "custom_orb.png")
+        val bmp = if (custom.exists()) {
+            runCatching { android.graphics.BitmapFactory.decodeFile(custom.absolutePath) }
+                .getOrNull()
+        } else {
+            null
+        }
+        if (bmp != null) {
+            img.setImageBitmap(bmp)
+        } else {
+            img.setImageResource(R.drawable.ic_unipanel_earth_orb)
+        }
     }
 
     /** Phase 4d (Mars revision) — replaces the manual CAM pill with
@@ -6453,7 +6525,6 @@ class MainActivity :
         }
 
         renderUnipanelGatewayBadge(
-            dot = findViewById(R.id.unipanelHudHermesDot),
             badge = findViewById(R.id.unipanelHudHermesBadge),
             status = state.hermesStatus
         )
@@ -6496,7 +6567,6 @@ class MainActivity :
     }
 
     private fun renderUnipanelGatewayBadge(
-        dot: View?,
         badge: android.widget.TextView?,
         status: com.TapLink.app.unipanel.HudStateBridge.GatewayStatus
     ) {
@@ -6506,10 +6576,10 @@ class MainActivity :
             com.TapLink.app.unipanel.HudStateBridge.GatewayStatus.BAD -> 0xFFFF5B5B.toInt()
             com.TapLink.app.unipanel.HudStateBridge.GatewayStatus.HIDDEN -> 0x00000000
         }
-        dot?.visibility = if (visible) View.VISIBLE else View.GONE
+        // Phase 4k — the standalone status dot was removed; the "H"
+        // badge alone now carries the green/red Hermes-reachable colour.
         badge?.visibility = if (visible) View.VISIBLE else View.GONE
         runCatching {
-            dot?.backgroundTintList = android.content.res.ColorStateList.valueOf(tint)
             badge?.backgroundTintList = android.content.res.ColorStateList.valueOf(tint)
         }
     }
@@ -6532,7 +6602,7 @@ class MainActivity :
             return
         }
 
-        tv.text = "HEART $text"
+        tv.text = "♥ $text"
         tv.visibility = View.VISIBLE
         tv.alpha = 1f
         tv.scrollX = 0
@@ -6677,25 +6747,40 @@ class MainActivity :
         }
     }
 
-    /** Pure view update. Called on the UI thread by the bridge subscriber. */
-    private fun renderUnipanelVoicePill(
-        pill: android.widget.TextView,
+    /**
+     * Phase 4k — pure view update for the avatar orb's glow halo.
+     * Mirrors ChatPanelFragment.pushVoiceOscilloscope: red halo while
+     * the user speaks, blue while Gemini speaks, hidden when idle. The
+     * halo alpha tracks the oscilloscope level so it pulses with speech
+     * loudness. The orb image itself stays put — only the halo carries
+     * the voice-activity colour. Called on the UI thread by the bridge
+     * subscriber.
+     */
+    private fun renderUnipanelVoiceOrb(
         state: com.TapLink.app.unipanel.HudStateBridge.State
     ) {
-        val tint = when (state.phase) {
-            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE ->
-                0xFF5577AA.toInt()       // muted blue-grey (matches the default drawable fill)
-            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.LISTENING ->
-                0xFFFF3344.toInt()       // red — same as the CAM dot
-            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.THINKING ->
-                0xFFFFB347.toInt()       // amber
-            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.FOLLOW_UP ->
-                0xFFFF6B7A.toInt()       // soft red
-        }
-        runCatching {
-            pill.backgroundTintList =
-                android.content.res.ColorStateList.valueOf(tint)
-        }
+        val glow = findViewById<View?>(R.id.unipanelVoiceOrbGlow) ?: return
+        val wantsRed =
+            state.oscilloscopeChannel ==
+                com.TapLink.app.unipanel.HudStateBridge.OscilloscopeChannel.USER ||
+                state.phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.LISTENING ||
+                state.phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.FOLLOW_UP
+        glow.setBackgroundResource(
+            if (wantsRed) R.drawable.bg_unipanel_orb_glow_red
+            else R.drawable.bg_unipanel_orb_glow_blue
+        )
+        val targetAlpha =
+            if (state.phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE) {
+                0f
+            } else {
+                val level = state.oscilloscopeLevel.coerceIn(0f, 1f)
+                if (wantsRed) {
+                    (0.35f + level * 0.65f).coerceIn(0f, 1f)
+                } else {
+                    (0.65f + level * 0.35f).coerceIn(0f, 1f)
+                }
+            }
+        glow.alpha = targetAlpha
     }
 
     /**
@@ -7100,6 +7185,14 @@ class MainActivity :
             return
         }
 
+        // Phase 4k — while the browser is collapsed to focus mode, taps
+        // that fall through the overlay would otherwise be dispatched
+        // into the (INVISIBLE) WebView. Swallow them: the HUD + chat are
+        // the only live surfaces, and double-tap is the way back.
+        if (browserPanelHidden) {
+            return
+        }
+
         val currentTime = SystemClock.uptimeMillis()
         if (currentTime - lastClickTime < MIN_CLICK_INTERVAL) {
             return
@@ -7193,10 +7286,29 @@ class MainActivity :
             document.body.removeChild(a);
             return "clicked";  // Signal that we handled it
         }
+
+        // Phase 4k — report taps that land on empty / background space
+        // so the Kotlin side can collapse the browser to a HUD+chat-only
+        // view. A tap is "interactive" when the hit element (or an
+        // ancestor) is a real control: links, buttons, form fields, the
+        // dashboard's role=button tiles, or media. Everything else
+        // (page background, plain text, layout containers) is empty.
+        var __thInteractive = element && element.closest && element.closest(
+            'a, button, input, select, textarea, label, summary, ' +
+            '[role=button], [role=link], [role=menuitem], [role=tab], ' +
+            '[onclick], [tabindex], [contenteditable=true], img, video'
+        );
+        if (!__thInteractive) { return 'taphud_empty'; }
         return null;
     })();
 """
-            ) { _ ->
+            ) { clickResult ->
+                // Phase 4k — empty-space tap collapses the browser to the
+                // HUD+chat-only focus view. evaluateJavascript hands back a
+                // JSON-encoded string, so the sentinel arrives quoted.
+                if (clickResult != null && clickResult.contains("taphud_empty")) {
+                    Handler(Looper.getMainLooper()).post { hideBrowserPanel() }
+                }
                 // Complete the touch sequence regardless of whether we found a special link
                 Handler(Looper.getMainLooper())
                         .postDelayed(

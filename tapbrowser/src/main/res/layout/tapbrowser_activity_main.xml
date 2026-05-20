@@ -195,16 +195,11 @@
                     android:letterSpacing="0.04"
                     tools:ignore="UnusedAttribute" />
 
-                <!-- Hermes server status dot — green if reachable,
-                     red if not. Placeholder red (unreachable) until
-                     a follow-up wires a Hermes ping. -->
-                <View
-                    android:id="@+id/unipanelHudHermesDot"
-                    android:layout_width="8dp"
-                    android:layout_height="8dp"
-                    android:layout_marginStart="10dp"
-                    android:background="@drawable/bg_unipanel_camera_dot"
-                    android:visibility="visible" />
+                <!-- Phase 4k — the standalone Hermes status dot was
+                     removed (Mars: "remove the green dot next to the
+                     Hermes H"). The "H" badge below already carries the
+                     reachable/unreachable colour, so the extra dot was
+                     redundant. -->
 
                 <TextView
                     android:id="@+id/unipanelHudHermesBadge"
@@ -221,37 +216,47 @@
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
-                <!-- Phase 4 — real MIC button (was a 14dp dot in
-                     Phase 6 essentials). 36dp tap target with the
-                     "MIC" label so it's professional and unambiguous
-                     instead of a tiny unlabeled pill. Tap = toggle a
-                     real Gemini Live voice session via the bound
-                     GeminiVoiceService → GeminiVoicePipeline. The
-                     parent HUD strip is also clickable as a generous
-                     fallback so a tap anywhere on the clock/strip
-                     area still activates voice. Color tints at
-                     runtime from HudStateBridge.VoicePhase:
-                       IDLE       → muted blue-grey
-                       LISTENING  → red
-                       THINKING   → amber
-                       FOLLOW_UP  → soft red -->
-                <TextView
-                    android:id="@+id/unipanelVoicePill"
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
+                <!-- Phase 4k (Mars revision) — the "MIC" text pill is
+                     replaced by the Hermes-branch avatar orb. Tapping
+                     the orb does exactly what tapping MIC did: toggle a
+                     Gemini Live voice session via the bound
+                     GeminiVoiceService. The avatar is a circular
+                     ImageView (the user's custom orb if uploaded, else
+                     the default earth orb) sitting in front of a glow
+                     halo. The halo is hidden when idle and lights up —
+                     red while the user speaks, blue while Gemini speaks
+                     — with its alpha driven by the oscilloscope level,
+                     mirroring ChatPanelFragment.pushVoiceOscilloscope.
+                     Same generous fallback: the whole HUD strip is also
+                     clickable so a tap near the clock still toggles. -->
+                <FrameLayout
+                    android:id="@+id/unipanelVoiceOrb"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
                     android:layout_marginStart="12dp"
-                    android:background="@drawable/bg_unipanel_voice_pill"
-                    android:gravity="center"
-                    android:text="MIC"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="11sp"
-                    android:textStyle="bold"
-                    android:fontFamily="sans-serif-medium"
-                    android:letterSpacing="0.08"
                     android:clickable="true"
                     android:focusable="true"
                     android:contentDescription="Toggle Gemini voice"
-                    tools:ignore="UnusedAttribute" />
+                    tools:ignore="UnusedAttribute">
+
+                    <View
+                        android:id="@+id/unipanelVoiceOrbGlow"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:alpha="0"
+                        android:background="@drawable/bg_unipanel_orb_glow_blue"
+                        android:contentDescription="@null" />
+
+                    <ImageView
+                        android:id="@+id/unipanelVoiceOrbImage"
+                        android:layout_width="32dp"
+                        android:layout_height="32dp"
+                        android:layout_gravity="center"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_unipanel_earth_orb"
+                        android:contentDescription="Voice activity orb" />
+
+                </FrameLayout>
 
                 <!-- Phase 4d (Mars revision) — manual CAM toggle
                      removed. Vision is now voice-triggered: when the
@@ -263,15 +268,16 @@
                      replaces the CAM button — it lights up while
                      vision is active and turns off otherwise.
 
-                     The 8dp × 8dp dot uses the existing camera-dot
-                     drawable. Visible only when HudStateBridge says
-                     screen-look or camera is active. -->
-                <View
+                     Phase 4k (Mars): the old 8dp red dot is now a red
+                     camera glyph so the "camera is watching" state is
+                     unmistakable. Visible only when CameraX is active. -->
+                <ImageView
                     android:id="@+id/unipanelVisionDot"
-                    android:layout_width="8dp"
-                    android:layout_height="8dp"
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
                     android:layout_marginStart="10dp"
-                    android:background="@drawable/bg_unipanel_camera_dot"
+                    android:src="@drawable/ic_unipanel_camera_red"
+                    android:contentDescription="Camera active"
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 

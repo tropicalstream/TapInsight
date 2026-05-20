@@ -215,6 +215,41 @@ class GeminiSessionForegroundService : LifecycleService() {
                 kotlinx.coroutines.delay(intervalMs)
             }
         }
+        // Phase 4k — own the companion config server here. It used to be
+        // started by visionclaw MainActivity, but that Activity doesn't
+        // run in unipanel mode, so https://localhost:19110 was dead even
+        // after `adb forward tcp:19110 tcp:19110`. The Service lives for
+        // the whole unipanel session, so it's the right owner. Summary
+        // providers come from the Application-scoped viewModel; the
+        // OAuth / location / camera providers stay null (their endpoints
+        // simply report unconfigured) to avoid an Activity dependency.
+        startCompanionServerIfNeeded()
+    }
+
+    /** Phase 4k — companion config/HTTP server (port 19110), Service-owned. */
+    private var companionServer: com.rayneo.visionclaw.core.config.CompanionServer? = null
+
+    private fun startCompanionServerIfNeeded() {
+        if (companionServer != null) return
+        try {
+            val vm = (applicationContext as com.rayneo.visionclaw.VisionClawApp).viewModel
+            val port = runCatching { vm.appConfig.debugServerSettings.port }
+                .getOrDefault(19110)
+            val server = com.rayneo.visionclaw.core.config.CompanionServer(
+                applicationContext,
+                port,
+                calendarSummaryProvider = { vm.calendarSummary.value },
+                tasksSummaryProvider = { vm.tasksSummary.value },
+                newsSummaryProvider = { vm.newsSummary.value },
+                airQualityTextProvider = { vm.airQualitySummary.value?.text },
+                airQualityValueProvider = { vm.airQualitySummary.value?.aqi }
+            )
+            server.startServer()
+            companionServer = server
+            Log.i(TAG, "Companion server started on port $port (unipanel Service-owned)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Companion server start failed: ${e.message}", e)
+        }
     }
 
     override fun onBind(intent: Intent): IBinder {
@@ -249,6 +284,9 @@ class GeminiSessionForegroundService : LifecycleService() {
         // event ends. The pipeline's release() is idempotent and
         // tolerates being called when it's already idle.
         runCatching { pipeline.release() }
+        // Phase 4k — tear down the companion server we started in onCreate.
+        runCatching { companionServer?.stopServer() }
+        companionServer = null
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
