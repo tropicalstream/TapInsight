@@ -6760,11 +6760,18 @@ class MainActivity :
         state: com.TapLink.app.unipanel.HudStateBridge.State
     ) {
         val glow = findViewById<View?>(R.id.unipanelVoiceOrbGlow) ?: return
-        val wantsRed =
-            state.oscilloscopeChannel ==
-                com.TapLink.app.unipanel.HudStateBridge.OscilloscopeChannel.USER ||
-                state.phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.LISTENING ||
-                state.phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.FOLLOW_UP
+        // Phase dominates the colour so it stays correct even if the
+        // oscilloscope channel field is momentarily stale: THINKING means
+        // Gemini is speaking → blue; LISTENING / FOLLOW_UP means the user
+        // is speaking → red; otherwise fall back to the channel hint.
+        val phase = state.phase
+        val wantsRed = when (phase) {
+            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.THINKING -> false
+            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.LISTENING,
+            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.FOLLOW_UP -> true
+            else -> state.oscilloscopeChannel ==
+                com.TapLink.app.unipanel.HudStateBridge.OscilloscopeChannel.USER
+        }
         glow.setBackgroundResource(
             if (wantsRed) R.drawable.bg_unipanel_orb_glow_red
             else R.drawable.bg_unipanel_orb_glow_blue
@@ -6940,16 +6947,28 @@ class MainActivity :
         screenY: Float
     ): UnipanelHit? {
         if (root.visibility != View.VISIBLE) return null
+        // Recurse first. An INTERACTIVE descendant always wins (a real
+        // button inside a container). But an INERT descendant must NOT
+        // short-circuit a clickable ancestor: e.g. the voice orb is a
+        // clickable FrameLayout whose glow child carries a background
+        // drawable (an "inert surface"). Without this, the glow would
+        // swallow the tap and the orb would never toggle voice. So we
+        // remember the first inert descendant and only fall back to it
+        // if no clickable view (descendant or ancestor) claims the tap.
+        var inertDescendant: UnipanelHit? = null
         if (root is android.view.ViewGroup) {
             for (i in root.childCount - 1 downTo 0) {
                 val child = root.getChildAt(i) ?: continue
                 val hit = findUnipanelHitDescendant(child, screenX, screenY)
-                if (hit != null) return hit
+                if (hit != null) {
+                    if (hit.isInteractive) return hit
+                    if (inertDescendant == null) inertDescendant = hit
+                }
             }
         }
         val clickable = root.isClickable
         val surface = root.background?.let { !isTransparentBackground(it) } ?: false
-        if (!clickable && !surface) return null
+        if (!clickable && !surface) return inertDescendant
         val loc = IntArray(2)
         root.getLocationOnScreen(loc)
         val left = loc[0].toFloat()
@@ -6957,9 +6976,12 @@ class MainActivity :
         val right = left + root.width
         val bottom = top + root.height
         if (screenX < left || screenX >= right || screenY < top || screenY >= bottom) {
-            return null
+            return inertDescendant
         }
-        return UnipanelHit(root, isInteractive = clickable)
+        // A clickable root beats any inert descendant; an inert root only
+        // matters if nothing deeper already claimed the tap.
+        if (clickable) return UnipanelHit(root, isInteractive = true)
+        return inertDescendant ?: UnipanelHit(root, isInteractive = false)
     }
 
     /**

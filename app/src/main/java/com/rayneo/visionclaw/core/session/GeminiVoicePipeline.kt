@@ -363,6 +363,22 @@ class GeminiVoicePipeline(context: Context) {
                 runCatching {
                     audioPlayer.playChunk(mimeType, data, muted = false, volume = 1f)
                 }
+                // Phase 4k — drive the MODEL (blue) oscilloscope from
+                // Gemini's outgoing audio so the avatar orb glows blue
+                // and pulses with the reply's loudness while it speaks.
+                // Output audio is PCM16, same as the mic stream, so the
+                // same peak helper applies. Phase is already THINKING
+                // (set in onOutputTranscription); we just feed the level.
+                runCatching {
+                    val peak = calculatePcm16Peak(data, data.size)
+                    val norm = (peak / 32_767f).coerceIn(0f, 1f)
+                    HudStateBridge.update {
+                        it.copy(
+                            oscilloscopeLevel = norm,
+                            oscilloscopeChannel = HudStateBridge.OscilloscopeChannel.MODEL
+                        )
+                    }
+                }
             }
 
             override fun onToolCall(callId: String, name: String, args: String) {
@@ -719,7 +735,17 @@ class GeminiVoicePipeline(context: Context) {
                     val norm = (peak / 32_767f).coerceIn(0f, 1f)
                     // Throttle HUD updates — the read loop is much faster
                     // than the overlay can usefully draw.
-                    if (norm > 0.04f || (System.currentTimeMillis() % 8L == 0L)) {
+                    //
+                    // Phase 4k — only drive the USER (red) oscilloscope
+                    // while we're actually in the LISTENING phase. The mic
+                    // keeps streaming during Gemini's reply (for barge-in),
+                    // so without this gate the red mic level would clobber
+                    // the blue MODEL level published from onModelAudio and
+                    // the orb would flicker red/blue while Gemini speaks.
+                    if (HudStateBridge.current().phase ==
+                            HudStateBridge.VoicePhase.LISTENING &&
+                        (norm > 0.04f || (System.currentTimeMillis() % 8L == 0L))
+                    ) {
                         HudStateBridge.update {
                             it.copy(
                                 oscilloscopeLevel = norm,

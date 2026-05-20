@@ -235,9 +235,18 @@ class GeminiSessionForegroundService : LifecycleService() {
             val vm = (applicationContext as com.rayneo.visionclaw.VisionClawApp).viewModel
             val port = runCatching { vm.appConfig.debugServerSettings.port }
                 .getOrDefault(19110)
+            // Phase 4k fix — the OAuth callback endpoints need a live
+            // GoogleOAuthManager. Without it the companion "Complete
+            // Authorization" step reports "OAuth manager not ready". The
+            // manager is just prefs + context, so build one here.
+            val oauthManager = com.rayneo.visionclaw.core.network.GoogleOAuthManager(
+                com.rayneo.visionclaw.core.storage.AppPreferences(applicationContext),
+                applicationContext
+            )
             val server = com.rayneo.visionclaw.core.config.CompanionServer(
                 applicationContext,
                 port,
+                oauthManager = oauthManager,
                 calendarSummaryProvider = { vm.calendarSummary.value },
                 tasksSummaryProvider = { vm.tasksSummary.value },
                 newsSummaryProvider = { vm.newsSummary.value },
