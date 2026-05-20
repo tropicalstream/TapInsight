@@ -95,6 +95,12 @@ object HudStateBridge {
         val calendarSummary: String = "",
         val tasksSummary: String = "",
         val newsSummary: String = "",
+        /**
+         * Comma-separated HUD card order from the companion app
+         * ("calendar,tasks,news"). Drives the tiered HUD panel's row
+         * order so the glasses match the user's companion preference.
+         */
+        val hudDisplayOrder: String = "calendar,tasks,news",
         val airQualityText: String? = null,
         val airQualityValue: Int? = null,
         val radioStation: String? = null,

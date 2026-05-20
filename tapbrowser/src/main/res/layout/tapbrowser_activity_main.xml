@@ -216,6 +216,26 @@
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
+                <!-- Phase 4k.3 — OpenClaw (TapClaw) status badge, sits
+                     right next to "H". Same green/red tint convention as
+                     the Hermes badge, driven by HudStateBridge.openClawStatus
+                     (Service-side OpenClaw health ping). Hidden when the
+                     OpenClaw integration is switched off. -->
+                <TextView
+                    android:id="@+id/unipanelHudOpenClawBadge"
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:layout_marginStart="6dp"
+                    android:gravity="center"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="O"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:background="@drawable/bg_unipanel_voice_pill"
+                    android:visibility="gone"
+                    tools:ignore="UnusedAttribute" />
+
                 <!-- Phase 4k (Mars revision) — the "MIC" text pill is
                      replaced by the Hermes-branch avatar orb. Tapping
                      the orb does exactly what tapping MIC did: toggle a
@@ -283,34 +303,21 @@
 
             </LinearLayout>
 
+            <!-- Phase 4k.3 — the old single-line summary marquee was
+                 replaced by the tiered HUD panel below
+                 (unipanelHudTierPanel). This strip is now invisible
+                 filler that keeps the clock pinned left and still acts
+                 as a generous voice-toggle tap target. -->
             <LinearLayout
                 android:id="@+id/unipanelHudFeedStrip"
                 android:layout_width="0dp"
                 android:layout_height="36dp"
-                android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:paddingHorizontal="10dp"
-                android:background="#B3000000"
+                android:background="@android:color/transparent"
                 android:clickable="false"
-                android:focusable="false">
-
-                <TextView
-                    android:id="@+id/unipanelHudSummaryText"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:ellipsize="end"
-                    android:fontFamily="sans-serif"
-                    android:maxLines="1"
-                    android:singleLine="true"
-                    android:text="Events --   Tasks --   News --"
-                    android:textColor="#FFB7CEDE"
-                    android:textSize="11sp"
-                    tools:ignore="UnusedAttribute" />
-
-            </LinearLayout>
+                android:focusable="false" />
 
             </LinearLayout>
             <!-- /unipanelTopHudRow -->
@@ -399,6 +406,84 @@
 
             </LinearLayout>
             <!-- /unipanelTopHudColumn -->
+
+            <!-- Phase 4k.3 — tiered HUD info panel, top-right so it stays
+                 clear of the left-gutter camera preview and the centered
+                 chat card. Three stacked rows (Calendar Events / Tasks &
+                 Reminders / News Headlines) replace the old single-line
+                 marquee that scrolled off-screen. Row order + which rows
+                 show is driven at runtime by the companion app's HUD
+                 display-order preference (renderUnipanelTieredHud). Each
+                 row is a dark pill, colour-keyed to match the companion
+                 (calendar cyan, tasks green, news amber), single-/two-line
+                 ellipsized so nothing ever runs off the edge. -->
+            <LinearLayout
+                android:id="@+id/unipanelHudTierPanel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|end"
+                android:layout_marginTop="50dp"
+                android:layout_marginEnd="10dp"
+                android:orientation="vertical"
+                android:gravity="end"
+                android:elevation="8dp"
+                android:clickable="false"
+                android:focusable="false">
+
+                <TextView
+                    android:id="@+id/unipanelHudTier0"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="4dp"
+                    android:maxWidth="380dp"
+                    android:background="#B3000000"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="4dp"
+                    android:fontFamily="sans-serif"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:textColor="#FFE0F4FF"
+                    android:textSize="12sp"
+                    android:lineSpacingExtra="1dp"
+                    android:visibility="gone"
+                    tools:ignore="UnusedAttribute" />
+
+                <TextView
+                    android:id="@+id/unipanelHudTier1"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="4dp"
+                    android:maxWidth="380dp"
+                    android:background="#B3000000"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="4dp"
+                    android:fontFamily="sans-serif"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:textColor="#FFE0F4FF"
+                    android:textSize="12sp"
+                    android:lineSpacingExtra="1dp"
+                    android:visibility="gone"
+                    tools:ignore="UnusedAttribute" />
+
+                <TextView
+                    android:id="@+id/unipanelHudTier2"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:maxWidth="380dp"
+                    android:background="#B3000000"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="4dp"
+                    android:fontFamily="sans-serif"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:textColor="#FFE0F4FF"
+                    android:textSize="12sp"
+                    android:lineSpacingExtra="1dp"
+                    android:visibility="gone"
+                    tools:ignore="UnusedAttribute" />
+
+            </LinearLayout>
 
             <!-- Phase 4g/4j — Hermes-style camera preview frame. 96dp ×
                  72dp burgundy-stroked container holding a PreviewView

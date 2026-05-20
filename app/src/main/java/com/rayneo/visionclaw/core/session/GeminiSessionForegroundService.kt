@@ -135,6 +135,7 @@ class GeminiSessionForegroundService : LifecycleService() {
         lifecycleScope.launch {
             try {
                 val vm = (applicationContext as com.rayneo.visionclaw.VisionClawApp).viewModel
+                val hudPrefs = com.rayneo.visionclaw.core.storage.AppPreferences(applicationContext)
                 kotlinx.coroutines.flow.combine(
                     vm.calendarSummary,
                     vm.tasksSummary,
@@ -153,6 +154,9 @@ class GeminiSessionForegroundService : LifecycleService() {
                             calendarSummary = values[0] as String,
                             tasksSummary = values[1] as String,
                             newsSummary = values[2] as String,
+                            // Phase 4k.3 — carry the companion's HUD card
+                            // order so the tiered HUD panel matches it.
+                            hudDisplayOrder = hudPrefs.hudDisplayOrder,
                             airQualityText = airQuality?.text,
                             airQualityValue = airQuality?.aqi,
                             radioStation = radio?.stationName,
@@ -210,6 +214,75 @@ class GeminiSessionForegroundService : LifecycleService() {
                     HudStateBridge.GatewayStatus.BAD
                 }
                 HudStateBridge.update { it.copy(hermesStatus = status) }
+                val intervalMs =
+                    (prefs.openClawHeartbeatIntervalSeconds * 1000L).coerceAtLeast(5_000L)
+                kotlinx.coroutines.delay(intervalMs)
+            }
+        }
+        // Phase 4k.3 — OpenClaw (TapClaw) health ping, mirroring the
+        // Hermes one above so the "O" badge next to "H" reflects the
+        // OpenClaw gateway's reachability in unipanel mode. GOOD when the
+        // gateway answers, BAD when configured-but-unreachable, HIDDEN
+        // when the integration is switched off. Same cadence pref.
+        lifecycleScope.launch {
+            val prefs = com.rayneo.visionclaw.core.storage.AppPreferences(applicationContext)
+            val pairing = applicationContext.getSharedPreferences(
+                "visionclaw_prefs", Context.MODE_PRIVATE
+            )
+            val openClawClient = com.rayneo.visionclaw.core.network.OpenClawClient(
+                gatewayUrlProvider = {
+                    prefs.openClawEndpoint.takeIf { it.isNotBlank() }
+                        ?: pairing.getString("openclaw_pair_device_token_gateway", null)
+                            ?.takeIf { it.isNotBlank() }
+                },
+                gatewayTokenProvider = {
+                    prefs.openClawToken.takeIf { it.isNotBlank() }
+                        ?: pairing.getString("openclaw_pair_device_token", null)
+                            ?.takeIf { it.isNotBlank() }
+                },
+                deviceIdProvider = {
+                    pairing.getString("openclaw_pair_device_id", null)?.takeIf { it.isNotBlank() }
+                },
+                publicKeyProvider = {
+                    pairing.getString("openclaw_pair_public_key", null)?.takeIf { it.isNotBlank() }
+                },
+                privateKeyProvider = {
+                    pairing.getString("openclaw_pair_private_key", null)?.takeIf { it.isNotBlank() }
+                },
+                sessionIdProvider = { prefs.openClawSessionId.ifBlank { "main" } },
+                timeoutMsProvider = {
+                    val t = prefs.openClawTimeoutSeconds
+                    if (t > 0) t * 1000 else 30_000
+                }
+            )
+            while (true) {
+                val status = try {
+                    val gateway = prefs.openClawEndpoint.takeIf { it.isNotBlank() }
+                        ?: pairing.getString("openclaw_pair_device_token_gateway", null)
+                    val token = prefs.openClawToken.takeIf { it.isNotBlank() }
+                        ?: pairing.getString("openclaw_pair_device_token", null)
+                    when {
+                        !prefs.openClawEnabled -> HudStateBridge.GatewayStatus.HIDDEN
+                        gateway.isNullOrBlank() || token.isNullOrBlank() ->
+                            HudStateBridge.GatewayStatus.BAD
+                        else -> {
+                            val result = kotlinx.coroutines.withTimeoutOrNull(12_000L) {
+                                openClawClient.ping()
+                            }
+                            if (result is
+                                com.rayneo.visionclaw.core.network.OpenClawClient.ClawResult.Success
+                            ) {
+                                HudStateBridge.GatewayStatus.GOOD
+                            } else {
+                                HudStateBridge.GatewayStatus.BAD
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "OpenClaw health ping failed: ${e.message}")
+                    HudStateBridge.GatewayStatus.BAD
+                }
+                HudStateBridge.update { it.copy(openClawStatus = status) }
                 val intervalMs =
                     (prefs.openClawHeartbeatIntervalSeconds * 1000L).coerceAtLeast(5_000L)
                 kotlinx.coroutines.delay(intervalMs)

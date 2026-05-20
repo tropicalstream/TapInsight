@@ -6515,8 +6515,7 @@ class MainActivity :
     private fun renderUnipanelHudState(
         state: com.TapLink.app.unipanel.HudStateBridge.State
     ) {
-        findViewById<android.widget.TextView?>(R.id.unipanelHudSummaryText)?.text =
-            buildUnipanelHudSummary(state)
+        renderUnipanelTieredHud(state)
 
         findViewById<android.widget.TextView?>(R.id.unipanelHudAqi)?.let { aqi ->
             val text = state.airQualityText?.trim().orEmpty()
@@ -6528,24 +6527,90 @@ class MainActivity :
             badge = findViewById(R.id.unipanelHudHermesBadge),
             status = state.hermesStatus
         )
+        renderUnipanelGatewayBadge(
+            badge = findViewById(R.id.unipanelHudOpenClawBadge),
+            status = state.openClawStatus
+        )
         renderUnipanelHeartbeat(state)
     }
 
-    private fun buildUnipanelHudSummary(
+    /**
+     * Phase 4k.3 — render the tiered HUD info panel (Calendar Events /
+     * Tasks &amp; Reminders / News Headlines) in the order the user set in
+     * the companion app (state.hudDisplayOrder). Each row is a colour-keyed
+     * pill: a bold label in the category colour followed by the value in
+     * soft white, two-line ellipsized so nothing scrolls off-screen.
+     */
+    private data class UnipanelHudTier(val label: String, val value: String, val color: Int)
+
+    private fun renderUnipanelTieredHud(
         state: com.TapLink.app.unipanel.HudStateBridge.State
-    ): String {
-        val events = compactUnipanelHudField("Events", state.calendarSummary)
-        val tasks = compactUnipanelHudField("Tasks", state.tasksSummary)
-        val news = compactUnipanelHudField("News", state.newsSummary)
-        val radio = state.radioStation
-            ?.takeIf { state.radioPlaying }
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?.let { "Radio ${it.take(36)}" }
-        return listOfNotNull(events, tasks, news, radio).joinToString("   ")
+    ) {
+        val slots = listOf(
+            findViewById<android.widget.TextView?>(R.id.unipanelHudTier0),
+            findViewById<android.widget.TextView?>(R.id.unipanelHudTier1),
+            findViewById<android.widget.TextView?>(R.id.unipanelHudTier2)
+        )
+        val order = state.hudDisplayOrder
+            .split(",")
+            .map { it.trim().lowercase(Locale.US) }
+            .filter { it.isNotBlank() }
+            .ifEmpty { listOf("calendar", "tasks", "news") }
+        val tiers = order.mapNotNull { key ->
+            when (key) {
+                "calendar" -> UnipanelHudTier(
+                    "Events", unipanelHudFieldBody("Events", state.calendarSummary),
+                    0xFF00E5FF.toInt()
+                )
+                "tasks" -> UnipanelHudTier(
+                    "Tasks", unipanelHudFieldBody("Tasks", state.tasksSummary),
+                    0xFF00E676.toInt()
+                )
+                "news" -> UnipanelHudTier(
+                    "News", unipanelHudFieldBody("News", state.newsSummary),
+                    0xFFFFB14A.toInt()
+                )
+                else -> null
+            }
+        }
+        for (i in slots.indices) {
+            val slot = slots[i] ?: continue
+            val tier = tiers.getOrNull(i)
+            if (tier == null) {
+                slot.visibility = View.GONE
+            } else {
+                slot.text = buildUnipanelTierLine(tier)
+                slot.visibility = View.VISIBLE
+            }
+        }
     }
 
-    private fun compactUnipanelHudField(label: String, raw: String): String {
+    /** Bold colour-keyed label + soft-white value for one tiered HUD row. */
+    private fun buildUnipanelTierLine(
+        tier: UnipanelHudTier
+    ): CharSequence {
+        val label = tier.label.uppercase(Locale.US)
+        val sb = android.text.SpannableStringBuilder()
+        sb.append(label)
+        sb.setSpan(
+            android.text.style.ForegroundColorSpan(tier.color),
+            0, sb.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        sb.setSpan(
+            android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+            0, sb.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        sb.append("  ")
+        val valueStart = sb.length
+        sb.append(tier.value)
+        sb.setSpan(
+            android.text.style.ForegroundColorSpan(0xFFE6EEF5.toInt()),
+            valueStart, sb.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        return sb
+    }
+
+    private fun unipanelHudFieldBody(label: String, raw: String): String {
         val body = raw
             .replace('\n', ' ')
             .replace(Regex("\\s+"), " ")
@@ -6553,7 +6618,7 @@ class MainActivity :
             .removePrefix("$label:")
             .removePrefix(label.uppercase(Locale.US) + ":")
             .trim()
-        return if (body.isBlank()) "$label --" else "$label ${body.take(48)}"
+        return if (body.isBlank()) "—" else body.take(90)
     }
 
     private fun colorForUnipanelAqi(aqi: Int?): Int {
@@ -6674,22 +6739,22 @@ class MainActivity :
     private fun repositionUnipanelCameraPreview() {
         val preview = findViewById<View?>(R.id.unipanelCameraPreviewFrame) ?: return
         if (preview.visibility != View.VISIBLE) return
-        val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText)
         // Phase 4k.2 — fixed, layout-space (dp) margins. The previous
         // getLocationInWindow math mixed coordinate spaces: the unipanel
         // overlay lives under BinocularSbsLayout's scale transform, so
         // window coordinates are post-scale while topMargin is applied
         // pre-scale. That inflated the margin enormously and dropped the
         // preview ~⅓ of the way down the screen, overlapping the
-        // dashboard tiles. dp constants computed against the known HUD
-        // band are scale-correct because layout happens before the SBS
-        // transform. The HUD clock row sits at 6dp + 40dp = 46dp; we
-        // tuck the preview just under it, dropping a little further only
-        // while the heartbeat bar is actually showing.
+        // dashboard tiles. dp constants are scale-correct because layout
+        // happens before the SBS transform.
+        // Phase 4k.3 — always pin just under the clock strip (50dp). The
+        // earlier 78dp "drop while the heartbeat shows" pushed the frame
+        // down onto the dashboard tiles (Mars: overlaps the browser while
+        // the ticker is up, fine once it clears). Staying at 50dp keeps it
+        // clear of the dashboard; the transient heartbeat bar sits behind
+        // the frame, which is fine since the frame itself signals camera.
         val density = resources.displayMetrics.density
-        val heartbeatShown = heartbeat != null && heartbeat.visibility == View.VISIBLE
-        val topDp = if (heartbeatShown) 78f else 50f
-        val newTop = (topDp * density).toInt()
+        val newTop = (50f * density).toInt()
         val lp = preview.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
         if (lp.topMargin != newTop) {
             lp.topMargin = newTop
