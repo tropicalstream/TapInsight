@@ -6029,10 +6029,10 @@ class MainActivity :
      */
     private var unipanelChatCardSubscription: AutoCloseable? = null
     private val hideUnipanelAssistantCardRunnable = Runnable {
-        findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)?.let { card ->
-            card.text = ""
-            card.visibility = View.GONE
-        }
+        // Phase 4k.5 — the card box is the ScrollView now; hide it and
+        // clear the inner text.
+        findViewById<View?>(R.id.unipanelMiniCardScroll)?.visibility = View.GONE
+        findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)?.text = ""
     }
 
     /**
@@ -6263,78 +6263,98 @@ class MainActivity :
     }
 
     private fun startUnipanelMiniCardObserver() {
-        // Phase 4g (Mars revision, take 2) — single chat card showing
-        // only the latest Gemini/TTS (assistant) reply. Tap toggles
-        // between collapsed (2 lines, ellipsized) and expanded (up to
-        // 8 lines, full text). No user-side card, no older-message
-        // history — just the live assistant message.
+        // Phase 4k.5 — single Gemini reply card. The text lives in
+        // unipanelMiniCard1 and scrolls inside the unipanelMiniCardScroll
+        // box (Hermes-style auto-scroll to the newest text). Tapping the
+        // card runs a Google search of the reply text in the browser —
+        // it no longer expands.
         val card1 = findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)
-        if (card1 == null) {
+        val scroll = findViewById<View?>(R.id.unipanelMiniCardScroll)
+        if (card1 == null || scroll == null) {
             DebugLog.w(
                 "Unipanel",
-                "Mini card observer: card1 TextView missing, skipping subscription"
+                "Mini card observer: card views missing, skipping subscription"
             )
             return
         }
-        card1.setOnClickListener {
-            unipanelChatCardExpanded = !unipanelChatCardExpanded
-            applyUnipanelChatCardExpansion(card1)
+        scroll.setOnClickListener {
+            val text = card1.text?.toString()?.trim().orEmpty()
+            if (text.isNotBlank()) openUnipanelChatCardSearch(text)
         }
-        applyUnipanelChatCardExpansion(card1)
 
         unipanelChatCardSubscription?.runCatching { close() }
         unipanelChatCardSubscription =
             com.TapLink.app.unipanel.ChatCardBridge.observe { cards ->
-                uiHandler.post { renderUnipanelAssistantCard(card1, cards) }
+                uiHandler.post { renderUnipanelAssistantCard(card1, scroll, cards) }
             }
     }
 
-    /** Phase 4g — collapsed/expanded toggle state for the single
-     *  Gemini chat card. */
-    @Volatile
-    private var unipanelChatCardExpanded: Boolean = false
-
-    private fun applyUnipanelChatCardExpansion(card: android.widget.TextView) {
-        if (unipanelChatCardExpanded) {
-            card.maxLines = 8
-            card.ellipsize = null
-        } else {
-            card.maxLines = 2
-            card.ellipsize = android.text.TextUtils.TruncateAt.END
+    /**
+     * Phase 4k.5 — tapping the chat card opens a Google search of the
+     * reply text in the browser, mirroring the Hermes branch's generic
+     * search (buildGenericSearchUrl → google.com/search?q=…). The browser
+     * is un-hidden first in case we're in the tap-to-collapse focus view.
+     */
+    private fun openUnipanelChatCardSearch(text: String) {
+        val cleaned = text
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+            .trim()
+            .take(1000)
+        if (cleaned.isBlank()) return
+        val encoded = try {
+            java.net.URLEncoder.encode(cleaned, "UTF-8")
+        } catch (_: Exception) {
+            return
         }
+        val url = "https://www.google.com/search?q=$encoded"
+        showBrowserPanel()
+        runCatching { openUrlInNewTab(url) }
+        DebugLog.d("Unipanel", "Chat card tapped → search: ${cleaned.take(60)}")
     }
 
     /**
-     * Phase 4g — pure render. Picks the most recent ASSISTANT card
-     * out of [cards] and writes its text into the single visible
-     * card; everything else (user messages, older history) is
-     * intentionally skipped.
-     *
-     * Phase 4g fix — when there are no assistant messages yet, the
-     * card is GONE rather than just empty. An empty card with its
-     * background drawable still consumes ~32dp of vertical space at
-     * the top of the screen, which is what ruined the apparent
-     * padding above the browser. Hiding when empty restores the
-     * cold-launch look.
+     * Phase 4k.5 — pure render. Picks the most recent ASSISTANT card and
+     * shows it in the scroll box; auto-scrolls to the newest text and
+     * caps the box height (grow-to-content up to ~96dp, then scroll).
+     * GONE when there's no assistant text.
      */
     private fun renderUnipanelAssistantCard(
         card: android.widget.TextView,
+        scroll: View,
         cards: List<com.TapLink.app.unipanel.ChatCardBridge.Card>
     ) {
         val latestAssistant = cards.lastOrNull { !it.fromUser }?.text?.takeIf { it.isNotBlank() }
+        uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
         if (latestAssistant == null) {
-            uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
             card.text = ""
-            card.visibility = View.GONE
-        } else {
-            uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
-            card.text = latestAssistant
-            card.visibility = View.VISIBLE
-            uiHandler.postDelayed(
-                hideUnipanelAssistantCardRunnable,
-                UNIPANEL_ASSISTANT_CARD_DISPLAY_MS
-            )
+            scroll.visibility = View.GONE
+            return
         }
+        card.text = latestAssistant
+        scroll.visibility = View.VISIBLE
+        // Cap the scroll box height: grow with content up to ~96dp, then
+        // let it scroll. Then auto-scroll to the bottom so the newest
+        // text stays visible as the reply streams in (Hermes behavior).
+        scroll.post {
+            val maxH = (96f * resources.displayMetrics.density).toInt()
+            val contentH = card.height + scroll.paddingTop + scroll.paddingBottom
+            val capped = contentH > maxH
+            val lp = scroll.layoutParams
+            lp.height = if (capped) maxH else android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            scroll.layoutParams = lp
+            if (capped) {
+                scroll.post {
+                    (scroll as? android.widget.ScrollView)?.fullScroll(View.FOCUS_DOWN)
+                }
+            }
+        }
+        uiHandler.postDelayed(
+            hideUnipanelAssistantCardRunnable,
+            UNIPANEL_ASSISTANT_CARD_DISPLAY_MS
+        )
     }
 
     /**

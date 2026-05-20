@@ -362,48 +362,6 @@
                  voice routing). Width capped at 340dp so even on a
                  single eye of the binocular display, the cards
                  don't span edge-to-edge. -->
-            <!-- Phase 4g (Mars revision, take 2) — ONE chat card,
-                 Gemini/TTS output only. Collapsed = 2 lines with
-                 ellipsis. Tap = expand to up to 8 lines so the user
-                 can read longer Gemini replies in place. Tap again
-                 = collapse. No user-side cards, no older-message
-                 cards — just the live assistant reply.
-                 Phase 4h — marginTop dropped from 64dp to 52dp so
-                 the card sits flush under the HUD strip instead of
-                 floating mid-screen. The card itself is GONE-when-
-                 empty (see renderUnipanelAssistantCard) so cold
-                 launch shows zero card-related padding. -->
-            <LinearLayout
-                android:id="@+id/unipanelMiniCardStack"
-                android:layout_width="340dp"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center_horizontal"
-                android:layout_marginTop="8dp"
-                android:orientation="vertical"
-                android:clickable="false"
-                android:focusable="false"
-                android:elevation="8dp">
-
-                <TextView
-                    android:id="@+id/unipanelMiniCard1"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/bg_unipanel_mini_card_assistant"
-                    android:paddingHorizontal="12dp"
-                    android:paddingVertical="8dp"
-                    android:fontFamily="sans-serif-medium"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="13sp"
-                    android:lineSpacingExtra="1dp"
-                    android:maxLines="2"
-                    android:ellipsize="end"
-                    android:text=""
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:contentDescription="Gemini reply — tap to expand" />
-
-            </LinearLayout>
-
             </LinearLayout>
             <!-- /unipanelTopHudColumn -->
 
@@ -417,73 +375,117 @@
                  row is a dark pill, colour-keyed to match the companion
                  (calendar cyan, tasks green, news amber), single-/two-line
                  ellipsized so nothing ever runs off the edge. -->
+            <!-- Phase 4k.5 — fixed-width (280dp) panel, top-right. Rows
+                 are match_parent + left-aligned text so EVENTS / TASKS /
+                 NEWS all start at the same left margin (no stagger). 11sp
+                 to match the dashboard's "Favorites / All" tabs so it
+                 fits without running off-screen. Each row is its own dark
+                 pill, gone-when-empty. -->
             <LinearLayout
                 android:id="@+id/unipanelHudTierPanel"
-                android:layout_width="wrap_content"
+                android:layout_width="280dp"
                 android:layout_height="wrap_content"
                 android:layout_gravity="top|end"
                 android:layout_marginTop="50dp"
-                android:layout_marginEnd="10dp"
+                android:layout_marginEnd="8dp"
                 android:orientation="vertical"
-                android:gravity="end"
                 android:elevation="8dp"
                 android:clickable="false"
                 android:focusable="false">
 
                 <TextView
                     android:id="@+id/unipanelHudTier0"
-                    android:layout_width="wrap_content"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="4dp"
-                    android:maxWidth="380dp"
+                    android:layout_marginBottom="3dp"
                     android:background="#B3000000"
-                    android:paddingHorizontal="10dp"
-                    android:paddingVertical="4dp"
+                    android:gravity="start"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="3dp"
                     android:fontFamily="sans-serif"
                     android:maxLines="2"
                     android:ellipsize="end"
                     android:textColor="#FFE0F4FF"
-                    android:textSize="12sp"
+                    android:textSize="11sp"
                     android:lineSpacingExtra="1dp"
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
                 <TextView
                     android:id="@+id/unipanelHudTier1"
-                    android:layout_width="wrap_content"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="4dp"
-                    android:maxWidth="380dp"
+                    android:layout_marginBottom="3dp"
                     android:background="#B3000000"
-                    android:paddingHorizontal="10dp"
-                    android:paddingVertical="4dp"
+                    android:gravity="start"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="3dp"
                     android:fontFamily="sans-serif"
                     android:maxLines="2"
                     android:ellipsize="end"
                     android:textColor="#FFE0F4FF"
-                    android:textSize="12sp"
+                    android:textSize="11sp"
                     android:lineSpacingExtra="1dp"
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
                 <TextView
                     android:id="@+id/unipanelHudTier2"
-                    android:layout_width="wrap_content"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:maxWidth="380dp"
                     android:background="#B3000000"
-                    android:paddingHorizontal="10dp"
-                    android:paddingVertical="4dp"
+                    android:gravity="start"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="3dp"
                     android:fontFamily="sans-serif"
                     android:maxLines="2"
                     android:ellipsize="end"
                     android:textColor="#FFE0F4FF"
-                    android:textSize="12sp"
+                    android:textSize="11sp"
                     android:lineSpacingExtra="1dp"
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
             </LinearLayout>
+
+            <!-- Phase 4k.5 — the Gemini reply chat card. Centered box with
+                 padding, parked at 118dp so it sits BELOW the heartbeat
+                 ticker (≤72dp) and the tier panel (≤~115dp) and clear of
+                 the left-gutter camera preview. The text scrolls inside a
+                 fixed-height ScrollView (Hermes-style: auto-scrolls to the
+                 newest text as the reply streams; no manual drag needed).
+                 11sp to match the dashboard tabs. Tapping the card runs a
+                 Google search of the reply text in the browser (it does
+                 NOT expand). GONE when there's no assistant text. -->
+            <ScrollView
+                android:id="@+id/unipanelMiniCardScroll"
+                android:layout_width="300dp"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="118dp"
+                android:background="@drawable/bg_unipanel_mini_card_assistant"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="8dp"
+                android:scrollbars="none"
+                android:fadeScrollbars="false"
+                android:elevation="10dp"
+                android:clickable="true"
+                android:focusable="true"
+                android:contentDescription="Gemini reply — tap to search the web"
+                android:visibility="gone"
+                tools:ignore="UnusedAttribute">
+
+                <TextView
+                    android:id="@+id/unipanelMiniCard1"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="11sp"
+                    android:lineSpacingExtra="1dp"
+                    android:text="" />
+
+            </ScrollView>
 
             <!-- Phase 4g/4j — Hermes-style camera preview frame. 96dp ×
                  72dp burgundy-stroked container holding a PreviewView
