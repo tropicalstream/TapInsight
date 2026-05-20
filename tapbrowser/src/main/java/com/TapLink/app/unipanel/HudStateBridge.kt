@@ -1,0 +1,139 @@
+package com.TapLink.app.unipanel
+
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * Unipanel v2 — process-local bridge for the voice / Gemini-Live HUD
+ * state that currently lives on visionclaw MainActivity views
+ * (R.id.listening_overlay, R.id.listening_transcript,
+ * R.id.voice_oscilloscope, R.id.hud_notification).
+ *
+ * Phase 1 of the Service refactor: this bridge is introduced empty.
+ * No publisher yet, no subscriber yet — it exists as the
+ * compile-time contract that subsequent phases will fill in. The
+ * goal is to give the future GeminiVoiceService a stateless,
+ * cross-module way to surface listening state without needing an
+ * Activity context.
+ *
+ * Why a single bridge for four concerns: every one of these fields
+ * is published-from the same code path (the AudioRecord read loop
+ * + the LiveSessionListener inside MainActivity), and tapbrowser
+ * needs to render them in lockstep on the unipanel overlay (a
+ * "listening" pulse, the user's last-heard partial transcript, the
+ * oscilloscope, and any one-line HUD notice). Bundling them keeps
+ * the subscriber side from racing on four independent observables.
+ *
+ * Threading mirrors [ChatCardBridge] / [CameraStateBridge]: state
+ * writes are atomic, listeners fire on the publisher's thread, UI
+ * consumers must hop to main themselves.
+ *
+ * Future phases (see docs/UNIPANEL_V2_SERVICE_REFACTOR.md):
+ *   • Phase 2: GeminiVoiceService becomes the publisher.
+ *   • Phase 3: unipanel overlay subscribes and renders.
+ *   • Phase 4: the corresponding R.id.* views in activity_main are
+ *     deleted along with the chat panel.
+ */
+object HudStateBridge {
+
+    /**
+     * Coarse phase of the voice pipeline. Drives whether the overlay
+     * shows "listening", "thinking", or nothing at all. Mirrors
+     * MainActivity.GeminiLiveState but exposed as an enum here so the
+     * tapbrowser module doesn't depend on visionclaw's package layout.
+     */
+    enum class VoicePhase { IDLE, LISTENING, THINKING, FOLLOW_UP }
+
+    /**
+     * Color hint for the oscilloscope bar. The current visionclaw
+     * implementation alternates between a "user speaking" red and a
+     * "model speaking" blue; we keep that split here.
+     */
+    enum class OscilloscopeChannel { USER, MODEL }
+
+    /**
+     * Connection status as understood by the chat HUD. Maps 1:1 to
+     * ChatPanelFragment.ConnectionStatus today; the enum lives here
+     * so the Service / tapbrowser side don't need to import the chat
+     * fragment.
+     */
+    enum class ConnectionStatus {
+        IDLE,
+        CONNECTING,
+        GEMINI_CONNECTED,
+        TOOLS_READY,
+        DEGRADED,
+        ERROR
+    }
+
+    /**
+     * Snapshot of everything the overlay needs to render the voice /
+     * Live HUD. Immutable; mutate by publishing a new [State].
+     *
+     * • [phase] — overall voice loop phase. Determines whether the
+     *   listening overlay is visible at all.
+     * • [transcript] — the user's currently-being-recognized utterance,
+     *   or null if there's nothing to display.
+     * • [oscilloscopeLevel] — 0.0 to 1.0 amplitude for the bar / wave
+     *   in the overlay. Zero means "draw the bar at rest". Negative
+     *   is treated as zero by consumers.
+     * • [oscilloscopeChannel] — which color to draw the bar in.
+     * • [connection] — current connection status pill.
+     * • [notification] — a one-line transient HUD message, or null.
+     *   Consumers are responsible for fading it out themselves; the
+     *   bridge does NOT time it out.
+     */
+    data class State(
+        val phase: VoicePhase = VoicePhase.IDLE,
+        val transcript: String? = null,
+        val oscilloscopeLevel: Float = 0f,
+        val oscilloscopeChannel: OscilloscopeChannel = OscilloscopeChannel.USER,
+        val connection: ConnectionStatus = ConnectionStatus.IDLE,
+        val notification: String? = null
+    )
+
+    private val state = AtomicReference(State())
+    private val listeners = CopyOnWriteArrayList<(State) -> Unit>()
+
+    /**
+     * Replace the published state. Triggers every registered listener
+     * synchronously on the calling thread.
+     */
+    fun publish(next: State) {
+        state.set(next)
+        for (l in listeners) {
+            try {
+                l(next)
+            } catch (_: Throwable) {
+                // Misbehaving listeners must never break the publisher.
+            }
+        }
+    }
+
+    /**
+     * Apply a transform to the current state and publish the result.
+     * Convenient when the caller only wants to bump one field — e.g.
+     * `update { it.copy(oscilloscopeLevel = peak) }`.
+     */
+    inline fun update(transform: (State) -> State) {
+        publish(transform(current()))
+    }
+
+    /** Most recently published snapshot. */
+    fun current(): State = state.get()
+
+    /**
+     * Subscribe. The listener fires once synchronously with the
+     * current state, then on every future [publish]. Returns an
+     * [AutoCloseable] for lifecycle-tied unsubscription.
+     */
+    fun observe(listener: (State) -> Unit): AutoCloseable {
+        listeners.add(listener)
+        try {
+            listener(state.get())
+        } catch (_: Throwable) {
+            // ditto.
+        }
+        return AutoCloseable { listeners.remove(listener) }
+    }
+}
