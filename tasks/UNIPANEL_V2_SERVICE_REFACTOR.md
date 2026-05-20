@@ -186,6 +186,32 @@ and completes the "browser as canvas" vision.
    FGS notification is posted (POST_NOTIFICATIONS granted).
 6. Speak; confirm Gemini responds.
 
+## UX constraint (from Mars, post-Phase 1 boot)
+
+Browser and chat HUD must both be reachable with simple swipes / taps.
+No mode toggles in settings, no two-finger gestures, no long-presses.
+The likely interaction model the rest of the refactor should preserve:
+
+  - **Default state**: browser fills the screen; HUD strip + mini-card
+    stack + CAM chip float on top as today.
+  - **Tap on the mini-card stack** → expand to a fuller chat view
+    (more rows, scrollable). Tap outside or single-tap the browser →
+    collapse back. This is where the migrated chat content from the
+    old visionclaw panel lives once Phase 5 deletes it.
+  - **Swipe down** (or some equally cheap gesture) → focus the HUD
+    layer for navigation; same swipe again returns focus to browser.
+    The cursor tap pipeline already distinguishes opaque-clickable /
+    opaque-inert / transparent zones, so this is mostly a focus-state
+    toggle in tapbrowser, not a new gesture engine.
+  - **Voice activation** stays a single dedicated tap (left-arm tap
+    today). Service-backed once Phase 4 lands.
+
+Phase 6 is the right time to actually wire the swipe / tap surfaces;
+Phases 2–5 just need to **not paint themselves into a corner** that
+makes Phase 6 expensive. Concretely: the chat-content rendering in
+tapbrowser must be able to grow from "3 mini cards" to "full chat
+list" without re-architecting how `ChatCardBridge` is consumed.
+
 ## Non-goals (for now)
 
 - Fish.audio readout migration. Stays where it is until voice is back.
