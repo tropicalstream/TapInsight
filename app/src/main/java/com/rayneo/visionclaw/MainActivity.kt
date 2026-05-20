@@ -55,6 +55,8 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.viewpager2.widget.ViewPager2
@@ -295,8 +297,38 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ── ViewModel & gesture engine ───────────────────────────────────────
+    //
+    // Unipanel v2 Phase 2 — `by viewModels()` keeps working syntactically,
+    // but the override below makes it (and every `by activityViewModels()`
+    // call inside ChatPanelFragment / SettingsPanelFragment /
+    // WebPanelFragment) resolve to the single Application-scoped
+    // MainViewModel held by VisionClawApp. This is the prerequisite for
+    // the upcoming voice Service: the Service runs outside Activity
+    // lifecycle but needs to write into the same `viewModel.messages`
+    // StateFlow that ChatCardBridge publishes from.
+    //
+    // The factory override is the cleanest way to get there without
+    // touching the ~40 fragment / activity call sites that use the
+    // ViewModelProvider idiom — they all funnel through this factory
+    // when resolving MainViewModel.
     private val viewModel: MainViewModel by viewModels()
     private val gestureEngine = TrackpadGestureEngine()
+
+    override fun getDefaultViewModelProviderFactory(): ViewModelProvider.Factory {
+        return object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                return when {
+                    modelClass.isAssignableFrom(MainViewModel::class.java) ->
+                        (application as VisionClawApp).viewModel as T
+                    else -> throw IllegalArgumentException(
+                        "Unknown ViewModel class: ${modelClass.name} — " +
+                            "add it to MainActivity.getDefaultViewModelProviderFactory"
+                    )
+                }
+            }
+        }
+    }
 
     // ── Fragment instances (retained across config changes via ViewPager2) ─
     private val chatFragment = ChatPanelFragment()

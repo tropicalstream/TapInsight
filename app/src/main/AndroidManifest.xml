@@ -46,6 +46,7 @@
     <uses-feature android:name="android.hardware.microphone" android:required="true" />
 
     <application
+        android:name=".VisionClawApp"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
