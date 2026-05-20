@@ -77,6 +77,29 @@
                     android:letterSpacing="0.06"
                     tools:ignore="UnusedAttribute" />
 
+                <!-- Phase 6 voice-toggle pill. Lives inside the HUD
+                     strip so it's always reachable but never covers
+                     the dashboard tiles underneath. Tap = toggle the
+                     Gemini voice session via the bound voice Service.
+                     Color is mutated at runtime from
+                     HudStateBridge.VoicePhase:
+                       - IDLE       → muted blue-grey (default fill)
+                       - LISTENING  → red
+                       - THINKING   → amber
+                       - FOLLOW_UP  → soft red
+                     Phase 4 will move the real audio pipeline behind
+                     this; Phase 3 stub on the Service just bounces a
+                     state change so Mars can verify the bind path. -->
+                <View
+                    android:id="@+id/unipanelVoicePill"
+                    android:layout_width="14dp"
+                    android:layout_height="14dp"
+                    android:layout_marginStart="10dp"
+                    android:background="@drawable/bg_unipanel_voice_pill"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="Toggle voice assistant" />
+
             </LinearLayout>
 
             <!-- Step 2c.2 mini chat-card stack. Three compact rows

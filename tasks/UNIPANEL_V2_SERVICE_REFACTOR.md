@@ -186,31 +186,54 @@ and completes the "browser as canvas" vision.
    FGS notification is posted (POST_NOTIFICATIONS granted).
 6. Speak; confirm Gemini responds.
 
-## UX constraint (from Mars, post-Phase 1 boot)
+## UX / HUD spec (from codex, locked in)
 
-Browser and chat HUD must both be reachable with simple swipes / taps.
-No mode toggles in settings, no two-finger gestures, no long-presses.
-The likely interaction model the rest of the refactor should preserve:
+The WebView is the HUD's home renderer — **not** disposable browser
+content underneath the HUD. On cold launch it shows the TapLinkX3
+dashboard tools: QR Scanner, Edit Links, Add Link. Those must remain
+visible and tappable at all times the user is in the default state.
 
-  - **Default state**: browser fills the screen; HUD strip + mini-card
-    stack + CAM chip float on top as today.
-  - **Tap on the mini-card stack** → expand to a fuller chat view
-    (more rows, scrollable). Tap outside or single-tap the browser →
-    collapse back. This is where the migrated chat content from the
-    old visionclaw panel lives once Phase 5 deletes it.
-  - **Swipe down** (or some equally cheap gesture) → focus the HUD
-    layer for navigation; same swipe again returns focus to browser.
-    The cursor tap pipeline already distinguishes opaque-clickable /
-    opaque-inert / transparent zones, so this is mostly a focus-state
-    toggle in tapbrowser, not a new gesture engine.
-  - **Voice activation** stays a single dedicated tap (left-arm tap
-    today). Service-backed once Phase 4 lands.
+The overlay layer is strictly the floating HUD overlay:
 
-Phase 6 is the right time to actually wire the swipe / tap surfaces;
-Phases 2–5 just need to **not paint themselves into a corner** that
-makes Phase 6 expensive. Concretely: the chat-content rendering in
-tapbrowser must be able to grow from "3 mini cards" to "full chat
-list" without re-architecting how `ChatCardBridge` is consumed.
+  - HUD strip (clock)
+  - Mini chat-card stack
+  - CAM chip
+  - Future expanded chat view (Phase 6+)
+
+Hit-test contract (the three-state hit-test already enforces this in
+tapbrowser):
+
+  - **Transparent overlay zones** → taps pass through to dashboard
+    tiles / WebView underneath.
+  - **Opaque inert overlay zones** → consume taps with NO action; the
+    consume is critical so taps that land on overlay backgrounds
+    don't leak to dashboard tiles that happen to sit beneath them.
+  - **Clickable overlay widgets** → own their own taps; fire their
+    onClick handlers.
+
+**Hard rule (codex):** future expanded chat may cover the dashboard
+**only temporarily** and MUST have an obvious collapse path back to
+the default overlay. The implementation must NEVER permanently bury
+QR Scanner, Edit Links, or Add Link behind chat UI.
+
+Interaction model the rest of the refactor must preserve:
+
+  - **Default state**: WebView shows dashboard; overlay (clock + mini
+    cards + CAM chip) floats on top; both are reachable.
+  - **Tap on the mini-card stack** → expand to a fuller chat view.
+    Must include a collapse affordance. Tap outside the expanded view
+    → collapse back to default overlay.
+  - **Swipe down** (or some equally cheap gesture) → focus toggle
+    between HUD overlay and browser. Cursor tap pipeline already
+    handles the routing.
+  - **Voice activation** → a single dedicated tap. Service-backed
+    once Phase 4 lands.
+
+Phase 6 wires the swipe/tap surfaces; Phases 2–5 must not paint
+themselves into a corner that makes Phase 6 expensive. Chat content
+rendering must grow from "3 mini cards" to "full chat list" without
+re-architecting how `ChatCardBridge` is consumed, and without burying
+the dashboard.
 
 ## Non-goals (for now)
 

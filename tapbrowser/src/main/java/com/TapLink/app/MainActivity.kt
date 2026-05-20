@@ -1052,6 +1052,13 @@ class MainActivity :
         // tasks/UNIPANEL_V2_SERVICE_REFACTOR.md for the phase plan.
         startVoiceServiceBinding()
 
+        // Unipanel v2 Phase 6-essentials — wire the voice pill in the
+        // HUD strip. Click → toggle voice via the binder; subscribed
+        // to HudStateBridge for visual feedback (color by VoicePhase).
+        // Pipeline still Phase 4; today's tap just bounces Service
+        // state through the bridge so Mars can verify the bind path.
+        startUnipanelVoicePill()
+
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
         // Add this to disable default keyboard
@@ -6008,6 +6015,83 @@ class MainActivity :
                     chip.visibility = if (active) View.VISIBLE else View.GONE
                 }
             }
+    }
+
+    /**
+     * Unipanel v2 Phase 6 — voice toggle pill in the HUD strip.
+     *
+     * Subscribes to [com.TapLink.app.unipanel.HudStateBridge] for visual
+     * feedback (tints the pill by VoicePhase) and registers an onClick
+     * that toggles voice via the bound [com.TapLink.app.unipanel.VoiceServiceApi].
+     *
+     * Pill placement matches codex's HUD spec:
+     *   - Sits inside the HUD strip (which is opaque-inert today; the
+     *     pill itself is opaque-clickable so it owns its taps).
+     *   - Doesn't cover dashboard tiles — strip is wrap_content and
+     *     pinned top-center.
+     *   - Tap is the only gesture; no long-press to keep things simple.
+     *
+     * Phase 4 will make activateVoice actually start the audio pipeline.
+     * Phase 3 stubs in the Service just bounce a HudStateBridge state
+     * change so Mars can verify the bind path: tap pill → red, tap
+     * again → blue-grey. If color flips on tap, the binder is alive
+     * end-to-end.
+     */
+    private var unipanelVoicePillSubscription: AutoCloseable? = null
+
+    private fun startUnipanelVoicePill() {
+        val pill = findViewById<View?>(R.id.unipanelVoicePill)
+        if (pill == null) {
+            DebugLog.w(
+                "Unipanel",
+                "Voice pill: view missing, skipping subscription"
+            )
+            return
+        }
+        pill.setOnClickListener {
+            val api = voiceServiceApi
+            if (api == null) {
+                DebugLog.w(
+                    "VoiceBind",
+                    "Pill tap: voiceServiceApi is null — bind not ready"
+                )
+                return@setOnClickListener
+            }
+            val phase = com.TapLink.app.unipanel.HudStateBridge.current().phase
+            if (phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE) {
+                DebugLog.d("VoiceBind", "Pill tap: activateVoice()")
+                api.activateVoice()
+            } else {
+                DebugLog.d("VoiceBind", "Pill tap (phase=$phase): shutdownVoice()")
+                api.shutdownVoice()
+            }
+        }
+        unipanelVoicePillSubscription?.runCatching { close() }
+        unipanelVoicePillSubscription =
+            com.TapLink.app.unipanel.HudStateBridge.observe { state ->
+                uiHandler.post { renderUnipanelVoicePill(pill, state) }
+            }
+    }
+
+    /** Pure view update. Called on the UI thread by the bridge subscriber. */
+    private fun renderUnipanelVoicePill(
+        pill: View,
+        state: com.TapLink.app.unipanel.HudStateBridge.State
+    ) {
+        val tint = when (state.phase) {
+            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE ->
+                0xFF5577AA.toInt()       // muted blue-grey (matches the default drawable fill)
+            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.LISTENING ->
+                0xFFFF3344.toInt()       // red — same as the CAM dot
+            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.THINKING ->
+                0xFFFFB347.toInt()       // amber
+            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.FOLLOW_UP ->
+                0xFFFF6B7A.toInt()       // soft red
+        }
+        runCatching {
+            pill.backgroundTintList =
+                android.content.res.ColorStateList.valueOf(tint)
+        }
     }
 
     /**
@@ -11959,6 +12043,12 @@ class MainActivity :
             unipanelCameraChipSubscription?.close()
         } catch (_: Exception) {}
         unipanelCameraChipSubscription = null
+        // Unipanel v2 Phase 6: drop the voice pill bridge subscription
+        // so a recreated Activity doesn't double-listen and drift.
+        try {
+            unipanelVoicePillSubscription?.close()
+        } catch (_: Exception) {}
+        unipanelVoicePillSubscription = null
         // Unipanel v2 Phase 3: drop the voice Service binding so an
         // Activity-recreate doesn't leak a ServiceConnection or
         // double-bind on the next onCreate.
