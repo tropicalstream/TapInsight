@@ -314,8 +314,12 @@ class MainActivity : AppCompatActivity() {
     private val viewModel: MainViewModel by viewModels()
     private val gestureEngine = TrackpadGestureEngine()
 
-    override fun getDefaultViewModelProviderFactory(): ViewModelProvider.Factory {
-        return object : ViewModelProvider.Factory {
+    // androidx.activity 1.8+ exposes defaultViewModelProviderFactory as a
+    // Kotlin `val`, not a Java getDefaultViewModelProviderFactory() method.
+    // Project is on androidx.activity 1.10.0 so we override the property.
+    // Lazy so we don't touch `application` before super.onCreate finishes.
+    override val defaultViewModelProviderFactory: ViewModelProvider.Factory by lazy {
+        object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 return when {
@@ -323,7 +327,7 @@ class MainActivity : AppCompatActivity() {
                         (application as VisionClawApp).viewModel as T
                     else -> throw IllegalArgumentException(
                         "Unknown ViewModel class: ${modelClass.name} — " +
-                            "add it to MainActivity.getDefaultViewModelProviderFactory"
+                            "add it to MainActivity.defaultViewModelProviderFactory"
                     )
                 }
             }
