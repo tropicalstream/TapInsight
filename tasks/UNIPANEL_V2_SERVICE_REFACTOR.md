@@ -243,6 +243,63 @@ the dashboard.
 
 ---
 
-**Current status:** Phase 1 complete. Next session resumes at Phase 2
-(Application-scope viewModel) once Mars confirms commit `bccac80` boots
-cleanly on the RayNeo X3 Pro.
+## Phase 4i — LiveToolCallCoordinator extraction (in progress)
+
+Codex's bb20ac4 wired a real ToolDispatcher into the Service path
+(unipanel build can now run open_taplink, send_video_list, tapradio,
+ask_maps, hermes_agent — not just browser_vision). But ~11
+Hermes-era guardrails still live ONLY in MainActivity, so the
+Service path lacks the "nuanced all-Gemini" behavior:
+
+  - lookup/list with send_video_list display=cache (no browser open)
+  - "show/send the list" → picker with display=glasses
+  - "play the first/second/that one/all" → cached-title resolver
+  - "play <keyword> on YouTube" → YouTube search + taplink_autoplay
+  - "can you play X" capability questions answered verbally, no
+    auto-open
+  - media-type conflict: YouTube request never routes into TapRadio,
+    vice-versa
+  - tapradio podcast action requires current consent
+  - redundant lookup after a recent suggestion cache hits the cache
+  - research_topic local readout / Gemini-output suppression
+  - local-agent Hermes/TapClaw direct presentation
+
+Migration sequence (one commit per guard so each is reviewable on
+its own):
+
+  4i.1 ✓ Scaffold:
+    - app/.../core/session/LiveToolCallActionSink.kt (this commit)
+    - app/.../core/session/LiveToolCallCoordinator.kt (this commit)
+    - dispatch() stub; no logic moved.
+  4i.2 — mediaServiceCapabilityQuestionResponse (pure)
+  4i.3 — explicitMediaTypeConflictResponse (pure)
+  4i.4 — tapRadioPodcastActionWithoutCurrentConsentResponse (pure)
+  4i.5 — youtubeSuggestionListWithoutCurrentConsentResponse (pure)
+  4i.6 — redundantMediaLookupAfterSuggestionCacheResponse (prefs)
+  4i.7 — rewriteTapRadioArgsForRequestedMediaType (pure)
+  4i.8 — forceTapRadioPlaybackArgsIfExplicit (pure)
+  4i.9 — resolveRecentYouTubeSuggestionListDisplayRequest (prefs)
+  4i.10 — resolveRecentYouTubeFollowUpPlaybackRequest (prefs)
+  4i.11 — research_topic local readout/suppression (sink.speak)
+  4i.12 — local-agent direct presentation (sink.presentLocalAgentResult)
+  4i.13 — final dispatch() body: chain guards in the same order
+    MainActivity.dispatchLiveToolCall does today
+  4i.14 — wire MainActivity → coordinator; delete Activity copies
+  4i.15 — wire GeminiVoicePipeline.onToolCall → coordinator; remove
+    pipeline's bb20ac4 inline tool dispatch
+
+Done when:
+  - MainActivity no longer holds any of the ~11 guard private funs
+  - GeminiVoicePipeline routes onToolCall through the coordinator
+  - Service-path voice flows replicate the Hermes-branch behavior
+    one-for-one in logcat and on-device traces
+
+Risk: this is exactly the kind of multi-component refactor that
+broke Phase 4 the first time. Mitigation: one guard per commit, full
+verification each step. No "do everything in one swing" attempts.
+
+---
+
+**Current status:** Phase 4h complete. Codex's bb20ac4 in. Phase 4i.1
+(coordinator scaffold) landed. Next session resumes at 4i.2 once
+Mars confirms bb20ac4 still boots clean.
