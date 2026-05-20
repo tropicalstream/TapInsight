@@ -20,6 +20,11 @@
          requested at runtime in MainActivity.onCreate. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Phase 4d: FOREGROUND_SERVICE_CAMERA so the Service can drive
+         CameraX while in foreground (Android 14+ enforcement). Pairs
+         with foregroundServiceType="microphone|camera" on the Service
+         element below. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-permission android:name="android.permission.READ_CALENDAR" />
@@ -87,7 +92,7 @@
         <service
             android:name=".core.session.GeminiSessionForegroundService"
             android:exported="false"
-            android:foregroundServiceType="microphone" />
+            android:foregroundServiceType="microphone|camera" />
 
     </application>
 

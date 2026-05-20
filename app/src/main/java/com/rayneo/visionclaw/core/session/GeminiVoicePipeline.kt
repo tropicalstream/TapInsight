@@ -242,6 +242,24 @@ class GeminiVoicePipeline(context: Context) {
         runCatching { audioPlayer.release() }
     }
 
+    /**
+     * Phase 4d — push one camera frame into the active Gemini Live
+     * session. Called by the Service whenever
+     * [com.rayneo.visionclaw.core.camera.FrameCaptureManager]
+     * produces a new analyzed frame (CameraX ImageAnalysis use case).
+     *
+     * No-op if the session isn't ready yet — there's no point
+     * sending video before onSessionReady fires, the model would
+     * just drop the frame.
+     */
+    fun sendCameraFrame(base64: String) {
+        if (!liveSessionReady) return
+        if (base64.isBlank()) return
+        runCatching {
+            liveSession?.sendImageChunkBase64(base64, "image/jpeg")
+        }
+    }
+
     // ────────────────────────────────────────────────────────────────
     // Internals
     // ────────────────────────────────────────────────────────────────

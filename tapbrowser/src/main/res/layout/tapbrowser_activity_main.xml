@@ -138,6 +138,29 @@
                     android:contentDescription="Toggle Gemini voice"
                     tools:ignore="UnusedAttribute" />
 
+                <!-- Phase 4d — CAM toggle pill. Streams CameraX
+                     frames into the active Gemini Live session when
+                     ON. Same 36dp footprint as MIC, sits beside it.
+                     Tinted from CameraStateBridge (green when on,
+                     blue-grey when off). -->
+                <TextView
+                    android:id="@+id/unipanelCameraPill"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="6dp"
+                    android:background="@drawable/bg_unipanel_voice_pill"
+                    android:gravity="center"
+                    android:text="CAM"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.08"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="Toggle Gemini camera"
+                    tools:ignore="UnusedAttribute" />
+
             </LinearLayout>
 
             <!-- Step 2c.2 mini chat-card stack. Three compact rows

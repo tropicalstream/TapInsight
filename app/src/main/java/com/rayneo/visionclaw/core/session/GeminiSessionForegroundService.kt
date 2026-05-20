@@ -3,7 +3,6 @@ package com.rayneo.visionclaw.core.session
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -12,6 +11,8 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.lifecycle.LifecycleService
+import com.TapLink.app.unipanel.CameraStateBridge
 import com.TapLink.app.unipanel.HudStateBridge
 import com.TapLink.app.unipanel.VoiceServiceApi
 
@@ -45,7 +46,7 @@ import com.TapLink.app.unipanel.VoiceServiceApi
  * `FOREGROUND_SERVICE_TYPE_MICROPHONE` are attached. Shutdown reverses
  * both (`stopForeground` + drop the notification).
  */
-class GeminiSessionForegroundService : Service() {
+class GeminiSessionForegroundService : LifecycleService() {
 
     /**
      * In-process Binder. Implements [VoiceServiceApi] so tapbrowser
@@ -56,6 +57,8 @@ class GeminiSessionForegroundService : Service() {
         override fun activateVoice() = this@GeminiSessionForegroundService.activateVoice()
         override fun shutdownVoice() = this@GeminiSessionForegroundService.shutdownVoice()
         override fun currentState(): HudStateBridge.State = HudStateBridge.current()
+        override fun toggleCamera() = this@GeminiSessionForegroundService.toggleCamera()
+        override fun isCameraOn(): Boolean = cameraOn
     }
 
     private val binder = LocalBinder()
@@ -70,8 +73,23 @@ class GeminiSessionForegroundService : Service() {
      *  allocate the audio stack until voice actually activates. */
     private val pipeline: GeminiVoicePipeline by lazy { GeminiVoicePipeline(this) }
 
-    override fun onBind(intent: Intent?): IBinder {
+    /** Phase 4d — CameraX frame capture, owned by the Service so it
+     *  can stream frames into the same Gemini Live session as the
+     *  audio pipeline. Lazy: only allocate the CameraX executor +
+     *  ProcessCameraProvider on first toggleCamera(). */
+    private val frameCapture by lazy {
+        com.rayneo.visionclaw.core.camera.FrameCaptureManager(this)
+    }
+
+    @Volatile
+    private var cameraOn: Boolean = false
+
+    override fun onBind(intent: Intent): IBinder {
         Log.d(TAG, "onBind — issuing LocalBinder")
+        // LifecycleService's onBind drives its internal lifecycle.
+        // Call super so the LifecycleOwner reaches STARTED, which
+        // CameraX (and viewModel-backed flows) require.
+        super.onBind(intent)
         return binder
     }
 
@@ -79,12 +97,20 @@ class GeminiSessionForegroundService : Service() {
         // Preserve the v2 behavior: when started via [start], promote
         // immediately so visionclaw's existing call sites still get the
         // mic privilege. Bound-only consumers won't hit this path.
+        super.onStartCommand(intent, flags, startId)
         startForegroundIfNeeded()
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         Log.d(TAG, "onDestroy")
+        // Phase 4d — stop CameraX before the pipeline so the analyzer
+        // doesn't try to push a frame into a closed WebSocket.
+        if (cameraOn) {
+            runCatching { frameCapture.stop() }
+            cameraOn = false
+            CameraStateBridge.publish(false)
+        }
         // Release the live pipeline FIRST so AudioRecord / WebSocket
         // / AudioTrack are all torn down cleanly before the process
         // event ends. The pipeline's release() is idempotent and
@@ -122,6 +148,53 @@ class GeminiSessionForegroundService : Service() {
         Log.i(TAG, "activateVoice()")
         startForegroundIfNeeded()
         pipeline.activate()
+    }
+
+    /**
+     * Phase 4d — toggle CameraX streaming. When ON, every frame the
+     * camera produces is sent to the active Gemini Live session via
+     * [GeminiVoicePipeline.sendCameraFrame] → liveSession.sendImage-
+     * ChunkBase64. When OFF, CameraX is unbound and the camera is
+     * released.
+     *
+     * Idempotent. Publishes the on/off state to [CameraStateBridge]
+     * so the tapbrowser CAM chip + pill reflect reality.
+     *
+     * Requires:
+     *   - CAMERA runtime permission (granted earlier via visionclaw
+     *     MainActivity in pre-unipanel builds; user grants on first
+     *     toggleCamera if not yet granted).
+     *   - FOREGROUND_SERVICE_CAMERA + foregroundServiceType="camera"
+     *     so Android 14+ lets us run CameraX from a Service.
+     */
+    private fun toggleCamera() {
+        if (cameraOn) {
+            Log.i(TAG, "toggleCamera: stopping CameraX")
+            runCatching { frameCapture.stop() }
+            cameraOn = false
+            CameraStateBridge.publish(false)
+            HudStateBridge.update { it.copy(notification = "Camera off") }
+        } else {
+            Log.i(TAG, "toggleCamera: starting CameraX")
+            // FGS must be foreground BEFORE CameraX opens, else
+            // Android revokes camera access mid-bind on API 30+.
+            startForegroundIfNeeded()
+            runCatching {
+                frameCapture.start(
+                    owner = this,
+                    previewSurfaceProvider = null,
+                    onFrameBase64 = { base64 -> pipeline.sendCameraFrame(base64) }
+                )
+                cameraOn = true
+                CameraStateBridge.publish(true)
+                HudStateBridge.update { it.copy(notification = "Camera streaming to Gemini") }
+            }.onFailure { e ->
+                Log.w(TAG, "toggleCamera start failed: ${e.message}", e)
+                HudStateBridge.update {
+                    it.copy(notification = "Camera couldn't start: ${e.message}")
+                }
+            }
+        }
     }
 
     /**

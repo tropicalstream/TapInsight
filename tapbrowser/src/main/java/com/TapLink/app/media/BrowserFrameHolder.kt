@@ -1,11 +1,16 @@
 package com.TapLink.app.media
 
+import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Rect
+import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import android.view.PixelCopy
 import android.view.View
 import android.webkit.WebView
 import java.io.ByteArrayOutputStream
@@ -145,6 +150,120 @@ object BrowserFrameHolder {
             Log.d(TAG, "captureBase64JpegWithStats: no WebView attached")
             return null
         }
+        // Phase 4d (codex follow-up) — PixelCopy first. View.draw on a
+        // hardware-accelerated WebView produces black frames on some
+        // OEM Android builds (RayNeo glasses included), which is why
+        // codex's Phase 4c BLANK warning kept firing. PixelCopy reads
+        // the actual rendered surface so it captures whatever the user
+        // sees on screen, including the hardware-accelerated WebView
+        // layers underneath the Android HUD overlay.
+        val pixelCopyResult = captureViaPixelCopy(webView)
+        if (pixelCopyResult != null) {
+            Log.d(TAG, "captureBase64JpegWithStats: PixelCopy path used")
+            return pixelCopyResult
+        }
+        Log.d(TAG, "captureBase64JpegWithStats: PixelCopy failed, falling back to View.draw")
+        return captureViaViewDraw(webView)
+    }
+
+    /**
+     * Phase 4d (codex follow-up) — capture the WebView's visible
+     * region via [PixelCopy.request] on the Activity's Window.
+     * srcRect is the WebView's bounds in window coordinates.
+     *
+     * Why Window instead of the WebView itself: the View overload of
+     * PixelCopy.request was added in API 34. We target API 30+, so
+     * the Window overload (API 26+) is the portable choice. The cost
+     * is that we have to compute the WebView's rect in window space
+     * ourselves; the win is that the captured pixels are the actual
+     * rendered pixels including hardware-accelerated layers, which
+     * View.draw cannot reach on every device.
+     *
+     * Runs on the UI thread (PixelCopy schedules its own callback);
+     * blocks the caller via CountDownLatch up to [CAPTURE_TIMEOUT_MS].
+     */
+    private fun captureViaPixelCopy(webView: WebView): CaptureResult? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
+        val activity = webView.context as? Activity ?: run {
+            Log.d(TAG, "PixelCopy: WebView context is not an Activity")
+            return null
+        }
+        val window = activity.window ?: run {
+            Log.d(TAG, "PixelCopy: Activity window is null")
+            return null
+        }
+        // Synchronously read WebView dimensions on the main thread.
+        val sizeHolder = IntArray(2)
+        val locHolder = IntArray(2)
+        val sizeLatch = CountDownLatch(1)
+        val locRunnable = Runnable {
+            try {
+                sizeHolder[0] = webView.width
+                sizeHolder[1] = webView.height
+                webView.getLocationInWindow(locHolder)
+            } finally {
+                sizeLatch.countDown()
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            locRunnable.run()
+        } else {
+            mainHandler.post(locRunnable)
+            try {
+                if (!sizeLatch.await(CAPTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) return null
+            } catch (_: InterruptedException) {
+                return null
+            }
+        }
+        val w = sizeHolder[0]
+        val h = sizeHolder[1]
+        if (w <= 0 || h <= 0) {
+            Log.d(TAG, "PixelCopy: WebView size $w×$h is 0")
+            return null
+        }
+        val srcRect = Rect(locHolder[0], locHolder[1], locHolder[0] + w, locHolder[1] + h)
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val resultHolder = intArrayOf(PixelCopy.ERROR_UNKNOWN)
+        val pixelLatch = CountDownLatch(1)
+        // PixelCopy needs its own HandlerThread for the callback because
+        // posting back to mainHandler from inside an already-pending
+        // mainHandler-runnable can deadlock the latch.
+        val pixelThread = HandlerThread("BrowserFrameHolder-PixelCopy").apply { start() }
+        val pixelHandler = Handler(pixelThread.looper)
+        try {
+            PixelCopy.request(
+                window,
+                srcRect,
+                bitmap,
+                { copyResult ->
+                    resultHolder[0] = copyResult
+                    pixelLatch.countDown()
+                },
+                pixelHandler
+            )
+            if (!pixelLatch.await(CAPTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "PixelCopy: timed out after ${CAPTURE_TIMEOUT_MS}ms")
+                return null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "PixelCopy: request threw: ${e.message}")
+            return null
+        } finally {
+            pixelThread.quitSafely()
+        }
+        if (resultHolder[0] != PixelCopy.SUCCESS) {
+            Log.w(TAG, "PixelCopy: result=${resultHolder[0]} (non-SUCCESS)")
+            bitmap.recycle()
+            return null
+        }
+        val scaled = downscaleIfNeeded(bitmap, MAX_DIM_PX)
+        if (scaled !== bitmap) bitmap.recycle()
+        return encodeAndStat(scaled)
+    }
+
+    /** Legacy View.draw path — kept as a fallback when PixelCopy
+     *  refuses (rare on the X3 Pro but possible on emulators). */
+    private fun captureViaViewDraw(webView: WebView): CaptureResult? {
         val resultBitmap = arrayOfNulls<Bitmap>(1)
         val latch = CountDownLatch(1)
         val runCapture = Runnable {
@@ -152,7 +271,7 @@ object BrowserFrameHolder {
                 val w = webView.width
                 val h = webView.height
                 if (w <= 0 || h <= 0) {
-                    Log.w(TAG, "captureBase64JpegWithStats: WebView 0-size ($w×$h)")
+                    Log.w(TAG, "View.draw: WebView 0-size ($w×$h)")
                     return@Runnable
                 }
                 val full = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -161,7 +280,7 @@ object BrowserFrameHolder {
                 resultBitmap[0] = downscaleIfNeeded(full, MAX_DIM_PX)
                 if (resultBitmap[0] !== full) full.recycle()
             } catch (e: Exception) {
-                Log.w(TAG, "captureBase64JpegWithStats: draw failed: ${e.message}")
+                Log.w(TAG, "View.draw: draw failed: ${e.message}")
             } finally {
                 latch.countDown()
             }
@@ -172,15 +291,19 @@ object BrowserFrameHolder {
             mainHandler.post(runCapture)
             try {
                 if (!latch.await(CAPTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                    Log.w(TAG, "captureBase64JpegWithStats: timed out")
+                    Log.w(TAG, "View.draw: timed out")
                     return null
                 }
             } catch (_: InterruptedException) {
-                Log.w(TAG, "captureBase64JpegWithStats: interrupted")
+                Log.w(TAG, "View.draw: interrupted")
                 return null
             }
         }
         val bmp = resultBitmap[0] ?: return null
+        return encodeAndStat(bmp)
+    }
+
+    private fun encodeAndStat(bmp: Bitmap): CaptureResult? {
         return try {
             val (nonBlack, sampled) = countNonBlackPixels(bmp)
             val out = ByteArrayOutputStream()
@@ -194,7 +317,7 @@ object BrowserFrameHolder {
                 sampledPixels = sampled
             )
         } catch (e: Exception) {
-            Log.w(TAG, "captureBase64JpegWithStats: encode failed: ${e.message}")
+            Log.w(TAG, "encodeAndStat: encode failed: ${e.message}")
             null
         } finally {
             bmp.recycle()

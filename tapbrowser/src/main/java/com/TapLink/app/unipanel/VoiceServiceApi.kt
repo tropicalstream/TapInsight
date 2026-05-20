@@ -60,6 +60,23 @@ interface VoiceServiceApi {
      */
     fun currentState(): HudStateBridge.State
 
+    /**
+     * Phase 4d — toggle CameraX streaming. When ON, the Service binds
+     * an ImageAnalysis use case and streams frames into the active
+     * Gemini Live session via `sendImageChunkBase64`. When OFF, the
+     * camera is unbound and released. Idempotent.
+     *
+     * The Service is foreground-promoted before opening the camera
+     * (Android 14+ requires foregroundServiceType="camera" + the
+     * matching runtime permission). State is mirrored via
+     * [CameraStateBridge] so the tapbrowser CAM chip + pill reflect
+     * the on/off state without polling.
+     */
+    fun toggleCamera()
+
+    /** True when CameraX is currently streaming. */
+    fun isCameraOn(): Boolean
+
     companion object {
         /**
          * Fully-qualified class name of the Service that implements
