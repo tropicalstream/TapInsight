@@ -51,13 +51,29 @@
                  article content the user is reading. Width matches
                  the mini-card stack so moving the pointer into the
                  HUD lane and tapping is enough to toggle voice. -->
+            <!-- Phase 4j — single vertical HUD column anchored top|start.
+                 Children stack in flow order: (1) the clock / status
+                 strip, (2) the Hermes heartbeat ticker DIRECTLY under
+                 the clock, (3) the popup Gemini chat card. Because all
+                 three live in one vertical LinearLayout, the heartbeat
+                 can never overlap the chat card and the card always
+                 sits below the ticker — regardless of which elements
+                 are currently visible (each is gone-when-empty). -->
+            <LinearLayout
+                android:id="@+id/unipanelTopHudColumn"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|start"
+                android:layout_marginTop="6dp"
+                android:orientation="vertical"
+                android:clickable="false"
+                android:focusable="false">
+
             <LinearLayout
                 android:id="@+id/unipanelTopHudRow"
                 android:layout_width="match_parent"
                 android:layout_height="40dp"
-                android:layout_gravity="top|start"
                 android:layout_marginStart="8dp"
-                android:layout_marginTop="6dp"
                 android:layout_marginEnd="10dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
@@ -275,20 +291,6 @@
                 android:focusable="false">
 
                 <TextView
-                    android:id="@+id/unipanelHudHeartbeatText"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:fontFamily="sans-serif-medium"
-                    android:maxLines="1"
-                    android:scrollHorizontally="true"
-                    android:singleLine="true"
-                    android:textColor="#FFFF5252"
-                    android:textSize="11sp"
-                    android:textStyle="bold"
-                    android:visibility="gone" />
-
-                <TextView
                     android:id="@+id/unipanelHudSummaryText"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
@@ -305,6 +307,35 @@
             </LinearLayout>
 
             </LinearLayout>
+            <!-- /unipanelTopHudRow -->
+
+            <!-- Phase 4j — Hermes heartbeat ticker, parked DIRECTLY
+                 under the clock strip (Mars: "the heartbeat ticker
+                 should be underneath the clock"). Own dark bar so it
+                 reads over any browser page. Fixed width so long
+                 messages marquee-scroll once via
+                 startUnipanelHeartbeatScroll (a wrap_content width
+                 would never overflow and so would never scroll).
+                 GONE when empty; renderUnipanelHeartbeat toggles it. -->
+            <TextView
+                android:id="@+id/unipanelHudHeartbeatText"
+                android:layout_width="248dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_marginTop="4dp"
+                android:background="#B3000000"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="3dp"
+                android:elevation="8dp"
+                android:fontFamily="sans-serif-medium"
+                android:maxLines="1"
+                android:scrollHorizontally="true"
+                android:singleLine="true"
+                android:textColor="#FFFF5252"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:visibility="gone"
+                tools:ignore="UnusedAttribute" />
 
             <!-- Step 2c.2 mini chat-card stack. Three compact rows
                  stacked vertically directly under the HUD strip.
@@ -333,8 +364,8 @@
                 android:id="@+id/unipanelMiniCardStack"
                 android:layout_width="340dp"
                 android:layout_height="wrap_content"
-                android:layout_gravity="top|center_horizontal"
-                android:layout_marginTop="50dp"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="8dp"
                 android:orientation="vertical"
                 android:clickable="false"
                 android:focusable="false"
@@ -360,23 +391,27 @@
 
             </LinearLayout>
 
-            <!-- Phase 4g — Hermes-style camera preview frame. 96dp ×
+            </LinearLayout>
+            <!-- /unipanelTopHudColumn -->
+
+            <!-- Phase 4g/4j — Hermes-style camera preview frame. 96dp ×
                  72dp burgundy-stroked container holding a PreviewView
-                 fed by the Service-side CameraX pipeline. Pinned
-                 just below the HUD strip, left-aligned with a small
-                 inset so it doesn't crowd the chat card. Visible
-                 only while CameraX is streaming (CameraStateBridge
-                 publishes true). The HUD expands implicitly because
-                 the chat card stays anchored at its 64dp marginTop —
-                 the preview frame sits to the LEFT of where cards
-                 would be, mirroring the Hermes orbColumn layout. -->
+                 fed by the Service-side CameraX pipeline. Lives in the
+                 LEFT gutter so it never sits behind the centered chat
+                 card. Visible only while CameraX is streaming
+                 (CameraStateBridge publishes true). Phase 4j: the
+                 marginTop below is just a sane pre-layout default — at
+                 runtime repositionUnipanelCameraPreview() drops the
+                 frame to just under the live HUD column (heartbeat row
+                 if visible, else the clock strip) so the magic 60dp no
+                 longer collides with the heartbeat ticker. -->
             <FrameLayout
                 android:id="@+id/unipanelCameraPreviewFrame"
                 android:layout_width="96dp"
                 android:layout_height="72dp"
                 android:layout_gravity="top|start"
                 android:layout_marginStart="14dp"
-                android:layout_marginTop="60dp"
+                android:layout_marginTop="56dp"
                 android:background="@drawable/bg_unipanel_camera_preview"
                 android:padding="4dp"
                 android:elevation="10dp"

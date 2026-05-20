@@ -6526,6 +6526,9 @@ class MainActivity :
         unipanelHeartbeatClearRunnable = null
         if (text.isNullOrBlank()) {
             hideUnipanelHeartbeatRunnable.run()
+            // Phase 4j — ticker just collapsed; if the camera preview
+            // is up, pull it back toward the clock strip.
+            repositionUnipanelCameraPreview()
             return
         }
 
@@ -6537,6 +6540,9 @@ class MainActivity :
         unipanelHeartbeatScrollAnimator = null
         val shouldScroll = notification != null || state.heartbeatShouldScroll
         if (shouldScroll) tv.post { startUnipanelHeartbeatScroll(tv) }
+        // Phase 4j — ticker just appeared under the clock; push the
+        // camera preview (if visible) down so it clears the new bar.
+        repositionUnipanelCameraPreview()
         val transient = notification != null || !state.heartbeatPersistent
         if (transient) {
             val clearRunnable = Runnable {
@@ -6585,6 +6591,45 @@ class MainActivity :
             }
     }
 
+    /**
+     * Phase 4j — drop the left-gutter camera preview frame to just
+     * below the live HUD column. Anchors to the heartbeat ticker when
+     * it's visible, otherwise the clock strip, so the preview always
+     * clears whatever the HUD is currently showing instead of relying
+     * on the old load-bearing 60dp XML margin (which collided with the
+     * heartbeat once it moved under the clock). No-op while the frame
+     * is hidden. The preview stays in the left gutter; the chat card
+     * is centered, so the two never overlap horizontally.
+     */
+    private fun repositionUnipanelCameraPreview() {
+        val preview = findViewById<View?>(R.id.unipanelCameraPreviewFrame) ?: return
+        if (preview.visibility != View.VISIBLE) return
+        val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return
+        val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText)
+        val hudRow = findViewById<View?>(R.id.unipanelTopHudRow)
+        val anchor = when {
+            heartbeat != null && heartbeat.visibility == View.VISIBLE -> heartbeat
+            hudRow != null -> hudRow
+            else -> return
+        }
+        preview.post {
+            if (preview.visibility != View.VISIBLE) return@post
+            val anchorLoc = IntArray(2)
+            val overlayLoc = IntArray(2)
+            anchor.getLocationInWindow(anchorLoc)
+            overlay.getLocationInWindow(overlayLoc)
+            val anchorBottomInOverlay = (anchorLoc[1] - overlayLoc[1]) + anchor.height
+            val gap = (8f * resources.displayMetrics.density).toInt()
+            val newTop = (anchorBottomInOverlay + gap).coerceAtLeast(0)
+            val lp = preview.layoutParams as? android.widget.FrameLayout.LayoutParams
+                ?: return@post
+            if (lp.topMargin != newTop) {
+                lp.topMargin = newTop
+                preview.layoutParams = lp
+            }
+        }
+    }
+
     private fun startUnipanelVisionDotObserver() {
         val dot = findViewById<View?>(R.id.unipanelVisionDot) ?: return
         val previewFrame = findViewById<View?>(R.id.unipanelCameraPreviewFrame)
@@ -6599,6 +6644,11 @@ class MainActivity :
                     // Service via setCameraPreviewSurfaceProvider
                     // (wired in startUnipanelCameraPreviewBinding).
                     previewFrame?.visibility = if (on) View.VISIBLE else View.GONE
+                    // Phase 4j — when the camera comes on, drop the
+                    // preview below the live HUD column so it clears
+                    // the heartbeat ticker instead of trusting the
+                    // hardcoded XML margin.
+                    if (on) repositionUnipanelCameraPreview()
                 }
             }
     }
