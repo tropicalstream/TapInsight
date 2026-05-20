@@ -123,6 +123,60 @@
                     android:letterSpacing="0.06"
                     tools:ignore="UnusedAttribute" />
 
+                <!-- Phase 4h — Hermes HUD fields, compressed into the
+                     unipanel strip. Ported from the hermes branch's
+                     fragment_chat_panel hudContainer block. The
+                     visionclaw API clients that drove live AQI /
+                     calendar / Hermes status used to fire on a
+                     periodic refresh from the Activity; in unipanel
+                     mode they're not yet wired (Application-scope
+                     viewModel exists but nothing polls). Until the
+                     polling is wired in a follow-up these show
+                     placeholder values, but the slots are present so
+                     the HUD visually matches the Hermes layout. -->
+
+                <!-- AI status badge "G" — tinted from HudStateBridge
+                     connection status. Green when Gemini connected,
+                     amber while connecting, red on error/idle. -->
+                <TextView
+                    android:id="@+id/unipanelHudAiBadge"
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:layout_marginStart="10dp"
+                    android:gravity="center"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="G"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:background="@drawable/bg_unipanel_voice_pill"
+                    tools:ignore="UnusedAttribute" />
+
+                <!-- AQI text — placeholder "AQI --" until a follow-up
+                     wires viewModel.airQualityClient polling. -->
+                <TextView
+                    android:id="@+id/unipanelHudAqi"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="AQI --"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="11sp"
+                    android:letterSpacing="0.04"
+                    tools:ignore="UnusedAttribute" />
+
+                <!-- Hermes server status dot — green if reachable,
+                     red if not. Placeholder red (unreachable) until
+                     a follow-up wires a Hermes ping. -->
+                <View
+                    android:id="@+id/unipanelHudHermesDot"
+                    android:layout_width="8dp"
+                    android:layout_height="8dp"
+                    android:layout_marginStart="10dp"
+                    android:background="@drawable/bg_unipanel_camera_dot"
+                    android:visibility="visible" />
+
                 <!-- Phase 4 — real MIC button (was a 14dp dot in
                      Phase 6 essentials). 36dp tap target with the
                      "MIC" label so it's professional and unambiguous
@@ -196,13 +250,18 @@
                  ellipsis. Tap = expand to up to 8 lines so the user
                  can read longer Gemini replies in place. Tap again
                  = collapse. No user-side cards, no older-message
-                 cards — just the live assistant reply. -->
+                 cards — just the live assistant reply.
+                 Phase 4h — marginTop dropped from 64dp to 52dp so
+                 the card sits flush under the HUD strip instead of
+                 floating mid-screen. The card itself is GONE-when-
+                 empty (see renderUnipanelAssistantCard) so cold
+                 launch shows zero card-related padding. -->
             <LinearLayout
                 android:id="@+id/unipanelMiniCardStack"
                 android:layout_width="340dp"
                 android:layout_height="wrap_content"
                 android:layout_gravity="top|center_horizontal"
-                android:layout_marginTop="64dp"
+                android:layout_marginTop="52dp"
                 android:orientation="vertical"
                 android:clickable="false"
                 android:focusable="false"

@@ -12,9 +12,11 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.lifecycleScope
 import com.TapLink.app.unipanel.CameraStateBridge
 import com.TapLink.app.unipanel.HudStateBridge
 import com.TapLink.app.unipanel.VoiceServiceApi
+import kotlinx.coroutines.launch
 
 /**
  * Unipanel v2 — foreground Service that hosts the Gemini Live voice
@@ -105,6 +107,30 @@ class GeminiSessionForegroundService : LifecycleService() {
         // Idempotent: subsequent invocations while cameraOn=true no-op.
         pipeline.setAutoCameraEnabler {
             if (!cameraOn) toggleCamera()
+        }
+        // Phase 4g fix — bridge the shared MainViewModel.messages flow
+        // into ChatCardBridge. The publisher used to live in visionclaw
+        // MainActivity but that Activity isn't running in unipanel mode,
+        // so nothing was hitting ChatCardBridge.publish. Now the
+        // Service owns the bridging on its own lifecycleScope, which
+        // outlives any Activity. Source of truth stays MainViewModel
+        // (Application-scoped per Phase 2).
+        lifecycleScope.launch {
+            try {
+                val vm = (applicationContext as com.rayneo.visionclaw.VisionClawApp).viewModel
+                vm.messages.collect { messages ->
+                    val cards = messages.map { msg ->
+                        com.TapLink.app.unipanel.ChatCardBridge.Card(
+                            text = msg.text,
+                            fromUser = msg.fromUser,
+                            timestampMs = msg.timestampMs
+                        )
+                    }
+                    com.TapLink.app.unipanel.ChatCardBridge.publish(cards)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "messages → ChatCardBridge bridge failed: ${e.message}", e)
+            }
         }
     }
 

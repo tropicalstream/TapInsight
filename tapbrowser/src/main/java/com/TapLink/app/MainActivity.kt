@@ -1068,6 +1068,9 @@ class MainActivity :
         // Lights up when CameraX or browser_vision is active. The
         // manual CAM toggle button is gone; vision is voice-triggered.
         startUnipanelVisionDotObserver()
+        // Phase 4h — AI status badge ("G") tints from HudStateBridge
+        // connection status so it tracks the Gemini Live state.
+        startUnipanelHudAiBadgeObserver()
         // Phase 4g — configure the burgundy preview frame's
         // PreviewView and seed its SurfaceProvider into the Service.
         startUnipanelCameraPreviewBinding()
@@ -6252,15 +6255,27 @@ class MainActivity :
      * Phase 4g — pure render. Picks the most recent ASSISTANT card
      * out of [cards] and writes its text into the single visible
      * card; everything else (user messages, older history) is
-     * intentionally skipped. If there are no assistant messages
-     * yet, the card stays blank — no placeholder text.
+     * intentionally skipped.
+     *
+     * Phase 4g fix — when there are no assistant messages yet, the
+     * card is GONE rather than just empty. An empty card with its
+     * background drawable still consumes ~32dp of vertical space at
+     * the top of the screen, which is what ruined the apparent
+     * padding above the browser. Hiding when empty restores the
+     * cold-launch look.
      */
     private fun renderUnipanelAssistantCard(
         card: android.widget.TextView,
         cards: List<com.TapLink.app.unipanel.ChatCardBridge.Card>
     ) {
-        val latestAssistant = cards.lastOrNull { !it.fromUser }
-        card.text = latestAssistant?.text.orEmpty()
+        val latestAssistant = cards.lastOrNull { !it.fromUser }?.text?.takeIf { it.isNotBlank() }
+        if (latestAssistant == null) {
+            card.text = ""
+            card.visibility = View.GONE
+        } else {
+            card.text = latestAssistant
+            card.visibility = View.VISIBLE
+        }
     }
 
     /**
@@ -6350,6 +6365,38 @@ class MainActivity :
      *  streaming frames into the Live session OR while browser_vision
      *  is in flight. No tap handler — vision is voice-triggered now. */
     private var unipanelVisionDotSubscription: AutoCloseable? = null
+
+    /** Phase 4h — AI status badge ("G") tinted from HudStateBridge.
+     *  Green = Gemini connected, amber = connecting, red = error/idle. */
+    private var unipanelHudAiBadgeSubscription: AutoCloseable? = null
+
+    private fun startUnipanelHudAiBadgeObserver() {
+        val badge = findViewById<android.widget.TextView?>(R.id.unipanelHudAiBadge) ?: return
+        unipanelHudAiBadgeSubscription?.runCatching { close() }
+        unipanelHudAiBadgeSubscription =
+            com.TapLink.app.unipanel.HudStateBridge.observe { state ->
+                uiHandler.post {
+                    val tint = when (state.connection) {
+                        com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus
+                            .GEMINI_CONNECTED,
+                        com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus
+                            .TOOLS_READY -> 0xFF34D399.toInt()         // green
+                        com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus
+                            .CONNECTING -> 0xFFFFB347.toInt()          // amber
+                        com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus
+                            .DEGRADED,
+                        com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus
+                            .ERROR -> 0xFFE57373.toInt()               // red
+                        com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus
+                            .IDLE -> 0xFF5577AA.toInt()                // blue-grey
+                    }
+                    runCatching {
+                        badge.backgroundTintList =
+                            android.content.res.ColorStateList.valueOf(tint)
+                    }
+                }
+            }
+    }
 
     private fun startUnipanelVisionDotObserver() {
         val dot = findViewById<View?>(R.id.unipanelVisionDot) ?: return
@@ -12395,6 +12442,11 @@ class MainActivity :
             unipanelVisionDotSubscription?.close()
         } catch (_: Exception) {}
         unipanelVisionDotSubscription = null
+        // Phase 4h — drop the AI status badge subscription.
+        try {
+            unipanelHudAiBadgeSubscription?.close()
+        } catch (_: Exception) {}
+        unipanelHudAiBadgeSubscription = null
         // Phase 4b: unregister the battery receiver so a config change
         // / Activity recreate doesn't leak it.
         try {
