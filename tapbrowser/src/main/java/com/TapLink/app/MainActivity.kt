@@ -4,7 +4,10 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
+import android.content.ServiceConnection
+import android.os.IBinder
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
@@ -1041,6 +1044,13 @@ class MainActivity :
         // — the live camera frames stay in the visionclaw chat panel
         // for now; this just tells the user "yes, Gemini is watching".
         startUnipanelCameraChipObserver()
+
+        // Unipanel v2 Phase 3 — bind to the GeminiVoiceService so
+        // tapbrowser can drive voice activation directly without
+        // launching visionclaw MainActivity. Pure plumbing today; the
+        // user-visible voice gesture wires in Phase 6. See
+        // tasks/UNIPANEL_V2_SERVICE_REFACTOR.md for the phase plan.
+        startVoiceServiceBinding()
 
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
@@ -5843,6 +5853,108 @@ class MainActivity :
      * touching the View tree.
      */
     private var unipanelChatCardSubscription: AutoCloseable? = null
+
+    // ──────────────────────────────────────────────────────────────────
+    // Unipanel v2 Phase 3 — GeminiVoiceService binding
+    //
+    // tapbrowser binds (BIND_AUTO_CREATE) to the foreground Service that
+    // hosts the voice pipeline. The Service is in the visionclaw `app`
+    // module so we can't import its class here — bindService is given
+    // an Intent constructed via setClassName(packageName, FQN), and the
+    // returned IBinder is cast to [com.TapLink.app.unipanel.VoiceServiceApi]
+    // which both sides implement.
+    //
+    // The bind does NOT promote the Service to foreground (no mic
+    // privilege attached yet). FGS promotion happens inside the
+    // Service when [VoiceServiceApi.activateVoice] is invoked. Phase 3
+    // doesn't wire any gesture to that — this is purely the plumbing
+    // commit, verified by:
+    //   adb logcat | grep -E "GeminiFgs|VoiceBind"
+    //
+    // Phase 4 will move the actual AudioRecord + WebSocket + AudioTrack
+    // ownership into the Service.
+    // Phase 6 will wire the user-facing gesture (tap on the chat-card
+    // stack, or whatever Mars's swipe/tap UX lands on) to call
+    // voiceServiceApi?.activateVoice() / shutdownVoice().
+    // ──────────────────────────────────────────────────────────────────
+    @Volatile
+    private var voiceServiceApi: com.TapLink.app.unipanel.VoiceServiceApi? = null
+
+    private val voiceServiceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val api = service as? com.TapLink.app.unipanel.VoiceServiceApi
+            if (api == null) {
+                DebugLog.w(
+                    "VoiceBind",
+                    "onServiceConnected: returned binder is not a VoiceServiceApi"
+                )
+                return
+            }
+            voiceServiceApi = api
+            DebugLog.d("VoiceBind", "bound to ${name?.shortClassName}")
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            DebugLog.w("VoiceBind", "onServiceDisconnected from ${name?.shortClassName}")
+            voiceServiceApi = null
+        }
+
+        override fun onBindingDied(name: ComponentName?) {
+            DebugLog.w("VoiceBind", "onBindingDied for ${name?.shortClassName}")
+            voiceServiceApi = null
+        }
+
+        override fun onNullBinding(name: ComponentName?) {
+            DebugLog.w("VoiceBind", "onNullBinding for ${name?.shortClassName}")
+            voiceServiceApi = null
+        }
+    }
+
+    private var voiceServiceBound: Boolean = false
+
+    /**
+     * Bind to the visionclaw GeminiVoiceService (defined as
+     * `com.rayneo.visionclaw.core.session.GeminiSessionForegroundService`
+     * — we identify it by string FQN since this module can't see the
+     * class). Idempotent: the bind only happens once per Activity
+     * lifetime.
+     *
+     * BIND_AUTO_CREATE creates the Service if it isn't running but does
+     * NOT make it foreground — that promotion happens lazily inside
+     * the Service when activateVoice is invoked. Voice-off means
+     * "Service bound but not foreground" which is the right resting
+     * state.
+     */
+    private fun startVoiceServiceBinding() {
+        if (voiceServiceBound) return
+        try {
+            val intent = Intent().setClassName(
+                packageName,
+                com.TapLink.app.unipanel.VoiceServiceApi.SERVICE_FQN
+            )
+            val ok = bindService(intent, voiceServiceConnection, Context.BIND_AUTO_CREATE)
+            if (ok) {
+                voiceServiceBound = true
+                DebugLog.d("VoiceBind", "bindService dispatched, awaiting onServiceConnected")
+            } else {
+                DebugLog.w("VoiceBind", "bindService returned false — service not findable")
+            }
+        } catch (e: Exception) {
+            DebugLog.w("VoiceBind", "bindService threw: ${e.message}")
+        }
+    }
+
+    private fun stopVoiceServiceBinding() {
+        if (!voiceServiceBound) return
+        try {
+            unbindService(voiceServiceConnection)
+            DebugLog.d("VoiceBind", "unbindService dispatched")
+        } catch (e: Exception) {
+            DebugLog.w("VoiceBind", "unbindService threw: ${e.message}")
+        }
+        voiceServiceBound = false
+        voiceServiceApi = null
+    }
 
     private fun startUnipanelMiniCardObserver() {
         val card1 = findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)
@@ -11847,6 +11959,10 @@ class MainActivity :
             unipanelCameraChipSubscription?.close()
         } catch (_: Exception) {}
         unipanelCameraChipSubscription = null
+        // Unipanel v2 Phase 3: drop the voice Service binding so an
+        // Activity-recreate doesn't leak a ServiceConnection or
+        // double-bind on the next onCreate.
+        stopVoiceServiceBinding()
         // ── Release native radio ExoPlayer ──
         // Critical: without this, the ExoPlayer continues playing audio in the
         // background after the Activity is destroyed (holds WAKE_MODE_LOCAL lock).

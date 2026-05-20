@@ -7,42 +7,149 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.TapLink.app.unipanel.HudStateBridge
+import com.TapLink.app.unipanel.VoiceServiceApi
 
 /**
- * Unipanel v2 — minimal foreground Service that keeps the Gemini
- * Live audio pipeline alive when visionclaw is in the background.
+ * Unipanel v2 — foreground Service that hosts the Gemini Live voice
+ * pipeline. Phase 3: this is now a bindable Service with a
+ * [VoiceServiceApi] surface; Phase 4 will move the AudioRecord +
+ * WebSocket + AudioTrack ownership in from visionclaw MainActivity.
  *
- * Android 11+ blocks AudioRecord capture from background processes.
- * After the launcher swap (tapbrowser is the launcher) visionclaw
- * lives backgrounded; without a microphone-typed FGS the OS quietly
- * tears down the mic — Gemini stops responding even though the
- * WebSocket is connected, because no audio frames reach it.
+ * Two ways to wake the Service:
  *
- * Design: this Service does NOT own the audio pipeline. The
- * existing AudioRecord / WebSocket / AudioTrack stay in visionclaw
- * MainActivity. The Service exists purely to attach
- * FOREGROUND_SERVICE_TYPE_MICROPHONE to the process so the Activity-
- * owned AudioRecord keeps working. Visionclaw starts the Service
- * when a Gemini Live session begins and stops it when the session
- * ends.
+ *   1. [start] / [stop] static helpers — fire-and-forget FGS lifecycle.
+ *      visionclaw MainActivity uses these from
+ *      `activateChatVoiceAssistant` / `shutdownMultimodalSession`. In
+ *      unipanel mode visionclaw isn't running, so this path is a no-op
+ *      today, but the code stays for any path that re-enables the
+ *      Activity (e.g. a settings shell that opens the chat panel
+ *      explicitly).
  *
- * Direct call from activateChatVoiceAssistant() / shutdown-
- * MultimodalSession() — NOT via voiceAssistantActive LiveData.
- * LiveData observers are lifecycle-aware and don't fire when
- * visionclaw is STOPPED (which it is during the warm-start),
- * so a LiveData hop misses the start.
+ *   2. `bindService` from tapbrowser. The Service's [LocalBinder] is
+ *      cast to [VoiceServiceApi] in tapbrowser; calling
+ *      [VoiceServiceApi.activateVoice] is the unipanel voice-activate
+ *      entry. Today the stub publishes a HudStateBridge update so the
+ *      bind path can be verified via logcat; Phase 4 wires it to the
+ *      actual pipeline.
+ *
+ * Foreground-vs-bound semantics: `bindService` alone does NOT promote
+ * the Service to foreground (no mic privilege yet). The Service goes
+ * foreground when [activateVoice] internally calls
+ * [startForegroundIfNeeded], which is where the FGS notification +
+ * `FOREGROUND_SERVICE_TYPE_MICROPHONE` are attached. Shutdown reverses
+ * both (`stopForeground` + drop the notification).
  */
 class GeminiSessionForegroundService : Service() {
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    /**
+     * In-process Binder. Implements [VoiceServiceApi] so tapbrowser
+     * can interact with the Service without depending on this
+     * visionclaw class.
+     */
+    private inner class LocalBinder : Binder(), VoiceServiceApi {
+        override fun activateVoice() = this@GeminiSessionForegroundService.activateVoice()
+        override fun shutdownVoice() = this@GeminiSessionForegroundService.shutdownVoice()
+        override fun currentState(): HudStateBridge.State = HudStateBridge.current()
+    }
+
+    private val binder = LocalBinder()
+
+    /** True while the Service is in foreground (FGS notification attached). */
+    @Volatile
+    private var foregroundActive: Boolean = false
+
+    override fun onBind(intent: Intent?): IBinder {
+        Log.d(TAG, "onBind — issuing LocalBinder")
+        return binder
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        ensureNotificationChannel(this)
+        // Preserve the v2 behavior: when started via [start], promote
+        // immediately so visionclaw's existing call sites still get the
+        // mic privilege. Bound-only consumers won't hit this path.
+        startForegroundIfNeeded()
+        return START_NOT_STICKY
+    }
 
+    override fun onDestroy() {
+        Log.d(TAG, "onDestroy")
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        }
+        foregroundActive = false
+        super.onDestroy()
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // VoiceServiceApi implementation — Phase 3 stubs
+    // ────────────────────────────────────────────────────────────────
+
+    /**
+     * Phase 3 stub. Publishes a LISTENING phase to HudStateBridge and
+     * promotes the Service to foreground so the mic privilege is
+     * attached when Phase 4 wires the real pipeline. No AudioRecord
+     * yet, no WebSocket yet — those land in Phase 4.
+     */
+    private fun activateVoice() {
+        Log.i(TAG, "activateVoice() — Phase 3 stub")
+        startForegroundIfNeeded()
+        HudStateBridge.update {
+            it.copy(
+                phase = HudStateBridge.VoicePhase.LISTENING,
+                connection = HudStateBridge.ConnectionStatus.CONNECTING,
+                notification = "Voice service alive (Phase 3 stub — Phase 4 adds pipeline)"
+            )
+        }
+    }
+
+    /**
+     * Phase 3 stub. Restores IDLE state and drops the FGS. Phase 4
+     * will additionally close the WebSocket, stop AudioRecord, and
+     * release audio effects.
+     */
+    private fun shutdownVoice() {
+        Log.i(TAG, "shutdownVoice() — Phase 3 stub")
+        HudStateBridge.update {
+            it.copy(
+                phase = HudStateBridge.VoicePhase.IDLE,
+                connection = HudStateBridge.ConnectionStatus.IDLE,
+                transcript = null,
+                oscilloscopeLevel = 0f,
+                notification = null
+            )
+        }
+        // Drop the FGS notification but keep the Service alive so a
+        // subsequent activateVoice() can re-promote without paying the
+        // bindService round-trip.
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        }
+        foregroundActive = false
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // FGS promotion
+    // ────────────────────────────────────────────────────────────────
+
+    private fun startForegroundIfNeeded() {
+        if (foregroundActive) return
+        ensureNotificationChannel(this)
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle("TapInsight assistant")
@@ -52,7 +159,6 @@ class GeminiSessionForegroundService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setSilent(true)
             .build()
-
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
@@ -64,24 +170,11 @@ class GeminiSessionForegroundService : Service() {
                 @Suppress("DEPRECATION")
                 startForeground(NOTIFICATION_ID, notification)
             }
+            foregroundActive = true
             Log.d(TAG, "startForeground OK — mic privilege attached")
         } catch (e: Exception) {
             Log.w(TAG, "startForeground failed: ${e.message}", e)
         }
-
-        return START_NOT_STICKY
-    }
-
-    override fun onDestroy() {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(true)
-            }
-        } catch (_: Exception) {}
-        super.onDestroy()
     }
 
     companion object {
@@ -89,9 +182,17 @@ class GeminiSessionForegroundService : Service() {
         private const val CHANNEL_ID = "tapinsight_voice_session"
         private const val NOTIFICATION_ID = 0x76_3F_45
 
-        /** Start the FGS. Idempotent. Visionclaw calls this when a
-         *  Gemini Live session begins; AudioRecord opens AFTER this
-         *  call so the mic privilege is in place. */
+        /** Fully-qualified class name string used by tapbrowser's
+         *  bindService call. Tapbrowser can't import the Service class
+         *  (visionclaw → tapbrowser module dependency), so it passes
+         *  this name via Intent.setClassName at runtime. */
+        const val FQN: String =
+            "com.rayneo.visionclaw.core.session.GeminiSessionForegroundService"
+
+        /** Start the FGS. Idempotent. Visionclaw calls this from
+         *  activateChatVoiceAssistant when the Activity is hosting voice
+         *  itself (legacy path; not used in unipanel mode where the
+         *  Activity isn't running). */
         fun start(context: Context) {
             ensureNotificationChannel(context)
             val intent = Intent(context, GeminiSessionForegroundService::class.java)
@@ -107,8 +208,7 @@ class GeminiSessionForegroundService : Service() {
             }
         }
 
-        /** Stop the FGS. Called from shutdownMultimodalSession or
-         *  any other path that drops the Gemini Live session. */
+        /** Stop the FGS. Legacy companion to [start]. */
         fun stop(context: Context) {
             val intent = Intent(context, GeminiSessionForegroundService::class.java)
             try {
