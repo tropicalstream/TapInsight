@@ -6739,22 +6739,22 @@ class MainActivity :
     private fun repositionUnipanelCameraPreview() {
         val preview = findViewById<View?>(R.id.unipanelCameraPreviewFrame) ?: return
         if (preview.visibility != View.VISIBLE) return
-        // Phase 4k.2 — fixed, layout-space (dp) margins. The previous
-        // getLocationInWindow math mixed coordinate spaces: the unipanel
-        // overlay lives under BinocularSbsLayout's scale transform, so
-        // window coordinates are post-scale while topMargin is applied
-        // pre-scale. That inflated the margin enormously and dropped the
-        // preview ~⅓ of the way down the screen, overlapping the
-        // dashboard tiles. dp constants are scale-correct because layout
-        // happens before the SBS transform.
-        // Phase 4k.3 — always pin just under the clock strip (50dp). The
-        // earlier 78dp "drop while the heartbeat shows" pushed the frame
-        // down onto the dashboard tiles (Mars: overlaps the browser while
-        // the ticker is up, fine once it clears). Staying at 50dp keeps it
-        // clear of the dashboard; the transient heartbeat bar sits behind
-        // the frame, which is fine since the frame itself signals camera.
+        val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText)
+        // Phase 4k.4 (Mars) — restore the two-stage placement that worked
+        // best: while the heartbeat ticker is showing ("Camera streaming
+        // to Gemini"), the preview sits just BELOW it; once the ticker
+        // auto-clears, the preview rises to 50dp under the clock. The only
+        // problem before was the lower stage (78dp) reaching down onto the
+        // dashboard tiles, so the initial stage is nudged up to 70dp —
+        // still clear of the heartbeat text (which ends ~69dp) but high
+        // enough to clear the browser tiles below. The heartbeat row spans
+        // ~50–72dp, so 70dp keeps the ticker readable directly above.
+        // dp/layout-space margins are scale-correct under the SBS transform
+        // (window-coordinate math from earlier builds was not).
         val density = resources.displayMetrics.density
-        val newTop = (50f * density).toInt()
+        val heartbeatShown = heartbeat != null && heartbeat.visibility == View.VISIBLE
+        val topDp = if (heartbeatShown) 70f else 50f
+        val newTop = (topDp * density).toInt()
         val lp = preview.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
         if (lp.topMargin != newTop) {
             lp.topMargin = newTop
