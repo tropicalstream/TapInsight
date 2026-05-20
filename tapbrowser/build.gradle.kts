@@ -51,6 +51,13 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.4.0")
     implementation("androidx.webkit:webkit:1.12.1")
 
+    // Phase 4g — CameraX preview (PreviewView) for the unipanel
+    // camera-preview frame. The Service in `app` owns the CameraX
+    // pipeline; tapbrowser hosts only the PreviewView's
+    // SurfaceProvider, which is passed across the binder.
+    implementation("androidx.camera:camera-view:1.4.1")
+    implementation("androidx.camera:camera-core:1.4.1")
+
     implementation("com.google.android.material:material:1.12.0")
     implementation("com.google.zxing:core:3.5.3")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")

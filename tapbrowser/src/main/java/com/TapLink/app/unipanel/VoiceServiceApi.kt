@@ -77,6 +77,18 @@ interface VoiceServiceApi {
     /** True when CameraX is currently streaming. */
     fun isCameraOn(): Boolean
 
+    /**
+     * Phase 4g — install a [androidx.camera.core.Preview.SurfaceProvider]
+     * (typically `PreviewView.surfaceProvider`) so the next camera
+     * activation binds a Preview use case alongside ImageAnalysis,
+     * which lights up the unipanel preview frame. Pass `null` to
+     * clear the provider so a subsequent camera-on goes analysis-only.
+     *
+     * Safe to call before [toggleCamera] — the Service caches the
+     * provider and uses it on the next start.
+     */
+    fun setCameraPreviewSurfaceProvider(provider: androidx.camera.core.Preview.SurfaceProvider?)
+
     companion object {
         /**
          * Fully-qualified class name of the Service that implements

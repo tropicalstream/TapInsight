@@ -191,6 +191,12 @@
                  voice routing). Width capped at 340dp so even on a
                  single eye of the binocular display, the cards
                  don't span edge-to-edge. -->
+            <!-- Phase 4g (Mars revision, take 2) — ONE chat card,
+                 Gemini/TTS output only. Collapsed = 2 lines with
+                 ellipsis. Tap = expand to up to 8 lines so the user
+                 can read longer Gemini replies in place. Tap again
+                 = collapse. No user-side cards, no older-message
+                 cards — just the live assistant reply. -->
             <LinearLayout
                 android:id="@+id/unipanelMiniCardStack"
                 android:layout_width="340dp"
@@ -202,11 +208,6 @@
                 android:focusable="false"
                 android:elevation="8dp">
 
-                <!-- Card 1 — assistant. Top of the stack (most
-                     recent assistant reply once 2c.3 lights this
-                     up). Placeholder text shows the visual at
-                     full-size so we can confirm sizing before any
-                     real wiring. -->
                 <TextView
                     android:id="@+id/unipanelMiniCard1"
                     android:layout_width="match_parent"
@@ -220,49 +221,43 @@
                     android:lineSpacingExtra="1dp"
                     android:maxLines="2"
                     android:ellipsize="end"
-                    android:text="Mini card · assistant placeholder. Live chat content lands here in 2c.3."
-                    android:clickable="false"
-                    android:focusable="false" />
-
-                <!-- Card 2 — user. -->
-                <TextView
-                    android:id="@+id/unipanelMiniCard2"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:background="@drawable/bg_unipanel_mini_card_user"
-                    android:paddingHorizontal="12dp"
-                    android:paddingVertical="8dp"
-                    android:fontFamily="sans-serif-medium"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="13sp"
-                    android:lineSpacingExtra="1dp"
-                    android:maxLines="2"
-                    android:ellipsize="end"
-                    android:text="Mini card · user placeholder. Your last spoken query will show here."
-                    android:clickable="false"
-                    android:focusable="false" />
-
-                <!-- Card 3 — assistant (older). -->
-                <TextView
-                    android:id="@+id/unipanelMiniCard3"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:background="@drawable/bg_unipanel_mini_card_assistant"
-                    android:paddingHorizontal="12dp"
-                    android:paddingVertical="8dp"
-                    android:fontFamily="sans-serif-medium"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="13sp"
-                    android:lineSpacingExtra="1dp"
-                    android:maxLines="2"
-                    android:ellipsize="end"
-                    android:text="Mini card · older assistant reply. Stack scrolls older entries down out of frame."
-                    android:clickable="false"
-                    android:focusable="false" />
+                    android:text=""
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="Gemini reply — tap to expand" />
 
             </LinearLayout>
+
+            <!-- Phase 4g — Hermes-style camera preview frame. 96dp ×
+                 72dp burgundy-stroked container holding a PreviewView
+                 fed by the Service-side CameraX pipeline. Pinned
+                 just below the HUD strip, left-aligned with a small
+                 inset so it doesn't crowd the chat card. Visible
+                 only while CameraX is streaming (CameraStateBridge
+                 publishes true). The HUD expands implicitly because
+                 the chat card stays anchored at its 64dp marginTop —
+                 the preview frame sits to the LEFT of where cards
+                 would be, mirroring the Hermes orbColumn layout. -->
+            <FrameLayout
+                android:id="@+id/unipanelCameraPreviewFrame"
+                android:layout_width="96dp"
+                android:layout_height="72dp"
+                android:layout_gravity="top|start"
+                android:layout_marginStart="14dp"
+                android:layout_marginTop="60dp"
+                android:background="@drawable/bg_unipanel_camera_preview"
+                android:padding="4dp"
+                android:elevation="10dp"
+                android:visibility="gone"
+                android:clickable="false"
+                android:focusable="false">
+
+                <androidx.camera.view.PreviewView
+                    android:id="@+id/unipanelCameraPreviewView"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent" />
+
+            </FrameLayout>
 
             <!-- Phase 4f (Mars revision) — legacy top-right CAM chip
                  deleted. The unipanelVisionDot inside the HUD strip

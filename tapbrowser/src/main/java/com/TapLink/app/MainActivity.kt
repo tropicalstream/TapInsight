@@ -139,6 +139,12 @@ class MainActivity :
          *  WebView to BrowserFrameHolder, then push our task to the
          *  back so the chat panel stays foreground. */
         private const val EXTRA_BROWSER_WARM_START = "tapclaw_warm_start"
+        /** Phase 4g — left-arm SHORT-TAP camera-toggle thresholds.
+         *  Mirror the visionclaw constants so the gesture feels
+         *  identical to the Hermes-branch UX. */
+        private const val LEFT_ARM_TAP_MAX_MS = 300L
+        private const val LEFT_ARM_TAP_MOVE_TOLERANCE_PX = 30f
+
         /** Unipanel v2 — flag we pass back to visionclaw when WE
          *  warm-start IT. Must match the value in
          *  com.rayneo.visionclaw.MainActivity.EXTRA_TAPCLAW_WARM_START.
@@ -1062,6 +1068,9 @@ class MainActivity :
         // Lights up when CameraX or browser_vision is active. The
         // manual CAM toggle button is gone; vision is voice-triggered.
         startUnipanelVisionDotObserver()
+        // Phase 4g — configure the burgundy preview frame's
+        // PreviewView and seed its SurfaceProvider into the Service.
+        startUnipanelCameraPreviewBinding()
 
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
@@ -6004,6 +6013,66 @@ class MainActivity :
      */
     private var unipanelChatCardSubscription: AutoCloseable? = null
 
+    /**
+     * Phase 4g — left-arm (cyttsp6_mt) SHORT-TAP detection. Ported
+     * from visionclaw MainActivity.consumedByLeftArmTap. Fires
+     * voiceServiceApi.toggleCamera() on a single quick tap so the
+     * user can flip the CameraX feed on/off the same way the Hermes
+     * branch did. Returns true to indicate the gesture was consumed —
+     * callers must NOT also forward the same UP to other detectors
+     * (which would interpret it as their own tap).
+     *
+     * The check runs through ACTION_DOWN/MOVE/UP/CANCEL to filter
+     * out long-presses, drags, and cancels. Threshold constants
+     * mirror visionclaw exactly so behavior matches Hermes.
+     */
+    private var leftArmTapDownTimeMs: Long = 0L
+    private var leftArmTapDownX: Float = 0f
+    private var leftArmTapDownY: Float = 0f
+    private var leftArmTapTracking: Boolean = false
+    private var leftArmTapMovedTooFar: Boolean = false
+
+    private fun consumedByLeftArmTap(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                leftArmTapDownTimeMs = SystemClock.uptimeMillis()
+                leftArmTapDownX = ev.x
+                leftArmTapDownY = ev.y
+                leftArmTapMovedTooFar = false
+                leftArmTapTracking = true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (leftArmTapTracking && !leftArmTapMovedTooFar) {
+                    val dx = ev.x - leftArmTapDownX
+                    val dy = ev.y - leftArmTapDownY
+                    if (kotlin.math.hypot(dx.toDouble(), dy.toDouble()) >
+                            LEFT_ARM_TAP_MOVE_TOLERANCE_PX) {
+                        leftArmTapMovedTooFar = true
+                    }
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                val wasTracking = leftArmTapTracking
+                val movedTooFar = leftArmTapMovedTooFar
+                leftArmTapTracking = false
+                if (!wasTracking || movedTooFar) return false
+                val elapsed = SystemClock.uptimeMillis() - leftArmTapDownTimeMs
+                if (elapsed >= LEFT_ARM_TAP_MAX_MS) return false
+                val api = voiceServiceApi ?: return false
+                DebugLog.d(
+                    "LeftArmTap",
+                    "short tap (${elapsed}ms) → toggleCamera (was=${api.isCameraOn()})"
+                )
+                runCatching { api.toggleCamera() }
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                leftArmTapTracking = false
+            }
+        }
+        return false
+    }
+
     /** Phase 4d (Mars revision) — double-tap now toggles tapbrowser's
      *  OWN side + bottom navigation bars via the existing
      *  [DualWebViewGroup.setNavBarsHidden] path (same toggle the
@@ -6059,6 +6128,20 @@ class MainActivity :
             }
             voiceServiceApi = api
             DebugLog.d("VoiceBind", "bound to ${name?.shortClassName}")
+            // Phase 4g — install the unipanel PreviewView's
+            // SurfaceProvider so the next CameraX bind shows a live
+            // feed in the camera-preview frame. The PreviewView is
+            // owned by tapbrowser's layout; CameraX runs in the
+            // Service. Crossing the binder hands the surface
+            // provider to FrameCaptureManager.start.
+            runCatching {
+                val pv = findViewById<androidx.camera.view.PreviewView?>(
+                    R.id.unipanelCameraPreviewView
+                )
+                if (pv != null) {
+                    api.setCameraPreviewSurfaceProvider(pv.surfaceProvider)
+                }
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -6124,25 +6207,60 @@ class MainActivity :
     }
 
     private fun startUnipanelMiniCardObserver() {
+        // Phase 4g (Mars revision, take 2) — single chat card showing
+        // only the latest Gemini/TTS (assistant) reply. Tap toggles
+        // between collapsed (2 lines, ellipsized) and expanded (up to
+        // 8 lines, full text). No user-side card, no older-message
+        // history — just the live assistant message.
         val card1 = findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)
-        val card2 = findViewById<android.widget.TextView?>(R.id.unipanelMiniCard2)
-        val card3 = findViewById<android.widget.TextView?>(R.id.unipanelMiniCard3)
-        if (card1 == null || card2 == null || card3 == null) {
+        if (card1 == null) {
             DebugLog.w(
                 "Unipanel",
-                "Mini card observer: stack TextViews missing, skipping subscription"
+                "Mini card observer: card1 TextView missing, skipping subscription"
             )
             return
         }
-        val slots = arrayOf(card1, card2, card3)
+        card1.setOnClickListener {
+            unipanelChatCardExpanded = !unipanelChatCardExpanded
+            applyUnipanelChatCardExpansion(card1)
+        }
+        applyUnipanelChatCardExpansion(card1)
 
-        // Drop any prior subscription if we're being called again
-        // (configuration change, re-init path, etc.).
         unipanelChatCardSubscription?.runCatching { close() }
         unipanelChatCardSubscription =
             com.TapLink.app.unipanel.ChatCardBridge.observe { cards ->
-                uiHandler.post { renderUnipanelMiniCards(slots, cards) }
+                uiHandler.post { renderUnipanelAssistantCard(card1, cards) }
             }
+    }
+
+    /** Phase 4g — collapsed/expanded toggle state for the single
+     *  Gemini chat card. */
+    @Volatile
+    private var unipanelChatCardExpanded: Boolean = false
+
+    private fun applyUnipanelChatCardExpansion(card: android.widget.TextView) {
+        if (unipanelChatCardExpanded) {
+            card.maxLines = 8
+            card.ellipsize = null
+        } else {
+            card.maxLines = 2
+            card.ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+    }
+
+    /**
+     * Phase 4g — pure render. Picks the most recent ASSISTANT card
+     * out of [cards] and writes its text into the single visible
+     * card; everything else (user messages, older history) is
+     * intentionally skipped. If there are no assistant messages
+     * yet, the card stays blank — no placeholder text.
+     */
+    private fun renderUnipanelAssistantCard(
+        card: android.widget.TextView,
+        cards: List<com.TapLink.app.unipanel.ChatCardBridge.Card>
+    ) {
+        val latestAssistant = cards.lastOrNull { !it.fromUser }
+        card.text = latestAssistant?.text.orEmpty()
     }
 
     /**
@@ -6235,13 +6353,44 @@ class MainActivity :
 
     private fun startUnipanelVisionDotObserver() {
         val dot = findViewById<View?>(R.id.unipanelVisionDot) ?: return
+        val previewFrame = findViewById<View?>(R.id.unipanelCameraPreviewFrame)
         unipanelVisionDotSubscription?.runCatching { close() }
         unipanelVisionDotSubscription =
             com.TapLink.app.unipanel.CameraStateBridge.observe { on ->
                 uiHandler.post {
                     dot.visibility = if (on) View.VISIBLE else View.GONE
+                    // Phase 4g — the 96dp × 72dp burgundy preview
+                    // frame follows the same on/off state. Its
+                    // PreviewView is fed by CameraX inside the
+                    // Service via setCameraPreviewSurfaceProvider
+                    // (wired in startUnipanelCameraPreviewBinding).
+                    previewFrame?.visibility = if (on) View.VISIBLE else View.GONE
                 }
             }
+    }
+
+    /** Phase 4g — hand the PreviewView's SurfaceProvider to the
+     *  Service so the next camera start binds a Preview use case
+     *  and the user sees a live feed in the unipanel frame. */
+    private fun startUnipanelCameraPreviewBinding() {
+        val previewView = findViewById<androidx.camera.view.PreviewView?>(
+            R.id.unipanelCameraPreviewView
+        ) ?: return
+        // The implementation mode default is "PERFORMANCE" which
+        // uses a SurfaceView under the hood — best for low-latency
+        // multimodal video. COMPATIBLE (TextureView-backed) would
+        // also work but adds an extra GPU copy.
+        previewView.implementationMode =
+            androidx.camera.view.PreviewView.ImplementationMode.COMPATIBLE
+        previewView.scaleType = androidx.camera.view.PreviewView.ScaleType.FILL_CENTER
+        // Pre-install on bind so a later toggleCamera() picks it up
+        // even if voice/camera haven't activated yet. ServiceConnection
+        // already runs us through onServiceConnected before this code,
+        // but we guard with null in case the bind hasn't resolved.
+        val api = voiceServiceApi
+        if (api != null) {
+            runCatching { api.setCameraPreviewSurfaceProvider(previewView.surfaceProvider) }
+        }
     }
 
     /** Pure view update. Called on the UI thread by the bridge subscriber. */
@@ -11701,6 +11850,17 @@ class MainActivity :
         // Match cyttsp6 specifically but allow suffix variants for hardware revisions.
         val templeDeviceName = ev.device?.name ?: ""
         if (templeDeviceName.contains("cyttsp6", ignoreCase = true)) {
+            // Phase 4g — left-arm SHORT TAP → voiceServiceApi.toggleCamera().
+            // Ported from visionclaw MainActivity.consumedByLeftArmTap. The
+            // short-tap check runs BEFORE the temple double-tap detector
+            // because a double-tap inherently contains a single tap; we
+            // forward to the double-tap detector only when this UP doesn't
+            // qualify as a standalone short-tap (moved too far / held too
+            // long / no voice session). Same gesture model as the Hermes
+            // branch — tap the left arm to flip the camera.
+            if (consumedByLeftArmTap(ev)) {
+                return true
+            }
             templeDoubleTapDetector.onTouchEvent(ev)
             return true
         }

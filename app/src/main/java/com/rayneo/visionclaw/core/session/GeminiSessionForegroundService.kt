@@ -59,6 +59,11 @@ class GeminiSessionForegroundService : LifecycleService() {
         override fun currentState(): HudStateBridge.State = HudStateBridge.current()
         override fun toggleCamera() = this@GeminiSessionForegroundService.toggleCamera()
         override fun isCameraOn(): Boolean = cameraOn
+        override fun setCameraPreviewSurfaceProvider(
+            provider: androidx.camera.core.Preview.SurfaceProvider?
+        ) {
+            this@GeminiSessionForegroundService.cameraPreviewSurfaceProvider = provider
+        }
     }
 
     private val binder = LocalBinder()
@@ -83,6 +88,13 @@ class GeminiSessionForegroundService : LifecycleService() {
 
     @Volatile
     private var cameraOn: Boolean = false
+
+    /** Phase 4g — preview surface provider supplied by tapbrowser
+     *  (its PreviewView). When non-null, the next CameraX bind
+     *  includes a Preview use case so the user sees a live feed in
+     *  the unipanel camera-preview frame. */
+    @Volatile
+    private var cameraPreviewSurfaceProvider: androidx.camera.core.Preview.SurfaceProvider? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -194,7 +206,7 @@ class GeminiSessionForegroundService : LifecycleService() {
             runCatching {
                 frameCapture.start(
                     owner = this,
-                    previewSurfaceProvider = null,
+                    previewSurfaceProvider = cameraPreviewSurfaceProvider,
                     onFrameBase64 = { base64 -> pipeline.sendCameraFrame(base64) }
                 )
                 cameraOn = true
