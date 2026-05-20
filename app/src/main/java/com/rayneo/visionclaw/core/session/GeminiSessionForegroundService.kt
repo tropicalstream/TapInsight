@@ -164,6 +164,57 @@ class GeminiSessionForegroundService : LifecycleService() {
                 Log.w(TAG, "HUD flows → HudStateBridge bridge failed: ${e.message}", e)
             }
         }
+        // Phase 4j — Hermes health ping. In unipanel mode the visionclaw
+        // Activity (which normally drives the "H" status badge via
+        // hermesPingRunnable) isn't running, so nothing publishes
+        // HudStateBridge.hermesStatus and the H badge would stay dark.
+        // The Service owns its own Activity-free ping here so the badge
+        // reflects Hermes reachability: GOOD (green) when the agent
+        // server answers, BAD (red) when configured-but-unreachable,
+        // HIDDEN when the integration is switched off. Cadence reuses
+        // the same openclaw heartbeat-interval pref as the Activity.
+        lifecycleScope.launch {
+            val prefs = com.rayneo.visionclaw.core.storage.AppPreferences(applicationContext)
+            val hermesClient = com.rayneo.visionclaw.core.network.HermesClient(
+                endpointUrlProvider = { prefs.hermesEndpoint.trim().takeIf { it.isNotBlank() } },
+                apiKeyProvider = { prefs.hermesApiKey.trim().takeIf { it.isNotBlank() } },
+                sessionIdProvider = {
+                    prefs.hermesSessionId.trim().takeIf { it.isNotBlank() } ?: "main"
+                },
+                timeoutMsProvider = {
+                    val seconds = prefs.hermesTimeoutSeconds.takeIf { it > 0 } ?: 30
+                    seconds.coerceAtLeast(5) * 1000
+                }
+            )
+            while (true) {
+                val status = try {
+                    when {
+                        !prefs.hermesEnabled -> HudStateBridge.GatewayStatus.HIDDEN
+                        prefs.hermesEndpoint.isBlank() || prefs.hermesApiKey.isBlank() ->
+                            HudStateBridge.GatewayStatus.BAD
+                        else -> {
+                            val result = kotlinx.coroutines.withTimeoutOrNull(12_000L) {
+                                hermesClient.ping()
+                            }
+                            if (result is
+                                com.rayneo.visionclaw.core.network.HermesClient.ClawResult.Success
+                            ) {
+                                HudStateBridge.GatewayStatus.GOOD
+                            } else {
+                                HudStateBridge.GatewayStatus.BAD
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Hermes health ping failed: ${e.message}")
+                    HudStateBridge.GatewayStatus.BAD
+                }
+                HudStateBridge.update { it.copy(hermesStatus = status) }
+                val intervalMs =
+                    (prefs.openClawHeartbeatIntervalSeconds * 1000L).coerceAtLeast(5_000L)
+                kotlinx.coroutines.delay(intervalMs)
+            }
+        }
     }
 
     override fun onBind(intent: Intent): IBinder {
