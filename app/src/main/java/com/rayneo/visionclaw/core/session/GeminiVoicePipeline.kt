@@ -859,19 +859,11 @@ class GeminiVoicePipeline(context: Context) {
         Log.i(TAG, "reader_mode trigger source=localRegex enter=$wantsEnter transcript='${transcript.take(80)}'")
         HudStateBridge.update { it.copy(notification = if (wantsEnter) "Reader mode" else null) }
         runCatching { com.TapLink.app.unipanel.BrowserCommandBridge.setReaderMode(wantsEnter) }
-        // Tell Gemini the device already handled it so it confirms instead of
-        // claiming it can't (the reflow happens on the glasses, outside
-        // Gemini's tool surface).
-        val confirm = if (wantsEnter) {
-            "[Device action] The current web page is now shown in a bold dark " +
-                "reader view on the glasses. Briefly confirm, e.g. \"Reader mode on.\" " +
-                "Do NOT say you are unable to do it."
-        } else {
-            "[Device action] Reader mode has been turned off and the original page " +
-                "restored on the glasses. Briefly confirm, e.g. \"Reader mode off.\" " +
-                "Do NOT say you are unable to do it."
-        }
-        runCatching { liveSession?.sendClientText(confirm) }
+        // NOTE: we deliberately do NOT inject a client-text "please confirm"
+        // here. That produced a SECOND spoken turn on top of Gemini's own
+        // reply to the user, so it said "Reader mode on" twice. Gemini's
+        // single confirmation is shaped by RULE ZERO-R in the system prompt
+        // (device-handled, exactly one short confirmation, never refuse).
     }
 
     /**

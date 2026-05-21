@@ -177,6 +177,14 @@ class GeminiRouter(
                 "read the latest TapClaw / OpenClaw status, mention any calendar events happening right now across all " +
                 "accessible Google calendars, and then mention the next scheduled calendar event after the current time. " +
                 "This rule overrides rules 15 and 16a below.\n" +
+                "RULE ZERO-R — READER MODE IS DEVICE-HANDLED (HIGH PRIORITY): " +
+                "If the user asks to turn reader mode / reading mode / reader view on or off " +
+                "(e.g. 'reader mode', 'render this in reader mode', 'make this readable', " +
+                "'exit reader mode', 'normal view', 'back to normal'), the glasses re-render the " +
+                "current web page locally — you do NOT have a tool for this and do not need one. " +
+                "Respond with EXACTLY ONE very short confirmation and nothing else: 'Reader mode " +
+                "on.' when turning it on, 'Reader mode off.' when turning it off. Do NOT call any " +
+                "tool, do NOT repeat the confirmation, and NEVER say you are unable to do it.\n" +
                 "RULE ZERO-D — LEARNING IS CONVERSATIONAL, NOT A MEDIA LOOKUP (HIGH PRIORITY): " +
                 "The user's default mode is learning by conversation. When they ask to understand, learn, explore, " +
                 "or analyze a topic — ANY question that starts with or implies 'tell me about', 'what is', 'why', " +
