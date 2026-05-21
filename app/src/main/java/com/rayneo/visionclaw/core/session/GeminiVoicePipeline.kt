@@ -95,6 +95,31 @@ class GeminiVoicePipeline(context: Context) {
      *  only allocate the AudioTrack when voice actually activates. */
     private val audioPlayer: GeminiAudioPlayer by lazy { GeminiAudioPlayer(appContext) }
 
+    // ── Agent readout TTS (Hermes / TapClaw / OpenClaw) ──────────────
+    // Bug fix — in the hermes branch the SELECTED readout engine (Gemini
+    // TTS or Fish.audio, per the companion "Readout Voice" tab) speaks all
+    // agent replies, not Gemini Live's own voice. We mirror that: when an
+    // agent tool returns, we suppress Gemini Live's audio for a window and
+    // synthesize+play the reply through the routed engine instead.
+    @Volatile
+    private var suppressGeminiOutputUntilMs: Long = 0L
+
+    /** While true the mic loop stops streaming to Gemini so the agent
+     *  readout playing out the speaker isn't echoed back into the session. */
+    @Volatile
+    private var agentReadoutActive: Boolean = false
+
+    private val fishReadoutTtsClient by lazy(LazyThreadSafetyMode.NONE) {
+        com.TapLink.app.media.FishTtsClient(
+            configProvider = { com.TapLink.app.media.resolveGlassesFishConfig(appContext) }
+        )
+    }
+    private val geminiReadoutTtsClient by lazy(LazyThreadSafetyMode.NONE) {
+        com.TapLink.app.media.GlassesTtsClient(
+            apiKeyProvider = { com.TapLink.app.media.resolveGlassesGeminiKey(appContext) }
+        )
+    }
+
     /** Phase 4b — browser_vision tool. Captures the WebView frame via
      *  the cross-module [com.TapLink.app.media.BrowserFrameHolder]
      *  (publisher: tapbrowser MainActivity) and asks Gemini's REST
@@ -360,6 +385,12 @@ class GeminiVoicePipeline(context: Context) {
 
             override fun onModelAudio(mimeType: String, data: ByteArray) {
                 if (data.isEmpty()) return
+                // Drop Gemini Live's own audio while an agent reply is being
+                // read aloud via the selected readout engine, so the two
+                // voices never overlap (mirrors hermes suppressGeminiOutputUntilMs).
+                if (android.os.SystemClock.uptimeMillis() < suppressGeminiOutputUntilMs) {
+                    return
+                }
                 runCatching {
                     audioPlayer.playChunk(mimeType, data, muted = false, volume = 1f)
                 }
@@ -453,6 +484,25 @@ class GeminiVoicePipeline(context: Context) {
                     ?: "Tool $toolName is unavailable right now."
             }
             Log.i(TAG, "native tool result name=$toolName text='${resultText.take(180)}'")
+
+            // Agent replies (Hermes / TapClaw / OpenClaw) are READ ALOUD via
+            // the selected readout engine — not narrated by Gemini Live. Mirror
+            // the hermes branch: suppress Gemini's audio, ack the tool with a
+            // minimal "ok" so the Live session doesn't hang waiting, then
+            // synthesize + play the reply through Fish/Gemini TTS.
+            if (toolName in AGENT_READOUT_TOOLS) {
+                Log.i(TAG, "agent tool $toolName → reading reply via selected readout engine")
+                suppressGeminiOutputUntilMs =
+                    android.os.SystemClock.uptimeMillis() + 30_000L
+                runCatching { audioPlayer.stopAndFlush() }
+                runCatching { liveSession?.sendToolResponse(callId, toolName, "ok") }
+                HudStateBridge.update {
+                    it.copy(notification = null, phase = HudStateBridge.VoicePhase.THINKING)
+                }
+                speakAgentReplyViaEngine(resultText)
+                return@launch
+            }
+
             maybeOpenTapLinkResult(toolName, resultText)
             val ok = runCatching {
                 liveSession?.sendToolResponse(callId, toolName, resultText) == true
@@ -460,6 +510,179 @@ class GeminiVoicePipeline(context: Context) {
             Log.i(TAG, "native tool sendToolResponse returned $ok name=$toolName callId=$callId")
             HudStateBridge.update { it.copy(notification = null) }
         }
+    }
+
+    /** Agent tools whose textual reply is read aloud via the selected
+     *  readout engine instead of being narrated by Gemini Live. */
+    private val AGENT_READOUT_TOOLS =
+        setOf("hermes_agent", "tapclaw_agent", "research_topic")
+
+    /**
+     * Synthesize [text] via the selected readout engine (Fish.audio when
+     * the companion "Readout Voice" is set to Fish and configured, else
+     * Gemini TTS) and play it through the same AudioTrack Gemini Live uses.
+     * Chunked so long reports don't exceed the per-call TTS limit. The mic
+     * is muted and Gemini's own audio suppressed for the duration so the
+     * two voices never overlap and the readout isn't echoed back.
+     */
+    private fun speakAgentReplyViaEngine(rawText: String) {
+        val text = cleanReadoutText(rawText)
+        if (text.isBlank()) {
+            suppressGeminiOutputUntilMs = 0L
+            return
+        }
+        agentReadoutActive = true
+        scope.launch {
+            try {
+                val chunks = chunkForReadout(text, 1600)
+                for (chunk in chunks) {
+                    if (chunk.isBlank()) continue
+                    val pcm = synthesizeRoutedToPcm(chunk) ?: continue
+                    // Keep Gemini's audio suppressed across the whole read.
+                    suppressGeminiOutputUntilMs =
+                        android.os.SystemClock.uptimeMillis() + 60_000L
+                    HudStateBridge.update {
+                        it.copy(
+                            phase = HudStateBridge.VoicePhase.THINKING,
+                            oscilloscopeLevel = 0.6f,
+                            oscilloscopeChannel = HudStateBridge.OscilloscopeChannel.MODEL
+                        )
+                    }
+                    runCatching {
+                        audioPlayer.playChunk(
+                            "audio/pcm;rate=${pcm.second}", pcm.first,
+                            muted = false, volume = 1f
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "agent readout failed: ${e.message}", e)
+            } finally {
+                agentReadoutActive = false
+                // Let the queued audio drain, then stop dropping Gemini's
+                // audio and return to the listening state for follow-ups.
+                suppressGeminiOutputUntilMs = 0L
+                if (liveSessionReady) {
+                    HudStateBridge.update {
+                        it.copy(
+                            phase = HudStateBridge.VoicePhase.LISTENING,
+                            oscilloscopeLevel = 0f
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /** Route one chunk through Fish or Gemini TTS and return PCM + sample
+     *  rate the [GeminiAudioPlayer] can stream, or null on failure. */
+    private fun synthesizeRoutedToPcm(text: String): Pair<ByteArray, Int>? {
+        val prefs = appContext.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
+        val engine = (prefs.getString("readout_engine", "gemini") ?: "gemini").trim()
+        if (engine == "fish" && com.TapLink.app.media.isFishReadoutReady(appContext)) {
+            val fish = runCatching { fishReadoutTtsClient.synthesize(text) }.getOrNull()
+            if (fish is com.TapLink.app.media.FishTtsClient.SynthesisResult.Success) {
+                stripWavHeaderToPcm(fish.wavBytes)?.let { return it }
+            }
+            Log.w(TAG, "Fish readout unavailable for chunk — falling back to Gemini TTS")
+        }
+        val gem = runCatching { geminiReadoutTtsClient.synthesize(text, null) }.getOrNull()
+        if (gem is com.TapLink.app.media.GlassesTtsClient.SynthesisResult.Success) {
+            return stripWavHeaderToPcm(gem.wavBytes)
+        }
+        return null
+    }
+
+    /** Split [text] into <= [maxChars] pieces at sentence / whitespace
+     *  boundaries so each fits the per-call TTS cap. */
+    private fun chunkForReadout(text: String, maxChars: Int): List<String> {
+        val trimmed = text.trim()
+        if (trimmed.length <= maxChars) return listOf(trimmed)
+        val out = ArrayList<String>()
+        val sentences = trimmed.split(Regex("(?<=[.!?])\\s+"))
+        val sb = StringBuilder()
+        for (s in sentences) {
+            if (sb.isNotEmpty() && sb.length + s.length + 1 > maxChars) {
+                out.add(sb.toString().trim()); sb.setLength(0)
+            }
+            if (s.length > maxChars) {
+                // A single mega-sentence: hard-split on whitespace.
+                var rest = s
+                while (rest.length > maxChars) {
+                    val cut = rest.lastIndexOf(' ', maxChars).takeIf { it > 0 } ?: maxChars
+                    out.add(rest.substring(0, cut).trim())
+                    rest = rest.substring(cut).trim()
+                }
+                if (rest.isNotBlank()) sb.append(rest).append(' ')
+            } else {
+                sb.append(s).append(' ')
+            }
+        }
+        if (sb.isNotBlank()) out.add(sb.toString().trim())
+        return out.filter { it.isNotBlank() }
+    }
+
+    /** Light markdown / URL cleanup so the synthesized speech doesn't read
+     *  out asterisks, backticks, or raw URLs. */
+    private fun cleanReadoutText(text: String): String {
+        return try {
+            text.replace("\r\n", "\n")
+                .replace(Regex("(?s)```.*?```"), " ")
+                .replace(Regex("(?:https?://|www\\.)[^\\s<>\"']+", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\*\\*([^*\\n]+?)\\*\\*"), "$1")
+                .replace(Regex("\\*([^*\\n]+?)\\*"), "$1")
+                .replace(Regex("[*_`#>|~]+"), " ")
+                .replace(Regex("[ \\t]+"), " ")
+                .replace(Regex("\\s*\\n\\s*\\n\\s*"), "\n\n")
+                .trim()
+        } catch (e: Exception) {
+            text.trim()
+        }
+    }
+
+    /** Parse a WAV byte array into raw PCM + sample rate (ported from the
+     *  visionclaw readout pipeline; tolerates Fish.audio streaming-size
+     *  sentinels). Returns null if it isn't parseable PCM WAV. */
+    private fun stripWavHeaderToPcm(wav: ByteArray): Pair<ByteArray, Int>? {
+        if (wav.size < 44) return null
+        if (wav[0] != 'R'.code.toByte() || wav[1] != 'I'.code.toByte() ||
+            wav[2] != 'F'.code.toByte() || wav[3] != 'F'.code.toByte()
+        ) return null
+        if (wav[8] != 'W'.code.toByte() || wav[9] != 'A'.code.toByte() ||
+            wav[10] != 'V'.code.toByte() || wav[11] != 'E'.code.toByte()
+        ) return null
+        fun u32(off: Int): Long =
+            (wav[off].toLong() and 0xFFL) or
+                ((wav[off + 1].toLong() and 0xFFL) shl 8) or
+                ((wav[off + 2].toLong() and 0xFFL) shl 16) or
+                ((wav[off + 3].toLong() and 0xFFL) shl 24)
+        fun isStreamingSizeSentinel(sz: Long): Boolean = sz >= 0xFFFFFF00L || sz < 0L
+        var sampleRate = 0
+        var pos = 12
+        while (pos + 8 <= wav.size) {
+            val id = String(wav, pos, 4, Charsets.US_ASCII)
+            val rawSz = u32(pos + 4)
+            val sz: Long =
+                if (isStreamingSizeSentinel(rawSz)) (wav.size - (pos + 8)).toLong().coerceAtLeast(0L)
+                else rawSz.coerceAtLeast(0L)
+            when (id) {
+                "fmt " -> if (pos + 12 + 4 <= wav.size) sampleRate = u32(pos + 12).toInt()
+                "data" -> {
+                    val dataStart = pos + 8
+                    val dataEnd = (dataStart.toLong() + sz)
+                        .coerceAtMost(wav.size.toLong())
+                        .coerceAtLeast(dataStart.toLong())
+                        .toInt()
+                    if (sampleRate <= 0) return null
+                    return wav.copyOfRange(dataStart, dataEnd) to sampleRate
+                }
+            }
+            val advance = sz + (sz and 1L)
+            val nextPos = (pos.toLong() + 8L + advance).coerceAtMost(wav.size.toLong()).toInt()
+            if (nextPos <= pos) return null
+            pos = nextPos
+        }
+        return null
     }
 
     /**
@@ -781,8 +1004,14 @@ class GeminiVoicePipeline(context: Context) {
                             )
                         }
                     }
-                    runCatching {
-                        liveSession?.sendAudioChunkPcm16(chunk, read, SAMPLE_RATE_HZ)
+                    // Don't stream the mic to Gemini while an agent reply is
+                    // being read aloud via the readout engine — otherwise the
+                    // speaker audio echoes back in and Gemini reacts to its
+                    // own readout as a new user turn.
+                    if (!agentReadoutActive) {
+                        runCatching {
+                            liveSession?.sendAudioChunkPcm16(chunk, read, SAMPLE_RATE_HZ)
+                        }
                     }
                 } else if (read < 0) {
                     Log.w(TAG, "audio read error code=$read")
