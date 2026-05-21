@@ -1608,6 +1608,26 @@ class MainActivity :
                                         if (dualWebViewGroup.isInScrollMode()) {
                                             return false // Don't consume - let tap go to WebView
                                         }
+                                        // ROOT-CAUSE FIX (avatar tap often fails to activate
+                                        // Gemini): when the cursor has idle-hidden, a single tap
+                                        // on an interactive HUD widget — the voice orb / clock
+                                        // strip / top row, all wired to toggle the voice session
+                                        // — was being LOST. The tap only re-showed the cursor and
+                                        // never dispatched, so the user had to tap twice. If the
+                                        // resting cursor is over an overlay widget, fire it now;
+                                        // otherwise fall back to just waking the cursor as before.
+                                        val pt =
+                                            runCatching { currentCursorInteractionPoint() }
+                                                .getOrNull()
+                                        if (pt != null &&
+                                            dispatchUnipanelOverlayTouchIfHit(pt.first, pt.second)
+                                        ) {
+                                            if (!isCursorVisible) {
+                                                isSimulatingTouchEvent = true
+                                                toggleCursorVisibility()
+                                            }
+                                            return true
+                                        }
                                         isSimulatingTouchEvent = true
                                         toggleCursorVisibility()
                                     }
@@ -1632,6 +1652,32 @@ class MainActivity :
                                             "DoubleTapDebug",
                                             "Double tap ignored - part of triple tap sequence"
                                     )
+                                    return true
+                                }
+
+                                // ROOT-CAUSE FIX (double-tap doesn't cancel Gemini): cancel
+                                // an active voice session IMMEDIATELY, before the scroll-mode
+                                // guard below. During a live session the cursor frequently
+                                // auto-hides into scroll mode, and the `isInScrollMode` early
+                                // return was swallowing the double-tap so the cancel never
+                                // ran. A cancel gesture must work regardless of cursor/scroll
+                                // state, so short-circuit here.
+                                if (com.TapLink.app.unipanel.HudStateBridge.current().phase !=
+                                    com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
+                                ) {
+                                    DebugLog.d(
+                                        "DoubleTapDebug",
+                                        "Main-pad double-tap — cancelling active Gemini session"
+                                    )
+                                    val api = voiceServiceApi
+                                    if (api == null) {
+                                        DebugLog.w(
+                                            "VoiceBind",
+                                            "Main-pad double-tap cancel: voiceServiceApi null"
+                                        )
+                                    } else {
+                                        runCatching { api.shutdownVoice() }
+                                    }
                                     return true
                                 }
 
@@ -1873,6 +1919,33 @@ class MainActivity :
                             override fun onDown(e: MotionEvent): Boolean = true
 
                             override fun onDoubleTap(e: MotionEvent): Boolean {
+                                // ROOT-CAUSE FIX (double-tap doesn't cancel Gemini):
+                                // the temple/side-arm pad (cyttsp6) is routed here, and
+                                // this handler previously ONLY toggled mouse-tap mode —
+                                // it never checked for an active voice session. So a
+                                // double-tap on the natural "cancel" pad silently flipped
+                                // mouse mode instead of stopping Gemini. Cancel an active
+                                // session first; only fall through to the mode toggle when
+                                // no voice session is running.
+                                val voiceActive =
+                                    com.TapLink.app.unipanel.HudStateBridge.current().phase !=
+                                        com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
+                                if (voiceActive) {
+                                    DebugLog.d(
+                                        "DoubleTapDebug",
+                                        "Temple double-tap — cancelling active Gemini session"
+                                    )
+                                    val api = voiceServiceApi
+                                    if (api == null) {
+                                        DebugLog.w(
+                                            "VoiceBind",
+                                            "Temple double-tap cancel: voiceServiceApi null"
+                                        )
+                                    } else {
+                                        runCatching { api.shutdownVoice() }
+                                    }
+                                    return true
+                                }
                                 toggleMouseTapMode()
                                 return true
                             }
@@ -6177,6 +6250,20 @@ class MainActivity :
             }
             voiceServiceApi = api
             DebugLog.d("VoiceBind", "bound to ${name?.shortClassName}")
+            // ROOT-CAUSE FIX (avatar tap sometimes does nothing right after
+            // launch): if the user tapped the orb before the Service finished
+            // binding, that tap was dropped with only a log. Flush a recent
+            // pending activation now that the binder is live (TTL-guarded so a
+            // stale tap can't silently start voice much later).
+            if (pendingVoiceActivateUntilMs > SystemClock.uptimeMillis()) {
+                pendingVoiceActivateUntilMs = 0L
+                if (com.TapLink.app.unipanel.HudStateBridge.current().phase ==
+                    com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
+                ) {
+                    DebugLog.d("VoiceBind", "Flushing pending voice activation after bind")
+                    runCatching { api.activateVoice() }
+                }
+            }
             // Phase 4g — install the unipanel PreviewView's
             // SurfaceProvider so the next CameraX bind shows a live
             // feed in the camera-preview frame. The PreviewView is
@@ -6210,6 +6297,11 @@ class MainActivity :
     }
 
     private var voiceServiceBound: Boolean = false
+
+    /** Set when the user taps to activate voice before the Service binder is
+     *  ready; flushed in onServiceConnected. TTL-guarded (uptime millis). */
+    @Volatile
+    private var pendingVoiceActivateUntilMs: Long = 0L
 
     /**
      * Bind to the visionclaw GeminiVoiceService (defined as
@@ -6461,8 +6553,12 @@ class MainActivity :
             if (api == null) {
                 DebugLog.w(
                     "VoiceBind",
-                    "Voice toggle tap: voiceServiceApi is null — bind not ready"
+                    "Voice toggle tap: voiceServiceApi is null — queuing activation until bind"
                 )
+                // Don't drop the tap: remember it so onServiceConnected can
+                // start the session the moment the binder arrives.
+                pendingVoiceActivateUntilMs = SystemClock.uptimeMillis() + 4000L
+                runCatching { startVoiceServiceBinding() }
                 return@OnClickListener
             }
             val phase = com.TapLink.app.unipanel.HudStateBridge.current().phase
@@ -7157,6 +7253,28 @@ class MainActivity :
             return ((bg.color ushr 24) and 0xFF) == 0
         }
         return false
+    }
+
+    /**
+     * Current cursor position in absolute screen coordinates, using the
+     * exact same anchored / non-anchored math as [dispatchTouchEventAtCursor].
+     * Extracted so the single-tap path can hit-test the overlay even when
+     * the cursor is hidden (idle-timed-out) without running the full
+     * WebView click pipeline.
+     */
+    private fun currentCursorInteractionPoint(): Pair<Float, Float> {
+        val groupLocation = IntArray(2)
+        dualWebViewGroup.getLocationOnScreen(groupLocation)
+        return if (isAnchored) {
+            (320f + groupLocation[0]) to (240f + groupLocation[1])
+        } else {
+            val scale = dualWebViewGroup.uiScale
+            val transX = dualWebViewGroup.leftEyeUIContainer.translationX
+            val transY = dualWebViewGroup.leftEyeUIContainer.translationY
+            val visualX = 320f + (lastCursorX - 320f) * scale + transX
+            val visualY = 240f + (lastCursorY - 240f) * scale + transY
+            (visualX + groupLocation[0]) to (visualY + groupLocation[1])
+        }
     }
 
     private fun dispatchTouchEventAtCursor() {

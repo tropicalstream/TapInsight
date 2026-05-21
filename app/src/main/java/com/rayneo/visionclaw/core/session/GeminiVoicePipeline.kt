@@ -111,7 +111,18 @@ class GeminiVoicePipeline(context: Context) {
 
     private val fishReadoutTtsClient by lazy(LazyThreadSafetyMode.NONE) {
         com.TapLink.app.media.FishTtsClient(
-            configProvider = { com.TapLink.app.media.resolveGlassesFishConfig(appContext) }
+            // ROOT-CAUSE FIX (agent-readout silence): the companion app
+            // defaults fish_format to "mp3", and the media-browser path
+            // gets away with that because it hands the bytes to a WebView
+            // <audio> element that decodes MP3. THIS pipeline instead
+            // decodes WAV by hand (stripWavHeaderToPcm rejects anything
+            // without a RIFF/WAVE header), so an MP3 reply parsed to null
+            // and the selected Fish voice was silently dropped — the user
+            // heard nothing (or the wrong Gemini fallback voice). Force
+            // WAV here so the PCM decoder always gets a stream it can play.
+            configProvider = {
+                com.TapLink.app.media.resolveGlassesFishConfig(appContext)?.copy(format = "wav")
+            }
         )
     }
     private val geminiReadoutTtsClient by lazy(LazyThreadSafetyMode.NONE) {
@@ -533,6 +544,7 @@ class GeminiVoicePipeline(context: Context) {
         }
         agentReadoutActive = true
         scope.launch {
+            var playedAny = false
             try {
                 val chunks = chunkForReadout(text, 1600)
                 for (chunk in chunks) {
@@ -553,6 +565,15 @@ class GeminiVoicePipeline(context: Context) {
                             "audio/pcm;rate=${pcm.second}", pcm.first,
                             muted = false, volume = 1f
                         )
+                    }.onSuccess { playedAny = true }
+                }
+                if (!playedAny) {
+                    // Both engines yielded no playable audio. Don't fail
+                    // silently — tell the user so a misconfigured TTS engine
+                    // is visible instead of looking like a dead assistant.
+                    Log.w(TAG, "agent readout produced no audio (TTS engine unavailable)")
+                    HudStateBridge.update {
+                        it.copy(notification = "Readout voice unavailable — check TTS settings")
                     }
                 }
             } catch (e: Exception) {
