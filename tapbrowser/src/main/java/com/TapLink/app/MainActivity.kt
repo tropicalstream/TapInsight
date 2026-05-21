@@ -7129,33 +7129,47 @@ class MainActivity :
         val preview = findViewById<View?>(R.id.unipanelCameraPreviewFrame) ?: return
         if (preview.visibility != View.VISIBLE) return
         val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText)
-        // Phase 4k.4 (Mars) — restore the two-stage placement that worked
-        // best: while the heartbeat ticker is showing ("Camera streaming
-        // to Gemini"), the preview sits just BELOW it; once the ticker
-        // auto-clears, the preview rises to 50dp under the clock. The only
-        // problem before was the lower stage (78dp) reaching down onto the
-        // dashboard tiles, so the initial stage is nudged up to 70dp —
-        // still clear of the heartbeat text (which ends ~69dp) but high
-        // enough to clear the browser tiles below. The heartbeat row spans
-        // ~50–72dp, so 70dp keeps the ticker readable directly above.
-        // dp/layout-space margins are scale-correct under the SBS transform
-        // (window-coordinate math from earlier builds was not).
+        val column = findViewById<View?>(R.id.unipanelTopHudColumn)
+        // Phase 4k.11 (Mars) — two-stage placement, but instead of guessing a
+        // magic dp for the BELOW-heartbeat stage (the old 70dp was razor-thin:
+        // the heartbeat ends ~69dp, so any small shift made the preview cover
+        // it), measure the heartbeat's ACTUAL laid-out bottom and sit just
+        // below it. Coordinates are taken in the overlay's own layout space
+        // (column.top + heartbeat.bottom) — NOT getLocationOnScreen, which is
+        // post-SBS-scale and was wrong in earlier builds. Once the ticker
+        // clears, the preview rises to 50dp under the clock.
         val density = resources.displayMetrics.density
-        // Phase 4k.9 — when the camera first turns on, force the BELOW-
-        // heartbeat stage (70dp) even if the "Camera streaming to Gemini"
-        // ticker hasn't published yet. Otherwise, depending on event
-        // order, the preview could momentarily land at 50dp — right on
-        // top of the heartbeat text. The preview only rises to 50dp once
-        // the ticker has actually cleared (renderUnipanelHeartbeat's empty
-        // branch calls this with the default false).
+        // forceBelowHeartbeat: when the camera first turns on, hold the BELOW
+        // stage even if the "Camera streaming to Gemini" ticker hasn't
+        // published yet (otherwise event order could briefly drop it to 50dp,
+        // on top of the ticker).
         val heartbeatShown = forceBelowHeartbeat ||
             (heartbeat != null && heartbeat.visibility == View.VISIBLE)
-        val topDp = if (heartbeatShown) 70f else 50f
-        val newTop = (topDp * density).toInt()
+        val fallbackBelowPx = (78f * density).toInt()
+        val newTop: Int = if (heartbeatShown) {
+            // Measured bottom of the heartbeat within the overlay, + an 8dp
+            // gap. Falls back to a safe 78dp until the ticker has measured.
+            val measuredBottom =
+                if (heartbeat != null && column != null && heartbeat.height > 0) {
+                    column.top + heartbeat.bottom + (8f * density).toInt()
+                } else {
+                    0
+                }
+            maxOf(measuredBottom, fallbackBelowPx)
+        } else {
+            (50f * density).toInt()
+        }
         val lp = preview.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
         if (lp.topMargin != newTop) {
             lp.topMargin = newTop
             preview.layoutParams = lp
+        }
+        // If the heartbeat hasn't been measured yet, re-run once layout settles
+        // so the preview lands exactly below its real bottom.
+        if (heartbeatShown && heartbeat != null &&
+            heartbeat.visibility == View.VISIBLE && heartbeat.height == 0
+        ) {
+            heartbeat.post { repositionUnipanelCameraPreview(forceBelowHeartbeat) }
         }
         repositionUnipanelAssistantCard()
     }
