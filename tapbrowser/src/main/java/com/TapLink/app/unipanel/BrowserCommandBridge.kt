@@ -17,7 +17,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 object BrowserCommandBridge {
 
     fun interface Listener {
-        fun onToggleReaderMode()
+        /** [enabled] true → enter reader mode, false → exit it. */
+        fun onSetReaderMode(enabled: Boolean)
     }
 
     private val listeners = CopyOnWriteArrayList<Listener>()
@@ -29,14 +30,15 @@ object BrowserCommandBridge {
     }
 
     /**
-     * Ask the browser to toggle reader mode on the currently-shown page.
-     * Fires every registered listener; a misbehaving listener can never
-     * break the publisher.
+     * Ask the browser to enter ([enabled]=true) or exit ([enabled]=false)
+     * reader mode on the currently-shown page. Reader mode is sticky — it
+     * stays until explicitly exited, not toggled. Fires every registered
+     * listener; a misbehaving listener can never break the publisher.
      */
-    fun toggleReaderMode() {
+    fun setReaderMode(enabled: Boolean) {
         for (l in listeners) {
             try {
-                l.onToggleReaderMode()
+                l.onSetReaderMode(enabled)
             } catch (_: Throwable) {
                 // ignore — never let a consumer crash the publisher
             }

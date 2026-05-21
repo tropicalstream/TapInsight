@@ -849,21 +849,29 @@ class GeminiVoicePipeline(context: Context) {
         val now = System.currentTimeMillis()
         if (now - lastReaderModeTriggerMs < MIN_LOCAL_VISION_INTERVAL_MS) return
         val lower = transcript.lowercase().trim()
-        if (READER_MODE_TRIGGER_PHRASES.none { lower.contains(it) }) return
+        // Check EXIT phrases first — "exit reader mode" also contains the
+        // enter phrase "reader mode", so exit must win. Reader mode is
+        // sticky: it stays on until the user explicitly asks to exit.
+        val wantsExit = READER_MODE_EXIT_PHRASES.any { lower.contains(it) }
+        val wantsEnter = !wantsExit && READER_MODE_ENTER_PHRASES.any { lower.contains(it) }
+        if (!wantsExit && !wantsEnter) return
         lastReaderModeTriggerMs = now
-        Log.i(TAG, "reader_mode trigger source=localRegex transcript='${transcript.take(80)}'")
-        HudStateBridge.update { it.copy(notification = "Reader mode") }
-        runCatching { com.TapLink.app.unipanel.BrowserCommandBridge.toggleReaderMode() }
+        Log.i(TAG, "reader_mode trigger source=localRegex enter=$wantsEnter transcript='${transcript.take(80)}'")
+        HudStateBridge.update { it.copy(notification = if (wantsEnter) "Reader mode" else null) }
+        runCatching { com.TapLink.app.unipanel.BrowserCommandBridge.setReaderMode(wantsEnter) }
         // Tell Gemini the device already handled it so it confirms instead of
-        // claiming it can't render reader mode (the reflow happens on the
-        // glasses, outside Gemini's tool surface).
-        runCatching {
-            liveSession?.sendClientText(
-                "[Device action] The current web page has been re-rendered in dark " +
-                    "reader mode on the glasses. Briefly confirm to the user, e.g. " +
-                    "\"Reader mode on.\" Do NOT say you are unable to do it."
-            )
+        // claiming it can't (the reflow happens on the glasses, outside
+        // Gemini's tool surface).
+        val confirm = if (wantsEnter) {
+            "[Device action] The current web page is now shown in a bold dark " +
+                "reader view on the glasses. Briefly confirm, e.g. \"Reader mode on.\" " +
+                "Do NOT say you are unable to do it."
+        } else {
+            "[Device action] Reader mode has been turned off and the original page " +
+                "restored on the glasses. Briefly confirm, e.g. \"Reader mode off.\" " +
+                "Do NOT say you are unable to do it."
         }
+        runCatching { liveSession?.sendClientText(confirm) }
     }
 
     /**
@@ -1217,9 +1225,8 @@ class GeminiVoicePipeline(context: Context) {
             "what am i looking at"
         )
 
-        /** Phrases that ask the browser to re-render the current page in a
-         *  clean dark reader view. */
-        private val READER_MODE_TRIGGER_PHRASES = listOf(
+        /** Phrases that ENTER the bold dark reader view. */
+        private val READER_MODE_ENTER_PHRASES = listOf(
             "reader mode",
             "reading mode",
             "reader view",
@@ -1232,6 +1239,27 @@ class GeminiVoicePipeline(context: Context) {
             "clean up this page",
             "declutter this page",
             "simplify this page"
+        )
+
+        /** Phrases that EXIT reader mode and restore the original page.
+         *  Checked before the enter phrases (these also contain "reader
+         *  mode"), so exit always wins. */
+        private val READER_MODE_EXIT_PHRASES = listOf(
+            "exit reader",
+            "exit reading",
+            "leave reader",
+            "leave reading",
+            "close reader",
+            "turn off reader",
+            "turn off reading",
+            "stop reader",
+            "disable reader",
+            "normal view",
+            "normal mode",
+            "back to normal",
+            "original page",
+            "exit reader mode",
+            "exit reading mode"
         )
 
         /** Screen-reference phrases used to decide when an agent command

@@ -145,7 +145,7 @@ class MainActivity :
 (function(){
   try {
     var D=document, W=window;
-    if (W.__tapReaderActive) { W.location.reload(); return 'reader:off'; }
+    if (W.__tapReaderActive) { return 'reader:already'; }
     function t(el){ return el ? (el.innerText||el.textContent||'').trim() : ''; }
     function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
     var title='';
@@ -166,24 +166,36 @@ class MainActivity :
     var clone=src.cloneNode(true);
     var junk=clone.querySelectorAll('script,style,noscript,iframe,form,button,input,select,svg,canvas,nav,aside,header,footer,[role=navigation],[role=banner],[role=complementary],[aria-hidden=true]');
     for(var k=0;k<junk.length;k++){ junk[k].remove(); }
+    // Convert images to text markers — a text-browser (lynx) shows no
+    // images, just an [image] placeholder / alt text.
+    var imgs=clone.querySelectorAll('img');
+    for(var a=0;a<imgs.length;a++){
+      var alt=(imgs[a].getAttribute('alt')||'').trim();
+      var rep=D.createElement('span'); rep.className='img';
+      rep.textContent='[image'+(alt?': '+alt:'')+']';
+      if(imgs[a].parentNode) imgs[a].parentNode.replaceChild(rep, imgs[a]);
+    }
     var html=clone.innerHTML;
     if((clone.innerText||'').trim().length<200){
       var body=(D.body.innerText||'').trim();
       html='<p>'+esc(body).replace(/\n{2,}/g,'</p><p>').replace(/\n/g,'<br>')+'</p>';
     }
+    // Bold monospace terminal look — modelled on the lynx text browser:
+    // pure-black bg, bright bold text, bold cyan underlined links, code in
+    // terminal green.
     var css='html,body{margin:0;padding:0;background:#000;}'+
-      '.tr{background:#000;color:#EAEAEA;font-family:-apple-system,Roboto,sans-serif;-webkit-font-smoothing:antialiased;}'+
-      '.tr .doc{max-width:680px;margin:0 auto;padding:30px 22px 90px;font-size:21px;line-height:1.65;letter-spacing:.2px;}'+
-      '.tr h1{font-size:30px;line-height:1.25;font-weight:700;color:#FFF;margin:0 0 18px;}'+
-      '.tr h2{font-size:24px;color:#FFF;margin:28px 0 10px;}'+
-      '.tr h3{font-size:21px;color:#F2F2F2;margin:22px 0 8px;}'+
-      '.tr p{margin:0 0 18px;color:#E6E6E6;}'+
-      '.tr a{color:#7FC4FF;text-decoration:none;}'+
-      '.tr img{max-width:100%;height:auto;border-radius:8px;margin:14px 0;opacity:.92;}'+
-      '.tr li{margin:6px 0;} .tr ul,.tr ol{padding-left:24px;}'+
-      '.tr blockquote{border-left:3px solid #444;margin:16px 0;padding:4px 0 4px 16px;color:#C8C8C8;font-style:italic;}'+
-      '.tr pre,.tr code{background:#141414;color:#D6D6D6;border-radius:6px;}'+
-      '.tr pre{padding:12px;overflow-x:auto;}';
+      '.tr{background:#000;color:#FFFFFF;font-family:"DejaVu Sans Mono","Courier New",monospace;font-weight:700;-webkit-font-smoothing:antialiased;}'+
+      '.tr .doc{max-width:760px;margin:0 auto;padding:26px 20px 90px;font-size:22px;line-height:1.5;}'+
+      '.tr h1{font-size:26px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#FFFFFF;margin:0 0 16px;border-bottom:2px solid #FFFFFF;padding-bottom:8px;}'+
+      '.tr h2{font-size:23px;font-weight:700;color:#FFFFFF;margin:26px 0 10px;}'+
+      '.tr h3{font-size:22px;font-weight:700;color:#E8E8E8;margin:20px 0 8px;}'+
+      '.tr p{margin:0 0 16px;color:#FFFFFF;font-weight:700;}'+
+      '.tr a{color:#3FE0FF;font-weight:700;text-decoration:underline;}'+
+      '.tr li{margin:6px 0;} .tr ul,.tr ol{padding-left:26px;}'+
+      '.tr .img{color:#888;font-weight:400;}'+
+      '.tr blockquote{border-left:3px solid #FFFFFF;margin:14px 0;padding:2px 0 2px 14px;color:#CFCFCF;}'+
+      '.tr pre,.tr code{background:#111;color:#7CFF7C;font-weight:700;border-radius:4px;}'+
+      '.tr pre{padding:10px;overflow-x:auto;}';
     D.documentElement.innerHTML='<head><meta name="viewport" content="width=device-width, initial-scale=1"><style>'+css+'</style></head><body class="tr"><article class="doc">'+(title?'<h1>'+esc(title)+'</h1>':'')+html+'</article></body>';
     W.__tapReaderActive=true;
     W.scrollTo(0,0);
@@ -191,6 +203,19 @@ class MainActivity :
   } catch(e){ return 'reader:err'; }
 })();
 """
+
+        /** Exit reader mode: restore the original page (only if reader mode
+         *  is active) by reloading. Reader mode is sticky — it stays until
+         *  this runs. */
+        private const val READER_MODE_EXIT_JS = """
+(function(){
+  try {
+    if (window.__tapReaderActive) { window.__tapReaderActive=false; window.location.reload(); return 'reader:off'; }
+    return 'reader:noop';
+  } catch(e){ return 'reader:err'; }
+})();
+"""
+
         private const val EXTRA_RETURN_TO_CHAT_ON_DOUBLE_TAP =
                 "tapclaw_return_to_chat_double_tap"
         /** Set by visionclaw MainActivity when it warm-starts us for
@@ -6750,24 +6775,26 @@ class MainActivity :
     private fun startBrowserCommandObserver() {
         browserCommandSubscription?.runCatching { close() }
         browserCommandSubscription =
-            com.TapLink.app.unipanel.BrowserCommandBridge.observe {
-                uiHandler.post { applyReaderModeToCurrentPage() }
+            com.TapLink.app.unipanel.BrowserCommandBridge.observe { enabled ->
+                uiHandler.post { applyReaderModeToCurrentPage(enabled) }
             }
     }
 
     /**
-     * Inject the reader-mode script into the currently-shown WebView. It
-     * extracts the article content (industry-standard paragraph-density
-     * heuristic, à la Safari/Firefox Reader), strips chrome/ads, and
-     * re-renders it in a dark, large-text, high-contrast layout tuned for
-     * the RayNeo X3 Pro. Running it again reloads the page to exit.
+     * Enter ([enabled]=true) or exit reader mode on the current WebView.
+     * Entering extracts the article (paragraph-density heuristic, à la
+     * Safari/Firefox Reader), strips chrome/ads, and re-renders it in a bold
+     * monospace dark "lynx-style" view tuned for the RayNeo X3 Pro. Reader
+     * mode is sticky — it stays until [enabled]=false, which reloads the
+     * page to restore the original.
      */
-    private fun applyReaderModeToCurrentPage() {
+    private fun applyReaderModeToCurrentPage(enabled: Boolean) {
         if (!::dualWebViewGroup.isInitialized) return
         // Make sure the browser is actually visible so the result is seen.
         runCatching { if (browserPanelHidden) showBrowserPanel() }
-        runCatching { webView.evaluateJavascript(READER_MODE_JS, null) }
-        DebugLog.d("ReaderMode", "Reader-mode script injected into current page")
+        val js = if (enabled) READER_MODE_JS else READER_MODE_EXIT_JS
+        runCatching { webView.evaluateJavascript(js, null) }
+        DebugLog.d("ReaderMode", "Reader mode ${if (enabled) "ENTER" else "EXIT"} injected")
     }
 
     /**
