@@ -7310,11 +7310,10 @@ class MainActivity :
                     // Service via setCameraPreviewSurfaceProvider
                     // (wired in startUnipanelCameraPreviewBinding).
                     previewFrame?.visibility = if (on) View.VISIBLE else View.GONE
-                    // Phase 4j — when the camera comes on, drop the
-                    // preview below the live HUD column so it clears
-                    // the heartbeat ticker instead of trusting the
-                    // hardcoded XML margin.
-                    if (on) repositionUnipanelCameraPreview(forceBelowHeartbeat = true)
+                    // Mars: the camera ticker was removed, so on enable the
+                    // preview goes straight to its FINAL position (50dp under
+                    // the clock) — no below-ticker stage / bounce.
+                    if (on) repositionUnipanelCameraPreview()
                     unipanelCameraOnState = on
                     updateMinimalIndicators()
                 }

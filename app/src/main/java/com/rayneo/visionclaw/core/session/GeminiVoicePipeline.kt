@@ -82,6 +82,10 @@ class GeminiVoicePipeline(context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var connectJob: Job? = null
+    /** The agent-readout coroutine (Hermes/TapClaw reply read aloud). Tracked
+     *  so shutdown() can cancel it — otherwise it keeps playing audio and
+     *  re-setting the THINKING phase after the session is closed. */
+    private var readoutJob: Job? = null
 
     @Volatile private var liveSession: GeminiRouter.LiveSessionHandle? = null
     @Volatile private var liveSessionReady: Boolean = false
@@ -282,7 +286,9 @@ class GeminiVoicePipeline(context: Context) {
      * @param reason optional one-line message surfaced in the HUD.
      */
     fun shutdown(reason: String? = null) {
-        if (!captureActive && liveSession == null && connectJob?.isActive != true) {
+        if (!captureActive && liveSession == null && connectJob?.isActive != true &&
+            readoutJob?.isActive != true
+        ) {
             Log.d(TAG, "shutdown(): already idle, skipping")
             return
         }
@@ -305,6 +311,16 @@ class GeminiVoicePipeline(context: Context) {
 
         connectJob?.cancel()
         connectJob = null
+
+        // Cancel the agent-readout coroutine and clear its gates BEFORE we
+        // flush audio — otherwise it keeps queueing TTS chunks (speech keeps
+        // playing) and re-publishing the THINKING phase (green halo stays) even
+        // though the session is closed. liveSessionReady is already false here,
+        // so the readout's finally block won't bounce the phase to LISTENING.
+        readoutJob?.cancel()
+        readoutJob = null
+        agentReadoutActive = false
+        suppressGeminiOutputUntilMs = 0L
 
         runCatching { audioPlayer.stopAndFlush() }
 
@@ -606,13 +622,15 @@ class GeminiVoicePipeline(context: Context) {
             return
         }
         agentReadoutActive = true
-        scope.launch {
+        readoutJob = scope.launch {
             var playedAny = false
             try {
                 val chunks = chunkForReadout(text, 1600)
                 for (chunk in chunks) {
+                    if (!isActive) break // shutdown/cancel — stop reading immediately
                     if (chunk.isBlank()) continue
                     val pcm = synthesizeRoutedToPcm(chunk) ?: continue
+                    if (!isActive) break
                     // Keep Gemini's audio suppressed across the whole read.
                     suppressGeminiOutputUntilMs =
                         android.os.SystemClock.uptimeMillis() + 60_000L
