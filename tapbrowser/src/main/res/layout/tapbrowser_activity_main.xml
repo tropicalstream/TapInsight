@@ -66,6 +66,8 @@
                 android:layout_gravity="top|start"
                 android:layout_marginTop="2dp"
                 android:orientation="vertical"
+                android:clipChildren="false"
+                android:clipToPadding="false"
                 android:clickable="false"
                 android:focusable="false">
 
@@ -78,6 +80,8 @@
                 android:gravity="top"
                 android:orientation="horizontal"
                 android:elevation="8dp"
+                android:clipChildren="false"
+                android:clipToPadding="false"
                 android:clickable="false"
                 android:focusable="false">
 
@@ -90,6 +94,8 @@
                 android:paddingStart="6dp"
                 android:paddingEnd="8dp"
                 android:background="#B3000000"
+                android:clipChildren="false"
+                android:clipToPadding="false"
                 android:clickable="true"
                 android:focusable="true">
 
@@ -246,8 +252,8 @@
                         android:id="@+id/unipanelVoiceOrbGlow"
                         android:layout_width="match_parent"
                         android:layout_height="match_parent"
-                        android:alpha="0.85"
-                        android:background="@drawable/bg_unipanel_orb_glow_blue"
+                        android:alpha="0.55"
+                        android:background="@drawable/bg_unipanel_orb_ring_idle"
                         android:contentDescription="@null" />
 
                     <ImageView

@@ -1532,6 +1532,30 @@ class MainActivity :
                                     return true
                                 }
 
+                                // Phase 4k.10 — RESTORE the browser on a single tap whenever
+                                // it's collapsed to the HUD-only focus view. This must run
+                                // BEFORE the cursor-visibility branch below: the normal
+                                // dispatchTouchEventAtCursor() path (which holds the overlay
+                                // hit-test + the browserPanelHidden -> showBrowserPanel()
+                                // restore) was ONLY being called when isCursorVisible was true.
+                                // Once the cursor's idle timeout hid it, a tap merely re-showed
+                                // the cursor and the browser never came back — that's the
+                                // "tap-to-toggle stopped working" regression. Driving
+                                // dispatchTouchEventAtCursor() directly here reuses the exact
+                                // same routing (an interactive HUD widget such as the voice orb
+                                // still wins; otherwise the empty-space tap restores the
+                                // browser) regardless of whether the cursor happens to be
+                                // visible.
+                                if (browserPanelHidden &&
+                                    ::dualWebViewGroup.isInitialized &&
+                                    !dualWebViewGroup.isScreenMasked()
+                                ) {
+                                    if (!cursorJustAppeared && !isSimulatingTouchEvent) {
+                                        dispatchTouchEventAtCursor()
+                                    }
+                                    return true
+                                }
+
                                 // When masked, don't consume the tap - let it reach the unmask
                                 // button and media controls
                                 // The mask overlay itself will block touches to web content
@@ -6883,32 +6907,45 @@ class MainActivity :
         state: com.TapLink.app.unipanel.HudStateBridge.State
     ) {
         val glow = findViewById<View?>(R.id.unipanelVoiceOrbGlow) ?: return
-        // Phase 4k.6 — the avatar wears a Hermes-style glow ring. When
-        // IDLE it keeps a soft, steady BLUE ring so the avatar always
-        // looks "alive" (matching the hermes orb halo). During a voice
-        // turn the ring goes red while the user speaks (LISTENING /
-        // FOLLOW_UP) and blue while Gemini speaks (THINKING), with the
-        // alpha pulsing on the oscilloscope level.
+        // Phase 4k.10 — the avatar ring must make voice state UNMISTAKABLE
+        // (Mars' repeated request). Three visually-distinct states, no
+        // longer a washed-out soft radial that idle and thinking shared:
+        //
+        //   IDLE       → thin DIM steel ring (clearly "off / standby")
+        //   LISTENING  → BOLD bright RED ring  (you are being heard)
+        //   FOLLOW_UP  → BOLD bright RED ring  (still listening)
+        //   THINKING   → BOLD bright GREEN ring (Gemini is talking back)
+        //
+        // Red vs green is the clearest possible contrast; the idle ring is
+        // thin/dim so the lit active rings dominate. On top of the colour
+        // swap the ring breathes — scaled up and brightened by the live
+        // oscilloscope level — so an active state is obvious even in
+        // peripheral vision on the glasses HUD.
         val phase = state.phase
         val idle = phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
-        val wantsRed = phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.LISTENING ||
-            phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.FOLLOW_UP
+        val listening =
+            phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.LISTENING ||
+                phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.FOLLOW_UP
         glow.setBackgroundResource(
-            if (wantsRed) R.drawable.bg_unipanel_orb_glow_red
-            else R.drawable.bg_unipanel_orb_glow_blue
+            when {
+                idle -> R.drawable.bg_unipanel_orb_ring_idle
+                listening -> R.drawable.bg_unipanel_orb_ring_red
+                else -> R.drawable.bg_unipanel_orb_ring_green
+            }
         )
-        val targetAlpha = when {
-            idle -> 0.85f // pronounced steady blue ring
-            wantsRed -> {
-                val level = state.oscilloscopeLevel.coerceIn(0f, 1f)
-                (0.8f + level * 0.2f).coerceIn(0f, 1f)
-            }
-            else -> {
-                val level = state.oscilloscopeLevel.coerceIn(0f, 1f)
-                (0.85f + level * 0.15f).coerceIn(0f, 1f)
-            }
+        val level = state.oscilloscopeLevel.coerceIn(0f, 1f)
+        if (idle) {
+            glow.alpha = 0.55f
+            glow.scaleX = 1f
+            glow.scaleY = 1f
+        } else {
+            // Active rings sit near-opaque and pulse outward with audio so
+            // the lit ring visibly grows while you speak / Gemini replies.
+            glow.alpha = (0.85f + level * 0.15f).coerceIn(0f, 1f)
+            val scale = 1f + level * 0.22f
+            glow.scaleX = scale
+            glow.scaleY = scale
         }
-        glow.alpha = targetAlpha
     }
 
     /**
