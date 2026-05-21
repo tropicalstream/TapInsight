@@ -1748,22 +1748,12 @@ class MainActivity :
                                 // return was swallowing the double-tap so the cancel never
                                 // ran. A cancel gesture must work regardless of cursor/scroll
                                 // state, so short-circuit here.
-                                if (com.TapLink.app.unipanel.HudStateBridge.current().phase !=
-                                    com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
-                                ) {
+                                if (isGeminiExitSurfaceActive()) {
                                     DebugLog.d(
                                         "DoubleTapDebug",
                                         "Main-pad double-tap — cancelling active Gemini session"
                                     )
-                                    val api = voiceServiceApi
-                                    if (api == null) {
-                                        DebugLog.w(
-                                            "VoiceBind",
-                                            "Main-pad double-tap cancel: voiceServiceApi null"
-                                        )
-                                    } else {
-                                        exitGeminiFully()
-                                    }
+                                    exitGeminiFully()
                                     return true
                                 }
 
@@ -1888,9 +1878,7 @@ class MainActivity :
                                 // HUD/chat up or down for a full-screen browser. (Dim
                                 // mode is handled by the short-circuit above; single-tap
                                 // on empty space still toggles the browser view.)
-                                val voiceActive =
-                                    com.TapLink.app.unipanel.HudStateBridge.current().phase !=
-                                        com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
+                                val voiceActive = isGeminiExitSurfaceActive()
                                 when {
                                     voiceActive -> {
                                         DebugLog.d(
@@ -2016,23 +2004,13 @@ class MainActivity :
                                 // mouse mode instead of stopping Gemini. Cancel an active
                                 // session first; only fall through to the mode toggle when
                                 // no voice session is running.
-                                val voiceActive =
-                                    com.TapLink.app.unipanel.HudStateBridge.current().phase !=
-                                        com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
+                                val voiceActive = isGeminiExitSurfaceActive()
                                 if (voiceActive) {
                                     DebugLog.d(
                                         "DoubleTapDebug",
                                         "Temple double-tap — cancelling active Gemini session"
                                     )
-                                    val api = voiceServiceApi
-                                    if (api == null) {
-                                        DebugLog.w(
-                                            "VoiceBind",
-                                            "Temple double-tap cancel: voiceServiceApi null"
-                                        )
-                                    } else {
-                                        exitGeminiFully()
-                                    }
+                                    exitGeminiFully()
                                     return true
                                 }
                                 toggleMouseTapMode()
@@ -6257,6 +6235,8 @@ class MainActivity :
      * touching the View tree.
      */
     private var unipanelChatCardSubscription: AutoCloseable? = null
+    @Volatile
+    private var unipanelAssistantCardDismissedThroughMs: Long = 0L
     private val hideUnipanelAssistantCardRunnable = Runnable {
         // Phase 4k.5 — the card box is the ScrollView now; hide it and
         // clear the inner text.
@@ -6282,6 +6262,8 @@ class MainActivity :
     private var leftArmTapDownY: Float = 0f
     private var leftArmTapTracking: Boolean = false
     private var leftArmTapMovedTooFar: Boolean = false
+    private var rightArmLastTapUpMs: Long = 0L
+    private var pendingRightArmSingleTapAction: Runnable? = null
 
     private fun consumedByLeftArmTap(ev: MotionEvent): Boolean {
         when (ev.actionMasked) {
@@ -6310,22 +6292,31 @@ class MainActivity :
                 val elapsed = SystemClock.uptimeMillis() - leftArmTapDownTimeMs
                 if (elapsed >= LEFT_ARM_TAP_MAX_MS) return false
                 val api = voiceServiceApi ?: return false
-                // Mars rebind: the left-arm short tap ACTIVATES Gemini when no
-                // session is running; only WHILE a session is active does it
-                // toggle the camera on/off.
-                val voiceActive =
-                    com.TapLink.app.unipanel.HudStateBridge.current().phase !=
-                        com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
-                if (!voiceActive) {
-                    DebugLog.d("LeftArmTap", "short tap (${elapsed}ms) → activateVoice (no session)")
-                    runCatching { api.activateVoice() }
-                } else {
-                    DebugLog.d(
-                        "LeftArmTap",
-                        "short tap (${elapsed}ms) → toggleCamera (was=${api.isCameraOn()})"
-                    )
-                    runCatching { api.toggleCamera() }
+                pendingRightArmSingleTapAction?.let { uiHandler.removeCallbacks(it) }
+                val action = Runnable {
+                    pendingRightArmSingleTapAction = null
+                    // Mars rebind: the left-arm short tap ACTIVATES Gemini when no
+                    // session is running; only WHILE a session is active does it
+                    // toggle the camera on/off.
+                    val voiceActive =
+                        com.TapLink.app.unipanel.HudStateBridge.current().phase !=
+                            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
+                    if (!voiceActive) {
+                        DebugLog.d("LeftArmTap", "short tap (${elapsed}ms) → activateVoice (no session)")
+                        runCatching { api.activateVoice() }
+                    } else {
+                        DebugLog.d(
+                            "LeftArmTap",
+                            "short tap (${elapsed}ms) → toggleCamera (was=${api.isCameraOn()})"
+                        )
+                        runCatching { api.toggleCamera() }
+                    }
                 }
+                pendingRightArmSingleTapAction = action
+                uiHandler.postDelayed(
+                    action,
+                    android.view.ViewConfiguration.getDoubleTapTimeout().toLong() + 20L
+                )
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
@@ -6333,6 +6324,34 @@ class MainActivity :
             }
         }
         return false
+    }
+
+    private fun consumedByRightArmGeminiExitDoubleTap(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_CANCEL) {
+            rightArmLastTapUpMs = 0L
+            return false
+        }
+        if (ev.actionMasked != MotionEvent.ACTION_UP) return false
+
+        val now = ev.eventTime.takeIf { it > 0L } ?: SystemClock.uptimeMillis()
+        val previous = rightArmLastTapUpMs
+        rightArmLastTapUpMs = now
+        val withinDoubleTap =
+            previous > 0L &&
+                now - previous <= android.view.ViewConfiguration.getDoubleTapTimeout()
+        if (!withinDoubleTap) return false
+
+        rightArmLastTapUpMs = 0L
+        if (!isGeminiExitSurfaceActive()) return false
+
+        pendingRightArmSingleTapAction?.let { uiHandler.removeCallbacks(it) }
+        pendingRightArmSingleTapAction = null
+        DebugLog.d(
+            "DoubleTapDebug",
+            "Right-arm early double-tap — full Gemini exit before short-tap handling"
+        )
+        exitGeminiFully()
+        return true
     }
 
     /** Phase 4d (Mars revision) — double-tap now toggles tapbrowser's
@@ -6592,7 +6611,10 @@ class MainActivity :
         scroll: View,
         cards: List<com.TapLink.app.unipanel.ChatCardBridge.Card>
     ) {
-        val latestAssistant = cards.lastOrNull { !it.fromUser }?.text?.takeIf { it.isNotBlank() }
+        val latestAssistantCard = cards.lastOrNull { !it.fromUser && it.text.isNotBlank() }
+        val latestAssistant = latestAssistantCard
+            ?.takeIf { it.timestampMs > unipanelAssistantCardDismissedThroughMs }
+            ?.text
         uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
         if (latestAssistant == null) {
             card.text = ""
@@ -6807,6 +6829,26 @@ class MainActivity :
         container.visibility = if (showDot || showCam) View.VISIBLE else View.GONE
     }
 
+    private fun isGeminiExitSurfaceActive(): Boolean {
+        val hudState = com.TapLink.app.unipanel.HudStateBridge.current()
+        val voiceActive =
+            hudState.phase != com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE ||
+                hudState.connection == com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus.CONNECTING ||
+                hudState.connection == com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus.GEMINI_CONNECTED ||
+                hudState.connection == com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus.TOOLS_READY
+        val cameraActive = runCatching {
+            voiceServiceApi?.isCameraOn() == true ||
+                com.TapLink.app.unipanel.CameraStateBridge.current()
+        }.getOrDefault(false)
+        val chatBubbleOpen =
+            findViewById<View?>(R.id.unipanelMiniCardScroll)?.visibility == View.VISIBLE ||
+                com.TapLink.app.unipanel.ChatCardBridge.current().any {
+                    !it.fromUser && it.text.isNotBlank() &&
+                        it.timestampMs > unipanelAssistantCardDismissedThroughMs
+                }
+        return voiceActive || cameraActive || chatBubbleOpen
+    }
+
     /**
      * Phase 4aa — full Gemini exit (right-arm double-tap, when a session is
      * active): close the voice session, turn the camera off if it's on, close
@@ -6815,12 +6857,39 @@ class MainActivity :
      */
     private fun exitGeminiFully() {
         val api = voiceServiceApi
-        runCatching { api?.shutdownVoice() }
+        val lastAssistantTimestamp = com.TapLink.app.unipanel.ChatCardBridge.current()
+            .asSequence()
+            .filter { !it.fromUser && it.text.isNotBlank() }
+            .map { it.timestampMs }
+            .maxOrNull()
+            ?: System.currentTimeMillis()
+        unipanelAssistantCardDismissedThroughMs =
+            maxOf(unipanelAssistantCardDismissedThroughMs, lastAssistantTimestamp)
+
         runCatching { if (api?.isCameraOn() == true) api.toggleCamera() }
-        // Close the chat bubble: clear the cards and hide the card view.
+        runCatching { api?.shutdownVoice() }
+        com.TapLink.app.unipanel.HudStateBridge.update {
+            it.copy(
+                phase = com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE,
+                connection = com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus.IDLE,
+                transcript = null,
+                oscilloscopeLevel = 0f,
+                notification = null
+            )
+        }
+        runCatching { com.TapLink.app.unipanel.CameraStateBridge.publish(false) }
+        unipanelCameraOnState = false
+        runCatching {
+            findViewById<View?>(R.id.unipanelCameraPreviewFrame)?.visibility = View.GONE
+            findViewById<View?>(R.id.unipanelVisionDot)?.visibility = View.GONE
+        }
+        // Close the chat bubble locally and suppress the current card so a
+        // late ViewModel/ChatCardBridge publish can't reopen it after exit.
         runCatching { com.TapLink.app.unipanel.ChatCardBridge.publish(emptyList()) }
+        uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
         runCatching {
             findViewById<View?>(R.id.unipanelMiniCardScroll)?.visibility = View.GONE
+            findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)?.text = ""
         }
         // The avatar ring returns to idle via HudStateBridge phase -> IDLE
         // (published by shutdownVoice). Refresh the minimal corner indicators.
@@ -12866,6 +12935,9 @@ class MainActivity :
         // Match cyttsp6 specifically but allow suffix variants for hardware revisions.
         val templeDeviceName = ev.device?.name ?: ""
         if (templeDeviceName.contains("cyttsp6", ignoreCase = true)) {
+            if (consumedByRightArmGeminiExitDoubleTap(ev)) {
+                return true
+            }
             // Phase 4g — left-arm SHORT TAP → voiceServiceApi.toggleCamera().
             // Ported from visionclaw MainActivity.consumedByLeftArmTap. The
             // short-tap check runs BEFORE the temple double-tap detector
@@ -13430,6 +13502,8 @@ class MainActivity :
         unipanelHeartbeatClearRunnable?.let { uiHandler.removeCallbacks(it) }
         unipanelHeartbeatClearRunnable = null
         uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
+        pendingRightArmSingleTapAction?.let { uiHandler.removeCallbacks(it) }
+        pendingRightArmSingleTapAction = null
         // Phase 4b: unregister the battery receiver so a config change
         // / Activity recreate doesn't leak it.
         try {
