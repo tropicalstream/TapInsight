@@ -1797,13 +1797,12 @@ class MainActivity :
                                     setUnipanelHudVisible(true)
                                     return
                                 }
-                                // Phase 4k.8 (Mars revision) — double-tap mirrors the
-                                // hermes branch's cyclePanelViaDoubleTap: if a Gemini
-                                // voice session is active (phase != IDLE), double-tap
-                                // CANCELS it. Browser show/hide is now handled by a
-                                // single tap on empty space, so double-tap's only
-                                // other job is toggling the browser's own nav bars
-                                // (when the browser is hidden, restore it first).
+                                // Double-tap priority: if a Gemini voice session is
+                                // active (phase != IDLE), CANCEL it. If the browser was
+                                // single-tap-hidden, restore it. Otherwise roll the
+                                // HUD/chat up or down for a full-screen browser. (Dim
+                                // mode is handled by the short-circuit above; single-tap
+                                // on empty space still toggles the browser view.)
                                 val voiceActive =
                                     com.TapLink.app.unipanel.HudStateBridge.current().phase !=
                                         com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
@@ -1823,11 +1822,14 @@ class MainActivity :
                                         showBrowserPanel()
                                     }
                                     else -> {
+                                        // Mars: double-tap rolls the HUD/chat up and
+                                        // down to give a full-screen browser (was: toggle
+                                        // the browser's own nav bars).
                                         DebugLog.d(
                                             "DoubleTapDebug",
-                                            "Toggling browser nav bars via setNavBarsHidden"
+                                            "Rolling HUD/chat for full-screen browser"
                                         )
-                                        toggleBrowserNavBars()
+                                        toggleUnipanelHudRoll()
                                     }
                                 }
                                 return
@@ -4183,9 +4185,55 @@ class MainActivity :
      */
     private fun setUnipanelHudVisible(visible: Boolean) {
         runCatching {
-            findViewById<View?>(R.id.unipanelOverlay)?.visibility =
-                if (visible) View.VISIBLE else View.GONE
+            val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return
+            if (visible) {
+                // Always clear any roll transform so dim-mode restore can't
+                // leave the HUD slid off-screen / transparent.
+                overlay.animate().cancel()
+                overlay.translationY = 0f
+                overlay.alpha = 1f
+                hudRolledUp = false
+            }
+            overlay.visibility = if (visible) View.VISIBLE else View.GONE
         }
+    }
+
+    /**
+     * Phase 4s — double-tap "full-screen browser" toggle. Rolls the whole
+     * unipanel HUD/chat overlay UP off the top of the screen (then hides it)
+     * so the browser fills the display, and rolls it back DOWN on the next
+     * double-tap. Replaces the old menu-bar toggle. Independent of dim mode
+     * and the single-tap browser show/hide.
+     */
+    @Volatile
+    private var hudRolledUp = false
+
+    private fun toggleUnipanelHudRoll() {
+        val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return
+        hudRolledUp = !hudRolledUp
+        overlay.animate().cancel()
+        val distance = (overlay.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels)
+            .toFloat()
+        if (hudRolledUp) {
+            // Roll up and out → full-screen browser.
+            overlay.animate()
+                .translationY(-distance)
+                .alpha(0f)
+                .setDuration(200)
+                .withEndAction { overlay.visibility = View.GONE }
+                .start()
+        } else {
+            // Roll back down into view.
+            overlay.visibility = View.VISIBLE
+            overlay.translationY = -distance
+            overlay.alpha = 0f
+            overlay.animate()
+                .translationY(0f)
+                .alpha(1f)
+                .setDuration(200)
+                .start()
+        }
+        DebugLog.d("DoubleTapDebug", "HUD roll ${if (hudRolledUp) "up (full-screen browser)" else "down"}")
     }
 
     override fun onSendEnterInLink() {
