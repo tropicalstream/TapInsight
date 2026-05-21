@@ -6341,24 +6341,11 @@ class MainActivity :
         }
         card.text = latestAssistant
         scroll.visibility = View.VISIBLE
-        // Cap the scroll box height: grow with content up to ~96dp, then
-        // let it scroll. Then auto-scroll to the bottom so the newest
-        // text stays visible as the reply streams in (Hermes behavior).
+        // Phase 4k.6 — the box is a fixed 3:4 size (set in XML); short
+        // replies sit at the top, long ones scroll. Auto-scroll to the
+        // newest text as the reply streams in (Hermes behavior).
         scroll.post {
-            // Phase 4k.6 — cap ~58dp (≈3 lines at 11sp incl. padding) so
-            // the card stays in the top band above the radio/dashboard
-            // panel; longer replies scroll (auto-scrolled to newest).
-            val maxH = (58f * resources.displayMetrics.density).toInt()
-            val contentH = card.height + scroll.paddingTop + scroll.paddingBottom
-            val capped = contentH > maxH
-            val lp = scroll.layoutParams
-            lp.height = if (capped) maxH else android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-            scroll.layoutParams = lp
-            if (capped) {
-                scroll.post {
-                    (scroll as? android.widget.ScrollView)?.fullScroll(View.FOCUS_DOWN)
-                }
-            }
+            (scroll as? android.widget.ScrollView)?.fullScroll(View.FOCUS_DOWN)
         }
         uiHandler.postDelayed(
             hideUnipanelAssistantCardRunnable,
@@ -6851,33 +6838,31 @@ class MainActivity :
         state: com.TapLink.app.unipanel.HudStateBridge.State
     ) {
         val glow = findViewById<View?>(R.id.unipanelVoiceOrbGlow) ?: return
-        // Phase dominates the colour so it stays correct even if the
-        // oscilloscope channel field is momentarily stale: THINKING means
-        // Gemini is speaking → blue; LISTENING / FOLLOW_UP means the user
-        // is speaking → red; otherwise fall back to the channel hint.
+        // Phase 4k.6 — the avatar wears a Hermes-style glow ring. When
+        // IDLE it keeps a soft, steady BLUE ring so the avatar always
+        // looks "alive" (matching the hermes orb halo). During a voice
+        // turn the ring goes red while the user speaks (LISTENING /
+        // FOLLOW_UP) and blue while Gemini speaks (THINKING), with the
+        // alpha pulsing on the oscilloscope level.
         val phase = state.phase
-        val wantsRed = when (phase) {
-            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.THINKING -> false
-            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.LISTENING,
-            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.FOLLOW_UP -> true
-            else -> state.oscilloscopeChannel ==
-                com.TapLink.app.unipanel.HudStateBridge.OscilloscopeChannel.USER
-        }
+        val idle = phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
+        val wantsRed = phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.LISTENING ||
+            phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.FOLLOW_UP
         glow.setBackgroundResource(
             if (wantsRed) R.drawable.bg_unipanel_orb_glow_red
             else R.drawable.bg_unipanel_orb_glow_blue
         )
-        val targetAlpha =
-            if (state.phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE) {
-                0f
-            } else {
+        val targetAlpha = when {
+            idle -> 0.45f // persistent soft blue ring
+            wantsRed -> {
                 val level = state.oscilloscopeLevel.coerceIn(0f, 1f)
-                if (wantsRed) {
-                    (0.35f + level * 0.65f).coerceIn(0f, 1f)
-                } else {
-                    (0.65f + level * 0.35f).coerceIn(0f, 1f)
-                }
+                (0.5f + level * 0.5f).coerceIn(0f, 1f)
             }
+            else -> {
+                val level = state.oscilloscopeLevel.coerceIn(0f, 1f)
+                (0.65f + level * 0.35f).coerceIn(0f, 1f)
+            }
+        }
         glow.alpha = targetAlpha
     }
 
