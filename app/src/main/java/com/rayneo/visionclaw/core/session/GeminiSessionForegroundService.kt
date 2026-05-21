@@ -427,6 +427,26 @@ class GeminiSessionForegroundService : LifecycleService() {
             )
             vm.setAirQualityClient(airQualityClient)
 
+            // Share the SAME authenticated clients with the voice tool path so
+            // google_calendar / google_tasks (and AQI / places / daily_briefing
+            // via location) work in conversation — not just on the HUD. Without
+            // this the pipeline's ToolDispatcher used no-auth stubs and Gemini
+            // reported it had no access to the user's calendar/tasks. Installed
+            // here (onCreate) before any session, so the lazy dispatcher sees it.
+            runCatching {
+                pipeline.setGoogleToolClients(
+                    calendarClient = calendarClient,
+                    tasksClient = tasksClient,
+                    airQualityClient = airQualityClient,
+                    locationProvider = {
+                        vm.getDeviceLocationContext()
+                            ?: runCatching {
+                                deviceLocationResolver.peekCached(allowApproximate = true)
+                            }.getOrNull()
+                    }
+                )
+            }
+
             lifecycleScope.launch {
                 // Prime device location FIRST so the immediate AQI fetch has
                 // coordinates (fetchHudAirQuality no-ops when location is null).

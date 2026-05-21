@@ -172,6 +172,14 @@ class GeminiVoicePipeline(context: Context) {
         )
         ToolDispatcher(
             context = appContext,
+            // Authenticated Google clients injected by the Service so the
+            // voice tools (google_calendar / google_tasks, plus AQI / places /
+            // daily_briefing via location) hit real OAuth instead of the
+            // no-auth stubs that made Gemini report "no access".
+            calendarClient = injectedCalendarClient,
+            tasksClient = injectedTasksClient,
+            airQualityClient = injectedAirQualityClient,
+            locationProvider = injectedLocationProvider,
             recentCardsProvider = { viewModel.getAssistantCardsSnapshot().map { it.text } },
             hermesClient = hermesClient,
             cameraFrameProvider = { latestCameraFrame },
@@ -198,6 +206,42 @@ class GeminiVoicePipeline(context: Context) {
      *  on the Service side. */
     fun setAutoCameraEnabler(enabler: () -> Unit) {
         autoCameraEnabler = enabler
+    }
+
+    /**
+     * OAuth-backed Google clients + a device-location provider, injected by
+     * the Service (which owns the GoogleOAuthManager). Without these, the
+     * [toolDispatcher] below falls back to ToolDispatcher's no-auth stub
+     * clients, so google_calendar / google_tasks (and places/AQI/briefing)
+     * fail authentication and Gemini truthfully tells the user it has no
+     * access — even though the HUD shows the same data. The Service installs
+     * these in setupUnipanelHudDataFeeds() during onCreate, which runs before
+     * any voice session, so the lazy toolDispatcher picks them up.
+     */
+    @Volatile private var injectedCalendarClient:
+        com.rayneo.visionclaw.core.network.GoogleCalendarClient? = null
+    @Volatile private var injectedTasksClient:
+        com.rayneo.visionclaw.core.network.GoogleTasksClient? = null
+    @Volatile private var injectedAirQualityClient:
+        com.rayneo.visionclaw.core.network.GoogleAirQualityClient? = null
+    @Volatile private var injectedLocationProvider:
+        (() -> com.rayneo.visionclaw.core.model.DeviceLocationContext?)? = null
+
+    /**
+     * Install the authenticated Google tool clients + location provider used
+     * by the voice [toolDispatcher]. Must be called BEFORE the first voice
+     * session (the dispatcher is built lazily on first tool call). Idempotent.
+     */
+    fun setGoogleToolClients(
+        calendarClient: com.rayneo.visionclaw.core.network.GoogleCalendarClient?,
+        tasksClient: com.rayneo.visionclaw.core.network.GoogleTasksClient?,
+        airQualityClient: com.rayneo.visionclaw.core.network.GoogleAirQualityClient?,
+        locationProvider: (() -> com.rayneo.visionclaw.core.model.DeviceLocationContext?)?
+    ) {
+        injectedCalendarClient = calendarClient
+        injectedTasksClient = tasksClient
+        injectedAirQualityClient = airQualityClient
+        injectedLocationProvider = locationProvider
     }
 
     /**
