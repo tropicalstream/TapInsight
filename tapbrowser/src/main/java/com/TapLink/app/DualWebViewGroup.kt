@@ -9211,6 +9211,26 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         maskMediaControlsContainer.addView(btnMaskNext)
         maskMediaControlsContainer.addView(btnMaskNextTrack)
 
+        // Phase 4r (Mars) — restore the on-screen dim-mode media toolbar.
+        // Everything else was already intact: updateMediaState() flips this
+        // container VISIBLE when media plays (DualWebViewGroup:13563/13572)
+        // and GONE when it stops (13692); dispatchMaskOverlayTouch() already
+        // hit-tests + performClick()s each button (3734-3756); and the
+        // prev/next/play/pause handlers already route to BOTH YouTube
+        // (video/.ytp-* selectors) and TapRadio (window.nextStation /
+        // handleNext) via getMediaControlWebView()/evaluateMediaControlCommand.
+        // The toolbar was invisible ONLY because the container had never been
+        // added to the overlay. Re-attach it bottom-center, raised above the
+        // now-playing label and clear of the AR lens FOV crop at the very
+        // bottom edge (same reason maskNowPlayingText sits at 120 px).
+        val maskControlsParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, 40
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            bottomMargin = 170
+        }
+        maskOverlay.addView(maskMediaControlsContainer, maskControlsParams)
+
         // ── Audio Visualizer (removed in dim-mode revamp) ────────────
         // The AudioVisualizerView is still constructed because other
         // code paths (`hideVisualizer` in unmaskScreen, the
