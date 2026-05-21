@@ -6788,7 +6788,7 @@ class MainActivity :
      * is hidden. The preview stays in the left gutter; the chat card
      * is centered, so the two never overlap horizontally.
      */
-    private fun repositionUnipanelCameraPreview() {
+    private fun repositionUnipanelCameraPreview(forceBelowHeartbeat: Boolean = false) {
         val preview = findViewById<View?>(R.id.unipanelCameraPreviewFrame) ?: return
         if (preview.visibility != View.VISIBLE) return
         val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText)
@@ -6804,7 +6804,15 @@ class MainActivity :
         // dp/layout-space margins are scale-correct under the SBS transform
         // (window-coordinate math from earlier builds was not).
         val density = resources.displayMetrics.density
-        val heartbeatShown = heartbeat != null && heartbeat.visibility == View.VISIBLE
+        // Phase 4k.9 — when the camera first turns on, force the BELOW-
+        // heartbeat stage (70dp) even if the "Camera streaming to Gemini"
+        // ticker hasn't published yet. Otherwise, depending on event
+        // order, the preview could momentarily land at 50dp — right on
+        // top of the heartbeat text. The preview only rises to 50dp once
+        // the ticker has actually cleared (renderUnipanelHeartbeat's empty
+        // branch calls this with the default false).
+        val heartbeatShown = forceBelowHeartbeat ||
+            (heartbeat != null && heartbeat.visibility == View.VISIBLE)
         val topDp = if (heartbeatShown) 70f else 50f
         val newTop = (topDp * density).toInt()
         val lp = preview.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
@@ -6833,7 +6841,7 @@ class MainActivity :
                     // preview below the live HUD column so it clears
                     // the heartbeat ticker instead of trusting the
                     // hardcoded XML margin.
-                    if (on) repositionUnipanelCameraPreview()
+                    if (on) repositionUnipanelCameraPreview(forceBelowHeartbeat = true)
                 }
             }
     }
