@@ -7785,10 +7785,31 @@ class MainActivity :
         // dashboard's role=button tiles, or media. Everything else
         // (page background, plain text, layout containers) is empty.
         var __thInteractive = element && element.closest && element.closest(
-            'a, button, input, select, textarea, label, summary, ' +
-            '[role=button], [role=link], [role=menuitem], [role=tab], ' +
-            '[onclick], [tabindex], [contenteditable=true], img, video'
+            'a, button, input, select, textarea, label, summary, details, ' +
+            '[role=button], [role=link], [role=menuitem], [role=menuitemcheckbox], ' +
+            '[role=menuitemradio], [role=tab], [role=option], [role=switch], ' +
+            '[role=checkbox], [role=radio], [role=combobox], [role=slider], ' +
+            '[role=spinbutton], [role=treeitem], [role=gridcell], ' +
+            '[onclick], [tabindex], [contenteditable], [contenteditable=true], ' +
+            '[data-href], [jsaction], [ng-click], img, video, audio, iframe'
         );
+        // Many sites attach click handlers via addEventListener on plain
+        // div/span elements (undetectable from JS), but they almost always
+        // set cursor:pointer to signal clickability. Walk a few ancestors
+        // and treat a pointer cursor as interactive so real taps reach the
+        // page instead of being misread as empty space (which would hide
+        // the browser AND swallow the click).
+        if (!__thInteractive && element) {
+            var __n = element, __hops = 0;
+            while (__n && __n.nodeType === 1 && __hops < 5) {
+                try {
+                    if (window.getComputedStyle(__n).cursor === 'pointer') {
+                        __thInteractive = __n; break;
+                    }
+                } catch (e) {}
+                __n = __n.parentElement; __hops++;
+            }
+        }
         if (!__thInteractive) { return 'taphud_empty'; }
         return null;
     })();

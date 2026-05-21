@@ -854,6 +854,16 @@ class GeminiVoicePipeline(context: Context) {
         Log.i(TAG, "reader_mode trigger source=localRegex transcript='${transcript.take(80)}'")
         HudStateBridge.update { it.copy(notification = "Reader mode") }
         runCatching { com.TapLink.app.unipanel.BrowserCommandBridge.toggleReaderMode() }
+        // Tell Gemini the device already handled it so it confirms instead of
+        // claiming it can't render reader mode (the reflow happens on the
+        // glasses, outside Gemini's tool surface).
+        runCatching {
+            liveSession?.sendClientText(
+                "[Device action] The current web page has been re-rendered in dark " +
+                    "reader mode on the glasses. Briefly confirm to the user, e.g. " +
+                    "\"Reader mode on.\" Do NOT say you are unable to do it."
+            )
+        }
     }
 
     /**
