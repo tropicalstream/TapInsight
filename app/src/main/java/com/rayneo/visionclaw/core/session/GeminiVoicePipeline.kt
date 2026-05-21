@@ -488,7 +488,11 @@ class GeminiVoicePipeline(context: Context) {
 
         scope.launch {
             HudStateBridge.update { it.copy(notification = "Running $toolName…") }
-            val result = toolDispatcher.dispatch(toolName, args)
+            // When the user tells an agent to "look at my screen", capture the
+            // current browser screen and fold its description into the agent's
+            // context before dispatching, so the agent acts on what's shown.
+            val dispatchArgs = augmentAgentArgsWithScreenIfRequested(toolName, args)
+            val result = toolDispatcher.dispatch(toolName, dispatchArgs)
             val resultText = result.getOrElse { err ->
                 Log.w(TAG, "native tool failed name=$toolName: ${err.message}")
                 err.message?.trim().takeUnless { it.isNullOrBlank() }
@@ -527,6 +531,56 @@ class GeminiVoicePipeline(context: Context) {
      *  readout engine instead of being narrated by Gemini Live. */
     private val AGENT_READOUT_TOOLS =
         setOf("hermes_agent", "tapclaw_agent", "research_topic")
+
+    /**
+     * When the user tells an agent (Hermes / TapClaw / OpenClaw) to "look at
+     * my screen" (or similar), capture the current browser screen via the
+     * existing browser_vision pipeline and fold that textual description into
+     * the agent call's `context` argument, so the agent's reply follows
+     * through on what's actually displayed. Returns [args] unchanged for
+     * non-agent tools, commands that don't reference the screen, or any
+     * capture failure (so the command still runs without screen context).
+     */
+    private suspend fun augmentAgentArgsWithScreenIfRequested(
+        toolName: String,
+        args: String
+    ): String {
+        if (toolName != "hermes_agent" && toolName != "tapclaw_agent") return args
+        val obj = runCatching { JSONObject(args) }.getOrNull() ?: return args
+        val query = obj.optString("query").trim()
+            .ifBlank { obj.optString("prompt").trim() }
+            .ifBlank { obj.optString("message").trim() }
+        if (query.isBlank()) return args
+        val lower = query.lowercase()
+        if (SCREEN_REFERENCE_PHRASES.none { lower.contains(it) }) return args
+
+        Log.i(TAG, "agent $toolName references the screen — capturing browser vision first")
+        HudStateBridge.update { it.copy(notification = "Looking at the screen…") }
+        val description = runCatching {
+            browserVisionTool.execute(mapOf("question" to query))
+        }.getOrNull()?.getOrNull()?.trim()
+        HudStateBridge.update { it.copy(notification = "Running $toolName…") }
+
+        if (description.isNullOrBlank()) {
+            Log.w(TAG, "screen-share for $toolName: no description captured; running without it")
+            return args
+        }
+        val trimmed = description.take(1800)
+        val existingContext = obj.optString("context").trim()
+        val mergedContext = buildString {
+            if (existingContext.isNotEmpty()) {
+                append(existingContext)
+                append("\n\n")
+            }
+            append("[Current screen the user is referring to]:\n")
+            append(trimmed)
+        }
+        return runCatching {
+            obj.put("context", mergedContext)
+            Log.i(TAG, "screen-share: injected ${trimmed.length} chars of screen context into $toolName")
+            obj.toString()
+        }.getOrDefault(args)
+    }
 
     /**
      * Synthesize [text] via the selected readout engine (Fish.audio when
@@ -1124,6 +1178,36 @@ class GeminiVoicePipeline(context: Context) {
             "describe the screen",
             "describe this page",
             "what am i looking at"
+        )
+
+        /** Screen-reference phrases used to decide when an agent command
+         *  (hermes_agent / tapclaw_agent) should be augmented with a
+         *  browser-vision description of the current screen. Broader than
+         *  [VISION_TRIGGER_PHRASES] because the user phrases these as
+         *  instructions to the agent ("hermes, look at my screen and …"). */
+        private val SCREEN_REFERENCE_PHRASES = listOf(
+            "my screen",
+            "the screen",
+            "on screen",
+            "on the screen",
+            "this screen",
+            "see my screen",
+            "see the screen",
+            "look at my screen",
+            "look at the screen",
+            "looking at my screen",
+            "look at this",
+            "what's on screen",
+            "what is on screen",
+            "what's on the screen",
+            "what is on the screen",
+            "this page",
+            "on this page",
+            "read the screen",
+            "read this page",
+            "describe the screen",
+            "what am i looking at",
+            "on my display"
         )
     }
 }

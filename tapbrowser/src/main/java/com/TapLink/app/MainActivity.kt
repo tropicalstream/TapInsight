@@ -6570,10 +6570,27 @@ class MainActivity :
                 api.shutdownVoice()
             }
         }
+        // ONLY the avatar orb activates / cancels Gemini (Mars: "only if I
+        // tap the avatar should it activate gemini"). Previously the whole
+        // top HUD row + feed strip + clock strip shared this handler, so a
+        // tap on empty HUD space activated voice by accident.
         orb.setOnClickListener(toggleHandler)
-        findViewById<View?>(R.id.unipanelHudStrip)?.setOnClickListener(toggleHandler)
-        findViewById<View?>(R.id.unipanelHudFeedStrip)?.setOnClickListener(toggleHandler)
-        findViewById<View?>(R.id.unipanelTopHudRow)?.setOnClickListener(toggleHandler)
+        // The clock / status pill is not the avatar, so it follows the
+        // predefined gesture instead: toggle the browser view.
+        val browserToggleHandler = View.OnClickListener {
+            if (browserPanelHidden) showBrowserPanel() else hideBrowserPanel()
+        }
+        findViewById<View?>(R.id.unipanelHudStrip)?.setOnClickListener(browserToggleHandler)
+        // Transparent empty regions must NOT intercept the tap at all — drop
+        // any previously-installed handler and make them non-clickable so a
+        // tap on genuinely empty space falls through the overlay hit-test to
+        // the standard browser toggle in the cursor pipeline.
+        findViewById<View?>(R.id.unipanelHudFeedStrip)?.let {
+            it.setOnClickListener(null); it.isClickable = false
+        }
+        findViewById<View?>(R.id.unipanelTopHudRow)?.let {
+            it.setOnClickListener(null); it.isClickable = false
+        }
 
         // Load the avatar image (custom orb if the user uploaded one via
         // the companion app, else the default earth orb) and clip round.
