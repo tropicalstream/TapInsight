@@ -4282,6 +4282,7 @@ class MainActivity :
                 runCatching { dualWebViewGroup.setHudLaneReserved(true) }
             }
             overlay.visibility = if (visible) View.VISIBLE else View.GONE
+            updateMinimalIndicators()
         }
     }
 
@@ -4329,6 +4330,7 @@ class MainActivity :
                 .start()
         }
         DebugLog.d("DoubleTapDebug", "HUD roll ${if (hudRolledUp) "up (full-screen browser)" else "down"}")
+        updateMinimalIndicators()
     }
 
     override fun onSendEnterInLink() {
@@ -6308,11 +6310,22 @@ class MainActivity :
                 val elapsed = SystemClock.uptimeMillis() - leftArmTapDownTimeMs
                 if (elapsed >= LEFT_ARM_TAP_MAX_MS) return false
                 val api = voiceServiceApi ?: return false
-                DebugLog.d(
-                    "LeftArmTap",
-                    "short tap (${elapsed}ms) → toggleCamera (was=${api.isCameraOn()})"
-                )
-                runCatching { api.toggleCamera() }
+                // Mars rebind: the left-arm short tap ACTIVATES Gemini when no
+                // session is running; only WHILE a session is active does it
+                // toggle the camera on/off.
+                val voiceActive =
+                    com.TapLink.app.unipanel.HudStateBridge.current().phase !=
+                        com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
+                if (!voiceActive) {
+                    DebugLog.d("LeftArmTap", "short tap (${elapsed}ms) → activateVoice (no session)")
+                    runCatching { api.activateVoice() }
+                } else {
+                    DebugLog.d(
+                        "LeftArmTap",
+                        "short tap (${elapsed}ms) → toggleCamera (was=${api.isCameraOn()})"
+                    )
+                    runCatching { api.toggleCamera() }
+                }
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
@@ -6760,8 +6773,38 @@ class MainActivity :
         unipanelVoicePillSubscription?.runCatching { close() }
         unipanelVoicePillSubscription =
             com.TapLink.app.unipanel.HudStateBridge.observe { state ->
-                uiHandler.post { renderUnipanelVoiceOrb(state) }
+                uiHandler.post {
+                    renderUnipanelVoiceOrb(state)
+                    updateMinimalIndicators()
+                }
             }
+    }
+
+    /** Last camera on/off state from CameraStateBridge, for the minimal
+     *  indicator (the bridge only delivers deltas). */
+    @Volatile
+    private var unipanelCameraOnState = false
+
+    /**
+     * Phase 4z — minimal status indicators shown ONLY when the full HUD/chat
+     * overlay is hidden (rolled up via double-tap, or hidden in dim mode).
+     * Red dot = Gemini session active; tiny red camera next to it = camera
+     * streaming. When the HUD is showing, the normal HUD carries the cues, so
+     * these stay hidden.
+     */
+    private fun updateMinimalIndicators() {
+        val container = findViewById<View?>(R.id.unipanelMinIndicator) ?: return
+        val dot = findViewById<View?>(R.id.unipanelMinGeminiDot)
+        val cam = findViewById<View?>(R.id.unipanelMinCameraIcon)
+        val overlay = findViewById<View?>(R.id.unipanelOverlay)
+        val hudHidden = hudRolledUp || overlay == null || overlay.visibility != View.VISIBLE
+        val geminiActive = com.TapLink.app.unipanel.HudStateBridge.current().phase !=
+            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
+        val showDot = hudHidden && geminiActive
+        val showCam = hudHidden && unipanelCameraOnState
+        dot?.visibility = if (showDot) View.VISIBLE else View.GONE
+        cam?.visibility = if (showCam) View.VISIBLE else View.GONE
+        container.visibility = if (showDot || showCam) View.VISIBLE else View.GONE
     }
 
     private var browserCommandSubscription: AutoCloseable? = null
@@ -7193,6 +7236,8 @@ class MainActivity :
                     // the heartbeat ticker instead of trusting the
                     // hardcoded XML margin.
                     if (on) repositionUnipanelCameraPreview(forceBelowHeartbeat = true)
+                    unipanelCameraOnState = on
+                    updateMinimalIndicators()
                 }
             }
     }
