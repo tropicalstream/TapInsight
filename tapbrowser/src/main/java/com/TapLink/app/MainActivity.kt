@@ -6265,6 +6265,27 @@ class MainActivity :
     private var rightArmLastTapUpMs: Long = 0L
     private var pendingRightArmSingleTapAction: Runnable? = null
 
+    // ── Right-arm (cyttsp5_mt) physical-tap KEY double-tap state ──────────
+    // On the X3 Pro the RIGHT arm trackpad delivers a physical tap as a
+    // hardware KEY event (KEYCODE_BUTTON_A / KEYCODE_DPAD_CENTER) through
+    // dispatchKeyEvent — NOT as a MotionEvent. (Cursor motion comes through
+    // dispatchTouchEvent as cyttsp5_mt, but the click/tap itself is a key.)
+    // The Hermes branch detected the right-arm double-tap in
+    // TrackpadGestureEngine.onKeyEvent and ended the session. The unipanel
+    // tapbrowser never wired a key-path double-tap detector, so right-arm
+    // double-taps never reached exitGeminiFully(). These fields back the
+    // detector below.
+    private var rightArmKeyDownMs: Long = 0L
+    private var rightArmKeyTracking: Boolean = false
+    private var rightArmKeyLastTapUpMs: Long = 0L
+    // A single physical tap should release well within this; longer = a hold.
+    private val RIGHT_ARM_KEY_TAP_MAX_MS = 400L
+    // Ignore a "second tap" that arrives almost instantly — that's the same
+    // physical tap echoed as a second keycode, not a real double-tap.
+    private val RIGHT_ARM_KEY_DOUBLE_TAP_MIN_GAP_MS = 40L
+    // Upper bound between the two taps to count as a double-tap.
+    private val RIGHT_ARM_KEY_DOUBLE_TAP_WINDOW_MS = 320L
+
     private fun consumedByLeftArmTap(ev: MotionEvent): Boolean {
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -6352,6 +6373,73 @@ class MainActivity :
         )
         exitGeminiFully()
         return true
+    }
+
+    /**
+     * Right-arm (cyttsp5_mt) DOUBLE-TAP → full Gemini exit, detected on the
+     * KEY path (this is the proven Hermes mechanism). The right-arm physical
+     * tap arrives as KEYCODE_BUTTON_A / KEYCODE_DPAD_CENTER via
+     * [dispatchKeyEvent], so a touch/GestureDetector-based detector never sees
+     * it — which is why earlier attempts to wire the exit to the touch path
+     * never fired for the right arm.
+     *
+     * Behaviour, carefully scoped so it never breaks normal browsing:
+     *   - We only ever CONSUME the event (return true) in the one case where
+     *     we actually fire the exit (a real double-tap WHILE a Gemini session /
+     *     camera / chat bubble is active). Every other key event is observed
+     *     for timing only and passed through untouched (return false), so a
+     *     single right-arm tap still clicks/selects in the browser exactly as
+     *     before.
+     *   - Detection keys off ACTION_UP (like Hermes) with a tap-length cap so a
+     *     long press isn't counted, and a small min-gap so a single physical
+     *     tap echoed as two keycodes isn't mistaken for a double-tap.
+     */
+    private fun consumedByRightArmKeyGeminiExitDoubleTap(event: KeyEvent): Boolean {
+        val isTapKey = event.keyCode == KeyEvent.KEYCODE_BUTTON_A ||
+            event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER
+        if (!isTapKey) return false
+
+        when (event.action) {
+            KeyEvent.ACTION_DOWN -> {
+                if (event.repeatCount == 0) {
+                    rightArmKeyDownMs = SystemClock.uptimeMillis()
+                    rightArmKeyTracking = true
+                }
+                // Never consume DOWN — preserves the normal browser click.
+                return false
+            }
+            KeyEvent.ACTION_UP -> {
+                if (!rightArmKeyTracking) return false
+                rightArmKeyTracking = false
+                val elapsed = SystemClock.uptimeMillis() - rightArmKeyDownMs
+                if (elapsed >= RIGHT_ARM_KEY_TAP_MAX_MS) {
+                    // Held too long — treat as not-a-tap and reset.
+                    rightArmKeyLastTapUpMs = 0L
+                    return false
+                }
+                val now = SystemClock.uptimeMillis()
+                val previous = rightArmKeyLastTapUpMs
+                val gap = now - previous
+                val isDoubleTap = previous > 0L &&
+                    gap in RIGHT_ARM_KEY_DOUBLE_TAP_MIN_GAP_MS..RIGHT_ARM_KEY_DOUBLE_TAP_WINDOW_MS
+                if (isDoubleTap) {
+                    rightArmKeyLastTapUpMs = 0L
+                    if (!isGeminiExitSurfaceActive()) return false
+                    pendingRightArmSingleTapAction?.let { uiHandler.removeCallbacks(it) }
+                    pendingRightArmSingleTapAction = null
+                    DebugLog.d(
+                        "DoubleTapDebug",
+                        "Right-arm KEY double-tap (code=${event.keyCode}, gap=${gap}ms) → full Gemini exit"
+                    )
+                    exitGeminiFully()
+                    return true
+                }
+                // First tap of a potential double-tap — record and pass through.
+                rightArmKeyLastTapUpMs = now
+                return false
+            }
+        }
+        return false
     }
 
     /** Phase 4d (Mars revision) — double-tap now toggles tapbrowser's
@@ -12883,6 +12971,12 @@ class MainActivity :
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Right-arm (cyttsp5_mt) physical-tap KEY double-tap → full Gemini exit.
+        // Checked first so a double-tap can't be swallowed by the WebView /
+        // focused view. Only consumes the event when it actually fires the exit.
+        if (consumedByRightArmKeyGeminiExitDoubleTap(event)) {
+            return true
+        }
         if (event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
