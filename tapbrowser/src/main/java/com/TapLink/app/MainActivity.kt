@@ -4215,7 +4215,10 @@ class MainActivity :
         val distance = (overlay.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels)
             .toFloat()
         if (hudRolledUp) {
-            // Roll up and out → full-screen browser.
+            // Roll up and out → full-screen browser. Also collapse the
+            // browser's own side/bottom nav bars so the web content truly
+            // fills the screen (not just the HUD overlay being hidden).
+            runCatching { dualWebViewGroup.setNavBarsHidden(true) }
             overlay.animate()
                 .translationY(-distance)
                 .alpha(0f)
@@ -4223,7 +4226,8 @@ class MainActivity :
                 .withEndAction { overlay.visibility = View.GONE }
                 .start()
         } else {
-            // Roll back down into view.
+            // Roll back down into view and restore the browser nav bars.
+            runCatching { dualWebViewGroup.setNavBarsHidden(false) }
             overlay.visibility = View.VISIBLE
             overlay.translationY = -distance
             overlay.alpha = 0f
