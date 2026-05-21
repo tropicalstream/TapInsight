@@ -5916,52 +5916,10 @@ class MainActivity :
     private var unipanelHudNetworkCallback: android.net.ConnectivityManager.NetworkCallback? = null
 
     private fun startUnipanelHudNetworkObserver() {
-        val tv = findViewById<android.widget.TextView?>(R.id.unipanelHudNetwork) ?: return
-        val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
-            as? android.net.ConnectivityManager ?: return
-        val render = { label: String, color: Int ->
-            uiHandler.post {
-                tv.text = label
-                runCatching { tv.setTextColor(color) }
-            }
-        }
-        val classify: (android.net.NetworkCapabilities?) -> Unit = { caps ->
-            when {
-                caps == null ||
-                    !caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) ->
-                        render("OFF", 0xFFE57373.toInt())
-                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ->
-                        render("WIFI", 0xFFFFB347.toInt())
-                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ->
-                        render("CELL", 0xFF7EC8E3.toInt())
-                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) ->
-                        render("ETH", 0xFFB7CEDE.toInt())
-                else -> render("NET", 0xFFB7CEDE.toInt())
-            }
-        }
-        // Seed from the current active network so the first paint is
-        // correct without waiting for an onAvailable callback.
-        runCatching { classify(cm.getNetworkCapabilities(cm.activeNetwork)) }
-
-        val callback = object : android.net.ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: android.net.Network) {
-                runCatching { classify(cm.getNetworkCapabilities(network)) }
-            }
-            override fun onCapabilitiesChanged(
-                network: android.net.Network,
-                caps: android.net.NetworkCapabilities
-            ) {
-                classify(caps)
-            }
-            override fun onLost(network: android.net.Network) {
-                runCatching { classify(cm.getNetworkCapabilities(cm.activeNetwork)) }
-                    .onFailure { render("OFF", 0xFFE57373.toInt()) }
-            }
-        }
-        runCatching {
-            cm.registerDefaultNetworkCallback(callback)
-            unipanelHudNetworkCallback = callback
-        }
+        // Network/Wi-Fi text was removed from the compact glasses HUD
+        // to make room for the Events/Tasks/News panel beside the avatar.
+        // Keep the method as a lifecycle no-op so older comments/call-sites
+        // don't need a broader cleanup.
     }
 
     /**

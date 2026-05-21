@@ -64,7 +64,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_gravity="top|start"
-                android:layout_marginTop="6dp"
+                android:layout_marginTop="2dp"
                 android:orientation="vertical"
                 android:clickable="false"
                 android:focusable="false">
@@ -72,10 +72,10 @@
             <LinearLayout
                 android:id="@+id/unipanelTopHudRow"
                 android:layout_width="match_parent"
-                android:layout_height="40dp"
-                android:layout_marginStart="8dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="2dp"
                 android:layout_marginEnd="10dp"
-                android:gravity="center_vertical"
+                android:gravity="top"
                 android:orientation="horizontal"
                 android:elevation="8dp"
                 android:clickable="false"
@@ -87,7 +87,7 @@
                 android:layout_height="36dp"
                 android:orientation="horizontal"
                 android:gravity="center"
-                android:paddingStart="10dp"
+                android:paddingStart="6dp"
                 android:paddingEnd="8dp"
                 android:background="#B3000000"
                 android:clickable="true"
@@ -132,23 +132,6 @@
                     android:textColor="#FF9FE6B0"
                     android:textSize="11sp"
                     android:letterSpacing="0.04"
-                    tools:ignore="UnusedAttribute" />
-
-                <!-- Phase 4f: connectivity indicator. ConnectivityManager
-                     callbacks drive this — "WIFI" / "CELL" / "OFF"
-                     reflect the current process-active network. Wi-Fi
-                     amber, cellular blue, offline red — matches the
-                     status-bar convention. -->
-                <TextView
-                    android:id="@+id/unipanelHudNetwork"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="10dp"
-                    android:fontFamily="sans-serif-medium"
-                    android:text="—"
-                    android:textColor="#FFB7CEDE"
-                    android:textSize="11sp"
-                    android:letterSpacing="0.06"
                     tools:ignore="UnusedAttribute" />
 
                 <!-- Phase 4h — Hermes HUD fields, compressed into the
@@ -303,91 +286,14 @@
 
             </LinearLayout>
 
-            <!-- Phase 4k.3 — the old single-line summary marquee was
-                 replaced by the tiered HUD panel below
-                 (unipanelHudTierPanel). This strip is now invisible
-                 filler that keeps the clock pinned left and still acts
-                 as a generous voice-toggle tap target. -->
-            <LinearLayout
-                android:id="@+id/unipanelHudFeedStrip"
-                android:layout_width="0dp"
-                android:layout_height="36dp"
-                android:layout_weight="1"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:background="@android:color/transparent"
-                android:clickable="false"
-                android:focusable="false" />
-
-            </LinearLayout>
-            <!-- /unipanelTopHudRow -->
-
-            <!-- Phase 4j — Hermes heartbeat ticker, parked DIRECTLY
-                 under the clock strip (Mars: "the heartbeat ticker
-                 should be underneath the clock"). Own dark bar so it
-                 reads over any browser page. Fixed width so long
-                 messages marquee-scroll once via
-                 startUnipanelHeartbeatScroll (a wrap_content width
-                 would never overflow and so would never scroll).
-                 GONE when empty; renderUnipanelHeartbeat toggles it. -->
-            <TextView
-                android:id="@+id/unipanelHudHeartbeatText"
-                android:layout_width="248dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:layout_marginTop="4dp"
-                android:background="#B3000000"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="3dp"
-                android:elevation="8dp"
-                android:fontFamily="sans-serif-medium"
-                android:maxLines="1"
-                android:scrollHorizontally="true"
-                android:singleLine="true"
-                android:textColor="#FFFF5252"
-                android:textSize="11sp"
-                android:textStyle="bold"
-                android:visibility="gone"
-                tools:ignore="UnusedAttribute" />
-
-            <!-- Step 2c.2 mini chat-card stack. Three compact rows
-                 stacked vertically directly under the HUD strip.
-                 Alternates assistant / user tinting so the layout
-                 reads as a real conversation at a glance. The
-                 outer LinearLayout is clickable=false: empty space
-                 between cards still falls through to the browser
-                 (taps on the cards themselves do nothing yet —
-                 these are read-only placeholders; Step 2c.3 wires
-                 them to MainViewModel chat events and adds focus +
-                 voice routing). Width capped at 340dp so even on a
-                 single eye of the binocular display, the cards
-                 don't span edge-to-edge. -->
-            </LinearLayout>
-            <!-- /unipanelTopHudColumn -->
-
-            <!-- Phase 4k.3 — tiered HUD info panel, top-right so it stays
-                 clear of the left-gutter camera preview and the centered
-                 chat card. Three stacked rows (Calendar Events / Tasks &
-                 Reminders / News Headlines) replace the old single-line
-                 marquee that scrolled off-screen. Row order + which rows
-                 show is driven at runtime by the companion app's HUD
-                 display-order preference (renderUnipanelTieredHud). Each
-                 row is a dark pill, colour-keyed to match the companion
-                 (calendar cyan, tasks green, news amber), single-/two-line
-                 ellipsized so nothing ever runs off the edge. -->
-            <!-- Phase 4k.5 — fixed-width (280dp) panel, top-right. Rows
-                 are match_parent + left-aligned text so EVENTS / TASKS /
-                 NEWS all start at the same left margin (no stagger). 11sp
-                 to match the dashboard's "Favorites / All" tabs so it
-                 fits without running off-screen. Each row is its own dark
-                 pill, gone-when-empty. -->
+            <!-- Events / Tasks / News now start on the top HUD row,
+                 immediately to the right of the avatar/status strip. -->
             <LinearLayout
                 android:id="@+id/unipanelHudTierPanel"
-                android:layout_width="280dp"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_gravity="top|end"
-                android:layout_marginTop="44dp"
-                android:layout_marginEnd="8dp"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
                 android:orientation="vertical"
                 android:elevation="8dp"
                 android:clickable="false"
@@ -447,6 +353,64 @@
                     tools:ignore="UnusedAttribute" />
 
             </LinearLayout>
+
+            <!-- Transparent filler keeps the rest of the top row tappable
+                 for voice without drawing over browser content. -->
+            <LinearLayout
+                android:id="@+id/unipanelHudFeedStrip"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="@android:color/transparent"
+                android:clickable="false"
+                android:focusable="false" />
+
+            </LinearLayout>
+            <!-- /unipanelTopHudRow -->
+
+            <!-- Phase 4j — Hermes heartbeat ticker, parked DIRECTLY
+                 under the clock strip (Mars: "the heartbeat ticker
+                 should be underneath the clock"). Own dark bar so it
+                 reads over any browser page. Fixed width so long
+                 messages marquee-scroll once via
+                 startUnipanelHeartbeatScroll (a wrap_content width
+                 would never overflow and so would never scroll).
+                 GONE when empty; renderUnipanelHeartbeat toggles it. -->
+            <TextView
+                android:id="@+id/unipanelHudHeartbeatText"
+                android:layout_width="248dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_marginTop="4dp"
+                android:background="#B3000000"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="3dp"
+                android:elevation="8dp"
+                android:fontFamily="sans-serif-medium"
+                android:maxLines="1"
+                android:scrollHorizontally="true"
+                android:singleLine="true"
+                android:textColor="#FFFF5252"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:visibility="gone"
+                tools:ignore="UnusedAttribute" />
+
+            <!-- Step 2c.2 mini chat-card stack. Three compact rows
+                 stacked vertically directly under the HUD strip.
+                 Alternates assistant / user tinting so the layout
+                 reads as a real conversation at a glance. The
+                 outer LinearLayout is clickable=false: empty space
+                 between cards still falls through to the browser
+                 (taps on the cards themselves do nothing yet —
+                 these are read-only placeholders; Step 2c.3 wires
+                 them to MainViewModel chat events and adds focus +
+                 voice routing). Width capped at 340dp so even on a
+                 single eye of the binocular display, the cards
+                 don't span edge-to-edge. -->
+            </LinearLayout>
+            <!-- /unipanelTopHudColumn -->
 
             <!-- Gemini reply card. Runtime positioning keeps this box in
                  the lane the glasses actually need: just to the right of
