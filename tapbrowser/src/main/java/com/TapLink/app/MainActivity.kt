@@ -6277,7 +6277,13 @@ class MainActivity :
             )
             return
         }
-        scroll.setOnClickListener {
+        // Phase 4k.6 — the onClick goes on the TextView, not the
+        // ScrollView: ScrollView.onTouchEvent doesn't call performClick,
+        // so a clickable ScrollView never fires onClick (that's why the
+        // earlier tap did nothing). The overlay hit-test resolves to the
+        // clickable TextView (an interactive descendant), so dispatching
+        // to it fires this handler.
+        card1.setOnClickListener {
             val text = card1.text?.toString()?.trim().orEmpty()
             if (text.isNotBlank()) openUnipanelChatCardSearch(text)
         }
@@ -6339,7 +6345,10 @@ class MainActivity :
         // let it scroll. Then auto-scroll to the bottom so the newest
         // text stays visible as the reply streams in (Hermes behavior).
         scroll.post {
-            val maxH = (96f * resources.displayMetrics.density).toInt()
+            // Phase 4k.6 — cap ~58dp (≈3 lines at 11sp incl. padding) so
+            // the card stays in the top band above the radio/dashboard
+            // panel; longer replies scroll (auto-scrolled to newest).
+            val maxH = (58f * resources.displayMetrics.density).toInt()
             val contentH = card.height + scroll.paddingTop + scroll.paddingBottom
             val capped = contentH > maxH
             val lp = scroll.layoutParams

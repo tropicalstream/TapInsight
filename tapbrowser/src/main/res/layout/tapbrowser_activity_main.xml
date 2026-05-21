@@ -386,7 +386,7 @@
                 android:layout_width="280dp"
                 android:layout_height="wrap_content"
                 android:layout_gravity="top|end"
-                android:layout_marginTop="50dp"
+                android:layout_marginTop="44dp"
                 android:layout_marginEnd="8dp"
                 android:orientation="vertical"
                 android:elevation="8dp"
@@ -397,17 +397,17 @@
                     android:id="@+id/unipanelHudTier0"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="3dp"
+                    android:layout_marginBottom="2dp"
                     android:background="#B3000000"
                     android:gravity="start"
                     android:paddingHorizontal="8dp"
-                    android:paddingVertical="3dp"
+                    android:paddingVertical="2dp"
                     android:fontFamily="sans-serif"
                     android:maxLines="2"
                     android:ellipsize="end"
                     android:textColor="#FFE0F4FF"
                     android:textSize="11sp"
-                    android:lineSpacingExtra="1dp"
+                    android:lineSpacingExtra="0dp"
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
@@ -415,17 +415,17 @@
                     android:id="@+id/unipanelHudTier1"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="3dp"
+                    android:layout_marginBottom="2dp"
                     android:background="#B3000000"
                     android:gravity="start"
                     android:paddingHorizontal="8dp"
-                    android:paddingVertical="3dp"
+                    android:paddingVertical="2dp"
                     android:fontFamily="sans-serif"
                     android:maxLines="2"
                     android:ellipsize="end"
                     android:textColor="#FFE0F4FF"
                     android:textSize="11sp"
-                    android:lineSpacingExtra="1dp"
+                    android:lineSpacingExtra="0dp"
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
@@ -436,42 +436,44 @@
                     android:background="#B3000000"
                     android:gravity="start"
                     android:paddingHorizontal="8dp"
-                    android:paddingVertical="3dp"
+                    android:paddingVertical="2dp"
                     android:fontFamily="sans-serif"
                     android:maxLines="2"
                     android:ellipsize="end"
                     android:textColor="#FFE0F4FF"
                     android:textSize="11sp"
-                    android:lineSpacingExtra="1dp"
+                    android:lineSpacingExtra="0dp"
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
             </LinearLayout>
 
-            <!-- Phase 4k.5 — the Gemini reply chat card. Centered box with
-                 padding, parked at 118dp so it sits BELOW the heartbeat
-                 ticker (≤72dp) and the tier panel (≤~115dp) and clear of
-                 the left-gutter camera preview. The text scrolls inside a
-                 fixed-height ScrollView (Hermes-style: auto-scrolls to the
-                 newest text as the reply streams; no manual drag needed).
-                 11sp to match the dashboard tabs. Tapping the card runs a
-                 Google search of the reply text in the browser (it does
-                 NOT expand). GONE when there's no assistant text. -->
+            <!-- Phase 4k.6 — the Gemini reply chat card. LEFT-aligned box
+                 (top|start) parked at 74dp: below the heartbeat ticker
+                 (≤~71dp) and clear of the radio/dashboard panel that
+                 begins lower down. Left side keeps it out of the tier
+                 panel's lane (top-right) so the two never collide. Text
+                 scrolls inside the height-capped ScrollView (Hermes-style
+                 auto-scroll to the newest text). The TextView — not the
+                 ScrollView — is the clickable target, because ScrollView
+                 doesn't fire performClick; tapping it runs a Google search
+                 of the reply text in the browser (no expand). 11sp to
+                 match the dashboard tabs. GONE when there's no reply. -->
             <ScrollView
                 android:id="@+id/unipanelMiniCardScroll"
-                android:layout_width="300dp"
+                android:layout_width="280dp"
                 android:layout_height="wrap_content"
-                android:layout_gravity="top|center_horizontal"
-                android:layout_marginTop="118dp"
+                android:layout_gravity="top|start"
+                android:layout_marginStart="8dp"
+                android:layout_marginTop="74dp"
                 android:background="@drawable/bg_unipanel_mini_card_assistant"
                 android:paddingHorizontal="12dp"
                 android:paddingVertical="8dp"
                 android:scrollbars="none"
                 android:fadeScrollbars="false"
                 android:elevation="10dp"
-                android:clickable="true"
-                android:focusable="true"
-                android:contentDescription="Gemini reply — tap to search the web"
+                android:clickable="false"
+                android:focusable="false"
                 android:visibility="gone"
                 tools:ignore="UnusedAttribute">
 
@@ -479,6 +481,9 @@
                     android:id="@+id/unipanelMiniCard1"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="Gemini reply — tap to search the web"
                     android:fontFamily="sans-serif-medium"
                     android:textColor="#FFFFFFFF"
                     android:textSize="11sp"
