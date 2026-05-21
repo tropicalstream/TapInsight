@@ -445,6 +445,7 @@ class MainActivity :
                     cancelPendingMaskSingleTap()
                     DebugLog.d("MaskGesture", "double-tap → exit dim mode ${describeDevice(e)}")
                     runCatching { dualWebViewGroup.unmaskScreen() }
+                    setUnipanelHudVisible(true)
                     return true
                 }
                 return false
@@ -1793,6 +1794,7 @@ class MainActivity :
                                         "Dim-mode active — double-tap exits dim mode only"
                                     )
                                     runCatching { dualWebViewGroup.unmaskScreen() }
+                                    setUnipanelHudVisible(true)
                                     return
                                 }
                                 // Phase 4k.8 (Mars revision) — double-tap mirrors the
@@ -4130,8 +4132,9 @@ class MainActivity :
         cursorRightView.visibility = View.GONE
         refreshCursor(false)
 
-        // Mask the screen
+        // Mask the screen — and hide the HUD overlay so dim mode is fully dark.
         dualWebViewGroup.maskScreen()
+        setUnipanelHudVisible(false)
     }
 
     override fun onSendCharacterToLink(character: String) {
@@ -4168,6 +4171,21 @@ class MainActivity :
 
     override fun onMaskTogglePressed() {
         handleMaskToggle()
+    }
+
+    /**
+     * Phase 4q — dim mode hides the WHOLE unipanel HUD overlay (clock,
+     * avatar, AQI, tiers, chat card) along with the browser, so the screen
+     * goes fully dark. Exiting dim mode (double-tap) restores it. GONE — not
+     * just transparent — so it also stops intercepting taps while dimmed,
+     * letting the mask overlay's play/pause + double-tap-exit gestures
+     * fall through cleanly.
+     */
+    private fun setUnipanelHudVisible(visible: Boolean) {
+        runCatching {
+            findViewById<View?>(R.id.unipanelOverlay)?.visibility =
+                if (visible) View.VISIBLE else View.GONE
+        }
     }
 
     override fun onSendEnterInLink() {
