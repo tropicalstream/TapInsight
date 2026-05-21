@@ -448,23 +448,20 @@
 
             </LinearLayout>
 
-            <!-- Phase 4k.6 — the Gemini reply chat card. LEFT-aligned box
-                 (top|start) parked at 74dp: below the heartbeat ticker
-                 (≤~71dp) and clear of the radio/dashboard panel that
-                 begins lower down. Left side keeps it out of the tier
-                 panel's lane (top-right) so the two never collide. Text
-                 scrolls inside the height-capped ScrollView (Hermes-style
-                 auto-scroll to the newest text). The TextView — not the
-                 ScrollView — is the clickable target, because ScrollView
-                 doesn't fire performClick; tapping it runs a Google search
-                 of the reply text in the browser (no expand). 11sp to
-                 match the dashboard tabs. GONE when there's no reply. -->
+            <!-- Gemini reply card. Runtime positioning keeps this box in
+                 the lane the glasses actually need: just to the right of
+                 the camera preview and just to the left of the tiered HUD
+                 text. The XML values are only pre-layout fallbacks; see
+                 repositionUnipanelAssistantCard(). Text scrolls inside
+                 the height-capped box and the whole card sits on top of
+                 the WebView. -->
             <ScrollView
                 android:id="@+id/unipanelMiniCardScroll"
-                android:layout_width="180dp"
-                android:layout_height="240dp"
-                android:layout_gravity="top|center_horizontal"
-                android:layout_marginTop="150dp"
+                android:layout_width="260dp"
+                android:layout_height="76dp"
+                android:layout_gravity="top|start"
+                android:layout_marginStart="118dp"
+                android:layout_marginTop="70dp"
                 android:background="@drawable/bg_unipanel_mini_card_assistant"
                 android:paddingHorizontal="12dp"
                 android:paddingVertical="8dp"

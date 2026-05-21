@@ -6293,6 +6293,7 @@ class MainActivity :
             com.TapLink.app.unipanel.ChatCardBridge.observe { cards ->
                 uiHandler.post { renderUnipanelAssistantCard(card1, scroll, cards) }
             }
+        scroll.post { repositionUnipanelAssistantCard() }
     }
 
     /**
@@ -6341,16 +6342,75 @@ class MainActivity :
         }
         card.text = latestAssistant
         scroll.visibility = View.VISIBLE
-        // Phase 4k.6 — the box is a fixed 3:4 size (set in XML); short
-        // replies sit at the top, long ones scroll. Auto-scroll to the
-        // newest text as the reply streams in (Hermes behavior).
+        repositionUnipanelAssistantCard()
+        // Short replies sit at the top, long ones scroll. Auto-scroll
+        // to the newest text as the reply streams in (Hermes behavior).
         scroll.post {
+            repositionUnipanelAssistantCard()
             (scroll as? android.widget.ScrollView)?.fullScroll(View.FOCUS_DOWN)
         }
         uiHandler.postDelayed(
             hideUnipanelAssistantCardRunnable,
             UNIPANEL_ASSISTANT_CARD_DISPLAY_MS
         )
+    }
+
+    /**
+     * Place the Gemini output card in the measured lane between the red
+     * camera preview and the tiered HUD text. This keeps it on top of the
+     * WebView without covering either overlay control:
+     *
+     *   camera preview | 8dp gap | Gemini card | 8dp gap | events/tasks/news
+     *
+     * If the right HUD panel has not measured yet, fall back to the parent
+     * right edge. If the lane is unusually narrow, keep a readable minimum
+     * width and let the card stop before the panel on the next layout pass.
+     */
+    private fun repositionUnipanelAssistantCard() {
+        val card = findViewById<View?>(R.id.unipanelMiniCardScroll) ?: return
+        val overlay = findViewById<ViewGroup?>(R.id.unipanelOverlay) ?: return
+        val camera = findViewById<View?>(R.id.unipanelCameraPreviewFrame)
+        val tierPanel = findViewById<View?>(R.id.unipanelHudTierPanel)
+        val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText)
+
+        val density = resources.displayMetrics.density
+        fun dp(value: Int): Int = (value * density).toInt()
+
+        val left = ((camera?.left ?: dp(14)) + (camera?.width?.takeIf { it > 0 } ?: dp(96)) + dp(8))
+            .coerceAtLeast(dp(118))
+        val rightLimit = (tierPanel?.left?.takeIf { it > 0 } ?: (overlay.width - dp(8))) - dp(8)
+        val minWidth = dp(180)
+        val maxWidth = dp(360)
+        val available = (rightLimit - left).coerceAtLeast(minWidth)
+        val width = available.coerceAtMost(maxWidth)
+
+        val heartbeatVisible = heartbeat != null && heartbeat.visibility == View.VISIBLE
+        val top = if (heartbeatVisible) dp(70) else dp(50)
+        val height = dp(76)
+
+        val lp = card.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
+        var changed = false
+        if (lp.leftMargin != left) {
+            lp.leftMargin = left
+            changed = true
+        }
+        if (lp.topMargin != top) {
+            lp.topMargin = top
+            changed = true
+        }
+        if (lp.width != width) {
+            lp.width = width
+            changed = true
+        }
+        if (lp.height != height) {
+            lp.height = height
+            changed = true
+        }
+        if (lp.gravity != (Gravity.TOP or Gravity.START)) {
+            lp.gravity = Gravity.TOP or Gravity.START
+            changed = true
+        }
+        if (changed) card.layoutParams = lp
     }
 
     /**
@@ -6518,6 +6578,7 @@ class MainActivity :
         tv.visibility = View.GONE
         tv.alpha = 1f
         tv.scrollX = 0
+        repositionUnipanelAssistantCard()
     }
 
     private fun startUnipanelHudStateObserver() {
@@ -6598,6 +6659,9 @@ class MainActivity :
                 slot.text = buildUnipanelTierLine(tier)
                 slot.visibility = View.VISIBLE
             }
+        }
+        findViewById<View?>(R.id.unipanelHudTierPanel)?.post {
+            repositionUnipanelAssistantCard()
         }
     }
 
@@ -6694,6 +6758,7 @@ class MainActivity :
         // Phase 4j — ticker just appeared under the clock; push the
         // camera preview (if visible) down so it clears the new bar.
         repositionUnipanelCameraPreview()
+        repositionUnipanelAssistantCard()
         val transient = notification != null || !state.heartbeatPersistent
         if (transient) {
             val clearRunnable = Runnable {
@@ -6776,6 +6841,7 @@ class MainActivity :
             lp.topMargin = newTop
             preview.layoutParams = lp
         }
+        repositionUnipanelAssistantCard()
     }
 
     private fun startUnipanelVisionDotObserver() {
