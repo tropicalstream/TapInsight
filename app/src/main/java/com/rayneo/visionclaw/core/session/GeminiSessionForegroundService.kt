@@ -365,6 +365,19 @@ class GeminiSessionForegroundService : LifecycleService() {
                 port,
                 oauthManager = oauthManager,
                 locationProvider = { resolveAndPublishDeviceLocation() },
+                // Phone-bridge GPS: when the companion app POSTs the phone's
+                // location to /api/phone-location, push it straight into the
+                // ViewModel (and clear when the bridge turns off) — matching
+                // how visionclaw's Activity wired it on the hermes branch. The
+                // pull path (locationProvider/peekPhoneBridgeContext) already
+                // reads the persisted fix; this just makes the update instant.
+                phoneLocationConsumer = { ctx ->
+                    if (ctx != null) {
+                        runCatching { vm.updateDeviceLocationContext(ctx) }
+                    } else if (vm.getDeviceLocationContext()?.provider == "companion_phone") {
+                        runCatching { vm.clearDeviceLocationContext() }
+                    }
+                },
                 calendarSummaryProvider = { vm.calendarSummary.value },
                 tasksSummaryProvider = { vm.tasksSummary.value },
                 newsSummaryProvider = { vm.newsSummary.value },
