@@ -263,14 +263,14 @@
                         android:id="@+id/unipanelVoiceOrbGlow"
                         android:layout_width="match_parent"
                         android:layout_height="match_parent"
-                        android:alpha="0.45"
+                        android:alpha="0.85"
                         android:background="@drawable/bg_unipanel_orb_glow_blue"
                         android:contentDescription="@null" />
 
                     <ImageView
                         android:id="@+id/unipanelVoiceOrbImage"
-                        android:layout_width="28dp"
-                        android:layout_height="28dp"
+                        android:layout_width="26dp"
+                        android:layout_height="26dp"
                         android:layout_gravity="center"
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_unipanel_earth_orb"

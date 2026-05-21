@@ -1725,27 +1725,38 @@ class MainActivity :
                                     runCatching { dualWebViewGroup.unmaskScreen() }
                                     return
                                 }
-                                // Phase 4k (Mars revision) — double-tap is now the
-                                // "bring the browser back" gesture. After a single
-                                // tap on empty space collapses the browser to a
-                                // HUD+chat-only view, double-tapping restores the
-                                // WebView + nav bars. When the browser is already
-                                // visible, double-tap keeps its prior meaning and
-                                // toggles tapbrowser's own side/bottom nav bars.
-                                // The unipanel HUD overlay stays visible the whole
-                                // time — it's never the thing being hidden.
-                                if (browserPanelHidden) {
-                                    DebugLog.d(
-                                        "DoubleTapDebug",
-                                        "Restoring browser portion (was focus-hidden)"
-                                    )
-                                    showBrowserPanel()
-                                } else {
-                                    DebugLog.d(
-                                        "DoubleTapDebug",
-                                        "Toggling browser nav bars via setNavBarsHidden"
-                                    )
-                                    toggleBrowserNavBars()
+                                // Phase 4k.8 (Mars revision) — double-tap mirrors the
+                                // hermes branch's cyclePanelViaDoubleTap: if a Gemini
+                                // voice session is active (phase != IDLE), double-tap
+                                // CANCELS it. Browser show/hide is now handled by a
+                                // single tap on empty space, so double-tap's only
+                                // other job is toggling the browser's own nav bars
+                                // (when the browser is hidden, restore it first).
+                                val voiceActive =
+                                    com.TapLink.app.unipanel.HudStateBridge.current().phase !=
+                                        com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
+                                when {
+                                    voiceActive -> {
+                                        DebugLog.d(
+                                            "DoubleTapDebug",
+                                            "Gemini active — double-tap cancels the voice session"
+                                        )
+                                        runCatching { voiceServiceApi?.shutdownVoice() }
+                                    }
+                                    browserPanelHidden -> {
+                                        DebugLog.d(
+                                            "DoubleTapDebug",
+                                            "Restoring browser portion (was focus-hidden)"
+                                        )
+                                        showBrowserPanel()
+                                    }
+                                    else -> {
+                                        DebugLog.d(
+                                            "DoubleTapDebug",
+                                            "Toggling browser nav bars via setNavBarsHidden"
+                                        )
+                                        toggleBrowserNavBars()
+                                    }
                                 }
                                 return
                             }
@@ -6544,19 +6555,21 @@ class MainActivity :
         unipanelHudAiBadgeSubscription =
             com.TapLink.app.unipanel.HudStateBridge.observe { state ->
                 uiHandler.post {
+                    // Bug fix — the "G" reflects Gemini API health, not
+                    // whether a turn is in progress. It stays GREEN
+                    // whenever the API is usable (including IDLE between
+                    // turns / before a session) — only amber while
+                    // actively connecting and red on a real error. Before,
+                    // IDLE turned it blue-grey, so G "switched off" every
+                    // time Gemini stopped talking.
                     val tint = when (state.connection) {
-                        com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus
-                            .GEMINI_CONNECTED,
-                        com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus
-                            .TOOLS_READY -> 0xFF34D399.toInt()         // green
                         com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus
                             .CONNECTING -> 0xFFFFB347.toInt()          // amber
                         com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus
                             .DEGRADED,
                         com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus
                             .ERROR -> 0xFFE57373.toInt()               // red
-                        com.TapLink.app.unipanel.HudStateBridge.ConnectionStatus
-                            .IDLE -> 0xFF5577AA.toInt()                // blue-grey
+                        else -> 0xFF34D399.toInt()                     // green (healthy / idle)
                     }
                     runCatching {
                         badge.backgroundTintList =
@@ -6919,14 +6932,14 @@ class MainActivity :
             else R.drawable.bg_unipanel_orb_glow_blue
         )
         val targetAlpha = when {
-            idle -> 0.45f // persistent soft blue ring
+            idle -> 0.85f // pronounced steady blue ring
             wantsRed -> {
                 val level = state.oscilloscopeLevel.coerceIn(0f, 1f)
-                (0.5f + level * 0.5f).coerceIn(0f, 1f)
+                (0.8f + level * 0.2f).coerceIn(0f, 1f)
             }
             else -> {
                 val level = state.oscilloscopeLevel.coerceIn(0f, 1f)
-                (0.65f + level * 0.35f).coerceIn(0f, 1f)
+                (0.85f + level * 0.15f).coerceIn(0f, 1f)
             }
         }
         glow.alpha = targetAlpha
@@ -7349,11 +7362,14 @@ class MainActivity :
             return
         }
 
-        // Phase 4k — while the browser is collapsed to focus mode, taps
-        // that fall through the overlay would otherwise be dispatched
-        // into the (INVISIBLE) WebView. Swallow them: the HUD + chat are
-        // the only live surfaces, and double-tap is the way back.
+        // Phase 4k.8 — single tap on empty space TOGGLES the browser.
+        // While collapsed to focus mode, a tap that falls through the
+        // overlay (i.e. lands on empty space, not a HUD widget) brings
+        // the browser back. (When the browser is visible, the symmetric
+        // hide happens below once the WebView JS confirms the tap hit
+        // empty page background — see the "taphud_empty" handler.)
         if (browserPanelHidden) {
+            showBrowserPanel()
             return
         }
 

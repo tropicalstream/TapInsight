@@ -621,6 +621,34 @@ class GeminiVoicePipeline(context: Context) {
         Log.i(TAG, "Launching TapBrowser from Service url=${initialUrl.take(180)}")
         runCatching { appContext.startActivity(intent) }
             .onFailure { Log.w(TAG, "TapBrowser launch failed: ${it.message}") }
+
+        // Bug fix — when the launched URL plays audio (radio / YouTube /
+        // any stream), the still-active Gemini Live session holds the
+        // mic + AudioTrack, so the media can't start. End the voice
+        // session so the WebView media gets the audio path (mirrors the
+        // hermes branch, where launching media ends the multimodal
+        // session). Non-audio pages leave the session running.
+        if (isAudioMediaUrl(lower)) {
+            Log.i(TAG, "Media URL launched — ending voice session so it can play audio")
+            shutdown(reason = null)
+        }
+    }
+
+    /** True for URLs that will play audio (radio streams, YouTube, media
+     *  files / player), so the voice session must release the audio path. */
+    private fun isAudioMediaUrl(lowerUrl: String): Boolean {
+        return lowerUrl.contains("youtube.com") ||
+            lowerUrl.contains("youtu.be") ||
+            lowerUrl.contains("tapradio") ||
+            lowerUrl.contains("radio") ||
+            lowerUrl.contains("somafm") ||
+            lowerUrl.contains("media_player") ||
+            lowerUrl.contains("/stream") ||
+            lowerUrl.contains("stream.") ||
+            lowerUrl.contains(".mp3") ||
+            lowerUrl.contains(".m3u") ||
+            lowerUrl.contains(".aac") ||
+            lowerUrl.contains(".pls")
     }
 
     private fun putYouTubeAutoplayExtras(
