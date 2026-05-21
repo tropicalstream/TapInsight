@@ -181,6 +181,7 @@ class GeminiVoicePipeline(context: Context) {
      *  phrases and call BrowserVisionTool directly. */
     @Volatile private var lastLocalVisionTriggerMs: Long = 0L
     @Volatile private var visionInFlight: Boolean = false
+    @Volatile private var lastReaderModeTriggerMs: Long = 0L
 
     /** Phase 4e — callback the Service installs so the pipeline can
      *  ask it to auto-start CameraX when a vision phrase fires. Set
@@ -383,6 +384,9 @@ class GeminiVoicePipeline(context: Context) {
                 // and fire the tool ourselves with the latest text as
                 // the question.
                 maybeTriggerBrowserVisionLocally(text)
+                // Deterministic "reader mode" trigger — re-render the current
+                // page in a clean dark reader view when the user asks for it.
+                maybeTriggerReaderModeLocally(text)
             }
 
             override fun onOutputTranscription(text: String) {
@@ -835,6 +839,24 @@ class GeminiVoicePipeline(context: Context) {
     }
 
     /**
+     * Deterministic "reader mode" trigger. When the user asks Gemini to
+     * render the shown page in reader mode, sniff the input transcript for
+     * reader-mode phrases and signal the tapbrowser WebView (which lives in
+     * the same process) to reflow the current page into a clean, dark,
+     * legible reader view. Debounced so a single utterance fires once.
+     */
+    private fun maybeTriggerReaderModeLocally(transcript: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastReaderModeTriggerMs < MIN_LOCAL_VISION_INTERVAL_MS) return
+        val lower = transcript.lowercase().trim()
+        if (READER_MODE_TRIGGER_PHRASES.none { lower.contains(it) }) return
+        lastReaderModeTriggerMs = now
+        Log.i(TAG, "reader_mode trigger source=localRegex transcript='${transcript.take(80)}'")
+        HudStateBridge.update { it.copy(notification = "Reader mode") }
+        runCatching { com.TapLink.app.unipanel.BrowserCommandBridge.toggleReaderMode() }
+    }
+
+    /**
      * Phase 4c — the shared body for both trigger paths. Captures
      * via [captureWebViewBase64Logged] (which logs nonblack pixel
      * count), runs [BrowserVisionTool], and delivers the result.
@@ -1183,6 +1205,23 @@ class GeminiVoicePipeline(context: Context) {
             "describe the screen",
             "describe this page",
             "what am i looking at"
+        )
+
+        /** Phrases that ask the browser to re-render the current page in a
+         *  clean dark reader view. */
+        private val READER_MODE_TRIGGER_PHRASES = listOf(
+            "reader mode",
+            "reading mode",
+            "reader view",
+            "reading view",
+            "render this in reader",
+            "render the page in reader",
+            "render this page in reader",
+            "make this readable",
+            "make the page readable",
+            "clean up this page",
+            "declutter this page",
+            "simplify this page"
         )
 
         /** Screen-reference phrases used to decide when an agent command

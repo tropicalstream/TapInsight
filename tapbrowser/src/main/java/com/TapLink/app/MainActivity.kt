@@ -132,6 +132,65 @@ class MainActivity :
 
     companion object {
         private const val EXTRA_BROWSER_INITIAL_URL = "tapclaw_initial_url"
+
+        /**
+         * Phase 4v — reader-mode script. Extracts the main article (paragraph
+         * density heuristic à la Safari/Firefox Reader), strips chrome/ads,
+         * and re-renders it in a dark, large-text, high-contrast layout tuned
+         * for the RayNeo X3 Pro (pure-black background reads as see-through on
+         * the AR display; off-white text; 21px / 1.65 line-height). Running it
+         * again reloads the page to exit.
+         */
+        private const val READER_MODE_JS = """
+(function(){
+  try {
+    var D=document, W=window;
+    if (W.__tapReaderActive) { W.location.reload(); return 'reader:off'; }
+    function t(el){ return el ? (el.innerText||el.textContent||'').trim() : ''; }
+    function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    var title='';
+    var m=D.querySelector('meta[property="og:title"]'); if(m) title=m.getAttribute('content')||'';
+    if(!title){ var h=D.querySelector('h1'); if(h) title=t(h); }
+    if(!title) title=D.title||'';
+    var best=null, bestScore=0;
+    var nodes=D.querySelectorAll('article, main, [role=main], section, div');
+    for(var i=0;i<nodes.length;i++){
+      var el=nodes[i], ps=el.querySelectorAll('p');
+      if(!ps.length) continue;
+      var s=0;
+      for(var j=0;j<ps.length;j++){ var p=t(ps[j]); if(p.length>40) s+=p.length; }
+      s -= el.querySelectorAll('a').length*25;
+      if(s>bestScore){ bestScore=s; best=el; }
+    }
+    var src=D.querySelector('article')||best||D.body;
+    var clone=src.cloneNode(true);
+    var junk=clone.querySelectorAll('script,style,noscript,iframe,form,button,input,select,svg,canvas,nav,aside,header,footer,[role=navigation],[role=banner],[role=complementary],[aria-hidden=true]');
+    for(var k=0;k<junk.length;k++){ junk[k].remove(); }
+    var html=clone.innerHTML;
+    if((clone.innerText||'').trim().length<200){
+      var body=(D.body.innerText||'').trim();
+      html='<p>'+esc(body).replace(/\n{2,}/g,'</p><p>').replace(/\n/g,'<br>')+'</p>';
+    }
+    var css='html,body{margin:0;padding:0;background:#000;}'+
+      '.tr{background:#000;color:#EAEAEA;font-family:-apple-system,Roboto,sans-serif;-webkit-font-smoothing:antialiased;}'+
+      '.tr .doc{max-width:680px;margin:0 auto;padding:30px 22px 90px;font-size:21px;line-height:1.65;letter-spacing:.2px;}'+
+      '.tr h1{font-size:30px;line-height:1.25;font-weight:700;color:#FFF;margin:0 0 18px;}'+
+      '.tr h2{font-size:24px;color:#FFF;margin:28px 0 10px;}'+
+      '.tr h3{font-size:21px;color:#F2F2F2;margin:22px 0 8px;}'+
+      '.tr p{margin:0 0 18px;color:#E6E6E6;}'+
+      '.tr a{color:#7FC4FF;text-decoration:none;}'+
+      '.tr img{max-width:100%;height:auto;border-radius:8px;margin:14px 0;opacity:.92;}'+
+      '.tr li{margin:6px 0;} .tr ul,.tr ol{padding-left:24px;}'+
+      '.tr blockquote{border-left:3px solid #444;margin:16px 0;padding:4px 0 4px 16px;color:#C8C8C8;font-style:italic;}'+
+      '.tr pre,.tr code{background:#141414;color:#D6D6D6;border-radius:6px;}'+
+      '.tr pre{padding:12px;overflow-x:auto;}';
+    D.documentElement.innerHTML='<head><meta name="viewport" content="width=device-width, initial-scale=1"><style>'+css+'</style></head><body class="tr"><article class="doc">'+(title?'<h1>'+esc(title)+'</h1>':'')+html+'</article></body>';
+    W.__tapReaderActive=true;
+    W.scrollTo(0,0);
+    return 'reader:on';
+  } catch(e){ return 'reader:err'; }
+})();
+"""
         private const val EXTRA_RETURN_TO_CHAT_ON_DOUBLE_TAP =
                 "tapclaw_return_to_chat_double_tap"
         /** Set by visionclaw MainActivity when it warm-starts us for
@@ -1067,6 +1126,7 @@ class MainActivity :
         // Pipeline still Phase 4; today's tap just bounces Service
         // state through the bridge so Mars can verify the bind path.
         startUnipanelVoicePill()
+        startBrowserCommandObserver()
         // Phase 4d (Mars revision) — passive red-dot indicator.
         // Lights up when CameraX or browser_vision is active. The
         // manual CAM toggle button is gone; vision is voice-triggered.
@@ -6677,6 +6737,37 @@ class MainActivity :
             com.TapLink.app.unipanel.HudStateBridge.observe { state ->
                 uiHandler.post { renderUnipanelVoiceOrb(state) }
             }
+    }
+
+    private var browserCommandSubscription: AutoCloseable? = null
+
+    /**
+     * Phase 4v — observe one-shot browser commands from the voice pipeline.
+     * Currently just "toggle reader mode": when the user asks Gemini to
+     * render the shown page in reader mode, reflow the current WebView page
+     * into a clean dark reader view (and toggle back on a second request).
+     */
+    private fun startBrowserCommandObserver() {
+        browserCommandSubscription?.runCatching { close() }
+        browserCommandSubscription =
+            com.TapLink.app.unipanel.BrowserCommandBridge.observe {
+                uiHandler.post { applyReaderModeToCurrentPage() }
+            }
+    }
+
+    /**
+     * Inject the reader-mode script into the currently-shown WebView. It
+     * extracts the article content (industry-standard paragraph-density
+     * heuristic, à la Safari/Firefox Reader), strips chrome/ads, and
+     * re-renders it in a dark, large-text, high-contrast layout tuned for
+     * the RayNeo X3 Pro. Running it again reloads the page to exit.
+     */
+    private fun applyReaderModeToCurrentPage() {
+        if (!::dualWebViewGroup.isInitialized) return
+        // Make sure the browser is actually visible so the result is seen.
+        runCatching { if (browserPanelHidden) showBrowserPanel() }
+        runCatching { webView.evaluateJavascript(READER_MODE_JS, null) }
+        DebugLog.d("ReaderMode", "Reader-mode script injected into current page")
     }
 
     /**
@@ -13186,6 +13277,10 @@ class MainActivity :
             unipanelChatCardSubscription?.close()
         } catch (_: Exception) {}
         unipanelChatCardSubscription = null
+        try {
+            browserCommandSubscription?.close()
+        } catch (_: Exception) {}
+        browserCommandSubscription = null
         // Phase 2 Step 2c.4: same pattern for the camera chip
         // subscription.
         try {
