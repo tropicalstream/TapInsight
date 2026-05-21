@@ -246,6 +246,11 @@ class GeminiVoicePipeline(context: Context) {
 
         val listener = createListener()
         connectJob = scope.launch {
+            // Make sure the user's location is published BEFORE the Live
+            // session connects: the router builds its CURRENT LOCATION block
+            // once at connect time, so Gemini always knows where the user is
+            // for location-related queries. Cheap when a recent fix is cached.
+            runCatching { viewModel.ensureDeviceLocationForLiveSession() }
             val handle = runCatching {
                 viewModel.geminiRouter.startLiveAudioSession(listener)
             }.getOrNull()

@@ -6703,9 +6703,11 @@ class MainActivity :
         renderUnipanelTieredHud(state)
 
         findViewById<android.widget.TextView?>(R.id.unipanelHudAqi)?.let { aqi ->
-            val text = state.airQualityText?.trim().orEmpty()
-            aqi.text = if (text.isBlank()) "AQI --" else text
-            aqi.setTextColor(colorForUnipanelAqi(state.airQualityValue))
+            // Mars: drop the long descriptive label — show just "AQI <n>",
+            // colour-coded (green healthy / yellow moderate / red unhealthy).
+            val value = state.airQualityValue
+            aqi.text = "AQI ${value ?: "--"}"
+            aqi.setTextColor(colorForUnipanelAqi(value))
         }
 
         renderUnipanelGatewayBadge(
@@ -6811,11 +6813,15 @@ class MainActivity :
 
     private fun colorForUnipanelAqi(aqi: Int?): Int {
         val value = aqi ?: return 0xCCFFFFFF.toInt()
+        // Google's Universal AQI is 0–100 where HIGHER is CLEANER, so the
+        // colour bands run the opposite way to the US EPA scale:
+        //   >= 60  → healthy   (green)
+        //   40–59  → moderate  (yellow)
+        //   < 40   → unhealthy (red)
         return when {
-            value <= 50 -> 0xFF00E676.toInt()
-            value <= 100 -> 0xFFFFD54F.toInt()
-            value <= 150 -> 0xFFFF9800.toInt()
-            else -> 0xFFFF5252.toInt()
+            value >= 60 -> 0xFF00E676.toInt()  // green — healthy
+            value >= 40 -> 0xFFFFD54F.toInt()  // yellow — moderate
+            else -> 0xFFFF5252.toInt()         // red — unhealthy
         }
     }
 

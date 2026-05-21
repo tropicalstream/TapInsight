@@ -703,6 +703,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return latestDeviceLocationContext
     }
 
+    /**
+     * Ensure a usable device location is published before a Live session
+     * connects, so the router's CURRENT LOCATION block (built once at
+     * connect time) is filled in and Gemini always knows where the user is.
+     * Cheap when a recent fix is already cached (phone-bridge / GPS / IP);
+     * only does a bounded resolve when nothing fresh is available. Best
+     * effort — never throws.
+     */
+    suspend fun ensureDeviceLocationForLiveSession() {
+        val current = latestDeviceLocationContext
+        val freshEnough = current != null &&
+            (System.currentTimeMillis() - current.timestampMs) <= 10 * 60 * 1000L
+        if (freshEnough) return
+        val resolved = runCatching {
+            withContext(Dispatchers.IO) {
+                deviceLocationResolver.peekCached(allowApproximate = true)
+                    ?: deviceLocationResolver.resolve(
+                        requirePrecise = false,
+                        allowApproximateFallback = true
+                    )
+            }
+        }.getOrNull()
+        if (resolved != null) updateDeviceLocationContext(resolved)
+    }
+
     private fun hasFreshVisionLocationContext(context: DeviceLocationContext?): Boolean {
         if (context == null) return false
         val ageMs = System.currentTimeMillis() - context.timestampMs
