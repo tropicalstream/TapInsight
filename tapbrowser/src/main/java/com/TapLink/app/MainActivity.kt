@@ -11039,6 +11039,18 @@ class MainActivity :
             ) {
                 permissionsToRequest.add(android.Manifest.permission.MODIFY_AUDIO_SETTINGS)
             }
+            // Location: the unipanel launcher must request this itself. In
+            // Activity mode visionclaw asked for it; here that Activity never
+            // runs, so without this the device never gets the GPS permission
+            // and the companion "Test Location" + HUD air-quality feed fail.
+            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) !=
+                            PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) !=
+                            PackageManager.PERMISSION_GRANTED
+            ) {
+                permissionsToRequest.add(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                permissionsToRequest.add(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
 
             if (permissionsToRequest.isNotEmpty()) {
                 requestPermissions(permissionsToRequest.toTypedArray(), PERMISSIONS_REQUEST_CODE)

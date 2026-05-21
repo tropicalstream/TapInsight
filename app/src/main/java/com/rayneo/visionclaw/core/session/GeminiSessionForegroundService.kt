@@ -321,6 +321,39 @@ class GeminiSessionForegroundService : LifecycleService() {
     /** Phase 4k — companion config/HTTP server (port 19110), Service-owned. */
     private var companionServer: com.rayneo.visionclaw.core.config.CompanionServer? = null
 
+    /**
+     * Device location for the unipanel Service. In Activity mode visionclaw's
+     * MainActivity owned the resolver, fed the companion server's
+     * locationProvider, and published fixes into the shared ViewModel. In
+     * unipanel mode that Activity never runs, so without this the companion
+     * "Test Location" returned null and the HUD air-quality feed (which reads
+     * latestDeviceLocationContext) had no coordinates. This resolver restores
+     * that wiring on the Service side.
+     */
+    private val deviceLocationResolver by lazy {
+        com.rayneo.visionclaw.core.location.DeviceLocationResolver(applicationContext)
+    }
+
+    /**
+     * Resolve a usable device location (GPS → wifi → IP fallback) and publish
+     * it into the shared ViewModel so the HUD AQI feed and the companion
+     * location test both have coordinates. Returns the resolved (or last
+     * published) context, or null if nothing is available. Blocking — call
+     * from a background / HTTP-server thread, never the main thread.
+     */
+    private fun resolveAndPublishDeviceLocation():
+        com.rayneo.visionclaw.core.model.DeviceLocationContext? {
+        val vm = (applicationContext as com.rayneo.visionclaw.VisionClawApp).viewModel
+        val resolved = runCatching {
+            deviceLocationResolver.peekCached(allowApproximate = true)
+                ?: deviceLocationResolver.resolveBlocking(allowApproximateFallback = true)
+        }.getOrNull()
+        if (resolved != null) {
+            runCatching { vm.updateDeviceLocationContext(resolved) }
+        }
+        return resolved ?: vm.getDeviceLocationContext()
+    }
+
     private fun startCompanionServerIfNeeded() {
         if (companionServer != null) return
         try {
@@ -331,6 +364,7 @@ class GeminiSessionForegroundService : LifecycleService() {
                 applicationContext,
                 port,
                 oauthManager = oauthManager,
+                locationProvider = { resolveAndPublishDeviceLocation() },
                 calendarSummaryProvider = { vm.calendarSummary.value },
                 tasksSummaryProvider = { vm.tasksSummary.value },
                 newsSummaryProvider = { vm.newsSummary.value },
@@ -381,8 +415,21 @@ class GeminiSessionForegroundService : LifecycleService() {
             vm.setAirQualityClient(airQualityClient)
 
             lifecycleScope.launch {
+                // Prime device location FIRST so the immediate AQI fetch has
+                // coordinates (fetchHudAirQuality no-ops when location is null).
+                runCatching {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        resolveAndPublishDeviceLocation()
+                    }
+                }
+                runCatching { vm.refreshHudAirQuality(force = true) }
                 while (true) {
                     kotlinx.coroutines.delay(5 * 60 * 1000L)
+                    runCatching {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            resolveAndPublishDeviceLocation()
+                        }
+                    }
                     runCatching { vm.refreshHudUpcomingCalendar(force = true) }
                     runCatching { vm.refreshHudTasks(force = true) }
                     runCatching { vm.refreshHudNews(force = true) }
