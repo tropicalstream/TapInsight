@@ -4188,11 +4188,13 @@ class MainActivity :
             val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return
             if (visible) {
                 // Always clear any roll transform so dim-mode restore can't
-                // leave the HUD slid off-screen / transparent.
+                // leave the HUD slid off-screen / transparent, and restore the
+                // browser's reserved HUD lane so the two stay in sync.
                 overlay.animate().cancel()
                 overlay.translationY = 0f
                 overlay.alpha = 1f
                 hudRolledUp = false
+                runCatching { dualWebViewGroup.setHudLaneReserved(true) }
             }
             overlay.visibility = if (visible) View.VISIBLE else View.GONE
         }
@@ -4215,9 +4217,11 @@ class MainActivity :
         val distance = (overlay.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels)
             .toFloat()
         if (hudRolledUp) {
-            // Roll up and out → full-screen browser. Also collapse the
-            // browser's own side/bottom nav bars so the web content truly
-            // fills the screen (not just the HUD overlay being hidden).
+            // Roll up and out → full-screen browser. Collapse the browser's
+            // own side/bottom nav bars AND drop the reserved HUD lane so the
+            // WebView grows up to the very top edge (y=0), not just the HUD
+            // overlay being hidden.
+            runCatching { dualWebViewGroup.setHudLaneReserved(false) }
             runCatching { dualWebViewGroup.setNavBarsHidden(true) }
             overlay.animate()
                 .translationY(-distance)
@@ -4226,7 +4230,9 @@ class MainActivity :
                 .withEndAction { overlay.visibility = View.GONE }
                 .start()
         } else {
-            // Roll back down into view and restore the browser nav bars.
+            // Roll back down into view; restore the browser nav bars and the
+            // reserved HUD lane so the WebView sits below the HUD again.
+            runCatching { dualWebViewGroup.setHudLaneReserved(true) }
             runCatching { dualWebViewGroup.setNavBarsHidden(false) }
             overlay.visibility = View.VISIBLE
             overlay.translationY = -distance

@@ -220,7 +220,14 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private val navBarHeightPx = 32.dp()
     private val toggleBarWidthPx = 32.dp()
     private val toggleButtonSizePx = toggleBarWidthPx
-    private val unipanelTopReservePx = 136.dp()
+    // HUD/chat lane reserved at the top of the browser. Dynamic so the
+    // double-tap "roll up" can drop it to 0 and let the WebView fill the
+    // screen from the very top; restored when the HUD rolls back down.
+    private val hudLaneReservePx = 136.dp()
+    @Volatile
+    private var hudLaneReserved = true
+    private val unipanelTopReservePx: Int
+        get() = if (hudLaneReserved) hudLaneReservePx else 0
 
     val keyboardContainer: FrameLayout =
             FrameLayout(context).apply {
@@ -643,6 +650,27 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 webViewsContainer.requestLayout()
             }
         }
+    }
+
+    /**
+     * When the unipanel HUD/chat rolls up (double-tap), drop the reserved
+     * top lane so the WebView grows up to the very top edge (y=0) and the
+     * browser fills the whole screen. Rolling the HUD back down restores the
+     * reserve. [unipanelTopReservePx] is read live by onMeasure/onLayout, so
+     * we just flip the flag, re-apply the container's static topMargin, and
+     * force a re-layout.
+     */
+    fun setHudLaneReserved(reserved: Boolean) {
+        if (hudLaneReserved == reserved) return
+        hudLaneReserved = reserved
+        runCatching {
+            (webViewsContainer.layoutParams as? FrameLayout.LayoutParams)?.let { p ->
+                p.topMargin = unipanelTopReservePx
+                webViewsContainer.layoutParams = p
+            }
+        }
+        requestLayout()
+        invalidate()
     }
 
     fun stabilizeWebViewViewportAfterNavigation(
