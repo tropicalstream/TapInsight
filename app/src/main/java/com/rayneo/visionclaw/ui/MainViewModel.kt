@@ -335,24 +335,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .getSharedPreferences("chat_context", android.content.Context.MODE_PRIVATE)
 
     /**
-     * Persist the current chat cards as "previous conversation" context.
-     * Called when a new chat starts or the app goes to background.
+     * Persist the current chat exchange as "previous conversation" context.
+     * Called when a new chat starts, the app goes to background, or the
+     * unipanel service closes a Live session.
      */
     fun saveChatContextForNextSession() {
-        val cards = getAssistantCardsSnapshot()
-        if (cards.isEmpty()) return
-        viewModelScope.launch(Dispatchers.Default) {
-            // Save last N messages. Research reports can be long so allow
-            // up to 4000 chars per card (the overall cap handles total size).
-            val summary = cards.takeLast(10).joinToString("\n---\n") { card ->
-                card.text.take(4000)
-            }.take(MAX_PREVIOUS_CONTEXT_CHARS)
-            chatContextPrefs.edit()
-                .putString(KEY_PREVIOUS_CHAT, summary)
-                .putLong(KEY_PREVIOUS_CHAT_MS, System.currentTimeMillis())
-                .apply()
-            Log.d(TAG, "Saved previous chat context: ${summary.length} chars, ${cards.size} cards")
-        }
+        val turns = _messages.value
+            .filter { it.text.isNotBlank() }
+            .takeLast(12)
+        if (turns.isEmpty()) return
+        // Save the last few user/assistant turns with explicit speaker
+        // labels. Hermes kept enough prior context for anaphoric follow-up
+        // questions, but GeminiRouter's PREVIOUS CONVERSATION rules forbid
+        // pulling tool arguments from stale turns unless the user clearly
+        // refers back to them.
+        val summary = turns.joinToString("\n---\n") { turn ->
+            val speaker = if (turn.fromUser) "User" else "Assistant"
+            "$speaker: ${turn.text.take(4000)}"
+        }.take(MAX_PREVIOUS_CONTEXT_CHARS)
+        chatContextPrefs.edit()
+            .putString(KEY_PREVIOUS_CHAT, summary)
+            .putLong(KEY_PREVIOUS_CHAT_MS, System.currentTimeMillis())
+            .apply()
+        Log.d(TAG, "Saved previous chat context: ${summary.length} chars, ${turns.size} turns")
     }
 
     /**

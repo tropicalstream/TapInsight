@@ -95,6 +95,7 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var audioThread: Thread? = null
     @Volatile private var latestInputTranscript: String = ""
     @Volatile private var latestCameraFrame: String? = null
+    @Volatile private var activeSessionEpoch: Long = 0L
 
     /** Audio playback for Gemini's model audio responses. Lazy so we
      *  only allocate the AudioTrack when voice actually activates. */
@@ -279,6 +280,12 @@ class GeminiVoicePipeline(context: Context) {
 
         Log.i(TAG, "activate(): starting voice session")
 
+        // Persist the visible prior exchange before GeminiRouter builds the
+        // Live system prompt. That mirrors the Activity/Hermes path where a
+        // fresh chat saves recent cards so follow-up questions can refer back
+        // without turning stale context into tool-call arguments.
+        runCatching { viewModel.saveChatContextForNextSession() }
+
         // Reset the live assistant stream buffer so a new turn doesn't
         // accidentally concatenate with the previous one.
         runCatching { viewModel.resetLiveAssistantStream() }
@@ -294,7 +301,8 @@ class GeminiVoicePipeline(context: Context) {
             )
         }
 
-        val listener = createListener()
+        val epoch = beginSessionEpoch()
+        val listener = createListener(epoch)
         connectJob = scope.launch {
             // Make sure the user's location is published BEFORE the Live
             // session connects: the router builds its CURRENT LOCATION block
@@ -318,6 +326,12 @@ class GeminiVoicePipeline(context: Context) {
                 return@launch
             }
 
+            if (!isSessionEpochCurrent(epoch)) {
+                Log.i(TAG, "Live session handle acquired for stale epoch=$epoch; closing")
+                runCatching { handle.close() }
+                return@launch
+            }
+
             liveSession = handle
             Log.i(TAG, "Live session handle acquired; awaiting onSessionReady")
         }
@@ -331,11 +345,11 @@ class GeminiVoicePipeline(context: Context) {
      * @param reason optional one-line message surfaced in the HUD.
      */
     fun shutdown(reason: String? = null) {
+        invalidateSessionEpoch()
         if (!captureActive && liveSession == null && connectJob?.isActive != true &&
             readoutJob?.isActive != true
         ) {
-            Log.d(TAG, "shutdown(): already idle, skipping")
-            return
+            Log.d(TAG, "shutdown(): already idle; forcing audio/UI cleanup anyway")
         }
         Log.i(TAG, "shutdown(reason=$reason)")
 
@@ -367,11 +381,17 @@ class GeminiVoicePipeline(context: Context) {
         agentReadoutActive = false
         suppressGeminiOutputUntilMs = 0L
 
-        runCatching { audioPlayer.stopAndFlush() }
+        // Hermes stopped every playback source on exit. In the service path,
+        // releasing the AudioTrack is safer than a pause/flush because stale
+        // Live callbacks or a long readout write loop cannot keep speaking on
+        // an already-detached track.
+        runCatching { audioPlayer.release() }
 
         // Commit any pending assistant stream chunk so it appears as a
         // mini-card rather than vanishing on shutdown mid-response.
+        runCatching { viewModel.appendUserUtterance(latestInputTranscript) }
         runCatching { viewModel.commitLiveAssistantStreamIfNeeded() }
+        runCatching { viewModel.saveChatContextForNextSession() }
         runCatching { viewModel.resetLiveAssistantStream() }
         runCatching { viewModel.deactivateVoiceAssistant() }
 
@@ -415,9 +435,24 @@ class GeminiVoicePipeline(context: Context) {
     // Internals
     // ────────────────────────────────────────────────────────────────
 
-    private fun createListener(): GeminiRouter.LiveSessionListener {
+    @Synchronized
+    private fun beginSessionEpoch(): Long {
+        activeSessionEpoch += 1L
+        return activeSessionEpoch
+    }
+
+    @Synchronized
+    private fun invalidateSessionEpoch() {
+        activeSessionEpoch += 1L
+    }
+
+    private fun isSessionEpochCurrent(epoch: Long): Boolean =
+        activeSessionEpoch == epoch
+
+    private fun createListener(epoch: Long): GeminiRouter.LiveSessionListener {
         return object : GeminiRouter.LiveSessionListener {
             override fun onSessionReady() {
+                if (!isSessionEpochCurrent(epoch)) return
                 Log.i(TAG, "onSessionReady")
                 liveSessionReady = true
                 HudStateBridge.update {
@@ -427,10 +462,11 @@ class GeminiVoicePipeline(context: Context) {
                         notification = null
                     )
                 }
-                startAudioStreaming()
+                startAudioStreaming(epoch)
             }
 
             override fun onInputTranscription(text: String) {
+                if (!isSessionEpochCurrent(epoch)) return
                 if (text.isBlank()) return
                 latestInputTranscript = text
                 Log.d(TAG, "onInputTranscription partial='${text.take(120)}'")
@@ -444,13 +480,14 @@ class GeminiVoicePipeline(context: Context) {
                 // "what does this say". Sniff the partial transcript
                 // and fire the tool ourselves with the latest text as
                 // the question.
-                maybeTriggerBrowserVisionLocally(text)
+                maybeTriggerBrowserVisionLocally(text, epoch)
                 // Deterministic "reader mode" trigger — re-render the current
                 // page in a clean dark reader view when the user asks for it.
                 maybeTriggerReaderModeLocally(text)
             }
 
             override fun onOutputTranscription(text: String) {
+                if (!isSessionEpochCurrent(epoch)) return
                 if (text.isBlank()) return
                 runCatching { viewModel.appendLiveAssistantStreamChunk(text) }
                 HudStateBridge.update {
@@ -465,6 +502,7 @@ class GeminiVoicePipeline(context: Context) {
             }
 
             override fun onModelAudio(mimeType: String, data: ByteArray) {
+                if (!isSessionEpochCurrent(epoch) || !liveSessionReady) return
                 if (data.isEmpty()) return
                 // Drop Gemini Live's own audio while an agent reply is being
                 // read aloud via the selected readout engine, so the two
@@ -494,16 +532,20 @@ class GeminiVoicePipeline(context: Context) {
             }
 
             override fun onToolCall(callId: String, name: String, args: String) {
+                if (!isSessionEpochCurrent(epoch)) return
                 Log.i(TAG, "onToolCall: callId=$callId name=$name args=${args.take(160)}")
                 when (name) {
                     "browser_vision" -> dispatchBrowserVision(callId, name, args)
-                    else -> dispatchNativeTool(callId, name, args)
+                    else -> dispatchNativeTool(callId, name, args, epoch)
                 }
             }
 
             override fun onTurnComplete(finishReason: String?) {
+                if (!isSessionEpochCurrent(epoch)) return
                 Log.d(TAG, "onTurnComplete: finishReason=$finishReason")
+                runCatching { viewModel.appendUserUtterance(latestInputTranscript) }
                 runCatching { viewModel.commitLiveAssistantStreamIfNeeded() }
+                runCatching { viewModel.saveChatContextForNextSession() }
                 runCatching { viewModel.resetLiveAssistantStream() }
                 runCatching { audioPlayer.notifyTurnComplete() }
                 if (liveSessionReady) {
@@ -517,11 +559,13 @@ class GeminiVoicePipeline(context: Context) {
             }
 
             override fun onError(message: String) {
+                if (!isSessionEpochCurrent(epoch)) return
                 Log.w(TAG, "onError: $message")
                 shutdown(reason = "Voice error: $message")
             }
 
             override fun onClosed(code: Int, reason: String) {
+                if (!isSessionEpochCurrent(epoch)) return
                 Log.i(TAG, "onClosed: code=$code reason=$reason")
                 // Only invoke shutdown if we initiated; the close path is
                 // idempotent so calling it from a remote-close event is
@@ -543,7 +587,7 @@ class GeminiVoicePipeline(context: Context) {
      * result back to Gemini Live. URL-opening tools are also applied
      * locally so Gemini cannot swallow or mangle taplink:// results.
      */
-    private fun dispatchNativeTool(callId: String, name: String, args: String) {
+    private fun dispatchNativeTool(callId: String, name: String, args: String, epoch: Long) {
         val toolName = name.trim()
         if (toolName.isBlank()) return
         Log.i(TAG, "native tool dispatch: callId=$callId name=$toolName args=${args.take(160)}")
@@ -557,6 +601,7 @@ class GeminiVoicePipeline(context: Context) {
         }
 
         scope.launch {
+            if (!isSessionEpochCurrent(epoch)) return@launch
             HudStateBridge.update { it.copy(notification = "Running $toolName…") }
             // When the user tells an agent to "look at my screen", capture the
             // current browser screen and fold its description into the agent's
@@ -569,6 +614,7 @@ class GeminiVoicePipeline(context: Context) {
                     ?: "Tool $toolName is unavailable right now."
             }
             Log.i(TAG, "native tool result name=$toolName text='${resultText.take(180)}'")
+            if (!isSessionEpochCurrent(epoch)) return@launch
 
             // Agent replies (Hermes / TapClaw / OpenClaw) are READ ALOUD via
             // the selected readout engine — not narrated by Gemini Live. Mirror
@@ -579,7 +625,7 @@ class GeminiVoicePipeline(context: Context) {
                 Log.i(TAG, "agent tool $toolName → reading reply via selected readout engine")
                 suppressGeminiOutputUntilMs =
                     android.os.SystemClock.uptimeMillis() + 30_000L
-                runCatching { audioPlayer.stopAndFlush() }
+                runCatching { audioPlayer.release() }
                 runCatching { liveSession?.sendToolResponse(callId, toolName, "ok") }
                 HudStateBridge.update {
                     it.copy(notification = null, phase = HudStateBridge.VoicePhase.THINKING)
@@ -590,6 +636,7 @@ class GeminiVoicePipeline(context: Context) {
 
             maybeOpenTapLinkResult(toolName, resultText)
             val ok = runCatching {
+                if (!isSessionEpochCurrent(epoch)) return@runCatching false
                 liveSession?.sendToolResponse(callId, toolName, resultText) == true
             }.getOrDefault(false)
             Log.i(TAG, "native tool sendToolResponse returned $ok name=$toolName callId=$callId")
@@ -666,16 +713,17 @@ class GeminiVoicePipeline(context: Context) {
             suppressGeminiOutputUntilMs = 0L
             return
         }
+        val epoch = activeSessionEpoch
         agentReadoutActive = true
         readoutJob = scope.launch {
             var playedAny = false
             try {
                 val chunks = chunkForReadout(text, 1600)
                 for (chunk in chunks) {
-                    if (!isActive) break // shutdown/cancel — stop reading immediately
+                    if (!isActive || !isSessionEpochCurrent(epoch)) break
                     if (chunk.isBlank()) continue
                     val pcm = synthesizeRoutedToPcm(chunk) ?: continue
-                    if (!isActive) break
+                    if (!isActive || !isSessionEpochCurrent(epoch)) break
                     // Keep Gemini's audio suppressed across the whole read.
                     suppressGeminiOutputUntilMs =
                         android.os.SystemClock.uptimeMillis() + 60_000L
@@ -693,7 +741,7 @@ class GeminiVoicePipeline(context: Context) {
                         )
                     }.onSuccess { playedAny = true }
                 }
-                if (!playedAny) {
+                if (!playedAny && isSessionEpochCurrent(epoch)) {
                     // Both engines yielded no playable audio. Don't fail
                     // silently — tell the user so a misconfigured TTS engine
                     // is visible instead of looking like a dead assistant.
@@ -709,7 +757,7 @@ class GeminiVoicePipeline(context: Context) {
                 // Let the queued audio drain, then stop dropping Gemini's
                 // audio and return to the listening state for follow-ups.
                 suppressGeminiOutputUntilMs = 0L
-                if (liveSessionReady) {
+                if (liveSessionReady && isSessionEpochCurrent(epoch)) {
                     HudStateBridge.update {
                         it.copy(
                             phase = HudStateBridge.VoicePhase.LISTENING,
@@ -870,11 +918,11 @@ class GeminiVoicePipeline(context: Context) {
      * tells Gemini what the screen says and instructs it to answer
      * the user briefly out loud.
      */
-    private fun maybeTriggerBrowserVisionLocally(transcript: String) {
+    private fun maybeTriggerBrowserVisionLocally(transcript: String, epoch: Long) {
         val now = System.currentTimeMillis()
         if (visionInFlight) return
         if (now - lastLocalVisionTriggerMs < MIN_LOCAL_VISION_INTERVAL_MS) return
-        if (liveSession == null) return
+        if (liveSession == null || !isSessionEpochCurrent(epoch)) return
         val lower = transcript.lowercase().trim()
         val matched = VISION_TRIGGER_PHRASES.any { phrase -> lower.contains(phrase) }
         if (!matched) return
@@ -890,6 +938,7 @@ class GeminiVoicePipeline(context: Context) {
         runCatching { autoCameraEnabler?.invoke() }
         scope.launch {
             try {
+                if (!isSessionEpochCurrent(epoch)) return@launch
                 runBrowserVisionAndDeliver(
                     question = transcript.ifBlank { DEFAULT_VISION_QUESTION },
                     callId = null,
@@ -1113,8 +1162,9 @@ class GeminiVoicePipeline(context: Context) {
         return q.ifBlank { DEFAULT_VISION_QUESTION }
     }
 
-    private fun startAudioStreaming() {
+    private fun startAudioStreaming(epoch: Long) {
         if (captureActive) return
+        if (!isSessionEpochCurrent(epoch)) return
         val minBuffer = AudioRecord.getMinBufferSize(
             SAMPLE_RATE_HZ,
             AudioFormat.CHANNEL_IN_MONO,
@@ -1145,7 +1195,7 @@ class GeminiVoicePipeline(context: Context) {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             val chunk = ByteArray(2048)
             var loggedFirstFrame = false
-            while (captureActive) {
+            while (captureActive && isSessionEpochCurrent(epoch)) {
                 val read = try {
                     recorder.read(chunk, 0, chunk.size)
                 } catch (e: Throwable) {
@@ -1183,7 +1233,7 @@ class GeminiVoicePipeline(context: Context) {
                     // being read aloud via the readout engine — otherwise the
                     // speaker audio echoes back in and Gemini reacts to its
                     // own readout as a new user turn.
-                    if (!agentReadoutActive) {
+                    if (!agentReadoutActive && isSessionEpochCurrent(epoch)) {
                         runCatching {
                             liveSession?.sendAudioChunkPcm16(chunk, read, SAMPLE_RATE_HZ)
                         }

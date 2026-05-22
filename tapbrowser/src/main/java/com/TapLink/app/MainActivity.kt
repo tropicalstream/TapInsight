@@ -10725,7 +10725,7 @@ class MainActivity :
                         "var s=document.createElement('style');" +
                         "s.id='__tl_nav_style';" +
                         "s.textContent=" +
-                        "'#__tl_nav{position:fixed;top:6px;right:12px;z-index:2000000;display:flex;gap:8px;pointer-events:auto!important}'" +
+                        "'#__tl_nav{position:fixed;top:6px;right:12px;z-index:2000000;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:auto!important}'" +
                         "+'\\n#__tl_nav button{background:rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.3);color:#fff;font-size:16px;padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;pointer-events:auto!important}'" +
                         "+'\\n#__tl_nav button:active{background:rgba(255,255,255,0.3)}'" +
                         "+'\\n#__tl_nav .tl-mode{font-size:13px;padding:8px 10px}';" +
@@ -10825,7 +10825,7 @@ class MainActivity :
                         //
                         // === Append to body + watchdog ===
                         //
-                        "nav.appendChild(bView);nav.appendChild(bNext);" +
+                        "nav.appendChild(bNext);nav.appendChild(bView);" +
                         "document.body.appendChild(nav);" +
                         // Watchdog: re-inject if YouTube removes buttons
                         "if(window.__tl_nav_watchdog)clearInterval(window.__tl_nav_watchdog);" +
