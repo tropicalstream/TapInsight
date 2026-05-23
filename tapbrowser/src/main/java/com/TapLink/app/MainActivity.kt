@@ -6496,6 +6496,37 @@ class MainActivity :
     }
 
     /**
+     * Toggle play/pause on the YouTube video the user is watching. Used by the
+     * empty-space tap while on a watch page (instead of collapsing the
+     * browser). Acts directly on the largest HTML5 <video> element so it
+     * doesn't depend on YouTube's own click-to-toggle (which is unreliable in
+     * the WebView) or on tracked isMediaPlaying state (which can drift).
+     */
+    private fun toggleYoutubeVideoPlayback() {
+        val js = """
+            (function(){
+              try{
+                var vids=[].slice.call(document.querySelectorAll('video'))
+                  .filter(function(v){return v.readyState>0 || v.currentTime>0 || v.duration>0;});
+                if(!vids.length) vids=[].slice.call(document.querySelectorAll('video'));
+                if(!vids.length) return 'novideo';
+                vids.sort(function(a,b){
+                  return (b.clientWidth*b.clientHeight)-(a.clientWidth*a.clientHeight);
+                });
+                var v=vids[0];
+                if(v.paused){ v.play(); return 'play'; }
+                v.pause(); return 'pause';
+              }catch(e){ return 'err:'+e; }
+            })();
+        """.trimIndent()
+        runCatching {
+            webView.evaluateJavascript(js) { r ->
+                DebugLog.d("YouTubeTap", "empty-space tap → video ${r?.trim('"')}")
+            }
+        }
+    }
+
+    /**
      * Right-arm (cyttsp5_mt) horizontal swipe → next/previous YouTube video,
      * in NORMAL (non-dim) viewing. Mirrors the dim-mode fling convention:
      * swipe forward (left→right, dx>0) = NEXT, swipe back (dx<0) = PREVIOUS.
@@ -8225,7 +8256,16 @@ class MainActivity :
                 // HUD+chat-only focus view. evaluateJavascript hands back a
                 // JSON-encoded string, so the sentinel arrives quoted.
                 if (clickResult != null && clickResult.contains("taphud_empty")) {
-                    Handler(Looper.getMainLooper()).post { hideBrowserPanel() }
+                    Handler(Looper.getMainLooper()).post {
+                        // While watching a YouTube video, an empty-space tap
+                        // pauses/unpauses the video instead of collapsing the
+                        // browser. Everywhere else it still hides the browser.
+                        if (isViewingYoutubeWatchPage()) {
+                            toggleYoutubeVideoPlayback()
+                        } else {
+                            hideBrowserPanel()
+                        }
+                    }
                 }
                 // Complete the touch sequence regardless of whether we found a special link
                 Handler(Looper.getMainLooper())
@@ -10841,6 +10881,7 @@ class MainActivity :
                     webView.evaluateJavascript(js) { result ->
                         DebugLog.d("YouTubeAuto", "CSS fullscreen result: $result")
                     }
+                    runCatching { activity.dualWebViewGroup.setYoutubeCssFullModeActive(true) }
 
                     // Enter Android immersive mode
                     activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -11004,6 +11045,7 @@ class MainActivity :
                     @Suppress("DEPRECATION")
                     activity.window.decorView.systemUiVisibility =
                         (View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+                    runCatching { activity.dualWebViewGroup.setYoutubeCssFullModeActive(false) }
                     runCatching { activity.dualWebViewGroup.restoreScrollBarsAfterFullscreen() }
                     DebugLog.d("YouTubeAuto", "Exited immersive mode")
                 } catch (e: Exception) {
