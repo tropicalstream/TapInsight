@@ -3329,11 +3329,11 @@ class MainActivity :
                                 '.iv-promo-base{display:none!important;visibility:hidden!important;opacity:0!important}';
                             document.head.appendChild(s);
                         } catch (e) {}
-                        var HINT_RX = /click[\s ]*[⚙⚙️🔧\W]?\s*for settings/i;
+                        var HINT_RX = /for settings|click[\s\S]*?settings/i;
                         function hideMatchingNodes(root) {
                             try {
                                 var bezels = root.querySelectorAll
-                                    ? root.querySelectorAll('.ytp-bezel,.ytp-bezel-text-wrapper,.ytp-popup-promo,.ytp-tooltip')
+                                    ? root.querySelectorAll('.ytp-bezel,.ytp-bezel-text-wrapper,.ytp-popup-promo,.ytp-popup,.ytp-tooltip')
                                     : [];
                                 for (var i = 0; i < bezels.length; i++) {
                                     var n = bezels[i];
@@ -3368,7 +3368,11 @@ class MainActivity :
                                 });
                                 mo.observe(document.body || document.documentElement,
                                            { childList: true, subtree: true });
-                                setTimeout(function() { try { mo.disconnect(); } catch (e) {} }, 20000);
+                                // Keep watching for the lifetime of the page —
+                                // the promo re-appears every time captions are
+                                // (re)enabled during playback, well past the old
+                                // 20s window, which is why it "kept flashing".
+                                setTimeout(function() { try { mo.disconnect(); } catch (e) {} }, 600000);
                             }
                         } catch (e) {}
                     })();
@@ -7096,6 +7100,18 @@ class MainActivity :
     private var unipanelHeartbeatScrollAnimator: android.animation.ValueAnimator? = null
     private var unipanelHeartbeatClearRunnable: Runnable? = null
 
+    // ── Heartbeat ticker anti-flash throttle ─────────────────────────────
+    // renderUnipanelHeartbeat runs on EVERY HUD state update; without a hold
+    // a burst of rapidly-changing heartbeat messages reset the ticker (text +
+    // scroll) many times a second, so it flashed by too fast to read. Hold
+    // each DISTINCT message on screen for at least this long, coalescing to
+    // the latest message. Clears (empty text) bypass the hold so exit is
+    // immediate.
+    private val UNIPANEL_HEARTBEAT_MIN_HOLD_MS = 2_000L
+    private var lastHeartbeatRenderedText: String? = null
+    private var lastHeartbeatRenderedAtMs: Long = 0L
+    private var pendingHeartbeatRenderRunnable: Runnable? = null
+
     private val hideUnipanelHeartbeatRunnable = Runnable {
         val tv = findViewById<android.widget.TextView?>(R.id.unipanelHudHeartbeatText) ?: return@Runnable
         unipanelHeartbeatScrollAnimator?.cancel()
@@ -7272,12 +7288,42 @@ class MainActivity :
         unipanelHeartbeatClearRunnable?.let { uiHandler.removeCallbacks(it) }
         unipanelHeartbeatClearRunnable = null
         if (text.isNullOrBlank()) {
+            // Clears bypass the anti-flash hold so Gemini exit / idle is instant.
+            pendingHeartbeatRenderRunnable?.let { uiHandler.removeCallbacks(it) }
+            pendingHeartbeatRenderRunnable = null
+            lastHeartbeatRenderedText = null
+            lastHeartbeatRenderedAtMs = 0L
             hideUnipanelHeartbeatRunnable.run()
             // Phase 4j — ticker just collapsed; if the camera preview
             // is up, pull it back toward the clock strip.
             repositionUnipanelCameraPreview()
             return
         }
+
+        // Same message already on screen — don't restart the scroll/clear timer
+        // (unrelated HUD updates were re-triggering this and causing the flash).
+        if (text == lastHeartbeatRenderedText && tv.visibility == View.VISIBLE) {
+            return
+        }
+
+        // Anti-flash hold: keep each distinct message up for at least
+        // UNIPANEL_HEARTBEAT_MIN_HOLD_MS, coalescing to the latest state.
+        val nowMs = SystemClock.uptimeMillis()
+        val heldFor = nowMs - lastHeartbeatRenderedAtMs
+        pendingHeartbeatRenderRunnable?.let { uiHandler.removeCallbacks(it) }
+        pendingHeartbeatRenderRunnable = null
+        if (lastHeartbeatRenderedText != null && heldFor < UNIPANEL_HEARTBEAT_MIN_HOLD_MS) {
+            val delay = UNIPANEL_HEARTBEAT_MIN_HOLD_MS - heldFor
+            val deferred = Runnable {
+                pendingHeartbeatRenderRunnable = null
+                renderUnipanelHeartbeat(com.TapLink.app.unipanel.HudStateBridge.current())
+            }
+            pendingHeartbeatRenderRunnable = deferred
+            uiHandler.postDelayed(deferred, delay)
+            return
+        }
+        lastHeartbeatRenderedText = text
+        lastHeartbeatRenderedAtMs = nowMs
 
         tv.text = "♥ $text"
         tv.visibility = View.VISIBLE
@@ -10857,6 +10903,7 @@ class MainActivity :
                     @Suppress("DEPRECATION")
                     activity.window.decorView.systemUiVisibility =
                         (View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+                    runCatching { activity.dualWebViewGroup.restoreScrollBarsAfterFullscreen() }
                     DebugLog.d("YouTubeAuto", "Exited immersive mode")
                 } catch (e: Exception) {
                     DebugLog.d("YouTubeAuto", "exitImmersiveMode failed: $e")
@@ -11223,6 +11270,7 @@ class MainActivity :
         }
 
         dualWebViewGroup.hideFullScreenOverlay()
+        runCatching { dualWebViewGroup.restoreScrollBarsAfterFullscreen() }
         fullScreenCustomView = null
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
