@@ -3,6 +3,9 @@ package com.rayneo.visionclaw.core.network
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -151,7 +154,7 @@ class ResearchRouter(
             "researchLinks: topic='${topic.take(80)}' mediaTypes=$mediaTypes " +
                 "biasLen=${typeBias.length}"
         )
-        runPromptInternal(
+        val result = runPromptInternal(
             prompt = effectivePrompt,
             systemPrompt = LINKS_SYSTEM_PROMPT,
             // CRITICAL: enable web-search grounding so the model returns
@@ -162,6 +165,61 @@ class ResearchRouter(
             // gets attached.
             enableWebSearch = true
         )
+        // Even with grounding enabled, the model still RETYPES URLs into its
+        // text and can mis-pair a right title with a wrong/old URL. Re-verify
+        // every URL in the output before it reaches the device: resolve
+        // grounding redirects to their real page, and re-ground any
+        // from-memory URL to the top real result. Defensive — any failure
+        // leaves the original line untouched.
+        if (result is ResearchResult.Success) {
+            val geminiKey = resolveApiKey(geminiFallbackApiKeyProvider())
+                ?: resolveApiKey(apiKeyProvider())
+            val verified = runCatching { resolveLinksInText(result.text, geminiKey) }
+                .getOrDefault(result.text)
+            result.copy(text = verified)
+        } else {
+            result
+        }
+    }
+
+    /**
+     * Re-verify every URL inside a links-mode markdown list. For each line that
+     * carries a URL we pull the title (text before the "(type:X)" tag or the
+     * URL) and the type tag, then hand them to [GroundedUrlResolver.resolveEntry]
+     * which follows grounding redirects, re-grounds from-memory URLs, and falls
+     * back to an on-topic search page. Lines are processed in parallel; any
+     * line that fails to parse/resolve is left exactly as-is.
+     */
+    private suspend fun resolveLinksInText(
+        text: String,
+        geminiApiKey: String?
+    ): String = coroutineScope {
+        val urlRx = Regex("""https?://\S+""")
+        val typeRx = Regex("""\(type:\s*([A-Za-z]+)\s*\)""")
+        text.split("\n").map { line ->
+            async(Dispatchers.IO) {
+                val match = urlRx.find(line) ?: return@async line
+                val rawUrl = match.value.trimEnd('.', ',', ')', ']', '>', '"', '\'', ' ')
+                if (rawUrl.isBlank()) return@async line
+                val type = typeRx.find(line)?.groupValues?.get(1)?.lowercase() ?: "web"
+                val beforeUrl = line.substringBefore(match.value)
+                val title = beforeUrl
+                    .substringBefore("(type:")
+                    .trim()
+                    .trimStart('-', '*', '•', ' ')
+                    .trimStart('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ')', ' ')
+                    .substringBefore(" — ")
+                    .substringBefore(" – ")
+                    .substringBefore(" - ")
+                    .trim()
+                    .ifBlank { rawUrl }
+                val resolved = runCatching {
+                    GroundedUrlResolver.resolveEntry(geminiApiKey, title, type, rawUrl)
+                }.getOrNull()
+                if (resolved.isNullOrBlank() || resolved == rawUrl) line
+                else line.replace(rawUrl, resolved)
+            }
+        }.awaitAll().joinToString("\n")
     }
 
     /**

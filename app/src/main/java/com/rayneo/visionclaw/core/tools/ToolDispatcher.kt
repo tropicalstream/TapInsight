@@ -112,7 +112,13 @@ class ToolDispatcher(
         ))
         register(TapLinkTool(context))
         register(SendVideoListTool(context))
-        register(SendLinkListTool(context))
+        register(SendLinkListTool(
+            context,
+            geminiApiKeyProvider = {
+                prefs.geminiApiKey.trim().takeIf { it.isNotBlank() }
+                    ?: BuildConfig.GEMINI_API_KEY.trim().takeIf { it.isNotBlank() }
+            }
+        ))
         register(ResearchTool(context, effectiveResearchRouter))
         register(LearnTool(effectiveLearnLmRouter))
         register(ContextCacheTool(context))

@@ -118,6 +118,49 @@ internal object ActiveNetworkHttp {
         }
     }
 
+    /**
+     * Follow redirects for [url] and return the FINAL landing URL. Used to
+     * turn opaque redirectors — notably Google grounding redirects
+     * (vertexaisearch.cloud.google.com/grounding-api-redirect/…) — into the
+     * real publisher URL so a list entry opens the page it claims to.
+     * Tries HEAD first (no body); falls back to GET when a host rejects HEAD.
+     * Returns null on failure so callers can fall back to the original URL.
+     */
+    fun resolveFinalUrl(
+        url: String,
+        connectTimeoutMs: Int = DEFAULT_CONNECT_TIMEOUT_MS,
+        readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS
+    ): String? {
+        val client = baseClient.newBuilder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(connectTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            .readTimeout(readTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            .callTimeout((connectTimeoutMs + readTimeoutMs).toLong(), TimeUnit.MILLISECONDS)
+            .build()
+        return try {
+            val headReq = Request.Builder().url(url).head()
+                .header("User-Agent", REDIRECT_RESOLVE_UA).build()
+            client.newCall(headReq).execute().use { resp ->
+                // resp.request.url is the URL of the LAST hop after redirects.
+                val finalUrl = resp.request.url.toString()
+                if (resp.code in 200..399 && finalUrl.isNotBlank()) return finalUrl
+            }
+            val getReq = Request.Builder().url(url).get()
+                .header("User-Agent", REDIRECT_RESOLVE_UA).build()
+            client.newCall(getReq).execute().use { resp ->
+                resp.request.url.toString().takeIf { it.isNotBlank() }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "resolveFinalUrl failed for $url: ${e.message}")
+            null
+        }
+    }
+
+    private const val REDIRECT_RESOLVE_UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
     fun openConnection(context: android.content.Context?, urlStr: String): HttpURLConnection {
         if (context != null) {
             Log.d(TAG, "Legacy openConnection used for $urlStr")

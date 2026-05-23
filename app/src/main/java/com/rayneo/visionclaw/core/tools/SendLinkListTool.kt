@@ -2,6 +2,11 @@ package com.rayneo.visionclaw.core.tools
 
 import android.content.Context
 import android.util.Log
+import com.rayneo.visionclaw.core.network.GroundedUrlResolver
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -32,7 +37,11 @@ import java.util.Locale
  * TapBrowser without round-tripping the URL back through Gemini (which
  * tends to mangle long encoded query strings).
  */
-class SendLinkListTool(private val context: Context) : AiTapTool {
+class SendLinkListTool(
+    private val context: Context,
+    /** Gemini API key for the grounded re-search used to repair URLs. */
+    private val geminiApiKeyProvider: () -> String? = { null }
+) : AiTapTool {
     override val name = "send_link_list"
 
     override suspend fun execute(args: Map<String, String>): Result<String> {
@@ -70,105 +79,75 @@ class SendLinkListTool(private val context: Context) : AiTapTool {
             )
         }
 
-        // Normalise each entry. Drop ones that lack a url or title — the
-        // HTML page can't render a row with neither. `type` is optional;
-        // when missing we emit "web" so the page still routes sanely.
-        val normalized = JSONArray()
-        val rejectedRedirects = mutableListOf<String>()
+        // Parse the raw entries first (title / type / summary + the model's
+        // candidate URL). We DON'T trust the candidate URL — it's frequently
+        // a from-memory hallucination that's plausibly shaped but points at
+        // the wrong item (e.g. a valid Goodreads URL for the wrong book).
+        // URL resolution happens in parallel below.
+        val rawEntries = mutableListOf<JSONObject>()
         for (i in 0 until linksArray.length()) {
             val obj = linksArray.optJSONObject(i) ?: continue
             val title = obj.optString("title").trim()
-            // Mutable so the YouTube watch-URL rewrite below can update it.
-            var url = obj.optString("url").trim()
-            if (title.isBlank() || url.isBlank()) continue
-
-            // Reject Google's vertexaisearch grounding-redirect URLs.
-            // These are opaque server-side redirects that the model
-            // pulls from googleSearch grounding chunks; they resolve
-            // unpredictably (a Wikipedia-titled redirect often lands
-            // on YouTube), so the user's tap doesn't match the entry's
-            // title or type. Drop them and let Gemini retry with
-            // direct URLs.
-            val urlLower = url.lowercase(Locale.US)
-            if (urlLower.contains("vertexaisearch.cloud.google.com") ||
-                urlLower.contains("/grounding-api-redirect/")
-            ) {
-                Log.w(
-                    "SendLinkListTool",
-                    "Rejecting grounding-redirect URL for entry '${title.take(60)}': $url"
-                )
-                rejectedRedirects.add(title)
-                continue
-            }
-
-            // Reject hallucinated YouTube watch URLs. Real YouTube IDs
-            // are exactly 11 characters of [A-Za-z0-9_-]. The model
-            // routinely invents IDs that look right but 404. We can
-            // catch most invented URLs by validating the ID shape, but
-            // we can't catch IDs that happen to be syntactically valid
-            // and point to an unrelated video — that needs a HEAD-check
-            // pass we don't do yet. For now, rewrite hallucination-
-            // prone watch URLs to a search URL using the entry's title,
-            // which always resolves to SOMETHING relevant.
-            val watchMatch = Regex(
-                """^https?://(?:www\.)?youtube\.com/watch\?(?:[^&]*&)*v=([^&\s]+)"""
-            ).find(url)
-            if (watchMatch != null) {
-                val videoId = watchMatch.groupValues[1]
-                val validId = videoId.matches(Regex("^[A-Za-z0-9_-]{11}$"))
-                if (!validId) {
-                    Log.w(
-                        "SendLinkListTool",
-                        "YouTube watch URL has invalid ID '$videoId' for entry '${title.take(60)}'; " +
-                            "rewriting to search URL."
-                    )
-                    val q = java.net.URLEncoder.encode(title, "UTF-8")
-                        .replace("%20", "+")
-                    url = "https://www.youtube.com/results?search_query=$q"
-                }
-            }
-
-            // Normalise type to lowercase so the HTML page can string-match
-            // without per-call defensive lowercasing. Unknown types fall
-            // through to "web" rather than rejecting the entry.
+            if (title.isBlank()) continue
             val type = obj.optString("type").trim().lowercase(Locale.US).ifBlank { "web" }
             val summary = obj.optString("summary").trim()
-            normalized.put(
+            val candidateUrl = obj.optString("url").trim()
+            rawEntries.add(
                 JSONObject()
                     .put("title", title)
-                    .put("url", url)
                     .put("type", type)
                     .put("summary", summary)
+                    .put("cand", candidateUrl)
             )
         }
 
-        // If any entries were rejected, surface a useful error so Gemini
-        // can retry with real URLs. Without this, partial lists slip
-        // through silently and the user only notices when they tap an
-        // entry and it opens the wrong page.
-        if (rejectedRedirects.isNotEmpty() && normalized.length() == 0) {
+        if (rawEntries.isEmpty()) {
             return Result.failure(
-                IllegalArgumentException(
-                    "send_link_list rejected: every URL was a vertexaisearch grounding redirect " +
-                        "(${rejectedRedirects.size} entries). These are opaque Google redirects that resolve " +
-                        "unpredictably. Use the original source URLs from the grounding metadata's 'web.uri' " +
-                        "field — direct URLs like https://en.wikipedia.org/wiki/X, https://www.youtube.com/" +
-                        "watch?v=Y, https://archive.org/details/Z. Do NOT use any URL whose host is " +
-                        "vertexaisearch.cloud.google.com."
-                )
+                IllegalArgumentException("send_link_list needs at least one entry with a title.")
             )
         }
-        if (rejectedRedirects.isNotEmpty()) {
-            Log.w(
-                "SendLinkListTool",
-                "Dropped ${rejectedRedirects.size} grounding-redirect entries; kept ${normalized.length()}"
+
+        // Resolve every URL to a real, on-topic one IN PARALLEL before showing
+        // the list (resolve-before-show): a grounding-redirect URL is followed
+        // to its real publisher page; a from-memory URL is re-grounded via a
+        // fresh search and replaced with the top real result; if nothing can
+        // be confirmed we fall back to an on-topic search page. See
+        // GroundedUrlResolver. A from-memory URL is never opened verbatim.
+        val apiKey = geminiApiKeyProvider()
+        val resolvedUrls: List<String> = coroutineScope {
+            rawEntries.map { e ->
+                async(Dispatchers.IO) {
+                    val t = e.optString("title")
+                    val ty = e.optString("type")
+                    val cand = e.optString("cand")
+                    runCatching {
+                        GroundedUrlResolver.resolveEntry(apiKey, t, ty, cand)
+                    }.getOrElse { GroundedUrlResolver.searchPageUrl(t, ty) }
+                }
+            }.awaitAll()
+        }
+
+        val normalized = JSONArray()
+        for (idx in rawEntries.indices) {
+            val e = rawEntries[idx]
+            val t = e.optString("title")
+            val ty = e.optString("type")
+            val url = resolvedUrls.getOrNull(idx)
+                ?.takeIf { it.isNotBlank() }
+                ?: GroundedUrlResolver.searchPageUrl(t, ty)
+            normalized.put(
+                JSONObject()
+                    .put("title", t)
+                    .put("url", url)
+                    .put("type", ty)
+                    .put("summary", e.optString("summary"))
             )
         }
 
         if (normalized.length() == 0) {
             return Result.failure(
                 IllegalArgumentException(
-                    "send_link_list couldn't read any valid {title, url} pairs."
+                    "send_link_list couldn't read any valid {title} entries."
                 )
             )
         }
