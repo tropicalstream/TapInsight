@@ -3330,18 +3330,42 @@ class MainActivity :
                             document.head.appendChild(s);
                         } catch (e) {}
                         var HINT_RX = /for settings|click[\s\S]*?settings/i;
+                        function killNode(n) {
+                            try {
+                                n.style.setProperty('display','none','important');
+                                n.style.setProperty('visibility','hidden','important');
+                                n.style.setProperty('opacity','0','important');
+                                // Also hide a known popup/promo/bezel ancestor so we
+                                // don't leave an empty box behind the hidden text.
+                                var anc = n.closest && n.closest('.ytp-popup-promo,.ytp-popup,.ytp-bezel,.ytp-tooltip,[class*="promo"]');
+                                if (anc && anc !== n) {
+                                    anc.style.setProperty('display','none','important');
+                                    anc.style.setProperty('visibility','hidden','important');
+                                }
+                            } catch (e) {}
+                        }
                         function hideMatchingNodes(root) {
                             try {
-                                var bezels = root.querySelectorAll
-                                    ? root.querySelectorAll('.ytp-bezel,.ytp-bezel-text-wrapper,.ytp-popup-promo,.ytp-popup,.ytp-tooltip')
+                                // Match by TEXT regardless of class — the promo's
+                                // class name varies by YouTube build (it slipped
+                                // past the old fixed selector list). Scan the node
+                                // itself plus every YouTube-player element under it,
+                                // and hide any whose SHORT text matches the hint.
+                                // Bounding the length avoids nuking big containers
+                                // and the real caption text (captions never say
+                                // "for settings").
+                                var candidates = [];
+                                if (root.nodeType === 1) candidates.push(root);
+                                var els = root.querySelectorAll
+                                    ? root.querySelectorAll('[class*="ytp-"],[class*="promo"],[class*="popup"],[class*="tooltip"],[class*="bezel"]')
                                     : [];
-                                for (var i = 0; i < bezels.length; i++) {
-                                    var n = bezels[i];
+                                for (var q = 0; q < els.length; q++) candidates.push(els[q]);
+                                for (var i = 0; i < candidates.length; i++) {
+                                    var n = candidates[i];
                                     var txt = '';
                                     try { txt = (n.innerText || n.textContent || '').trim(); } catch (e) {}
-                                    if (txt && HINT_RX.test(txt)) {
-                                        n.style.display = 'none';
-                                        n.style.visibility = 'hidden';
+                                    if (txt && txt.length < 90 && HINT_RX.test(txt)) {
+                                        killNode(n);
                                     }
                                 }
                             } catch (e) {}
@@ -7365,46 +7389,49 @@ class MainActivity :
         val notification = state.notification?.trim().takeUnless { it.isNullOrBlank() }
         val bridgeMessage = state.heartbeatMessage?.trim().takeUnless { it.isNullOrBlank() }
         val text = notification ?: bridgeMessage
+        // Nothing actually changed since the last APPLIED render — leave the
+        // ticker alone so unrelated HUD updates (clock, AQI, badges) can't
+        // restart the scroll or the clear timer.
+        if (text == lastHeartbeatRenderedText) {
+            return
+        }
+
+        // Uniform anti-flash cadence: apply at most ONE visible change — a new
+        // message, a message swap, OR a hide — every UNIPANEL_HEARTBEAT_MIN_HOLD_MS.
+        // A burst of rapidly-changing (or rapidly toggling on/off) heartbeat
+        // states collapses to whatever the latest state is when the window
+        // elapses. This is what stops the ticker flashing by too fast to read.
+        // (The earlier version let clears bypass the hold, so message→null→
+        //  message bursts still flashed.)
+        val nowMs = SystemClock.uptimeMillis()
+        val heldFor = nowMs - lastHeartbeatRenderedAtMs
+        if (lastHeartbeatRenderedAtMs != 0L && heldFor < UNIPANEL_HEARTBEAT_MIN_HOLD_MS) {
+            pendingHeartbeatRenderRunnable?.let { uiHandler.removeCallbacks(it) }
+            val deferred = Runnable {
+                pendingHeartbeatRenderRunnable = null
+                renderUnipanelHeartbeat(com.TapLink.app.unipanel.HudStateBridge.current())
+            }
+            pendingHeartbeatRenderRunnable = deferred
+            uiHandler.postDelayed(deferred, UNIPANEL_HEARTBEAT_MIN_HOLD_MS - heldFor)
+            return
+        }
+
+        // Apply now — cancel any pending timers and record the apply time.
+        pendingHeartbeatRenderRunnable?.let { uiHandler.removeCallbacks(it) }
+        pendingHeartbeatRenderRunnable = null
         uiHandler.removeCallbacks(hideUnipanelHeartbeatRunnable)
         unipanelHeartbeatClearRunnable?.let { uiHandler.removeCallbacks(it) }
         unipanelHeartbeatClearRunnable = null
+        lastHeartbeatRenderedText = text
+        lastHeartbeatRenderedAtMs = nowMs
+
         if (text.isNullOrBlank()) {
-            // Clears bypass the anti-flash hold so Gemini exit / idle is instant.
-            pendingHeartbeatRenderRunnable?.let { uiHandler.removeCallbacks(it) }
-            pendingHeartbeatRenderRunnable = null
-            lastHeartbeatRenderedText = null
-            lastHeartbeatRenderedAtMs = 0L
             hideUnipanelHeartbeatRunnable.run()
             // Phase 4j — ticker just collapsed; if the camera preview
             // is up, pull it back toward the clock strip.
             repositionUnipanelCameraPreview()
             return
         }
-
-        // Same message already on screen — don't restart the scroll/clear timer
-        // (unrelated HUD updates were re-triggering this and causing the flash).
-        if (text == lastHeartbeatRenderedText && tv.visibility == View.VISIBLE) {
-            return
-        }
-
-        // Anti-flash hold: keep each distinct message up for at least
-        // UNIPANEL_HEARTBEAT_MIN_HOLD_MS, coalescing to the latest state.
-        val nowMs = SystemClock.uptimeMillis()
-        val heldFor = nowMs - lastHeartbeatRenderedAtMs
-        pendingHeartbeatRenderRunnable?.let { uiHandler.removeCallbacks(it) }
-        pendingHeartbeatRenderRunnable = null
-        if (lastHeartbeatRenderedText != null && heldFor < UNIPANEL_HEARTBEAT_MIN_HOLD_MS) {
-            val delay = UNIPANEL_HEARTBEAT_MIN_HOLD_MS - heldFor
-            val deferred = Runnable {
-                pendingHeartbeatRenderRunnable = null
-                renderUnipanelHeartbeat(com.TapLink.app.unipanel.HudStateBridge.current())
-            }
-            pendingHeartbeatRenderRunnable = deferred
-            uiHandler.postDelayed(deferred, delay)
-            return
-        }
-        lastHeartbeatRenderedText = text
-        lastHeartbeatRenderedAtMs = nowMs
 
         tv.text = "♥ $text"
         tv.visibility = View.VISIBLE
