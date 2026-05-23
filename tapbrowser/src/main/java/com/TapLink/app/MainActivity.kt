@@ -6290,6 +6290,23 @@ class MainActivity :
     // Upper bound between the two taps to count as a double-tap.
     private val RIGHT_ARM_KEY_DOUBLE_TAP_WINDOW_MS = 320L
 
+    // ── Right-arm (cyttsp5_mt) YouTube swipe → prev/next video ───────────
+    // While a YouTube watch page is showing in NORMAL (non-dim) view, a quick
+    // horizontal swipe on the right arm skips to the next/previous video. (Dim
+    // mode already does this via maskedGestureDetector.onFling.) Tracked
+    // manually off the raw cyttsp5 motion stream so we don't depend on the
+    // mouse-synthesis GestureDetector path. MOVE/DOWN pass through untouched so
+    // the cursor still works; only a confirmed swipe consumes the UP.
+    private var ytSwipeTracking: Boolean = false
+    private var ytSwipeDownX: Float = 0f
+    private var ytSwipeDownY: Float = 0f
+    private var ytSwipeDownMs: Long = 0L
+    // Min horizontal travel + must be mostly horizontal + quick, so a normal
+    // cursor drag to tap a control isn't mistaken for a video skip.
+    private val YT_SWIPE_MIN_DX_PX = 90f
+    private val YT_SWIPE_MAX_DY_RATIO = 1.2f
+    private val YT_SWIPE_MAX_MS = 700L
+
     private fun consumedByLeftArmTap(ev: MotionEvent): Boolean {
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -6440,6 +6457,70 @@ class MainActivity :
                 }
                 // First tap of a potential double-tap — record and pass through.
                 rightArmKeyLastTapUpMs = now
+                return false
+            }
+        }
+        return false
+    }
+
+    /** True when the foreground WebView is on a YouTube watch (video) page. */
+    private fun isViewingYoutubeWatchPage(): Boolean {
+        val url = runCatching { webView.url }.getOrNull().orEmpty()
+        return url.contains("youtube.com/watch", ignoreCase = true) ||
+            url.contains("youtu.be/", ignoreCase = true) ||
+            (url.contains("youtube.com", ignoreCase = true) && url.contains("v=", ignoreCase = true))
+    }
+
+    /**
+     * Right-arm (cyttsp5_mt) horizontal swipe → next/previous YouTube video,
+     * in NORMAL (non-dim) viewing. Mirrors the dim-mode fling convention:
+     * swipe forward (left→right, dx>0) = NEXT, swipe back (dx<0) = PREVIOUS.
+     * Returns true only on a confirmed swipe (consuming the UP so it doesn't
+     * also click); DOWN/MOVE always pass through so the cursor keeps working.
+     */
+    private fun consumedByMainTouchpadYoutubeSwipe(ev: MotionEvent): Boolean {
+        // Dim mode is handled by maskedGestureDetector.onFling; skip here.
+        if (::dualWebViewGroup.isInitialized && dualWebViewGroup.isScreenMasked()) {
+            ytSwipeTracking = false
+            return false
+        }
+        if (!isViewingYoutubeWatchPage()) {
+            ytSwipeTracking = false
+            return false
+        }
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                ytSwipeTracking = true
+                ytSwipeDownX = ev.x
+                ytSwipeDownY = ev.y
+                ytSwipeDownMs = SystemClock.uptimeMillis()
+                return false
+            }
+            MotionEvent.ACTION_UP -> {
+                if (!ytSwipeTracking) return false
+                ytSwipeTracking = false
+                val dx = ev.x - ytSwipeDownX
+                val dy = ev.y - ytSwipeDownY
+                val absDx = kotlin.math.abs(dx)
+                val absDy = kotlin.math.abs(dy)
+                val elapsed = SystemClock.uptimeMillis() - ytSwipeDownMs
+                if (elapsed <= YT_SWIPE_MAX_MS &&
+                    absDx >= YT_SWIPE_MIN_DX_PX &&
+                    absDx > absDy * YT_SWIPE_MAX_DY_RATIO
+                ) {
+                    if (dx > 0f) {
+                        DebugLog.d("YouTubeSwipe", "right-arm swipe FORWARD → next video (dx=${"%.0f".format(dx)})")
+                        runCatching { dualWebViewGroup.onMaskSwipeNext() }
+                    } else {
+                        DebugLog.d("YouTubeSwipe", "right-arm swipe BACK → prev video (dx=${"%.0f".format(dx)})")
+                        runCatching { dualWebViewGroup.onMaskSwipePrev() }
+                    }
+                    return true
+                }
+                return false
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                ytSwipeTracking = false
                 return false
             }
         }
@@ -10855,23 +10936,16 @@ class MainActivity :
                         "console.log('[TapLink-YT] View mode set to: '+labels[next]);" +
                         "});" +
                         //
-                        // === Next button ===
-                        //
-                        "var bNext=document.createElement('button');" +
-                        "bNext.id='__tl_next';" +
-                        "bNext.textContent='Next';" +
-                        "bNext.addEventListener('click',function(e){" +
-                        "e.stopPropagation();e.preventDefault();" +
-                        "var now=Date.now();" +
-                        "if(window.__tl_last_next_click&&now-window.__tl_last_next_click<800)return;" +
-                        "window.__tl_last_next_click=now;" +
-                        "try{window.GroqBridge.playNextInPlaylist();}catch(x){}" +
-                        "console.log('[TapLink-YT] Nav: Next clicked');" +
-                        "});" +
+                        // === Next button removed ===
+                        // Mars: the on-screen Next button is gone — the user
+                        // swipes forward/back on the RIGHT arm to skip to the
+                        // next/previous video instead (see
+                        // consumedByMainTouchpadYoutubeSwipe + dim-mode fling).
+                        // The view-mode ("Full") button below stays.
                         //
                         // === Append to body + watchdog ===
                         //
-                        "nav.appendChild(bNext);nav.appendChild(bView);" +
+                        "nav.appendChild(bView);" +
                         "document.body.appendChild(nav);" +
                         // Watchdog: re-inject if YouTube removes buttons
                         "if(window.__tl_nav_watchdog)clearInterval(window.__tl_nav_watchdog);" +
@@ -10882,7 +10956,7 @@ class MainActivity :
                         "try{window.GroqBridge.injectNavButtons();}catch(x){}" +
                         "}" +
                         "},2000);" +
-                        "console.log('[TapLink-YT] Nav buttons injected on body (View:'+labels[window.__tl_view_mode||0]+' + Next)');" +
+                        "console.log('[TapLink-YT] Nav button injected on body (View:'+labels[window.__tl_view_mode||0]+')');" +
                         "return 'ok';" +
                         "}catch(err){console.log('[TapLink-YT] injectNav error: '+err);return 'error:'+err;}" +
                         "})()"
@@ -13069,6 +13143,12 @@ class MainActivity :
         val isMainTouchpadEvent = deviceName?.contains("cyttsp5_mt", ignoreCase = true) == true
         if (isMainTouchpadEvent) {
             ensureMouseTapModeDisabled()
+            // Right-arm horizontal swipe → prev/next YouTube video (normal
+            // view). Only consumes the event on a confirmed swipe; otherwise
+            // it just records timing and lets the cursor pipeline run.
+            if (consumedByMainTouchpadYoutubeSwipe(ev)) {
+                return true
+            }
         }
 
         // Temple arm input should only be used for mode-toggle double taps.
