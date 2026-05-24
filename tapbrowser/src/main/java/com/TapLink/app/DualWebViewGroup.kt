@@ -1142,8 +1142,13 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         val showHorz =
                 if (onYoutubeWatchForFull) false
                 else stickyHorzScrollable || showHorzRaw || (now - lastHorzScrollableAt < scrollBarHoldMs)
+        // On a YouTube watch page the vertical bar is deterministic, not
+        // measured: in Full the page is overflow:hidden (no bar); in Theater/
+        // Mini the page always scrolls, so show the bar IMMEDIATELY rather than
+        // waiting for a live re-measure (which only fired after the user
+        // interacted near it). youtubeCssFullModeActive is true only in Full.
         val showVert =
-                if (onYoutubeWatchForFull) showVertRaw
+                if (onYoutubeWatchForFull) !youtubeCssFullModeActive
                 else stickyVertScrollable || showVertRaw || (now - lastVertScrollableAt < scrollBarHoldMs)
 
         if (!isFrozen) {
