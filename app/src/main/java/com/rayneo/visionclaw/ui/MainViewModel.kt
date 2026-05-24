@@ -255,6 +255,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var latestNearbyPlaceSnapshot: NearbyPlaceSnapshot? = null
     @Volatile
     private var lastHudCalendarRefreshMs = 0L
+    // Last events we successfully fetched. The HUD summary is re-derived from
+    // this against the CURRENT clock on every refresh, so a now-past event drops
+    // off even when a later refresh can't fetch fresh data (e.g. a transient
+    // OAuth/API hiccup) — without this, a stale "9 AM" line could linger long
+    // after 9 AM because the failed refresh left the old summary untouched.
+    @Volatile
+    private var lastCalendarEventsCache: List<GoogleCalendarClient.CalendarEvent> = emptyList()
     @Volatile
     private var lastHudTasksRefreshMs = 0L
     @Volatile
@@ -1133,23 +1140,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun appendLiveAssistantWorkingChunk(chunk: String): String {
-        // Gemini Live sends output-transcription as INCREMENTAL deltas whose
-        // spacing is already correct (e.g. "Hello", " world", or a mid-word
-        // continuation "wonder" + "ful"). The previous path trimmed each delta
-        // and re-joined them with a heuristic that inserted spurious spaces
-        // (splitting words apart) or dropped overlapping characters (merging /
-        // skipping words). We now concatenate the deltas verbatim so the card
-        // text matches exactly what was said, with a guard for the rare case
-        // where a delta arrives cumulative (already contains the whole turn).
-        if (chunk.isEmpty()) return currentAssistantVisibleLog()
+        // Gemini Live's output-transcription deltas arrive as whole-word
+        // fragments WITHOUT boundary spaces (e.g. "Hello", "world", "this").
+        // So they must be joined WITH a space — concatenating them verbatim
+        // glues words together ("Helloworld"). We keep the cumulative / stale /
+        // contains guards (a delta that already holds the whole turn), but we
+        // deliberately DROP the old longest-suffix/prefix overlap heuristic:
+        // it false-matched on coincidental overlaps (e.g. "I am" + "amazing" ->
+        // "I amazing") and was the source of the dropped / merged words.
+        val next = chunk.trim()
+        if (next.isBlank()) return currentAssistantVisibleLog()
         val prev = liveAssistantWorkingTurn
         liveAssistantWorkingTurn = when {
-            prev.isEmpty() -> chunk
-            chunk.startsWith(prev) -> chunk        // cumulative resend of full turn
-            prev.startsWith(chunk) -> prev         // duplicate / stale delta
-            else -> prev + chunk                   // normal incremental delta
+            prev.isBlank() -> next
+            next.startsWith(prev) -> next      // cumulative resend of the full turn
+            prev.startsWith(next) -> prev      // stale / duplicate delta
+            next.contains(prev) -> next        // cumulative (with leading context)
+            prev.contains(next) -> prev        // already included
+            else -> "$prev $next"              // distinct fragment — join with one space
         }
-        upsertLiveAssistantWorkingCard(liveAssistantWorkingTurn.trim())
+        upsertLiveAssistantWorkingCard(liveAssistantWorkingTurn)
         return currentAssistantVisibleLog()
     }
 
@@ -1425,23 +1435,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             // Sort all events by start time
             allEvents.sortBy { it.start?.time ?: Long.MAX_VALUE }
-            _calendarEvents.postValue(allEvents)
+
+            // Use the freshest data we have. If THIS fetch returned events, cache
+            // them; if it came back empty (e.g. a transient OAuth/API failure)
+            // fall back to the last good set so we can still re-filter it against
+            // the current time instead of leaving a stale summary in place.
+            val gotFreshData = allEvents.isNotEmpty()
+            if (gotFreshData) {
+                lastCalendarEventsCache = allEvents.toList()
+            }
+            val sourceEvents = if (gotFreshData) allEvents else lastCalendarEventsCache
+            _calendarEvents.postValue(sourceEvents)
 
             // The HUD should surface the NEXT event that hasn't started yet, not
-            // one that's currently in progress. The Calendar API returns events
-            // that are still ongoing (started before now, ending later), so keep
-            // only events with a CONFIRMED future start. A null start (un-parseable
-            // time, or an all-day event whose midnight is already past) is NOT a
-            // confirmed upcoming event, so it's excluded too — otherwise an
-            // in-progress event with a mis-parsed time would masquerade as next.
+            // one that's currently in progress. Keep only events with a CONFIRMED
+            // future start — recomputed against the CURRENT clock on every refresh.
+            // A null start (un-parseable time, or an all-day event whose midnight
+            // is already past) is NOT a confirmed upcoming event, so it's excluded
+            // too — otherwise an in-progress event would masquerade as next.
             val nowMs = System.currentTimeMillis()
-            val upcomingEvents = allEvents.filter { ev ->
+            val upcomingEvents = sourceEvents.filter { ev ->
                 val startMs = ev.start?.time ?: return@filter false
                 startMs > nowMs
             }
 
             val summary = if (upcomingEvents.isEmpty()) {
-                if (allEvents.isEmpty() && anyApiKeyMissing) {
+                if (sourceEvents.isEmpty() && anyApiKeyMissing) {
                     onApiKeyMissing("Google Calendar")
                     return@launch
                 }
