@@ -1661,6 +1661,26 @@ class GeminiRouter(
                             append("M3U entries resolve relative to the playlist's own folder.")
                         }
                     }
+                    // Always tell Gemini the current LOCAL date/time, even when
+                    // location is unavailable. Previously the time only reached the
+                    // model inside the CURRENT LOCATION block; with no location at
+                    // session start the model had no clock and guessed (it answered
+                    // in UTC, ~7h ahead of Pacific). This block uses the device's
+                    // own wall clock + default timezone so it always matches what
+                    // the glasses display.
+                    run {
+                        val now = java.util.Date()
+                        val zone = java.util.TimeZone.getDefault()
+                        val ts = java.text.SimpleDateFormat(
+                            "EEEE, MMMM d, yyyy h:mm a",
+                            java.util.Locale.US
+                        ).apply { timeZone = zone }.format(now)
+                        append("\n\nCURRENT DATE/TIME:\n")
+                        append("It is currently $ts (timezone ${zone.id}). ")
+                        append("This is the authoritative local date and time from the device clock. ")
+                        append("Always use it when asked the time or date; never convert to UTC or ")
+                        append("state a different time zone unless the user explicitly asks for one.")
+                    }
                     // Inject current device location so Gemini knows where the user is
                     val locationCtx = locationContextProvider()?.trim().orEmpty()
                     if (locationCtx.isNotBlank()) {

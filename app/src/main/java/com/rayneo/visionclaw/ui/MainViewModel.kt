@@ -1419,8 +1419,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             allEvents.sortBy { it.start?.time ?: Long.MAX_VALUE }
             _calendarEvents.postValue(allEvents)
 
-            val summary = if (allEvents.isEmpty()) {
-                if (anyApiKeyMissing) {
+            // The HUD should surface the NEXT event that hasn't started yet, not
+            // one that's currently in progress. The Calendar API returns events
+            // that are still ongoing (started before now, ending later), so drop
+            // anything whose start time is already in the past. If nothing is left
+            // (e.g. only an in-progress all-day event), say so rather than showing
+            // the running event.
+            val nowMs = System.currentTimeMillis()
+            val upcomingEvents = allEvents.filter { (it.start?.time ?: Long.MAX_VALUE) >= nowMs }
+
+            val summary = if (upcomingEvents.isEmpty()) {
+                if (allEvents.isEmpty() && anyApiKeyMissing) {
                     onApiKeyMissing("Google Calendar")
                     return@launch
                 }
@@ -1431,7 +1440,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     timeZone = TimeZone.getDefault()
                 }
                 val dateFormat = SimpleDateFormat("MMM d", Locale.US)
-                allEvents.take(3).joinToString("\n") { event ->
+                upcomingEvents.take(3).joinToString("\n") { event ->
                     if (showTime && event.start != null) {
                         val time = timeFormat.format(event.start)
                         val date = dateFormat.format(event.start)

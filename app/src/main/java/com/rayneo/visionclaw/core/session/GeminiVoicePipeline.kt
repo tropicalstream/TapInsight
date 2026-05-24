@@ -489,6 +489,16 @@ class GeminiVoicePipeline(context: Context) {
             override fun onOutputTranscription(text: String) {
                 if (!isSessionEpochCurrent(epoch)) return
                 if (text.isBlank()) return
+                // While an agent reply (Hermes / TapClaw / OpenClaw) is being
+                // read aloud via the selected readout engine, the chat card
+                // already holds the agent's VERBATIM reply
+                // (appendDirectAssistantResponse). Gemini Live may still emit
+                // its own spoken SUMMARY transcript for the same turn — drop it
+                // so it doesn't overwrite the verbatim agent text on the card.
+                // This mirrors the audio suppression in onModelAudio.
+                if (android.os.SystemClock.uptimeMillis() < suppressGeminiOutputUntilMs) {
+                    return
+                }
                 runCatching { viewModel.appendLiveAssistantStreamChunk(text) }
                 HudStateBridge.update {
                     it.copy(phase = HudStateBridge.VoicePhase.THINKING)

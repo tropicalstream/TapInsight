@@ -6715,10 +6715,12 @@ class MainActivity :
         // clickable TextView (an interactive descendant), so dispatching
         // to it fires this handler.
         // Tap toggles the Hermes-style reader: first tap EXPANDS the card to a
-        // tall/wide readable view (and stops the auto-hide so it stays up);
-        // tapping again COLLAPSES it back to the compact box and restarts the
-        // auto-hide. (Was: tap ran a Google search; that's available via
-        // openUnipanelChatCardSearch if we want to re-wire it to a long-press.)
+        // tall/wide readable view; tapping again COLLAPSES it back to the
+        // compact box. The card never auto-hides in either state — it persists
+        // until a newer reply replaces it or the user dismisses it (right-arm
+        // double-tap → exitGeminiFully). (Was: tap ran a Google search; that's
+        // available via openUnipanelChatCardSearch if we re-wire it to a
+        // long-press.)
         card1.setOnClickListener {
             val text = card1.text?.toString()?.trim().orEmpty()
             if (text.isBlank()) return@setOnClickListener
@@ -6728,13 +6730,6 @@ class MainActivity :
             (scroll as? android.widget.ScrollView)?.post {
                 if (isUnipanelCardExpanded) scroll.scrollTo(0, 0)
                 else scroll.fullScroll(View.FOCUS_DOWN)
-            }
-            if (!isUnipanelCardExpanded) {
-                // Collapsed again — let it auto-hide as before.
-                uiHandler.postDelayed(
-                    hideUnipanelAssistantCardRunnable,
-                    UNIPANEL_ASSISTANT_CARD_DISPLAY_MS
-                )
             }
             DebugLog.d(
                 "Unipanel",
@@ -6806,14 +6801,10 @@ class MainActivity :
             repositionUnipanelAssistantCard()
             (scroll as? android.widget.ScrollView)?.fullScroll(View.FOCUS_DOWN)
         }
-        // While expanded (reader open) the card stays up so the user can read;
-        // only the compact card auto-hides.
-        if (!isUnipanelCardExpanded) {
-            uiHandler.postDelayed(
-                hideUnipanelAssistantCardRunnable,
-                UNIPANEL_ASSISTANT_CARD_DISPLAY_MS
-            )
-        }
+        // The chat card persists (Hermes behavior): it stays up until a newer
+        // assistant card replaces it or the user dismisses it (right-arm
+        // double-tap → exitGeminiFully). No auto-hide timeout — a reply must
+        // not vanish out from under the user a few seconds after it appears.
     }
 
     /**
