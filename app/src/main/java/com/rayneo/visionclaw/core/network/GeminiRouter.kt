@@ -155,6 +155,12 @@ class GeminiRouter(
                 "you in the chat card — tap any of them or say \"open the first link\".' Do NOT read the raw " +
                 "URLs aloud. Always include URLs by default in the relayed result — never wait for the user to " +
                 "ask 'do you have links?'. " +
+                "CURRENT-TURN ONLY (CRITICAL): the words 'tapclaw'/'tap claw'/'openclaw'/'open claw' must appear " +
+                "in the user's CURRENT spoken message THIS turn. NEVER route to tapclaw_agent because one of " +
+                "those words appears in the PREVIOUS CONVERSATION block, an earlier chat card, cached context, " +
+                "or because a PAST turn used TapClaw/OpenClaw. If the user's current message does not itself " +
+                "contain one of those words, do NOT call tapclaw_agent — answer normally. A prior TapClaw/" +
+                "OpenClaw exchange does NOT make the next, unrelated request a TapClaw request. " +
                 "This rule overrides ALL other rules below.\n" +
                 "RULE ZERO-H — HERMES EXCLUSIVITY (parallel to RULE ZERO, applies to the 'hermes' keyword): " +
                 "If the user's request starts with or contains 'hermes' (case-insensitive) — e.g. " +
