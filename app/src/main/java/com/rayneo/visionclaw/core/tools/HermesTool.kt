@@ -47,10 +47,15 @@ class HermesTool(
             return Result.failure(Exception("No query provided for Hermes."))
         }
 
+        // An explicit on-screen frame (raw WebView screenshot) supplied by the
+        // caller wins over the live camera: when the user asked Hermes to look
+        // at what's ON SCREEN, send those exact pixels, not the camera.
+        val screenFrame = args["image_base64"]?.takeIf { it.isNotBlank() }
         val explicitCameraQuery = EXPLICIT_CAMERA_QUERY.containsMatchIn(query)
-        val includeImage = (args["include_image"]?.toBooleanStrictOrNull() == true && explicitCameraQuery)
+        val includeImage = screenFrame != null
+            || (args["include_image"]?.toBooleanStrictOrNull() == true && explicitCameraQuery)
             || isVisionQuery(query)
-        val imageBase64 = if (includeImage) frameProvider() else null
+        val imageBase64 = screenFrame ?: if (includeImage) frameProvider() else null
         val hasImage = !imageBase64.isNullOrBlank()
 
         Log.d(TAG, "Hermes call: vision=$includeImage hasFrame=$hasImage query=${query.take(100)}")

@@ -80,12 +80,17 @@ class OpenClawTool(
             )
         }
 
-        // Check if query implies vision — attach camera frame if available
+        // Check if query implies vision — attach camera frame if available.
+        // An explicit on-screen frame (raw WebView screenshot) supplied by the
+        // caller wins over the live camera: when the user asked OpenClaw to look
+        // at what's ON SCREEN, send those exact pixels, not the camera.
+        val screenFrame = args["image_base64"]?.takeIf { it.isNotBlank() }
         val mediaFileQuery = MEDIA_LIBRARY_QUERY.containsMatchIn(query)
         val explicitCameraQuery = EXPLICIT_CAMERA_QUERY.containsMatchIn(query)
-        val includeImage = (args["include_image"]?.toBooleanStrictOrNull() == true && (!mediaFileQuery || explicitCameraQuery))
+        val includeImage = screenFrame != null
+            || (args["include_image"]?.toBooleanStrictOrNull() == true && (!mediaFileQuery || explicitCameraQuery))
             || isVisionQuery(query)
-        val imageBase64 = if (includeImage) frameProvider() else null
+        val imageBase64 = screenFrame ?: if (includeImage) frameProvider() else null
         val hasImage = !imageBase64.isNullOrBlank()
 
         val frameSizeKb = imageBase64?.length?.div(1024) ?: 0

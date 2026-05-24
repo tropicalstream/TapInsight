@@ -686,8 +686,32 @@ class GeminiVoicePipeline(context: Context) {
         val lower = query.lowercase()
         if (SCREEN_REFERENCE_PHRASES.none { lower.contains(it) }) return args
 
-        Log.i(TAG, "agent $toolName references the screen — capturing browser vision first")
-        HudStateBridge.update { it.copy(notification = "Looking at the screen…") }
+        Log.i(TAG, "agent $toolName references on-screen content — capturing the raw screen frame")
+        HudStateBridge.update { it.copy(notification = "Capturing the screen…") }
+
+        // Preferred path: attach the ACTUAL on-screen pixels (raw WebView
+        // screenshot) as an image the agent can digest directly, rather than a
+        // text description of them. Hermes/OpenClaw already accept an image
+        // (the camera frame); we hand them the screen frame the same way via an
+        // explicit image_base64 arg that the tools prefer over the camera.
+        val screenFrame = runCatching { captureWebViewBase64Logged() }
+            .getOrNull()?.takeIf { it.isNotBlank() }
+        if (!screenFrame.isNullOrBlank()) {
+            HudStateBridge.update { it.copy(notification = "Running $toolName…") }
+            return runCatching {
+                obj.put("image_base64", screenFrame)
+                obj.put("include_image", true)
+                Log.i(
+                    TAG,
+                    "screen-share: attached raw screen frame (${screenFrame.length} b64 chars) to $toolName"
+                )
+                obj.toString()
+            }.getOrDefault(args)
+        }
+
+        // Fallback: raw capture failed — fold a text description into context so
+        // the agent still has something to work with.
+        Log.w(TAG, "screen-share for $toolName: raw capture failed; falling back to a text description")
         val description = runCatching {
             browserVisionTool.execute(mapOf("question" to query))
         }.getOrNull()?.getOrNull()?.trim()
