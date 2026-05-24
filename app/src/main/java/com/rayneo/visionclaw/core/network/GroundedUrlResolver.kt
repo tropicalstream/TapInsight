@@ -113,7 +113,16 @@ object GroundedUrlResolver {
                 if (resp.code == 404) continue else break
             }
             val uri = firstGroundingUri(resp.body)
-            if (!uri.isNullOrBlank()) return@withContext resolveRedirect(uri)
+            if (!uri.isNullOrBlank()) {
+                val resolved = resolveRedirect(uri)
+                // Only accept a REAL publisher URL. If the redirect couldn't be
+                // followed (expired / blocked) it stays a vertexaisearch URL,
+                // which 404s in the browser — treat that as "no result" so the
+                // caller falls through to the on-topic search page instead.
+                if (resolved.isNotBlank() && !isGroundingRedirect(resolved)) {
+                    return@withContext resolved
+                }
+            }
         }
         null
     }
@@ -151,13 +160,20 @@ object GroundedUrlResolver {
         candidateUrl: String
     ): String = withContext(Dispatchers.IO) {
         val candidate = candidateUrl.trim()
-        // L1 — model already grounded it; the URL is just opaque. Resolve it.
+        // L1 — model already grounded it; the URL is just opaque. Resolve it,
+        // but ONLY use the result if it became a real publisher URL. If the
+        // redirect couldn't be followed (expired / blocked) it stays a
+        // vertexaisearch URL that 404s in the browser — fall through to the
+        // next layer instead of opening the dead redirect.
         if (candidate.isNotBlank() && isGroundingRedirect(candidate)) {
-            return@withContext resolveRedirect(candidate)
+            val resolved = resolveRedirect(candidate)
+            if (resolved.isNotBlank() && !isGroundingRedirect(resolved)) {
+                return@withContext resolved
+            }
         }
         // A — re-ground the title (don't trust a from-memory URL even if reachable).
         groundedTopUrl(geminiApiKey, title, type)?.let { return@withContext it }
-        // B — guaranteed on-topic search page.
+        // B — guaranteed on-topic search page (never 404s).
         searchPageUrl(title, type)
     }
 }
