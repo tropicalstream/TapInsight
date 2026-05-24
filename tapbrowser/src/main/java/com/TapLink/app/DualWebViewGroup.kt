@@ -1126,10 +1126,21 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             lastVertScrollableAt = now
             stickyVertScrollable = true
         }
+        // On a YouTube WATCH page, decide from the LIVE scroll range instead of
+        // the sticky latch + hold. YouTube is a single-page app: Full mode's
+        // overflow:hidden makes the page unscrollable WITHOUT a URL change, and
+        // the latch only resets on navigation — so it would otherwise keep a
+        // scrollbar drawn over the video for the whole session even after the
+        // page stops being scrollable. Watch pages are decisively scrollable
+        // (Theater/Mini) or decisively not (Full), so there's no marginal zone
+        // for the latch to debounce here. Every other page — including YouTube
+        // search/home — keeps the original anti-flicker/anti-oscillation latch.
         val showHorz =
-                stickyHorzScrollable || showHorzRaw || (now - lastHorzScrollableAt < scrollBarHoldMs)
+                if (onYoutubeWatchForFull) showHorzRaw
+                else stickyHorzScrollable || showHorzRaw || (now - lastHorzScrollableAt < scrollBarHoldMs)
         val showVert =
-                stickyVertScrollable || showVertRaw || (now - lastVertScrollableAt < scrollBarHoldMs)
+                if (onYoutubeWatchForFull) showVertRaw
+                else stickyVertScrollable || showVertRaw || (now - lastVertScrollableAt < scrollBarHoldMs)
 
         if (!isFrozen) {
             horizontalScrollBar.apply {
@@ -9615,6 +9626,15 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         val isYoutube = url.contains("youtube.com", ignoreCase = true) ||
             url.contains("youtu.be", ignoreCase = true)
         youtubeCssFullModeActive = active && isYoutube
+        if (youtubeCssFullModeActive) {
+            // Belt-and-suspenders: clear any latched "scrollbar visible" state so
+            // neither the sticky flag nor the hold timer can carry a stale bar
+            // into Full mode (the bar would otherwise sit over the video).
+            stickyHorzScrollable = false
+            stickyVertScrollable = false
+            lastHorzScrollableAt = 0L
+            lastVertScrollableAt = 0L
+        }
         updateScrollBarsVisibility(force = true)
     }
 
