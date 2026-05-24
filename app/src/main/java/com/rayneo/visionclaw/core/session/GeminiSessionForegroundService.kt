@@ -448,14 +448,26 @@ class GeminiSessionForegroundService : LifecycleService() {
             }
 
             lifecycleScope.launch {
-                // Prime device location FIRST so the immediate AQI fetch has
-                // coordinates (fetchHudAirQuality no-ops when location is null).
-                runCatching {
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        resolveAndPublishDeviceLocation()
+                // IMMEDIATE first pass so the HUD populates at launch instead of
+                // staying blank until the first 5-minute tick. Calendar + tasks
+                // were already kicked by setCalendarClient/setTasksClient above;
+                // we add news here and force a calendar/tasks refresh too so all
+                // three text feeds appear right away.
+                runCatching { vm.refreshHudNews(force = true) }
+                runCatching { vm.refreshHudUpcomingCalendar(force = true) }
+                runCatching { vm.refreshHudTasks(force = true) }
+                // Resolve location + AQI on a SEPARATE coroutine so the (slow,
+                // blocking) GPS resolve never gates the text feeds or the loop.
+                // AQI fills in a few seconds later once coordinates arrive.
+                launch {
+                    runCatching {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            resolveAndPublishDeviceLocation()
+                        }
                     }
+                    runCatching { vm.refreshHudAirQuality(force = true) }
                 }
-                runCatching { vm.refreshHudAirQuality(force = true) }
+                // Ongoing refresh: delay AFTER the immediate pass above.
                 while (true) {
                     kotlinx.coroutines.delay(5 * 60 * 1000L)
                     runCatching {
