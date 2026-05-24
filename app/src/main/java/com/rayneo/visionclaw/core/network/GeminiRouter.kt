@@ -1076,6 +1076,28 @@ class GeminiRouter(
         internal const val DEFAULT_URL_RULES =
             "URL & ROUTING RULES — YOU ARE THE ROUTER. The client trusts your decision.\n" +
                 "All links must use https://.\n\n" +
+                "TOPIC QUESTIONS vs FIND REQUESTS — DECIDE INTENT FIRST (READ THIS BEFORE " +
+                "ANY ROUTING BELOW):\n" +
+                "If the user is ASKING ABOUT a topic — 'tell me about X', 'what/who/why/how " +
+                "is X', 'explain X', 'I'm curious about X', 'X's artwork/career/history', or " +
+                "any question seeking understanding — ANSWER IT substantively using your " +
+                "Google Search grounding. Delivering that insight IS the product (this is " +
+                "TapInsight). Do NOT deflect to a search, do NOT open a result, and do NOT " +
+                "substitute research_topic or 'research mode' for actually answering. Only " +
+                "AFTER you have answered may you OFFER to pull something up. Route to a " +
+                "search / link list / images ONLY when the user makes an explicit FIND or " +
+                "SHOW request ('find me links', 'show me images', 'send me sources', 'links " +
+                "to X', 'pull up X'). Asking about a topic is never a reason to open a URL.\n\n" +
+                "IMAGES & ARTWORK — OPEN GOOGLE IMAGES (overrides the URL-LIST offer below " +
+                "for visual requests):\n" +
+                "When the user explicitly asks to SEE or FIND images, artwork, paintings, " +
+                "photos, or pictures — e.g. 'links to <artist>'s artwork', 'show me photos of " +
+                "X', 'find paintings by Y', 'images of Z' — open Google Images directly: call " +
+                "open_taplink with https://www.google.com/search?tbm=isch&q=QUERY+HERE (QUERY " +
+                "= the subject, spaces as +). Do NOT call research_topic, do NOT write or read " +
+                "a report, and do NOT read URLs aloud. A short spoken line like 'Opening " +
+                "images of <subject>.' is fine. (If instead they ask ABOUT the artwork — " +
+                "'tell me about X's paintings' — answer per the topic rule above, don't open.)\n\n" +
                 "URL-LIST REQUESTS — DELEGATE TO REAL WEB-SEARCH PATHS:\n" +
                 "When the user asks for visible LINKS, URLs, or a written list of sources — wording " +
                 "like 'find me links', 'find me URLs', 'links to X', 'send me articles about X', " +
@@ -1092,7 +1114,10 @@ class GeminiRouter(
                 "the web quickly, or research-mode does a deeper grounded pass that takes longer. " +
                 "Which would you like?' Wait for the user's pick before calling either tool.\n" +
                 "DO NOT type URLs in your spoken response — Live TTS pronounces them character by " +
-                "character. DO NOT call send_link_list yourself. DO NOT promise specific sources " +
+                "character. NEVER use research_topic in REPORT mode (i.e. without mode='links') for a " +
+                "find/links request, and NEVER read a research report or a spoken list of URLs as a " +
+                "substitute for a link list — report mode is reserved for explicit 'research X', " +
+                "'brief me on X', or 'read me a summary' requests. DO NOT call send_link_list yourself. DO NOT promise specific sources " +
                 "by name (Wikipedia / New Yorker / YouTube) before the search has run — the user " +
                 "will compare what you said against the list and notice if it doesn't match.\n" +
                 "If the user picks TapClaw, call tapclaw_agent with their query — the TapClaw " +
