@@ -10831,58 +10831,40 @@ class MainActivity :
                         "bView.id='__tl_view';" +
                         "bView.className='tl-mode';" +
                         "var labels=['Full','Theater','Mini'];" +
-                        // Read-only mode detection — NEVER mutates the DOM.
-                        // (Force-setting/removing YouTube's `theater` attribute
-                        // made detection lie: the label flipped but the video
-                        // display never changed. Detection now only READS the
-                        // real YouTube state, including the miniplayer.)
-                        "window.__tlDetectMode=function(){" +
-                        "try{" +
-                        "if(document.getElementById('__taplink_fs_style'))return 0;" +
-                        "if(document.querySelector('ytd-miniplayer[active],ytd-miniplayer[is-active]'))return 2;" +
-                        "var fx=document.querySelector('ytd-watch-flexy');" +
-                        "if(fx&&fx.hasAttribute('theater'))return 1;" +
-                        "return 0;" +
-                        "}catch(e){return 0;}" +
-                        "};" +
+                        // Deterministic, CSS-driven view modes. YouTube's native
+                        // theater / miniplayer buttons do NOT reliably toggle
+                        // inside this WebView (the .click() is a no-op), which is
+                        // why the display never changed and the label snapped
+                        // back. All three modes are now applied with OUR OWN
+                        // injected <style> (the same proven technique as Full):
+                        //   Full    = video fills the viewport (+ immersive)
+                        //   Theater = video pinned as a wide top banner, page
+                        //             (description/comments) scrollable below
+                        //   Mini    = small floating player, page scrolls behind
+                        // Switching is instant and the detected mode always
+                        // matches what we applied, so the label can't revert.
+                        "window.__tlTheaterCss='html,body{overflow:auto!important;margin:0!important;padding:0!important;background:#0f0f0f!important}#movie_player,.html5-video-player{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:60vh!important;z-index:999998!important;background:#000!important}#movie_player video,.html5-video-player video,video{width:100%!important;height:100%!important;object-fit:contain!important;background:#000!important}#masthead-container,ytd-masthead,#guide,#secondary{display:none!important}ytd-watch-flexy{max-width:100vw!important}ytd-watch-flexy #primary{margin-top:60vh!important}';" +
+                        "window.__tlMiniCss='html,body{overflow:auto!important;background:#0f0f0f!important}#movie_player,.html5-video-player{position:fixed!important;bottom:10px!important;right:10px!important;width:42vw!important;height:24vw!important;z-index:2147483646!important;background:#000!important;border:1px solid #333!important;border-radius:6px!important;overflow:hidden!important;box-shadow:0 2px 12px rgba(0,0,0,0.6)!important}#movie_player video,.html5-video-player video,video{width:100%!important;height:100%!important;object-fit:contain!important;background:#000!important}';" +
+                        "window.__tlClearViewStyles=function(){['__taplink_fs_style','__tl_theater_style','__tl_mini_style'].forEach(function(id){var el=document.getElementById(id);if(el&&el.parentNode)el.parentNode.removeChild(el);});};" +
+                        "window.__tlInject=function(id,css){var el=document.getElementById(id);if(!el){el=document.createElement('style');el.id=id;document.head.appendChild(el);}el.textContent=css;};" +
+                        // Read-only detection: which of OUR style elements is live.
+                        "window.__tlDetectMode=function(){try{if(document.getElementById('__tl_theater_style'))return 1;if(document.getElementById('__tl_mini_style'))return 2;if(document.getElementById('__taplink_fs_style'))return 0;return 0;}catch(e){return 0;}};" +
+                        // Apply a mode by swapping the single active <style>.
+                        "window.__tlApplyMode=function(target){try{window.__tlClearViewStyles();if(target===1){try{window.GroqBridge.exitImmersiveMode();}catch(x){}window.__tlInject('__tl_theater_style',window.__tlTheaterCss);}else if(target===2){try{window.GroqBridge.exitImmersiveMode();}catch(x){}window.__tlInject('__tl_mini_style',window.__tlMiniCss);}else{try{window.GroqBridge.enterCssFullscreen();}catch(x){}}}catch(e){console.log('[TapLink-YT] applyMode err:'+e);}};" +
                         // Initial label from the live state.
                         "window.__tl_view_mode=window.__tlDetectMode();" +
                         "bView.textContent=labels[window.__tl_view_mode||0];" +
                         "bView.addEventListener('click',function(e){" +
                         "e.stopPropagation();e.preventDefault();" +
                         "var now=Date.now();" +
-                        "if(window.__tl_last_view_click&&now-window.__tl_last_view_click<800)return;" +
+                        "if(window.__tl_last_view_click&&now-window.__tl_last_view_click<600)return;" +
                         "window.__tl_last_view_click=now;" +
-                        // Reconcile with the REAL current mode before advancing,
-                        // so the first tap after a navigation transitions right.
                         "var cur=window.__tlDetectMode();" +
                         "var next=(cur+1)%3;" +
                         "console.log('[TapLink-YT] View: '+labels[cur]+' -> '+labels[next]);" +
-                        // Proven pairwise transitions — these actually change the
-                        // YouTube display (toggle the real native theater /
-                        // miniplayer buttons; Full is our CSS overlay).
-                        "if(cur===0&&next===1){" +
-                        "var fs=document.getElementById('__taplink_fs_style');if(fs)fs.remove();" +
-                        "try{window.GroqBridge.exitImmersiveMode();}catch(x){}" +
-                        "setTimeout(function(){" +
-                        "var fx=document.querySelector('ytd-watch-flexy');" +
-                        "if(fx&&fx.hasAttribute('theater'))return;" +
-                        "var sb=document.querySelector('.ytp-size-button');if(sb)sb.click();" +
-                        "},500);" +
-                        "}else if(cur===1&&next===2){" +
-                        "var fx2=document.querySelector('ytd-watch-flexy');" +
-                        "if(fx2&&fx2.hasAttribute('theater')){var sb2=document.querySelector('.ytp-size-button');if(sb2)sb2.click();}" +
-                        "setTimeout(function(){var mb=document.querySelector('.ytp-miniplayer-button');if(mb)mb.click();},500);" +
-                        "}else if(cur===2&&next===0){" +
-                        "var exp=document.querySelector('.ytp-miniplayer-expand-watch-page-button');" +
-                        "if(exp){exp.click();}else{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,bubbles:true}));}" +
-                        "setTimeout(function(){try{window.GroqBridge.enterCssFullscreen();}catch(x){}},500);" +
-                        "}" +
-                        // Optimistic label now; reconcile to the settled REAL
-                        // state shortly after (read-only — won't lie).
+                        "window.__tlApplyMode(next);" +
                         "window.__tl_view_mode=next;" +
                         "bView.textContent=labels[next];" +
-                        "setTimeout(function(){try{var m=window.__tlDetectMode();window.__tl_view_mode=m;var el=document.getElementById('__tl_view');if(el)el.textContent=labels[m];}catch(x){}},1300);" +
                         "console.log('[TapLink-YT] View mode set to: '+labels[next]);" +
                         "});" +
                         //
