@@ -167,7 +167,13 @@ class GeminiRouter(
                 "If the user says 'hermes' with a vision request (e.g. 'hermes what do you see', 'hermes " +
                 "describe this', 'hermes read this label'), set include_image to true so the current camera " +
                 "frame is attached. If hermes_agent is NOT in the tool list this session, do not mention " +
-                "Hermes — treat the request normally. This rule is parallel to RULE ZERO above (TapClaw); " +
+                "Hermes — treat the request normally. " +
+                "CURRENT-TURN ONLY (CRITICAL): the word 'hermes' must appear in the user's CURRENT spoken " +
+                "message THIS turn. NEVER route to hermes_agent because 'hermes' appears in the PREVIOUS " +
+                "CONVERSATION block, an earlier chat card, cached context, or because a PAST turn used Hermes. " +
+                "If the user's current message does not itself contain 'hermes', do NOT call hermes_agent — " +
+                "answer normally. A prior Hermes exchange does NOT make the next, unrelated request a Hermes " +
+                "request. This rule is parallel to RULE ZERO above (TapClaw); " +
                 "the keyword determines the route. This rule overrides all rules below.\n" +
                 "RULE ZERO-C — 'STATUS' IS ALWAYS status_briefing (HIGH PRIORITY, OVERRIDES ALL TOOL-SPECIFIC RULES): " +
                 "If the user says 'status', 'status update', 'give me a status update', or close variants like " +

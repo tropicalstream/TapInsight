@@ -6840,6 +6840,41 @@ class MainActivity :
      * right edge. If the lane is unusually narrow, keep a readable minimum
      * width and let the card stop before the panel on the next layout pass.
      */
+    /**
+     * Align the heartbeat ticker with the Events/Tasks/News list: same left
+     * edge and same width as the tier panel. The ticker lives in the vertical
+     * HUD column (so it already stacks BELOW the top row / last tier line), but
+     * its XML start margin put it under the avatar, bleeding out to the LEFT of
+     * the list. Shift it right by the measured gap and clamp its width to the
+     * list's. Idempotent: once aligned the measured delta is 0.
+     */
+    private fun repositionUnipanelHeartbeat() {
+        val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText) ?: return
+        if (heartbeat.visibility != View.VISIBLE) return
+        val tierPanel = findViewById<View?>(R.id.unipanelHudTierPanel) ?: return
+        if (tierPanel.width <= 0) return
+        val tierLoc = IntArray(2)
+        val hbLoc = IntArray(2)
+        tierPanel.getLocationInWindow(tierLoc)
+        heartbeat.getLocationInWindow(hbLoc)
+        val deltaX = tierLoc[0] - hbLoc[0]
+        val lp = heartbeat.layoutParams as? android.widget.LinearLayout.LayoutParams ?: return
+        var changed = false
+        if (deltaX != 0) {
+            val newStart = (lp.marginStart + deltaX).coerceAtLeast(0)
+            if (lp.marginStart != newStart || lp.leftMargin != newStart) {
+                lp.marginStart = newStart
+                lp.leftMargin = newStart
+                changed = true
+            }
+        }
+        if (lp.width != tierPanel.width) {
+            lp.width = tierPanel.width
+            changed = true
+        }
+        if (changed) heartbeat.layoutParams = lp
+    }
+
     private fun repositionUnipanelAssistantCard() {
         val card = findViewById<View?>(R.id.unipanelMiniCardScroll) ?: return
         val overlay = findViewById<ViewGroup?>(R.id.unipanelOverlay) ?: return
@@ -7320,6 +7355,7 @@ class MainActivity :
         }
         findViewById<View?>(R.id.unipanelHudTierPanel)?.post {
             repositionUnipanelAssistantCard()
+            repositionUnipanelHeartbeat()
         }
     }
 
@@ -7448,6 +7484,10 @@ class MainActivity :
         tv.scrollX = 0
         unipanelHeartbeatScrollAnimator?.cancel()
         unipanelHeartbeatScrollAnimator = null
+        // Park the ticker directly under the Events/Tasks/News list: align its
+        // left edge with the tier panel and match its width, so it never bleeds
+        // out to the left of that list (it used to start under the avatar).
+        tv.post { repositionUnipanelHeartbeat() }
         val shouldScroll = notification != null || state.heartbeatShouldScroll
         if (shouldScroll) tv.post { startUnipanelHeartbeatScroll(tv) }
         // Phase 4j — ticker just appeared under the clock; push the
