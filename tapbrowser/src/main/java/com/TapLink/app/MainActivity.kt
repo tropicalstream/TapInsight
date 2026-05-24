@@ -10860,7 +10860,12 @@ class MainActivity :
                         "if(window.__tl_last_view_click&&now-window.__tl_last_view_click<600)return;" +
                         "window.__tl_last_view_click=now;" +
                         "var cur=window.__tlDetectMode();" +
-                        "var next=(cur+1)%3;" +
+                        // Cycle order Full -> Mini -> Theater -> Full. Mode ids
+                        // are 0=Full, 1=Theater, 2=Mini (labels index), so the
+                        // visit order is the id sequence [0,2,1].
+                        "var order=[0,2,1];" +
+                        "var oi=order.indexOf(cur);if(oi<0)oi=0;" +
+                        "var next=order[(oi+1)%order.length];" +
                         "console.log('[TapLink-YT] View: '+labels[cur]+' -> '+labels[next]);" +
                         "window.__tlApplyMode(next);" +
                         "window.__tl_view_mode=next;" +
