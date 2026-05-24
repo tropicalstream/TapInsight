@@ -630,6 +630,11 @@ class GeminiVoicePipeline(context: Context) {
                 HudStateBridge.update {
                     it.copy(notification = null, phase = HudStateBridge.VoicePhase.THINKING)
                 }
+                // Mirror the hermes branch: the agent's full reply is also shown
+                // as TEXT in the chat card (not just spoken). This appends it to
+                // the ViewModel's message list, which the Service collects and
+                // publishes to ChatCardBridge → the unipanel reply card.
+                runCatching { viewModel.appendDirectAssistantResponse(resultText) }
                 speakAgentReplyViaEngine(resultText)
                 return@launch
             }

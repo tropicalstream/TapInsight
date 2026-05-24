@@ -6258,9 +6258,14 @@ class MainActivity :
     private var unipanelChatCardSubscription: AutoCloseable? = null
     @Volatile
     private var unipanelAssistantCardDismissedThroughMs: Long = 0L
+    // Hermes-style expand/collapse for the single Gemini/agent reply card.
+    // Collapsed = the compact 76dp scroll box; expanded = a tall, wide reader
+    // that fills most of the overlay so long agent replies are readable.
+    private var isUnipanelCardExpanded: Boolean = false
     private val hideUnipanelAssistantCardRunnable = Runnable {
         // Phase 4k.5 — the card box is the ScrollView now; hide it and
         // clear the inner text.
+        isUnipanelCardExpanded = false
         findViewById<View?>(R.id.unipanelMiniCardScroll)?.visibility = View.GONE
         findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)?.text = ""
     }
@@ -6709,9 +6714,32 @@ class MainActivity :
         // earlier tap did nothing). The overlay hit-test resolves to the
         // clickable TextView (an interactive descendant), so dispatching
         // to it fires this handler.
+        // Tap toggles the Hermes-style reader: first tap EXPANDS the card to a
+        // tall/wide readable view (and stops the auto-hide so it stays up);
+        // tapping again COLLAPSES it back to the compact box and restarts the
+        // auto-hide. (Was: tap ran a Google search; that's available via
+        // openUnipanelChatCardSearch if we want to re-wire it to a long-press.)
         card1.setOnClickListener {
             val text = card1.text?.toString()?.trim().orEmpty()
-            if (text.isNotBlank()) openUnipanelChatCardSearch(text)
+            if (text.isBlank()) return@setOnClickListener
+            isUnipanelCardExpanded = !isUnipanelCardExpanded
+            uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
+            repositionUnipanelAssistantCard()
+            (scroll as? android.widget.ScrollView)?.post {
+                if (isUnipanelCardExpanded) scroll.scrollTo(0, 0)
+                else scroll.fullScroll(View.FOCUS_DOWN)
+            }
+            if (!isUnipanelCardExpanded) {
+                // Collapsed again — let it auto-hide as before.
+                uiHandler.postDelayed(
+                    hideUnipanelAssistantCardRunnable,
+                    UNIPANEL_ASSISTANT_CARD_DISPLAY_MS
+                )
+            }
+            DebugLog.d(
+                "Unipanel",
+                "Chat card ${if (isUnipanelCardExpanded) "expanded" else "collapsed"}"
+            )
         }
 
         unipanelChatCardSubscription?.runCatching { close() }
@@ -6778,10 +6806,14 @@ class MainActivity :
             repositionUnipanelAssistantCard()
             (scroll as? android.widget.ScrollView)?.fullScroll(View.FOCUS_DOWN)
         }
-        uiHandler.postDelayed(
-            hideUnipanelAssistantCardRunnable,
-            UNIPANEL_ASSISTANT_CARD_DISPLAY_MS
-        )
+        // While expanded (reader open) the card stays up so the user can read;
+        // only the compact card auto-hides.
+        if (!isUnipanelCardExpanded) {
+            uiHandler.postDelayed(
+                hideUnipanelAssistantCardRunnable,
+                UNIPANEL_ASSISTANT_CARD_DISPLAY_MS
+            )
+        }
     }
 
     /**
@@ -6805,17 +6837,30 @@ class MainActivity :
         val density = resources.displayMetrics.density
         fun dp(value: Int): Int = (value * density).toInt()
 
+        val expanded = isUnipanelCardExpanded
         val left = ((camera?.left ?: dp(14)) + (camera?.width?.takeIf { it > 0 } ?: dp(96)) + dp(8))
             .coerceAtLeast(dp(118))
-        val rightLimit = (tierPanel?.left?.takeIf { it > 0 } ?: (overlay.width - dp(8))) - dp(8)
+        // Expanded reader spans nearly the full width (over the tier panel);
+        // collapsed stops before the right-side events/tasks/news panel.
+        val rightLimit = if (expanded) {
+            overlay.width - dp(8)
+        } else {
+            (tierPanel?.left?.takeIf { it > 0 } ?: (overlay.width - dp(8))) - dp(8)
+        }
         val minWidth = dp(180)
-        val maxWidth = dp(360)
+        val maxWidth = if (expanded) dp(600) else dp(360)
         val available = (rightLimit - left).coerceAtLeast(minWidth)
         val width = available.coerceAtMost(maxWidth)
 
         val heartbeatVisible = heartbeat != null && heartbeat.visibility == View.VISIBLE
         val top = if (heartbeatVisible) dp(70) else dp(50)
-        val height = dp(76)
+        // Expanded reader fills the remaining vertical space; collapsed is the
+        // compact 76dp scroll box.
+        val height = if (expanded) {
+            (overlay.height - top - dp(8)).coerceAtLeast(dp(120))
+        } else {
+            dp(76)
+        }
 
         val lp = card.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
         var changed = false
@@ -10836,9 +10881,9 @@ class MainActivity :
         }
 
         /** Injects persistent View Mode + Next buttons on any YouTube watch page.
-         *  View Mode cycles: Full → Theater → Mini → Full...
+         *  View Mode cycles: Full → Mini → Theater → Full...
          *  Full = our CSS fullscreen overlay (video fills viewport).
-         *  Theater/Mini = YouTube's native modes (CSS overlay removed).
+         *  Theater/Mini = CSS-driven TapLink layouts for WebView stability.
          *  Buttons go on document.body to survive YouTube DOM rebuilds.
          *  window.__tl_view_mode is preserved across re-injections. */
         @JavascriptInterface
@@ -10885,14 +10930,15 @@ class MainActivity :
                         //   Mini    = small floating player, page scrolls behind
                         // Switching is instant and the detected mode always
                         // matches what we applied, so the label can't revert.
-                        "window.__tlTheaterCss='html,body{overflow-x:hidden!important;overflow-y:auto!important;width:100vw!important;max-width:100vw!important;margin:0!important;padding:0!important;background:#0f0f0f!important}#player-container-outer,#player-container-inner,#player-container,ytd-player,#ytd-player,#movie_player,.html5-video-player{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:40vh!important;max-height:40vh!important;z-index:999998!important;background:#000!important;transform:none!important}#movie_player .html5-video-container,.html5-video-player .html5-video-container{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;transform:none!important}#movie_player video,.html5-video-player video{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;object-fit:contain!important;background:#000!important;transform:none!important}#masthead-container,ytd-masthead,#guide,#secondary,#related,ytd-watch-next-secondary-results-renderer,ytd-compact-video-renderer,yt-related-chip-cloud-renderer{display:none!important}ytd-watch-flexy,#columns,#primary,#primary-inner{display:block!important;width:100vw!important;max-width:100vw!important;margin:0!important;padding:0!important;box-sizing:border-box!important;transform:none!important}ytd-watch-flexy #player,#player-theater-container{height:0!important;min-height:0!important;max-height:0!important;margin:0!important;padding:0!important;overflow:visible!important}ytd-watch-flexy #primary{padding-top:calc(40vh + 4px)!important}ytd-watch-metadata,#above-the-fold,#info,#meta,ytd-watch-metadata #title{margin-top:0!important;padding-top:0!important}ytd-merch-shelf-renderer,#ticket-shelf,#donation-shelf,#clarify-box,#offer-module{display:none!important}#below,#meta,#info,#comments,ytd-comments{display:block!important;position:relative!important;z-index:1!important;width:calc(100vw - 24px)!important;max-width:calc(100vw - 24px)!important;margin:0 12px!important;padding:0!important;box-sizing:border-box!important;clear:both!important;transform:none!important}';" +
+                        "window.__tlTheaterCss=':root{--tl-theater-h:45vh;--tl-theater-meta-lift:150px}html,body{overflow-x:hidden!important;overflow-y:auto!important;width:100vw!important;max-width:100vw!important;margin:0!important;padding:0!important;background:#0f0f0f!important}#player-container-outer,#player-container-inner,#player-container,ytd-player,#ytd-player,#movie_player,.html5-video-player{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:var(--tl-theater-h)!important;max-height:var(--tl-theater-h)!important;z-index:999998!important;background:#000!important;transform:none!important;box-shadow:0 1px 0 rgba(255,255,255,0.12)!important}#movie_player .html5-video-container,.html5-video-player .html5-video-container{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;transform:none!important}#movie_player video,.html5-video-player video{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;object-fit:contain!important;background:#000!important;transform:none!important}#masthead-container,ytd-masthead,#guide,#secondary,#related,ytd-watch-next-secondary-results-renderer,ytd-compact-video-renderer,yt-related-chip-cloud-renderer{display:none!important}ytd-watch-flexy,#columns,#primary,#primary-inner{display:block!important;width:100vw!important;max-width:100vw!important;margin:0!important;box-sizing:border-box!important;transform:none!important}#columns{padding:calc(var(--tl-theater-h) + 4px) 0 0 0!important}#primary,#primary-inner{padding:0!important}ytd-watch-flexy #player,#player-theater-container{height:0!important;min-height:0!important;max-height:0!important;margin:0!important;padding:0!important;overflow:visible!important}#below,#above-the-fold,ytd-watch-metadata,ytd-watch-metadata #title,#title h1,#top-row,#owner,#info,#meta{margin-top:0!important;padding-top:0!important}#above-the-fold,ytd-watch-metadata{position:relative!important;top:calc(-1 * var(--tl-theater-meta-lift))!important;margin-bottom:calc(-1 * var(--tl-theater-meta-lift))!important}ytd-merch-shelf-renderer,#ticket-shelf,#donation-shelf,#clarify-box,#offer-module{display:none!important}#below,#meta,#info,#comments,ytd-comments{display:block!important;position:relative!important;z-index:1!important;width:calc(100vw - 24px)!important;max-width:calc(100vw - 24px)!important;margin:0 12px!important;padding:0!important;box-sizing:border-box!important;clear:both!important;transform:none!important}';" +
                         "window.__tlMiniCss='html,body{overflow-x:hidden!important;overflow-y:auto!important;width:100vw!important;max-width:100vw!important;background:#0f0f0f!important}#player-container-outer,#player-container-inner,#player-container,ytd-player,#ytd-player,#movie_player,.html5-video-player{position:fixed!important;top:auto!important;left:auto!important;bottom:10px!important;right:10px!important;width:42vw!important;height:24vw!important;max-width:42vw!important;max-height:24vw!important;z-index:2147483646!important;background:#000!important;border:1px solid #333!important;border-radius:6px!important;overflow:hidden!important;box-shadow:0 2px 12px rgba(0,0,0,0.6)!important;transform:none!important}#movie_player .html5-video-container,.html5-video-player .html5-video-container{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;transform:none!important}#movie_player video,.html5-video-player video{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;object-fit:contain!important;background:#000!important;transform:none!important}ytd-watch-flexy #player{height:0!important;min-height:0!important;max-height:0!important;margin:0!important;padding:0!important;overflow:visible!important}#columns,#primary,#primary-inner,#below{margin:0!important;padding:0!important;max-width:100vw!important;width:100vw!important;box-sizing:border-box!important;transform:none!important}';" +
                         "window.__tlClearViewStyles=function(){['__taplink_fs_style','__tl_theater_style','__tl_mini_style'].forEach(function(id){var el=document.getElementById(id);if(el&&el.parentNode)el.parentNode.removeChild(el);});};" +
                         "window.__tlInject=function(id,css){var el=document.getElementById(id);if(!el){el=document.createElement('style');el.id=id;document.head.appendChild(el);}el.textContent=css;};" +
                         // Read-only detection: which of OUR style elements is live.
                         "window.__tlDetectMode=function(){try{if(document.getElementById('__tl_theater_style'))return 1;if(document.getElementById('__tl_mini_style'))return 2;if(document.getElementById('__taplink_fs_style'))return 0;return 0;}catch(e){return 0;}};" +
+                        "window.__tlScrollTop=function(){try{window.scrollTo(0,0);document.documentElement.scrollTop=0;document.body.scrollTop=0;}catch(e){}};" +
                         // Apply a mode by swapping the single active <style>.
-                        "window.__tlApplyMode=function(target){try{window.__tlClearViewStyles();if(target===1){try{window.GroqBridge.exitImmersiveMode();}catch(x){}window.__tlInject('__tl_theater_style',window.__tlTheaterCss);}else if(target===2){try{window.GroqBridge.exitImmersiveMode();}catch(x){}window.__tlInject('__tl_mini_style',window.__tlMiniCss);}else{try{window.GroqBridge.enterCssFullscreen();}catch(x){}}}catch(e){console.log('[TapLink-YT] applyMode err:'+e);}};" +
+                        "window.__tlApplyMode=function(target){try{window.__tlClearViewStyles();if(target===1){try{window.GroqBridge.exitImmersiveMode();}catch(x){}window.__tlInject('__tl_theater_style',window.__tlTheaterCss);window.__tlScrollTop();}else if(target===2){try{window.GroqBridge.exitImmersiveMode();}catch(x){}window.__tlInject('__tl_mini_style',window.__tlMiniCss);}else{try{window.GroqBridge.enterCssFullscreen();}catch(x){}}}catch(e){console.log('[TapLink-YT] applyMode err:'+e);}};" +
                         // Initial label from the live state.
                         // Restore the user's last-chosen mode across video
                         // navigations (window state resets per page load;
