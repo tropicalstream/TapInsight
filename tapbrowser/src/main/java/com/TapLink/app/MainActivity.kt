@@ -461,9 +461,10 @@ class MainActivity :
     }
 
     /**
-     * Dim-mode gesture detector. Owns single-tap (play/pause),
-     * double-tap (exit dim mode), and horizontal fling (swipe to
-     * change track) for the entire duration the mask overlay is up.
+     * Dim-mode gesture detector. Owns single-tap (play/pause) and
+     * double-tap (exit dim mode) for the entire duration the mask
+     * overlay is up. Horizontal flings are consumed but intentionally
+     * ignored so arm swipes cannot misfire as media skip commands.
      * Lazy so we don't construct it before MainActivity.onCreate runs
      * (it captures `this` as the detector context).
      *
@@ -546,55 +547,11 @@ class MainActivity :
                     return false
                 }
                 cancelPendingMaskSingleTap()
-                val dx = e2.x - e1.x
-                val dy = e2.y - e1.y
-                val absDx = kotlin.math.abs(dx)
-                val absDy = kotlin.math.abs(dy)
-                val absVx = kotlin.math.abs(velocityX)
-                // ── Device-fingerprint diagnostic ───────────────────────
-                // Print which input device the swipe came from so we can
-                // identify left-arm (volume) vs right-arm (temple). The
-                // X3 Pro exposes cyttsp5_mt and cyttsp6_mt as separate
-                // /dev/input devices; Android assigns each its own
-                // InputDevice.id. With this log we can read the user's
-                // logcat after they swipe each arm and learn which ID
-                // is which, then add an allow-list filter below.
-                val devInfo = describeDevice(e2)
                 DebugLog.d(
                     "MaskGesture",
-                    "fling candidate dx=${"%.0f".format(dx)} dy=${"%.0f".format(dy)} " +
-                        "vx=${"%.0f".format(velocityX)} $devInfo"
+                    "fling ignored; swipe-to-skip is disabled ${describeDevice(e2)}"
                 )
-                // ── Filter out the left-arm volume pad ──
-                // cyttsp6_mt on the X3 Pro is the LEFT-arm pad used
-                // for volume; swipes there were being mis-interpreted
-                // as track-skip flings. cyttsp5_mt is the RIGHT-arm
-                // temple pad we actually want for track-skip.
-                // (Same helper is used by onSingleTapUp so taps and
-                // swipes share the same arm-mapping policy.)
-                if (isIgnoredMaskInputDevice(e2)) {
-                    DebugLog.d(
-                        "MaskGesture",
-                        "fling IGNORED — left-arm device $devInfo"
-                    )
-                    return false
-                }
-                if (absDx >= 80f && absDx > absDy * 1.4f && absVx > 250f) {
-                    if (dx > 0f) {
-                        // Swipe forward (LEFT-to-RIGHT on the temple
-                        // trackpad — toward the front of the user's
-                        // face) → next video / next track.
-                        DebugLog.d("MaskGesture", "swipe FORWARD → next track $devInfo")
-                        runCatching { dualWebViewGroup.onMaskSwipeNext() }
-                    } else {
-                        // Swipe back (RIGHT-to-LEFT — toward the back
-                        // of the user's head) → previous video / track.
-                        DebugLog.d("MaskGesture", "swipe BACK → prev track $devInfo")
-                        runCatching { dualWebViewGroup.onMaskSwipePrev() }
-                    }
-                    return true
-                }
-                return false
+                return true
             }
         })
     }
@@ -6314,23 +6271,6 @@ class MainActivity :
     // Upper bound between the two taps to count as a double-tap.
     private val RIGHT_ARM_KEY_DOUBLE_TAP_WINDOW_MS = 320L
 
-    // ── Right-arm (cyttsp5_mt) YouTube swipe → prev/next video ───────────
-    // While a YouTube watch page is showing in NORMAL (non-dim) view, a quick
-    // horizontal swipe on the right arm skips to the next/previous video. (Dim
-    // mode already does this via maskedGestureDetector.onFling.) Tracked
-    // manually off the raw cyttsp5 motion stream so we don't depend on the
-    // mouse-synthesis GestureDetector path. MOVE/DOWN pass through untouched so
-    // the cursor still works; only a confirmed swipe consumes the UP.
-    private var ytSwipeTracking: Boolean = false
-    private var ytSwipeDownX: Float = 0f
-    private var ytSwipeDownY: Float = 0f
-    private var ytSwipeDownMs: Long = 0L
-    // Min horizontal travel + must be mostly horizontal + quick, so a normal
-    // cursor drag to tap a control isn't mistaken for a video skip.
-    private val YT_SWIPE_MIN_DX_PX = 90f
-    private val YT_SWIPE_MAX_DY_RATIO = 1.2f
-    private val YT_SWIPE_MAX_MS = 700L
-
     private fun consumedByLeftArmTap(ev: MotionEvent): Boolean {
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -6524,62 +6464,6 @@ class MainActivity :
                 DebugLog.d("YouTubeTap", "empty-space tap → video ${r?.trim('"')}")
             }
         }
-    }
-
-    /**
-     * Right-arm (cyttsp5_mt) horizontal swipe → next/previous YouTube video,
-     * in NORMAL (non-dim) viewing. Mirrors the dim-mode fling convention:
-     * swipe forward (left→right, dx>0) = NEXT, swipe back (dx<0) = PREVIOUS.
-     * Returns true only on a confirmed swipe (consuming the UP so it doesn't
-     * also click); DOWN/MOVE always pass through so the cursor keeps working.
-     */
-    private fun consumedByMainTouchpadYoutubeSwipe(ev: MotionEvent): Boolean {
-        // Dim mode is handled by maskedGestureDetector.onFling; skip here.
-        if (::dualWebViewGroup.isInitialized && dualWebViewGroup.isScreenMasked()) {
-            ytSwipeTracking = false
-            return false
-        }
-        if (!isViewingYoutubeWatchPage()) {
-            ytSwipeTracking = false
-            return false
-        }
-        when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                ytSwipeTracking = true
-                ytSwipeDownX = ev.x
-                ytSwipeDownY = ev.y
-                ytSwipeDownMs = SystemClock.uptimeMillis()
-                return false
-            }
-            MotionEvent.ACTION_UP -> {
-                if (!ytSwipeTracking) return false
-                ytSwipeTracking = false
-                val dx = ev.x - ytSwipeDownX
-                val dy = ev.y - ytSwipeDownY
-                val absDx = kotlin.math.abs(dx)
-                val absDy = kotlin.math.abs(dy)
-                val elapsed = SystemClock.uptimeMillis() - ytSwipeDownMs
-                if (elapsed <= YT_SWIPE_MAX_MS &&
-                    absDx >= YT_SWIPE_MIN_DX_PX &&
-                    absDx > absDy * YT_SWIPE_MAX_DY_RATIO
-                ) {
-                    if (dx > 0f) {
-                        DebugLog.d("YouTubeSwipe", "right-arm swipe FORWARD → next video (dx=${"%.0f".format(dx)})")
-                        runCatching { dualWebViewGroup.onMaskSwipeNext() }
-                    } else {
-                        DebugLog.d("YouTubeSwipe", "right-arm swipe BACK → prev video (dx=${"%.0f".format(dx)})")
-                        runCatching { dualWebViewGroup.onMaskSwipePrev() }
-                    }
-                    return true
-                }
-                return false
-            }
-            MotionEvent.ACTION_CANCEL -> {
-                ytSwipeTracking = false
-                return false
-            }
-        }
-        return false
     }
 
     /** Phase 4d (Mars revision) — double-tap now toggles tapbrowser's
@@ -8181,7 +8065,7 @@ class MainActivity :
         // TapLink nav buttons: force-click if cursor lands on them.
         // This guarantees the button action fires regardless of touch chain.
         if (element) {
-            var btn = (element.id === '__tl_view' || element.id === '__tl_next') ? element
+            var btn = (element.id === '__tl_view' || element.id === '__tl_prev' || element.id === '__tl_next') ? element
                     : element.closest ? element.closest('#__tl_nav button') : null;
             if (btn) {
                 btn.click();
@@ -8255,13 +8139,18 @@ class MainActivity :
                 // Phase 4k — empty-space tap collapses the browser to the
                 // HUD+chat-only focus view. evaluateJavascript hands back a
                 // JSON-encoded string, so the sentinel arrives quoted.
-                if (clickResult != null && clickResult.contains("taphud_empty")) {
+                val emptySpaceTap = clickResult != null && clickResult.contains("taphud_empty")
+                val handledAsMediaToggle =
+                        emptySpaceTap && (hudRolledUp || isViewingYoutubeWatchPage())
+                if (emptySpaceTap) {
                     Handler(Looper.getMainLooper()).post {
-                        // While watching a YouTube video, an empty-space tap
-                        // pauses/unpauses the video instead of collapsing the
-                        // browser. Everywhere else it still hides the browser.
+                        // When the HUD/chat are rolled up, empty space becomes
+                        // a media pause/unpause surface instead of collapsing
+                        // the browser into a black focus state.
                         if (isViewingYoutubeWatchPage()) {
                             toggleYoutubeVideoPlayback()
+                        } else if (hudRolledUp) {
+                            dualWebViewGroup.toggleMediaPlayback()
                         } else {
                             hideBrowserPanel()
                         }
@@ -8275,7 +8164,11 @@ class MainActivity :
                                             MotionEvent.obtain(
                                                             eventTime,
                                                             SystemClock.uptimeMillis(),
-                                                            MotionEvent.ACTION_UP,
+                                                            if (handledAsMediaToggle) {
+                                                                MotionEvent.ACTION_CANCEL
+                                                            } else {
+                                                                MotionEvent.ACTION_UP
+                                                            },
                                                             adjustedX,
                                                             adjustedY,
                                                             1
@@ -10923,7 +10816,8 @@ class MainActivity :
                         "'#__tl_nav{position:fixed;top:6px;right:12px;z-index:2000000;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:auto!important}'" +
                         "+'\\n#__tl_nav button{background:rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.3);color:#fff;font-size:16px;padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;pointer-events:auto!important}'" +
                         "+'\\n#__tl_nav button:active{background:rgba(255,255,255,0.3)}'" +
-                        "+'\\n#__tl_nav .tl-mode{font-size:13px;padding:8px 10px}';" +
+                        "+'\\n#__tl_nav .tl-mode{font-size:13px;padding:8px 10px}'" +
+                        "+'\\n#__tl_nav .tl-skip{font-size:18px;font-weight:700;line-height:1;padding:8px 0;min-width:44px;text-align:center}';" +
                         "document.head.appendChild(s);" +
                         "}" +
                         // Nav container on document.body
@@ -10936,84 +10830,108 @@ class MainActivity :
                         "var bView=document.createElement('button');" +
                         "bView.id='__tl_view';" +
                         "bView.className='tl-mode';" +
-                        // Preserve mode across re-injections; only detect if undefined
-                        "if(typeof window.__tl_view_mode==='undefined'||window.__tl_view_mode===null){" +
-                        "window.__tl_view_mode=0;" +
-                        "if(document.getElementById('__taplink_fs_style'))window.__tl_view_mode=0;" +
-                        "else{var fx=document.querySelector('ytd-watch-flexy');" +
-                        "if(fx&&fx.hasAttribute('theater'))window.__tl_view_mode=1;" +
-                        "}" +
-                        "}" +
                         "var labels=['Full','Theater','Mini'];" +
+                        // Robust DOM-based mode detection. Used for BOTH the
+                        // initial label and every click, so the label and the
+                        // transition always reflect YouTube's ACTUAL layout —
+                        // even after a navigation reset (the old code only
+                        // detected Full/Theater and NEVER re-detected Mini, so
+                        // the label could desync and a click could fire the
+                        // wrong transition).
+                        "window.__tlDetectMode=function(){" +
+                        "try{" +
+                        "if(document.getElementById('__taplink_fs_style'))return 0;" +
+                        "if(document.querySelector('ytd-miniplayer[active]'))return 2;" +
+                        "var fx=document.querySelector('ytd-watch-flexy');" +
+                        "if(fx&&fx.hasAttribute('theater'))return 1;" +
+                        "return 0;" +
+                        "}catch(e){return (window.__tl_view_mode||0);}" +
+                        "};" +
+                        // Target-driven transition: drive the DOM to the desired
+                        // mode regardless of where we start, so a stale/guessed
+                        // current state can never send us to the wrong place.
+                        "window.__tlApplyMode=function(target){" +
+                        "try{" +
+                        "var fs=document.getElementById('__taplink_fs_style');" +
+                        "var mini=document.querySelector('ytd-miniplayer[active]');" +
+                        "if(target===0){" +
+                        "if(mini){var ex=document.querySelector('.ytp-miniplayer-expand-watch-page-button');if(ex)ex.click();}" +
+                        "setTimeout(function(){try{window.GroqBridge.enterCssFullscreen();}catch(x){}},mini?450:0);" +
+                        "}else if(target===1){" +
+                        "if(fs)fs.remove();" +
+                        "try{window.GroqBridge.exitImmersiveMode();}catch(x){}" +
+                        "if(mini){var ex2=document.querySelector('.ytp-miniplayer-expand-watch-page-button');if(ex2)ex2.click();}" +
+                        "setTimeout(function(){" +
+                        "var fx2=document.querySelector('ytd-watch-flexy');" +
+                        "if(fx2&&fx2.hasAttribute('theater'))return;" +
+                        "var sb=document.querySelector('.ytp-size-button');if(sb)sb.click();" +
+                        "},mini?500:300);" +
+                        "}else{" +
+                        "if(fs)fs.remove();" +
+                        "try{window.GroqBridge.exitImmersiveMode();}catch(x){}" +
+                        "setTimeout(function(){" +
+                        "var fx3=document.querySelector('ytd-watch-flexy');" +
+                        "if(fx3&&fx3.hasAttribute('theater')){var sb2=document.querySelector('.ytp-size-button');if(sb2)sb2.click();}" +
+                        "setTimeout(function(){var mb=document.querySelector('.ytp-miniplayer-button');if(mb)mb.click();},250);" +
+                        "},300);" +
+                        "}" +
+                        "}catch(e){console.log('[TapLink-YT] applyMode err:'+e);}" +
+                        "};" +
+                        // Initial label reflects the live DOM state.
+                        "window.__tl_view_mode=window.__tlDetectMode();" +
                         "bView.textContent=labels[window.__tl_view_mode||0];" +
-                        //
-                        // === Click handler: self-contained transition ===
-                        // Each click reads the ACTUAL page state to stay in sync.
-                        //
+                        // Click: read the ACTUAL current mode, advance, drive to it.
                         "bView.addEventListener('click',function(e){" +
                         "e.stopPropagation();e.preventDefault();" +
-                        // Debounce
                         "var now=Date.now();" +
                         "if(window.__tl_last_view_click&&now-window.__tl_last_view_click<800)return;" +
                         "window.__tl_last_view_click=now;" +
-                        //
-                        "var cur=window.__tl_view_mode||0;" +
+                        "var cur=window.__tlDetectMode();" +
                         "var next=(cur+1)%3;" +
                         "console.log('[TapLink-YT] View: '+labels[cur]+' -> '+labels[next]);" +
-                        //
-                        // --- Do the transition in one shot ---
-                        //
-                        "if(cur===0&&next===1){" +
-                        // Full → Theater: remove CSS fs, exit immersive, enter theater
-                        "var fs=document.getElementById('__taplink_fs_style');if(fs)fs.remove();" +
-                        "try{window.GroqBridge.exitImmersiveMode();}catch(x){}" +
-                        // Ensure theater is clean then click after delay
-                        "setTimeout(function(){" +
-                        "var fx=document.querySelector('ytd-watch-flexy');" +
-                        "if(fx&&fx.hasAttribute('theater'))return;" + // already in theater
-                        "var sb=document.querySelector('.ytp-size-button');" +
-                        "if(sb)sb.click();" +
-                        "},500);" +
-                        "}" +
-                        //
-                        "else if(cur===1&&next===2){" +
-                        // Theater → Mini: exit theater, then enter miniplayer
-                        "var fx2=document.querySelector('ytd-watch-flexy');" +
-                        "if(fx2&&fx2.hasAttribute('theater')){" +
-                        "var sb2=document.querySelector('.ytp-size-button');if(sb2)sb2.click();" +
-                        "}" +
-                        "setTimeout(function(){" +
-                        "var mb=document.querySelector('.ytp-miniplayer-button');" +
-                        "if(mb)mb.click();" +
-                        "},500);" +
-                        "}" +
-                        //
-                        "else if(cur===2&&next===0){" +
-                        // Mini → Full: exit miniplayer, then apply CSS fs
-                        "var exp=document.querySelector('.ytp-miniplayer-expand-watch-page-button');" +
-                        "if(exp){exp.click();}else{" +
-                        "document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,bubbles:true}));}" +
-                        "setTimeout(function(){" +
-                        "try{window.GroqBridge.enterCssFullscreen();}catch(x){}" +
-                        "},500);" +
-                        "}" +
-                        //
-                        // Update state and label
+                        "window.__tlApplyMode(next);" +
                         "window.__tl_view_mode=next;" +
                         "bView.textContent=labels[next];" +
-                        "console.log('[TapLink-YT] View mode set to: '+labels[next]);" +
+                        // Re-sync the label after the DOM settles, in case YT
+                        // didn't land where we asked (e.g. miniplayer blocked).
+                        "setTimeout(function(){try{var m=window.__tlDetectMode();window.__tl_view_mode=m;bView.textContent=labels[m];}catch(x){}},900);" +
                         "});" +
                         //
-                        // === Next button removed ===
-                        // Mars: the on-screen Next button is gone — the user
-                        // swipes forward/back on the RIGHT arm to skip to the
-                        // next/previous video instead (see
-                        // consumedByMainTouchpadYoutubeSwipe + dim-mode fling).
-                        // The view-mode ("Full") button below stays.
+                        // === Explicit prev/next buttons ===
+                        // Swipe-to-skip is intentionally disabled; the user
+                        // gets deterministic skip controls stacked under
+                        // the Full/Theater/Mini view-mode button.
                         //
+                        "function tlStop(ev){ev.stopPropagation();ev.preventDefault();}" +
+                        "var bPrev=document.createElement('button');" +
+                        "bPrev.id='__tl_prev';" +
+                        "bPrev.className='tl-skip';" +
+                        "bPrev.textContent='<';" +
+                        "bPrev.setAttribute('aria-label','Previous video');" +
+                        "bPrev.addEventListener('click',function(e){" +
+                        "tlStop(e);" +
+                        "var now=Date.now();" +
+                        "if(window.__tl_last_prev_click&&now-window.__tl_last_prev_click<650)return;" +
+                        "window.__tl_last_prev_click=now;" +
+                        "try{window.GroqBridge.playPrevInPlaylist();}catch(x){}" +
+                        "});" +
+                        "var bNext=document.createElement('button');" +
+                        "bNext.id='__tl_next';" +
+                        "bNext.className='tl-skip';" +
+                        "bNext.textContent='>';" +
+                        "bNext.setAttribute('aria-label','Next video');" +
+                        "bNext.addEventListener('click',function(e){" +
+                        "tlStop(e);" +
+                        "var now=Date.now();" +
+                        "if(window.__tl_last_next_click&&now-window.__tl_last_next_click<650)return;" +
+                        "window.__tl_last_next_click=now;" +
+                        "try{window.GroqBridge.playNextInPlaylist();}catch(x){}" +
+                        "});" +
                         // === Append to body + watchdog ===
                         //
                         "nav.appendChild(bView);" +
+                        "nav.appendChild(bPrev);" +
+                        "nav.appendChild(bNext);" +
                         "document.body.appendChild(nav);" +
                         // Watchdog: re-inject if YouTube removes buttons
                         "if(window.__tl_nav_watchdog)clearInterval(window.__tl_nav_watchdog);" +
@@ -13190,10 +13108,11 @@ class MainActivity :
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         // ── Dim-mode short-circuit ─────────────────────────────────
         // While the mask overlay is up, ALL touch events route through
-        // a single dedicated GestureDetector that owns the four
-        // documented gestures: single-tap (play/pause), double-tap
-        // (exit dim mode), swipe-LEFT (next track), swipe-RIGHT
-        // (previous track). Putting this check FIRST is intentional:
+        // a single dedicated GestureDetector that owns the two
+        // documented gestures: single-tap (play/pause) and double-tap
+        // (exit dim mode). Horizontal flings are swallowed there so
+        // arm swipes cannot misfire as media skip commands. Putting
+        // this check FIRST is intentional:
         // it sits in front of the cyttsp6 (temple) early-return below,
         // which would otherwise consume temple-arm events before our
         // handler sees them, AND in front of every gestureDetector /
@@ -13212,12 +13131,6 @@ class MainActivity :
         val isMainTouchpadEvent = deviceName?.contains("cyttsp5_mt", ignoreCase = true) == true
         if (isMainTouchpadEvent) {
             ensureMouseTapModeDisabled()
-            // Right-arm horizontal swipe → prev/next YouTube video (normal
-            // view). Only consumes the event on a confirmed swipe; otherwise
-            // it just records timing and lets the cursor pipeline run.
-            if (consumedByMainTouchpadYoutubeSwipe(ev)) {
-                return true
-            }
         }
 
         // Temple arm input should only be used for mode-toggle double taps.

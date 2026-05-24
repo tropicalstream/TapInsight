@@ -187,6 +187,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private var lastMediaPlayingAt = 0L
     private var lastMediaInteractionTime = 0L
     private val mediaScrollFreezeMs = 1500L
+    private var youtubeCssFullModeActive = false
     private val mediaStateByWindowId = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
     private val mediaLastPlayedAtByWindowId = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private var nativeTapRadioPlaying = false
@@ -936,12 +937,22 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
-    fun updateScrollBarsVisibility() {
+    fun updateScrollBarsVisibility(force: Boolean = false) {
         // DebugLog.d("ScrollDebug", "updateScrollBarsVisibility called. isAnchored=$isAnchored,
         // isInScrollMode=$isInScrollMode, uiScale=$uiScale")
         val now = SystemClock.uptimeMillis()
+        if (!force &&
+            (isInteractingWithScrollBar || now - lastScrollBarInteractionTime < scrollBarRelayoutSuppressMs)
+        ) {
+            // During scrollbar clicks/drags, JS scroll metrics can arrive in
+            // a burst and briefly disagree with WebView metrics. Avoid
+            // relaying those into WebView layout changes until the gesture
+            // settles; otherwise the track extent changes under the cursor
+            // and the thumb appears to jump up/down by itself.
+            return
+        }
         // Check freeze state but don't return early - we need to update layout
-        val isFrozen = shouldFreezeScrollBars() && !isInteractingWithScrollBar
+        val isFrozen = !force && shouldFreezeScrollBars() && !isInteractingWithScrollBar
 
         // Determine mode-specific base constraints
         val isScrollModeActive = isInScrollMode || isNavBarsHidden
@@ -1008,6 +1019,57 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     p.bottomMargin = baseBottomMargin
                     p.gravity = targetGravity
                     webViewsContainer.layoutParams = p
+                    webViewsContainer.requestLayout()
+                    webViewsContainer.invalidate()
+                }
+            }
+            return
+        }
+
+        // YouTube "Full" mode: hide the custom scrollbars so they don't draw
+        // over the fullscreen video — REGARDLESS of whether the browser nav
+        // bars are rolled up. (The old gate also required isNavBarsHidden, so
+        // a scrollbar could linger over the video in Full mode when the bars
+        // were shown.) Scoped to an actual YouTube watch page so a stale
+        // youtubeCssFullModeActive flag can never hide scrollbars on
+        // search/home/non-YouTube pages; Theater & Mini keep their scrollbars.
+        val onYoutubeWatchForFull =
+            currentUrl.contains("youtube.com/watch", ignoreCase = true) ||
+                currentUrl.contains("youtu.be/", ignoreCase = true) ||
+                (currentUrl.contains("youtube.com", ignoreCase = true) &&
+                    currentUrl.contains("v=", ignoreCase = true))
+        if (youtubeCssFullModeActive && onYoutubeWatchForFull) {
+            horizontalScrollBar.apply {
+                visibility = View.GONE
+                isClickable = false
+                isFocusable = false
+            }
+            verticalScrollBar.apply {
+                visibility = View.GONE
+                isClickable = false
+                isFocusable = false
+            }
+            (webViewsContainer.layoutParams as? FrameLayout.LayoutParams)?.let { p ->
+                val targetWidth = containerWidth
+                val targetHeight = (480 - topReserve - keyboardHeight).coerceAtLeast(0)
+                val targetGravity = Gravity.TOP or Gravity.START
+                if (p.width != targetWidth ||
+                    p.height != targetHeight ||
+                    p.leftMargin != 0 ||
+                    p.topMargin != topReserve ||
+                    p.rightMargin != 0 ||
+                    p.bottomMargin != 0 ||
+                    p.gravity != targetGravity
+                ) {
+                    p.width = targetWidth
+                    p.height = targetHeight
+                    p.leftMargin = 0
+                    p.topMargin = topReserve
+                    p.rightMargin = 0
+                    p.bottomMargin = 0
+                    p.gravity = targetGravity
+                    webViewsContainer.layoutParams = p
+                    webView.requestLayout()
                     webViewsContainer.requestLayout()
                     webViewsContainer.invalidate()
                 }
@@ -1179,6 +1241,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         offsetY = offsetY.coerceAtLeast(0),
                         timestamp = now
                 )
+
+        if (isInteractingWithScrollBar || now - lastScrollBarInteractionTime < scrollBarRelayoutSuppressMs) {
+            finishScrollBarInteraction()
+            return
+        }
 
         if (!isAnchored && now - lastScrollBarCheckTime > scrollBarVisibilityThrottleMs) {
             updateScrollBarsVisibility()
@@ -1515,10 +1582,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 // (MainActivity.maskedGestureDetector), so we only need
                 // to consume any stray events that reach this view to
                 // stop them from propagating to webviews/navbar
-                // underneath. The activity-level detector handles all
-                // four documented gestures: single-tap (play/pause),
-                // double-tap (exit dim mode), swipe-LEFT (next track),
-                // swipe-RIGHT (previous track).
+                // underneath. The activity-level detector handles the
+                // documented tap gestures and consumes horizontal flings
+                // without treating them as media skip commands.
                 setOnTouchListener { _, _ -> true }
             }
 
@@ -1618,6 +1684,30 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private var hScrollThumb: View
     private var vScrollThumb: View
     private var isInteractingWithScrollBar = false
+    private val scrollBarRelayoutSuppressMs = 450L
+    private val scrollBarSettleRunnable = Runnable {
+        isInteractingWithScrollBar = false
+        updateScrollBarsVisibility(force = true)
+        updateScrollBarThumbs(0, 0)
+    }
+
+    private fun beginScrollBarInteraction() {
+        isInteractingWithScrollBar = true
+        lastScrollBarInteractionTime = SystemClock.uptimeMillis()
+        removeCallbacks(scrollBarSettleRunnable)
+    }
+
+    private fun finishScrollBarInteraction() {
+        lastScrollBarInteractionTime = SystemClock.uptimeMillis()
+        removeCallbacks(scrollBarSettleRunnable)
+        postDelayed(scrollBarSettleRunnable, scrollBarRelayoutSuppressMs)
+    }
+
+    private fun clickScrollBarArrow(action: () -> Unit) {
+        beginScrollBarInteraction()
+        action()
+        finishScrollBarInteraction()
+    }
 
     private var windowsOverviewContainer: android.widget.ScrollView? = null
     private var hoveredWindowsOverviewItem: View? = null
@@ -3113,17 +3203,17 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     addView(btnRight)
 
                     // Click handlers
-                    btnLeft.setOnClickListener { scrollPageHorizontal(-10) }
-                    btnRight.setOnClickListener { scrollPageHorizontal(10) }
+                    btnLeft.setOnClickListener { clickScrollBarArrow { scrollPageHorizontal(-10) } }
+                    btnRight.setOnClickListener { clickScrollBarArrow { scrollPageHorizontal(10) } }
                     trackContainer.setOnTouchListener { v, event ->
                         val fullWidth = v.width
                         val thumbWidth = hScrollThumb.width
                         val trackableWidth = fullWidth - thumbWidth
+                        if (trackableWidth <= 0) return@setOnTouchListener true
 
                         when (event.action) {
                             MotionEvent.ACTION_DOWN -> {
-                                isInteractingWithScrollBar = true
-                                lastScrollBarInteractionTime = SystemClock.uptimeMillis()
+                                beginScrollBarInteraction()
                                 v.parent.requestDisallowInterceptTouchEvent(true)
                                 // Immediate jump on touch down
                                 val clickX = event.x
@@ -3138,7 +3228,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                 true
                             }
                             MotionEvent.ACTION_MOVE -> {
-                                lastScrollBarInteractionTime = SystemClock.uptimeMillis()
+                                beginScrollBarInteraction()
                                 val clickX = event.x
                                 val clickLeft = clickX - thumbWidth / 2
                                 val percent = (clickLeft / trackableWidth).coerceIn(0f, 1f)
@@ -3151,10 +3241,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                 true
                             }
                             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                                isInteractingWithScrollBar = false
-                                lastScrollBarInteractionTime = SystemClock.uptimeMillis()
                                 v.parent.requestDisallowInterceptTouchEvent(false)
-                                updateScrollBarThumbs(0, 0)
+                                finishScrollBarInteraction()
                                 true
                             }
                             else -> false
@@ -3218,17 +3306,17 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     addView(btnDown)
 
                     // Click handlers
-                    btnUp.setOnClickListener { scrollPageVertical(-10) }
-                    btnDown.setOnClickListener { scrollPageVertical(10) }
+                    btnUp.setOnClickListener { clickScrollBarArrow { scrollPageVertical(-10) } }
+                    btnDown.setOnClickListener { clickScrollBarArrow { scrollPageVertical(10) } }
                     trackContainer.setOnTouchListener { v, event ->
                         val fullHeight = v.height
                         val thumbHeight = vScrollThumb.height
                         val trackableHeight = fullHeight - thumbHeight
+                        if (trackableHeight <= 0) return@setOnTouchListener true
 
                         when (event.action) {
                             MotionEvent.ACTION_DOWN -> {
-                                isInteractingWithScrollBar = true
-                                lastScrollBarInteractionTime = SystemClock.uptimeMillis()
+                                beginScrollBarInteraction()
                                 v.parent.requestDisallowInterceptTouchEvent(true)
                                 // Immediate jump on touch down
                                 val clickY = event.y
@@ -3249,7 +3337,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                 true
                             }
                             MotionEvent.ACTION_MOVE -> {
-                                lastScrollBarInteractionTime = SystemClock.uptimeMillis()
+                                beginScrollBarInteraction()
                                 val clickY = event.y
                                 val clickTop = clickY - thumbHeight / 2
                                 val percent = (clickTop / trackableHeight).coerceIn(0f, 1f)
@@ -3266,10 +3354,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                 true
                             }
                             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                                isInteractingWithScrollBar = false
-                                lastScrollBarInteractionTime = SystemClock.uptimeMillis()
                                 v.parent.requestDisallowInterceptTouchEvent(false)
-                                updateScrollBarThumbs(0, 0)
+                                finishScrollBarInteraction()
                                 true
                             }
                             else -> false
@@ -3455,8 +3541,35 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // Restore normal refresh rate and notify listener
         fullscreenListener?.onExitFullscreen()
         updateRefreshRate()
+        restoreScrollBarsAfterFullscreen()
 
         // DebugLog.d("FullscreenDebug", "hideFullScreenOverlay complete")
+    }
+
+    fun restoreScrollBarsAfterFullscreen() {
+        isInteractingWithScrollBar = false
+        removeCallbacks(scrollBarSettleRunnable)
+        clearExternalScrollMetrics()
+        lastScrollBarCheckTime = 0L
+        resetScrollBarVisibilityMemory(webView.url)
+        injectPageObservers(webView)
+        webView.evaluateJavascript(
+                """
+            (function() {
+                try {
+                    if (window.__taplinkReportScroll) window.__taplinkReportScroll();
+                    if (window.__taplinkWarmupScroll) window.__taplinkWarmupScroll();
+                } catch (e) {}
+            })();
+            """.trimIndent(),
+                null
+        )
+        longArrayOf(0L, 120L, 350L, 800L).forEach { delayMs ->
+            postDelayed({
+                updateScrollBarsVisibility(force = true)
+                updateScrollBarThumbs(0, 0)
+            }, delayMs)
+        }
     }
 
     private fun updateRefreshRate() {
@@ -8343,7 +8456,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
 
         // Update scrollbars and layout
-        updateScrollBarsVisibility()
+        updateScrollBarsVisibility(force = true)
 
         // Force layout update
         post {
@@ -8415,8 +8528,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             }
         }
 
-        // Update scrollbars and layout
-        updateScrollBarsVisibility()
+        // Update scrollbars and layout. Force this so leaving full-screen
+        // browser mode immediately restores the bars even if media playback
+        // recently froze automatic scrollbar visibility churn.
+        updateScrollBarsVisibility(force = true)
 
         // Force layout update
         post {
@@ -8978,13 +9093,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // ── Removed dim-mode chrome ─────────────────────────────────
         // The X (btnMaskUnmask), the 6-button media toolbar, and every
         // music visualizer were intentionally removed in the dim-mode
-        // revamp. The only interactions in dim mode are the gestures
-        // wired in maskOverlay.setOnTouchListener: swipe-LEFT = next
-        // track, swipe-RIGHT = previous track, double-tap = exit dim
-        // mode. The button fields below are still initialized so the
-        // gesture handlers can fire .performClick() on them and reuse
-        // the existing prev/next JS without code duplication; they're
-        // simply never added to the maskOverlay view hierarchy.
+        // revamp. The only interactions in dim mode are the activity-level
+        // gestures: single-tap = play/pause and double-tap = exit dim mode.
+        // The button fields below are still initialized for legacy code paths;
+        // they're simply never added to the maskOverlay view hierarchy.
         btnMaskUnmask =
                 ImageButton(context).apply {
                     setImageResource(R.drawable.ic_visibility_on)
@@ -9006,11 +9118,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     alpha = 0.5f
                     visibility = View.GONE // Hidden by default until media detected
                 }
-        // Media-controls container is built (so the prev/next buttons it
-        // owns can still be `performClick()`-ed by the dim-mode swipe
-        // gestures) but it is intentionally NOT added to the maskOverlay
-        // view hierarchy — the dim-mode revamp removed the on-screen
-        // toolbar.
+        // Media-controls container is built for legacy code paths but is
+        // intentionally NOT added to the maskOverlay view hierarchy — the
+        // dim-mode revamp removed the on-screen toolbar.
         // (no maskOverlay.addView for maskMediaControlsContainer)
 
         // Controls - Order: Prev Track, 10s Back, Play, Pause, 10s Forward, Next Track
@@ -9498,6 +9608,14 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
     fun isMediaPlaying(): Boolean {
         return isMediaPlaying
+    }
+
+    fun setYoutubeCssFullModeActive(active: Boolean) {
+        val url = webView.url.orEmpty()
+        val isYoutube = url.contains("youtube.com", ignoreCase = true) ||
+            url.contains("youtu.be", ignoreCase = true)
+        youtubeCssFullModeActive = active && isYoutube
+        updateScrollBarsVisibility(force = true)
     }
 
     fun toggleMediaPlayback() {
