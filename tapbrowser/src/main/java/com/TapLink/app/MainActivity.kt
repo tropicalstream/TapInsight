@@ -10831,70 +10831,59 @@ class MainActivity :
                         "bView.id='__tl_view';" +
                         "bView.className='tl-mode';" +
                         "var labels=['Full','Theater','Mini'];" +
-                        // Robust DOM-based mode detection. Used for BOTH the
-                        // initial label and every click, so the label and the
-                        // transition always reflect YouTube's ACTUAL layout —
-                        // even after a navigation reset (the old code only
-                        // detected Full/Theater and NEVER re-detected Mini, so
-                        // the label could desync and a click could fire the
-                        // wrong transition).
+                        // Read-only mode detection — NEVER mutates the DOM.
+                        // (Force-setting/removing YouTube's `theater` attribute
+                        // made detection lie: the label flipped but the video
+                        // display never changed. Detection now only READS the
+                        // real YouTube state, including the miniplayer.)
                         "window.__tlDetectMode=function(){" +
                         "try{" +
                         "if(document.getElementById('__taplink_fs_style'))return 0;" +
-                        "if(document.querySelector('ytd-miniplayer[active]'))return 2;" +
+                        "if(document.querySelector('ytd-miniplayer[active],ytd-miniplayer[is-active]'))return 2;" +
                         "var fx=document.querySelector('ytd-watch-flexy');" +
                         "if(fx&&fx.hasAttribute('theater'))return 1;" +
                         "return 0;" +
-                        "}catch(e){return (window.__tl_view_mode||0);}" +
+                        "}catch(e){return 0;}" +
                         "};" +
-                        // Target-driven transition: drive the DOM to the desired
-                        // mode regardless of where we start, so a stale/guessed
-                        // current state can never send us to the wrong place.
-                        "window.__tlApplyMode=function(target){" +
-                        "try{" +
-                        "var fs=document.getElementById('__taplink_fs_style');" +
-                        "var mini=document.querySelector('ytd-miniplayer[active]');" +
-                        "if(target===0){" +
-                        "if(mini){var ex=document.querySelector('.ytp-miniplayer-expand-watch-page-button');if(ex)ex.click();}" +
-                        "setTimeout(function(){try{window.GroqBridge.enterCssFullscreen();}catch(x){}},mini?450:0);" +
-                        "}else if(target===1){" +
-                        "if(fs)fs.remove();" +
-                        "try{window.GroqBridge.exitImmersiveMode();}catch(x){}" +
-                        "if(mini){var ex2=document.querySelector('.ytp-miniplayer-expand-watch-page-button');if(ex2)ex2.click();}" +
-                        "setTimeout(function(){" +
-                        "var fx2=document.querySelector('ytd-watch-flexy');" +
-                        "if(fx2&&fx2.hasAttribute('theater'))return;" +
-                        "var sb=document.querySelector('.ytp-size-button');if(sb)sb.click();" +
-                        "},mini?500:300);" +
-                        "}else{" +
-                        "if(fs)fs.remove();" +
-                        "try{window.GroqBridge.exitImmersiveMode();}catch(x){}" +
-                        "setTimeout(function(){" +
-                        "var fx3=document.querySelector('ytd-watch-flexy');" +
-                        "if(fx3&&fx3.hasAttribute('theater')){var sb2=document.querySelector('.ytp-size-button');if(sb2)sb2.click();}" +
-                        "setTimeout(function(){var mb=document.querySelector('.ytp-miniplayer-button');if(mb)mb.click();},250);" +
-                        "},300);" +
-                        "}" +
-                        "}catch(e){console.log('[TapLink-YT] applyMode err:'+e);}" +
-                        "};" +
-                        // Initial label reflects the live DOM state.
+                        // Initial label from the live state.
                         "window.__tl_view_mode=window.__tlDetectMode();" +
                         "bView.textContent=labels[window.__tl_view_mode||0];" +
-                        // Click: read the ACTUAL current mode, advance, drive to it.
                         "bView.addEventListener('click',function(e){" +
                         "e.stopPropagation();e.preventDefault();" +
                         "var now=Date.now();" +
                         "if(window.__tl_last_view_click&&now-window.__tl_last_view_click<800)return;" +
                         "window.__tl_last_view_click=now;" +
+                        // Reconcile with the REAL current mode before advancing,
+                        // so the first tap after a navigation transitions right.
                         "var cur=window.__tlDetectMode();" +
                         "var next=(cur+1)%3;" +
                         "console.log('[TapLink-YT] View: '+labels[cur]+' -> '+labels[next]);" +
-                        "window.__tlApplyMode(next);" +
+                        // Proven pairwise transitions — these actually change the
+                        // YouTube display (toggle the real native theater /
+                        // miniplayer buttons; Full is our CSS overlay).
+                        "if(cur===0&&next===1){" +
+                        "var fs=document.getElementById('__taplink_fs_style');if(fs)fs.remove();" +
+                        "try{window.GroqBridge.exitImmersiveMode();}catch(x){}" +
+                        "setTimeout(function(){" +
+                        "var fx=document.querySelector('ytd-watch-flexy');" +
+                        "if(fx&&fx.hasAttribute('theater'))return;" +
+                        "var sb=document.querySelector('.ytp-size-button');if(sb)sb.click();" +
+                        "},500);" +
+                        "}else if(cur===1&&next===2){" +
+                        "var fx2=document.querySelector('ytd-watch-flexy');" +
+                        "if(fx2&&fx2.hasAttribute('theater')){var sb2=document.querySelector('.ytp-size-button');if(sb2)sb2.click();}" +
+                        "setTimeout(function(){var mb=document.querySelector('.ytp-miniplayer-button');if(mb)mb.click();},500);" +
+                        "}else if(cur===2&&next===0){" +
+                        "var exp=document.querySelector('.ytp-miniplayer-expand-watch-page-button');" +
+                        "if(exp){exp.click();}else{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,bubbles:true}));}" +
+                        "setTimeout(function(){try{window.GroqBridge.enterCssFullscreen();}catch(x){}},500);" +
+                        "}" +
+                        // Optimistic label now; reconcile to the settled REAL
+                        // state shortly after (read-only — won't lie).
                         "window.__tl_view_mode=next;" +
                         "bView.textContent=labels[next];" +
-                        // Re-sync the label after the DOM settles, in case YT
-                        // didn't land where we asked (e.g. miniplayer blocked).
-                        "setTimeout(function(){try{var m=window.__tlDetectMode();window.__tl_view_mode=m;bView.textContent=labels[m];}catch(x){}},900);" +
+                        "setTimeout(function(){try{var m=window.__tlDetectMode();window.__tl_view_mode=m;var el=document.getElementById('__tl_view');if(el)el.textContent=labels[m];}catch(x){}},1300);" +
+                        "console.log('[TapLink-YT] View mode set to: '+labels[next]);" +
                         "});" +
                         //
                         // === Explicit prev/next buttons ===
