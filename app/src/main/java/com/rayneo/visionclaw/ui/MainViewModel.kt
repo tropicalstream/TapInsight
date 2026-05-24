@@ -1133,15 +1133,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun appendLiveAssistantWorkingChunk(chunk: String): String {
-        val next = chunk.trim()
-        if (next.isBlank()) return currentAssistantVisibleLog()
-        liveAssistantWorkingTurn =
-            if (liveAssistantWorkingTurn.isBlank()) {
-                next
-            } else {
-                mergeStreamText(liveAssistantWorkingTurn, next)
-            }
-        upsertLiveAssistantWorkingCard(liveAssistantWorkingTurn)
+        // Gemini Live sends output-transcription as INCREMENTAL deltas whose
+        // spacing is already correct (e.g. "Hello", " world", or a mid-word
+        // continuation "wonder" + "ful"). The previous path trimmed each delta
+        // and re-joined them with a heuristic that inserted spurious spaces
+        // (splitting words apart) or dropped overlapping characters (merging /
+        // skipping words). We now concatenate the deltas verbatim so the card
+        // text matches exactly what was said, with a guard for the rare case
+        // where a delta arrives cumulative (already contains the whole turn).
+        if (chunk.isEmpty()) return currentAssistantVisibleLog()
+        val prev = liveAssistantWorkingTurn
+        liveAssistantWorkingTurn = when {
+            prev.isEmpty() -> chunk
+            chunk.startsWith(prev) -> chunk        // cumulative resend of full turn
+            prev.startsWith(chunk) -> prev         // duplicate / stale delta
+            else -> prev + chunk                   // normal incremental delta
+        }
+        upsertLiveAssistantWorkingCard(liveAssistantWorkingTurn.trim())
         return currentAssistantVisibleLog()
     }
 
@@ -1421,12 +1429,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             // The HUD should surface the NEXT event that hasn't started yet, not
             // one that's currently in progress. The Calendar API returns events
-            // that are still ongoing (started before now, ending later), so drop
-            // anything whose start time is already in the past. If nothing is left
-            // (e.g. only an in-progress all-day event), say so rather than showing
-            // the running event.
+            // that are still ongoing (started before now, ending later), so keep
+            // only events with a CONFIRMED future start. A null start (un-parseable
+            // time, or an all-day event whose midnight is already past) is NOT a
+            // confirmed upcoming event, so it's excluded too — otherwise an
+            // in-progress event with a mis-parsed time would masquerade as next.
             val nowMs = System.currentTimeMillis()
-            val upcomingEvents = allEvents.filter { (it.start?.time ?: Long.MAX_VALUE) >= nowMs }
+            val upcomingEvents = allEvents.filter { ev ->
+                val startMs = ev.start?.time ?: return@filter false
+                startMs > nowMs
+            }
 
             val summary = if (upcomingEvents.isEmpty()) {
                 if (allEvents.isEmpty() && anyApiKeyMissing) {

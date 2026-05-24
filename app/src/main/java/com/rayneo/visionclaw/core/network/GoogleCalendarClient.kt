@@ -389,21 +389,39 @@ class GoogleCalendarClient(
     private fun parseEventTime(obj: JSONObject?): Date? {
         if (obj == null) return null
         val dateTimeStr = obj.optString("dateTime", "")
-        val dateStr = obj.optString("date", "")
-        return try {
-            when {
-                dateTimeStr.isNotBlank() -> {
-                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)
-                        .parse(dateTimeStr)
+        if (dateTimeStr.isNotBlank()) {
+            // Google returns RFC3339 timestamps that may or may not carry
+            // fractional seconds, and the offset is either "Z" or "±hh:mm".
+            // The ISO-8601 'XXX' token handles both "Z" and "-07:00"; we try
+            // the millis and no-millis variants. If parsing fails we return
+            // null — but callers MUST treat a null start as "not a confirmed
+            // upcoming event" so a mis-parsed (and possibly in-progress) event
+            // can't masquerade as the next one on the HUD.
+            for (pattern in arrayOf(
+                "yyyy-MM-dd'T'HH:mm:ssXXX",
+                "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"
+            )) {
+                try {
+                    return SimpleDateFormat(pattern, Locale.US).parse(dateTimeStr)
+                } catch (_: Exception) {
+                    // try the next pattern
                 }
-                dateStr.isNotBlank() -> {
-                    SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(dateStr)
-                }
-                else -> null
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to parse event time: $e")
-            null
+            Log.w(TAG, "Failed to parse event dateTime: $dateTimeStr")
+            return null
         }
+        val dateStr = obj.optString("date", "")
+        if (dateStr.isNotBlank()) {
+            // All-day event: date only, interpreted in the device's local zone
+            // (midnight). An all-day event for *today* therefore has a start in
+            // the past, so the HUD will treat it as in-progress, not upcoming.
+            return try {
+                SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(dateStr)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to parse event date: $dateStr ($e)")
+                null
+            }
+        }
+        return null
     }
 }

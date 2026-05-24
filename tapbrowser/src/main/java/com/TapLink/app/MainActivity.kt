@@ -6262,6 +6262,11 @@ class MainActivity :
     // Collapsed = the compact 76dp scroll box; expanded = a tall, wide reader
     // that fills most of the overlay so long agent replies are readable.
     private var isUnipanelCardExpanded: Boolean = false
+    // The card text we last rendered. Used to detect when a genuinely NEW reply
+    // arrives (vs. the same reply streaming in more text) so we can reset the
+    // card to its collapsed state — a card should only ever be expanded by an
+    // explicit tap, never auto-expand because a previous reply was expanded.
+    private var lastRenderedUnipanelCardText: String = ""
     private val hideUnipanelAssistantCardRunnable = Runnable {
         // Phase 4k.5 — the card box is the ScrollView now; hide it and
         // clear the inner text.
@@ -6726,6 +6731,9 @@ class MainActivity :
             if (text.isBlank()) return@setOnClickListener
             isUnipanelCardExpanded = !isUnipanelCardExpanded
             uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
+            // Collapsing must NOT hide the card — it returns to the compact box
+            // and stays on the HUD. Keep it explicitly visible either way.
+            scroll.visibility = View.VISIBLE
             repositionUnipanelAssistantCard()
             (scroll as? android.widget.ScrollView)?.post {
                 if (isUnipanelCardExpanded) scroll.scrollTo(0, 0)
@@ -6790,8 +6798,22 @@ class MainActivity :
         if (latestAssistant == null) {
             card.text = ""
             scroll.visibility = View.GONE
+            lastRenderedUnipanelCardText = ""
+            isUnipanelCardExpanded = false
             return
         }
+        // A card is only ever expanded by an explicit tap. When a genuinely NEW
+        // reply arrives (not just more text streaming into the same one), reset
+        // to the collapsed state so it doesn't inherit the previous card's
+        // expansion. A streaming continuation (new text starts with the old)
+        // keeps whatever state the user chose.
+        val isContinuation =
+            lastRenderedUnipanelCardText.isNotEmpty() &&
+                latestAssistant.startsWith(lastRenderedUnipanelCardText)
+        if (!isContinuation) {
+            isUnipanelCardExpanded = false
+        }
+        lastRenderedUnipanelCardText = latestAssistant
         card.text = latestAssistant
         scroll.visibility = View.VISIBLE
         repositionUnipanelAssistantCard()
