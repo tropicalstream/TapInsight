@@ -6853,9 +6853,27 @@ class MainActivity :
      */
     private fun repositionUnipanelHeartbeat() {
         val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText) ?: return
-        if (heartbeat.visibility != View.VISIBLE) return
+        // Run while VISIBLE *or* INVISIBLE — the appear path positions it while
+        // invisible (so it never flashes at the wrong spot) then reveals it.
+        // Only a GONE ticker is skipped.
+        if (heartbeat.visibility == View.GONE) return
         val tierPanel = findViewById<View?>(R.id.unipanelHudTierPanel) ?: return
-        if (tierPanel.width <= 0) return
+        // The tier panel may not be measured yet on the very first frame; retry
+        // on the next layout pass rather than leaving the ticker mispositioned.
+        // Bounded so a GONE/zero-width tier panel can't spin forever — after a
+        // few attempts give up and reveal in place (a later tier re-render will
+        // realign it) rather than leaving the ticker stuck INVISIBLE.
+        if (tierPanel.width <= 0 || !tierPanel.isLaidOut) {
+            if (heartbeatRepositionAttempts < 5) {
+                heartbeatRepositionAttempts++
+                heartbeat.postDelayed({ repositionUnipanelHeartbeat() }, 50L)
+            } else {
+                heartbeatRepositionAttempts = 0
+                if (heartbeat.visibility == View.INVISIBLE) heartbeat.visibility = View.VISIBLE
+            }
+            return
+        }
+        heartbeatRepositionAttempts = 0
         val tierLoc = IntArray(2)
         val hbLoc = IntArray(2)
         tierPanel.getLocationInWindow(tierLoc)
@@ -6876,6 +6894,13 @@ class MainActivity :
             changed = true
         }
         if (changed) heartbeat.layoutParams = lp
+        // Now that the ticker is correctly placed under the tier list, reveal it
+        // if the appear path left it INVISIBLE. This is the single point where it
+        // becomes visible, so the first frame the user sees is already in place
+        // (no flash-then-slide from the old XML position).
+        if (heartbeat.visibility == View.INVISIBLE) {
+            heartbeat.visibility = View.VISIBLE
+        }
     }
 
     private fun repositionUnipanelAssistantCard() {
@@ -7263,6 +7288,9 @@ class MainActivity :
     private var lastHeartbeatRenderedText: String? = null
     private var lastHeartbeatRenderedAtMs: Long = 0L
     private var pendingHeartbeatRenderRunnable: Runnable? = null
+    // Bounded retry counter for repositionUnipanelHeartbeat when the tier panel
+    // isn't laid out yet — prevents an infinite repost loop.
+    private var heartbeatRepositionAttempts: Int = 0
 
     private val hideUnipanelHeartbeatRunnable = Runnable {
         val tv = findViewById<android.widget.TextView?>(R.id.unipanelHudHeartbeatText) ?: return@Runnable
@@ -7481,18 +7509,32 @@ class MainActivity :
             return
         }
 
+        val wasVisible = tv.visibility == View.VISIBLE
         tv.text = "♥ $text"
-        tv.visibility = View.VISIBLE
         tv.alpha = 1f
         tv.scrollX = 0
         unipanelHeartbeatScrollAnimator?.cancel()
         unipanelHeartbeatScrollAnimator = null
+        val shouldScroll = notification != null || state.heartbeatShouldScroll
         // Park the ticker directly under the Events/Tasks/News list: align its
         // left edge with the tier panel and match its width, so it never bleeds
         // out to the left of that list (it used to start under the avatar).
-        tv.post { repositionUnipanelHeartbeat() }
-        val shouldScroll = notification != null || state.heartbeatShouldScroll
-        if (shouldScroll) tv.post { startUnipanelHeartbeatScroll(tv) }
+        //
+        // Anti-jump: when the ticker is FIRST appearing it must not flash at its
+        // XML start position (under the avatar) and then slide right once the
+        // post-layout reposition runs. So lay it out while INVISIBLE, position
+        // it, and only THEN reveal it — the very first frame the user sees is
+        // already in the correct spot. When it's already visible (just a text
+        // swap) the margin is already correct, so reposition in place.
+        // Already visible = just a text swap (margin already correct, reposition
+        // in place). First appearance = stay INVISIBLE; repositionUnipanelHeartbeat
+        // reveals it only once it's been placed under the tier list, so the user
+        // never sees it at the old (XML) position first.
+        tv.visibility = if (wasVisible) View.VISIBLE else View.INVISIBLE
+        tv.post {
+            repositionUnipanelHeartbeat()
+            if (shouldScroll) startUnipanelHeartbeatScroll(tv)
+        }
         // Phase 4j — ticker just appeared under the clock; push the
         // camera preview (if visible) down so it clears the new bar.
         repositionUnipanelCameraPreview()
