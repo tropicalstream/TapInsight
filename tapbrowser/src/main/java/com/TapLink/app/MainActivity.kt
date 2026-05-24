@@ -6200,8 +6200,11 @@ class MainActivity :
                     val status = intent.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1)
                     val charging = status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
                         status == android.os.BatteryManager.BATTERY_STATUS_FULL
-                    val pillSymbol = if (charging) "⚡" else "▮"
-                    tv.text = if (pct >= 0) "$pillSymbol $pct%" else "— %"
+                    // The battery silhouette is now a drawableStart icon on this
+                    // TextView, so the text is just the percentage (plus a bolt
+                    // while charging). No more "▮" glyph standing in for a battery.
+                    val chargePrefix = if (charging) "⚡ " else ""
+                    tv.text = if (pct >= 0) "$chargePrefix$pct%" else "—%"
                 }
             } catch (_: Exception) {}
         }
