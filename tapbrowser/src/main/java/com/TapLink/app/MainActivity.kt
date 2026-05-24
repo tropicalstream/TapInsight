@@ -4296,6 +4296,35 @@ class MainActivity :
         updateMinimalIndicators()
     }
 
+    /**
+     * YouTube "Full" view mode = real full-screen browser: hide the surrounding
+     * app chrome (unipanel HUD overlay + the browser's own side/bottom nav bars
+     * + the reserved HUD lane) so the video fills the display. Theater/Mini call
+     * this with hidden=false to bring the chrome back. The in-page Full/Theater/
+     * Mini and prev/next buttons live in the WebView, so they stay visible.
+     */
+    fun applyYoutubeFullscreenChrome(hidden: Boolean) {
+        runCatching {
+            val overlay = findViewById<View?>(R.id.unipanelOverlay)
+            if (hidden) {
+                hudRolledUp = true
+                runCatching { dualWebViewGroup.setHudLaneReserved(false) }
+                runCatching { dualWebViewGroup.setNavBarsHidden(true) }
+                overlay?.animate()?.cancel()
+                overlay?.visibility = View.GONE
+            } else {
+                hudRolledUp = false
+                runCatching { dualWebViewGroup.setHudLaneReserved(true) }
+                runCatching { dualWebViewGroup.setNavBarsHidden(false) }
+                overlay?.animate()?.cancel()
+                overlay?.translationY = 0f
+                overlay?.alpha = 1f
+                overlay?.visibility = View.VISIBLE
+            }
+            updateMinimalIndicators()
+        }
+    }
+
     override fun onSendEnterInLink() {
         isUrlEditing = false
         dualWebViewGroup.toggleIsUrlEditing(false)
@@ -8140,8 +8169,11 @@ class MainActivity :
                 // HUD+chat-only focus view. evaluateJavascript hands back a
                 // JSON-encoded string, so the sentinel arrives quoted.
                 val emptySpaceTap = clickResult != null && clickResult.contains("taphud_empty")
+                val tapLinkOverlayButton =
+                        clickResult != null && clickResult.contains("tl_btn_")
                 val handledAsMediaToggle =
                         emptySpaceTap && (hudRolledUp || isViewingYoutubeWatchPage())
+                val shouldCancelSyntheticClick = handledAsMediaToggle || tapLinkOverlayButton
                 if (emptySpaceTap) {
                     Handler(Looper.getMainLooper()).post {
                         // When the HUD/chat are rolled up, empty space becomes
@@ -8164,7 +8196,7 @@ class MainActivity :
                                             MotionEvent.obtain(
                                                             eventTime,
                                                             SystemClock.uptimeMillis(),
-                                                            if (handledAsMediaToggle) {
+                                                            if (shouldCancelSyntheticClick) {
                                                                 MotionEvent.ACTION_CANCEL
                                                             } else {
                                                                 MotionEvent.ACTION_UP
@@ -10786,6 +10818,9 @@ class MainActivity :
                                 View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
                                 View.SYSTEM_UI_FLAG_FULLSCREEN or
                                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
+                    // Full = real full-screen browser: hide the app HUD overlay
+                    // + the browser's own nav bars so only the video shows.
+                    runCatching { activity.applyYoutubeFullscreenChrome(true) }
                     DebugLog.d("YouTubeAuto", "Entered CSS fullscreen + immersive mode")
                 } catch (e: Exception) {
                     DebugLog.d("YouTubeAuto", "enterCssFullscreen failed: $e")
@@ -10843,8 +10878,8 @@ class MainActivity :
                         //   Mini    = small floating player, page scrolls behind
                         // Switching is instant and the detected mode always
                         // matches what we applied, so the label can't revert.
-                        "window.__tlTheaterCss='html,body{overflow-x:hidden!important;overflow-y:auto!important;width:100vw!important;max-width:100vw!important;margin:0!important;padding:0!important;background:#0f0f0f!important}#movie_player,.html5-video-player,#player-container-outer,#player-container-inner,#player-container,ytd-player,#ytd-player{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:60vh!important;max-height:60vh!important;z-index:999998!important;background:#000!important}#movie_player .html5-video-container,.html5-video-player .html5-video-container{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important}#movie_player video,.html5-video-player video,video{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;object-fit:contain!important;background:#000!important;transform:none!important}#masthead-container,ytd-masthead,#guide,#secondary{display:none!important}ytd-watch-flexy{max-width:100vw!important}ytd-watch-flexy #player{height:0!important;min-height:0!important;overflow:hidden!important}ytd-watch-flexy #primary{margin-top:61vh!important}';" +
-                        "window.__tlMiniCss='html,body{overflow-x:hidden!important;overflow-y:auto!important;width:100vw!important;max-width:100vw!important;background:#0f0f0f!important}#movie_player,.html5-video-player{position:fixed!important;top:auto!important;left:auto!important;bottom:10px!important;right:10px!important;width:42vw!important;height:24vw!important;z-index:2147483646!important;background:#000!important;border:1px solid #333!important;border-radius:6px!important;overflow:hidden!important;box-shadow:0 2px 12px rgba(0,0,0,0.6)!important}#movie_player .html5-video-container,.html5-video-player .html5-video-container{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important}#movie_player video,.html5-video-player video,video{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;object-fit:contain!important;background:#000!important;transform:none!important}';" +
+                        "window.__tlTheaterCss='html,body{overflow-x:hidden!important;overflow-y:auto!important;width:100vw!important;max-width:100vw!important;margin:0!important;padding:0!important;background:#0f0f0f!important}#player-container-outer,#player-container-inner,#player-container,ytd-player,#ytd-player,#movie_player,.html5-video-player{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:45vh!important;max-height:45vh!important;z-index:999998!important;background:#000!important;transform:none!important}#movie_player .html5-video-container,.html5-video-player .html5-video-container{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;transform:none!important}#movie_player video,.html5-video-player video{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;object-fit:contain!important;background:#000!important;transform:none!important}#masthead-container,ytd-masthead,#guide,#secondary,#related,ytd-watch-next-secondary-results-renderer,ytd-compact-video-renderer,yt-related-chip-cloud-renderer{display:none!important}ytd-watch-flexy,#columns,#primary,#primary-inner{display:block!important;width:100vw!important;max-width:100vw!important;margin:0!important;padding:0!important;box-sizing:border-box!important;transform:none!important}ytd-watch-flexy #player,#player-theater-container{height:0!important;min-height:0!important;max-height:0!important;margin:0!important;padding:0!important;overflow:visible!important}ytd-watch-flexy #primary{padding-top:calc(45vh + 4px)!important}ytd-watch-metadata,#above-the-fold,#info,#meta,ytd-watch-metadata #title{margin-top:0!important;padding-top:0!important}ytd-merch-shelf-renderer,#ticket-shelf,#donation-shelf,#clarify-box,#offer-module{display:none!important}#below,#meta,#info,#comments,ytd-comments{display:block!important;position:relative!important;z-index:1!important;width:calc(100vw - 24px)!important;max-width:calc(100vw - 24px)!important;margin:0 12px!important;padding:0!important;box-sizing:border-box!important;clear:both!important;transform:none!important}';" +
+                        "window.__tlMiniCss='html,body{overflow-x:hidden!important;overflow-y:auto!important;width:100vw!important;max-width:100vw!important;background:#0f0f0f!important}#player-container-outer,#player-container-inner,#player-container,ytd-player,#ytd-player,#movie_player,.html5-video-player{position:fixed!important;top:auto!important;left:auto!important;bottom:10px!important;right:10px!important;width:42vw!important;height:24vw!important;max-width:42vw!important;max-height:24vw!important;z-index:2147483646!important;background:#000!important;border:1px solid #333!important;border-radius:6px!important;overflow:hidden!important;box-shadow:0 2px 12px rgba(0,0,0,0.6)!important;transform:none!important}#movie_player .html5-video-container,.html5-video-player .html5-video-container{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;transform:none!important}#movie_player video,.html5-video-player video{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;object-fit:contain!important;background:#000!important;transform:none!important}ytd-watch-flexy #player{height:0!important;min-height:0!important;max-height:0!important;margin:0!important;padding:0!important;overflow:visible!important}#columns,#primary,#primary-inner,#below{margin:0!important;padding:0!important;max-width:100vw!important;width:100vw!important;box-sizing:border-box!important;transform:none!important}';" +
                         "window.__tlClearViewStyles=function(){['__taplink_fs_style','__tl_theater_style','__tl_mini_style'].forEach(function(id){var el=document.getElementById(id);if(el&&el.parentNode)el.parentNode.removeChild(el);});};" +
                         "window.__tlInject=function(id,css){var el=document.getElementById(id);if(!el){el=document.createElement('style');el.id=id;document.head.appendChild(el);}el.textContent=css;};" +
                         // Read-only detection: which of OUR style elements is live.
@@ -10860,9 +10895,7 @@ class MainActivity :
                         "if(window.__tl_last_view_click&&now-window.__tl_last_view_click<600)return;" +
                         "window.__tl_last_view_click=now;" +
                         "var cur=window.__tlDetectMode();" +
-                        // Cycle order Full -> Mini -> Theater -> Full. Mode ids
-                        // are 0=Full, 1=Theater, 2=Mini (labels index), so the
-                        // visit order is the id sequence [0,2,1].
+                        // Cycle in the requested order: Full -> Mini -> Theater.
                         "var order=[0,2,1];" +
                         "var oi=order.indexOf(cur);if(oi<0)oi=0;" +
                         "var next=order[(oi+1)%order.length];" +
@@ -10941,6 +10974,8 @@ class MainActivity :
                         (View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
                     runCatching { activity.dualWebViewGroup.setYoutubeCssFullModeActive(false) }
                     runCatching { activity.dualWebViewGroup.restoreScrollBarsAfterFullscreen() }
+                    // Theater/Mini: bring the app HUD + browser nav bars back.
+                    runCatching { activity.applyYoutubeFullscreenChrome(false) }
                     DebugLog.d("YouTubeAuto", "Exited immersive mode")
                 } catch (e: Exception) {
                     DebugLog.d("YouTubeAuto", "exitImmersiveMode failed: $e")

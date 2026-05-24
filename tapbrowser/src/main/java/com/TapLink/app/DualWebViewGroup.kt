@@ -1135,8 +1135,12 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // (Theater/Mini) or decisively not (Full), so there's no marginal zone
         // for the latch to debounce here. Every other page — including YouTube
         // search/home — keeps the original anti-flicker/anti-oscillation latch.
+        // A YouTube watch page (Full/Theater/Mini) should NEVER show a
+        // horizontal scrollbar — the video/page is constrained to 100vw, and a
+        // horizontal bar was appearing (notably over Mini). Suppress it there;
+        // every other page keeps the normal horizontal-scroll behaviour.
         val showHorz =
-                if (onYoutubeWatchForFull) showHorzRaw
+                if (onYoutubeWatchForFull) false
                 else stickyHorzScrollable || showHorzRaw || (now - lastHorzScrollableAt < scrollBarHoldMs)
         val showVert =
                 if (onYoutubeWatchForFull) showVertRaw
