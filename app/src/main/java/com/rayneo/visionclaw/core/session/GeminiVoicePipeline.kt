@@ -1382,12 +1382,19 @@ class GeminiVoicePipeline(context: Context) {
             "exit reading mode"
         )
 
-        /** Screen-reference phrases used to decide when an agent command
+        /** Visual / media-reference phrases used to decide when an agent command
          *  (hermes_agent / tapclaw_agent) should be augmented with a
-         *  browser-vision description of the current screen. Broader than
-         *  [VISION_TRIGGER_PHRASES] because the user phrases these as
-         *  instructions to the agent ("hermes, look at my screen and …"). */
+         *  browser-vision description of whatever is currently displayed — the
+         *  page, an image, a video frame, or any media on the screen. Broader
+         *  than [VISION_TRIGGER_PHRASES] because the user phrases these as
+         *  instructions to the agent ("hermes, look at this image and …",
+         *  "openclaw, digest what's on the screen"). When any of these match, the
+         *  on-screen content is captured and folded into the agent's context so
+         *  the agent digests what the user is actually looking at. (The real-world
+         *  CAMERA frame is attached separately by the agent tools' own vision
+         *  heuristic — isVisionQuery / EXPLICIT_CAMERA_QUERY.) */
         private val SCREEN_REFERENCE_PHRASES = listOf(
+            // Screen / page
             "my screen",
             "the screen",
             "on screen",
@@ -1409,7 +1416,41 @@ class GeminiVoicePipeline(context: Context) {
             "read this page",
             "describe the screen",
             "what am i looking at",
-            "on my display"
+            "on my display",
+            // Generic media / content
+            "what's displayed",
+            "what is displayed",
+            "what's shown",
+            "what is shown",
+            "this content",
+            "this media",
+            "digest this",
+            "digest the",
+            "digest what",
+            // Images
+            "this image",
+            "the image",
+            "this picture",
+            "the picture",
+            "this photo",
+            "the photo",
+            "look at the image",
+            "read this image",
+            // Video
+            "this video",
+            "the video",
+            "this clip",
+            "what's playing",
+            "what is playing",
+            // Vision cues that also apply to on-screen media
+            "what do you see",
+            "what you see",
+            "see this",
+            "describe this",
+            "read this",
+            "what does this say",
+            "what is this",
+            "what's this"
         )
     }
 }
