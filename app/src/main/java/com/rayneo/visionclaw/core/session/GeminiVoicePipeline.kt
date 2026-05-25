@@ -280,11 +280,13 @@ class GeminiVoicePipeline(context: Context) {
 
         Log.i(TAG, "activate(): starting voice session")
 
-        // Persist the visible prior exchange before GeminiRouter builds the
-        // Live system prompt. That mirrors the Activity/Hermes path where a
-        // fresh chat saves recent cards so follow-up questions can refer back
-        // without turning stale context into tool-call arguments.
-        runCatching { viewModel.saveChatContextForNextSession() }
+        // NOTE: we deliberately do NOT persist the chat context here. Saving the
+        // currently-visible exchange and then immediately re-reading it as the
+        // GeminiRouter builds the Live prompt re-injected the current topic as
+        // "PREVIOUS CONVERSATION (from an earlier session)", which is exactly
+        // what let stale context drive irrelevant commands. The cache is written
+        // only when a session actually ends (deactivate) and read at the next
+        // activation — never within the same breath.
 
         // Reset the live assistant stream buffer so a new turn doesn't
         // accidentally concatenate with the previous one.
@@ -555,7 +557,12 @@ class GeminiVoicePipeline(context: Context) {
                 Log.d(TAG, "onTurnComplete: finishReason=$finishReason")
                 runCatching { viewModel.appendUserUtterance(latestInputTranscript) }
                 runCatching { viewModel.commitLiveAssistantStreamIfNeeded() }
-                runCatching { viewModel.saveChatContextForNextSession() }
+                // Do NOT persist the cross-session cache per turn. Saving the
+                // just-completed live exchange here made turn N reappear as
+                // "PREVIOUS CONVERSATION (from an earlier session)" on turn N+1
+                // within the SAME live session — the in-session contamination
+                // loop that let stale topics drive irrelevant tool calls. The
+                // cache is persisted only at true session end (deactivate).
                 runCatching { viewModel.resetLiveAssistantStream() }
                 runCatching { audioPlayer.notifyTurnComplete() }
                 if (liveSessionReady) {

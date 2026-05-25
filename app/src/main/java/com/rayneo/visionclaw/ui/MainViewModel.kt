@@ -347,24 +347,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * unipanel service closes a Live session.
      */
     fun saveChatContextForNextSession() {
-        val turns = _messages.value
-            .filter { it.text.isNotBlank() }
-            .takeLast(12)
-        if (turns.isEmpty()) return
-        // Save the last few user/assistant turns with explicit speaker
-        // labels. Hermes kept enough prior context for anaphoric follow-up
-        // questions, but GeminiRouter's PREVIOUS CONVERSATION rules forbid
-        // pulling tool arguments from stale turns unless the user clearly
-        // refers back to them.
-        val summary = turns.joinToString("\n---\n") { turn ->
-            val speaker = if (turn.fromUser) "User" else "Assistant"
-            "$speaker: ${turn.text.take(4000)}"
+        // Persist ASSISTANT cards ONLY — never the user's raw spoken commands.
+        // This restores the hermes behavior: including the user's turns (e.g.
+        // "play jazz", "open <x>", "research <y>") let the model graft those
+        // stale command verbs into the NEXT session's tool arguments, which is
+        // the cross-session contamination class of bug. Assistant-authored text
+        // still supports anaphoric follow-ups ("tell me more about that")
+        // without handing the model stale commands to re-execute.
+        val cards = getAssistantCardsSnapshot()
+        if (cards.isEmpty()) return
+        val summary = cards.takeLast(10).joinToString("\n---\n") { card ->
+            card.text.take(4000)
         }.take(MAX_PREVIOUS_CONTEXT_CHARS)
         chatContextPrefs.edit()
             .putString(KEY_PREVIOUS_CHAT, summary)
             .putLong(KEY_PREVIOUS_CHAT_MS, System.currentTimeMillis())
             .apply()
-        Log.d(TAG, "Saved previous chat context: ${summary.length} chars, ${turns.size} turns")
+        Log.d(TAG, "Saved previous chat context: ${summary.length} chars, ${cards.size} cards")
     }
 
     /**
