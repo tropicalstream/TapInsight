@@ -1134,6 +1134,15 @@ class GeminiRouter(
                 "OFFER PATTERN: 'For real working links I have two options — TapClaw can search " +
                 "the web quickly, or research-mode does a deeper grounded pass that takes longer. " +
                 "Which would you like?' Wait for the user's pick before calling either tool.\n" +
+                "SINGLE-LINK / SEARCH-RESULT URL SAFETY (stop the 404s): when you open ONE link for " +
+                "the user (open_taplink), the PRIMARY source is a real web-search-verified URL — a " +
+                "fresh googleSearch grounding citation or a URL returned verbatim by tapclaw_agent / " +
+                "research_topic. If you cannot verify the EXACT current URL that way, the SECONDARY is " +
+                "a plain Google search RESULTS page — https://www.google.com/search?q=<terms> (spaces " +
+                "as +) — which can never 404. NEVER open a deep URL typed from memory or stitched " +
+                "together (e.g. guessing a site's article path), and NEVER open an expired " +
+                "vertexaisearch grounding-redirect URL — those are exactly what 404. When in doubt, " +
+                "the Google search results page is always the right fallback over a guessed deep link.\n" +
                 "DO NOT type URLs in your spoken response — Live TTS pronounces them character by " +
                 "character. NEVER use research_topic in REPORT mode (i.e. without mode='links') for a " +
                 "find/links request, and NEVER read a research report or a spoken list of URLs as a " +
