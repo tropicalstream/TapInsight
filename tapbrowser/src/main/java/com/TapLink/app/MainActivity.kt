@@ -13,6 +13,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -28,6 +29,8 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
@@ -69,6 +72,9 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.SeekBar
+import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -678,6 +684,11 @@ class MainActivity :
     private var isToggling = false
     private var lastCursorX = 320f
     private var lastCursorY = 240f
+    // downTime of the touch gesture whose scroll deltas we last applied to the
+    // cursor. When the user lifts and re-touches the trackpad a NEW gesture
+    // starts (different downTime); its first delta can span the lift gap and
+    // teleport the cursor, so we drop that first delta to keep control smooth.
+    private var cursorScrollDownTime: Long = 0L
     private var isDispatchingTouchEvent = false
     private var isGestureHandled = false
     private var wasTouchOnBookmarks = false
@@ -821,6 +832,25 @@ class MainActivity :
     private var nativeRadioPreparing = false
     private var nativeRadioBuffering = false
     private var nativeRadioError: String? = null
+    private var nativeVideoPlayer: ExoPlayer? = null
+    private var nativeVideoOverlay: FrameLayout? = null
+    private var nativeVideoPlayerView: PlayerView? = null
+    private var nativeVideoCloseButton: View? = null
+    private var nativeVideoControlsView: View? = null
+    private var nativeVideoPlayPauseButton: TextView? = null
+    private var nativeVideoSeekBar: SeekBar? = null
+    private var nativeVideoTimeText: TextView? = null
+    private var nativeVideoPressedControl: String? = null
+    private val hideNativeVideoControlsRunnable = Runnable {
+        nativeVideoControlsView?.visibility = View.GONE
+    }
+    private val nativeVideoProgressTicker = object : Runnable {
+        override fun run() {
+            if (nativeVideoOverlay == null) return
+            updateNativeVideoControlsState()
+            uiHandler.postDelayed(this, 500L)
+        }
+    }
     private val nativeRadioProgressTicker =
             object : Runnable {
                 override fun run() {
@@ -865,6 +895,9 @@ class MainActivity :
                     when {
                         fullScreenCustomView != null -> {
                             hideFullScreenCustomView()
+                        }
+                        nativeVideoOverlay != null -> {
+                            hideNativeVideoOverlay()
                         }
                         isKeyboardVisible || dualWebViewGroup.isUrlEditing() -> {
                             // Hide keyboard and exit URL editing
@@ -1527,9 +1560,24 @@ class MainActivity :
 
                                 // Not anchored: keep your existing cursor-follow logic
                                 // val cursorGain = 0.45f // using class member cursorGain instead
-                                val dx = -distanceX * cursorGain
-                                val dy = -distanceY * cursorGain
+                                var dx = -distanceX * cursorGain
+                                var dy = -distanceY * cursorGain
                                 if (!isAnchored && !dualWebViewGroup.isInScrollMode()) {
+                                    // Re-anchor on a fresh touch: lifting and re-touching the
+                                    // trackpad starts a new gesture (different downTime). Its
+                                    // first scroll delta can span the lift gap and teleport the
+                                    // cursor, so we drop just that first delta and resume smooth
+                                    // tracking on the next event.
+                                    val newGesture = e2.downTime != cursorScrollDownTime
+                                    cursorScrollDownTime = e2.downTime
+                                    if (newGesture) {
+                                        return true
+                                    }
+                                    // Safety net: even within one gesture, ignore an implausibly
+                                    // large single-frame delta (a stray jump) by clamping the step.
+                                    val maxStep = 160f
+                                    dx = dx.coerceIn(-maxStep, maxStep)
+                                    dy = dy.coerceIn(-maxStep, maxStep)
                                     // Clamp to single eye dimensions (640x480), not full dual
                                     // display width
                                     val maxW = 640f
@@ -7967,6 +8015,29 @@ class MainActivity :
         }
     }
 
+    /**
+     * Absolute screen coordinate of the VISIBLE cursor — the single source of
+     * truth for where the user is pointing. Matches View.getLocationOnScreen
+     * space, so overlay hit-tests (unipanel widgets, native-video controls)
+     * compare directly. In anchored mode the interaction point is the eye
+     * center; otherwise it follows lastCursorX/Y through the same scale +
+     * translation transform used to render the cursor.
+     */
+    private fun cursorInteractionPoint(): Pair<Float, Float> {
+        val groupLocation = IntArray(2)
+        dualWebViewGroup.getLocationOnScreen(groupLocation)
+        return if (isAnchored) {
+            (320f + groupLocation[0]) to (240f + groupLocation[1])
+        } else {
+            val scale = dualWebViewGroup.uiScale
+            val transX = dualWebViewGroup.leftEyeUIContainer.translationX
+            val transY = dualWebViewGroup.leftEyeUIContainer.translationY
+            val visualX = 320f + (lastCursorX - 320f) * scale + transX
+            val visualY = 240f + (lastCursorY - 240f) * scale + transY
+            (visualX + groupLocation[0]) to (visualY + groupLocation[1])
+        }
+    }
+
     private fun dispatchTouchEventAtCursor() {
 
         if (isSimulatingTouchEvent || cursorJustAppeared || isToggling) {
@@ -7986,32 +8057,19 @@ class MainActivity :
         }
 
         val scale = dualWebViewGroup.uiScale
-        val interactionX: Float
-        val interactionY: Float
-        val groupLocation = IntArray(2)
-        dualWebViewGroup.getLocationOnScreen(groupLocation)
-
-        if (isAnchored) {
-            // In anchored mode, interaction center is always screen center of the eye
-            interactionX = 320f + groupLocation[0]
-            interactionY = 240f + groupLocation[1]
-        } else {
-            // In non-anchored mode, interaction follows the visual cursor scaled around (320, 240)
-            // and translated
-            val transX = dualWebViewGroup.leftEyeUIContainer.translationX
-            val transY = dualWebViewGroup.leftEyeUIContainer.translationY
-
-            val visualX = 320f + (lastCursorX - 320f) * scale + transX
-            val visualY = 240f + (lastCursorY - 240f) * scale + transY
-
-            interactionX = visualX + groupLocation[0]
-            interactionY = visualY + groupLocation[1]
-        }
+        // Single source of truth for the cursor's screen position (also used by
+        // the native-video overlay hit-test, so both line up exactly).
+        val (interactionX, interactionY) = cursorInteractionPoint()
 
         // Intercept touches for mask overlay buttons when screen is masked
         if (dualWebViewGroup.isScreenMasked()) {
             suppressImmediateWebClickLeak()
             dualWebViewGroup.dispatchMaskOverlayTouch(interactionX, interactionY)
+            return
+        }
+
+        if (dispatchNativeVideoControlAt(interactionX, interactionY)) {
+            suppressImmediateWebClickLeak()
             return
         }
 
@@ -10143,6 +10201,11 @@ class MainActivity :
                 DebugLog.w("MediaPerm", "requestMediaPermission launch failed: ${e.message}")
             }
         }
+        mediaLibraryBridge.nativeVideoOpener = { uriText, mimeType, title ->
+            runOnUiBlockingForBridge {
+                openNativeVideoOverlay(uriText, mimeType, title)
+            }
+        }
         // Add JavaScript interface for custom media handling if needed
         webView.addJavascriptInterface(
                 object {
@@ -10320,6 +10383,436 @@ class MainActivity :
             .remove("tapradio_now_playing_duration_ms")
             .remove("tapradio_now_playing_error")
             .commit()
+    }
+
+    private fun runOnUiBlockingForBridge(block: () -> String): String {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return block()
+        }
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var result = ""
+        runOnUiThread {
+            try {
+                result = block()
+            } catch (e: Exception) {
+                result = JSONObject().put("error", e.localizedMessage ?: "Native video failed").toString()
+            } finally {
+                latch.countDown()
+            }
+        }
+        try {
+            latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: Exception) {}
+        return result.ifBlank {
+            JSONObject().put("error", "Native video player timed out").toString()
+        }
+    }
+
+    private fun nativeVideoPanelBackground(alpha: Int, color: Int = Color.BLACK, radius: Float = 14f): GradientDrawable {
+        return GradientDrawable().apply {
+            setColor(Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color)))
+            cornerRadius = radius
+            setStroke(1, Color.argb(90, 255, 255, 255))
+        }
+    }
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun openNativeVideoOverlay(uriText: String, mimeType: String?, title: String?): String {
+        if (!::mainContainer.isInitialized) {
+            return JSONObject().put("error", "Native video player is not ready").toString()
+        }
+        val uri = try {
+            Uri.parse(uriText)
+        } catch (e: Exception) {
+            return JSONObject().put("error", "Bad video URI").toString()
+        }
+        val mime = mimeType?.trim()?.takeIf { it.isNotBlank() } ?: "video/mp4"
+        val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() } ?: "Video"
+
+        DebugLog.d("NativeVideo", "Opening in-app video player title=$cleanTitle mime=$mime uri=$uri")
+        pauseNativeRadioStreamInternal(abandonFocus = true)
+        hideNativeVideoOverlay()
+
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            isClickable = true
+            isFocusable = true
+            isFocusableInTouchMode = true
+        }
+        val playerView = (layoutInflater.inflate(
+            R.layout.native_video_player_view,
+            overlay,
+            false
+        ) as PlayerView).apply {
+            setBackgroundColor(Color.BLACK)
+            useController = false
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+            setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+        }
+        overlay.addView(
+            playerView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        val titleView = TextView(this).apply {
+            text = cleanTitle
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            background = nativeVideoPanelBackground(145, radius = 10f)
+            setPadding(14, 8, 72, 8)
+            maxLines = 1
+            elevation = 20f
+        }
+        overlay.addView(
+            titleView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
+            )
+        )
+
+        val closeButton = TextView(this).apply {
+            text = "X"
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = nativeVideoPanelBackground(220, Color.rgb(28, 28, 28), radius = 16f)
+            elevation = 40f
+            setOnClickListener { hideNativeVideoOverlay() }
+        }
+        overlay.addView(
+            closeButton,
+            FrameLayout.LayoutParams(72, 56, Gravity.TOP or Gravity.END).apply {
+                topMargin = 10
+                rightMargin = 10
+            }
+        )
+
+        val playButton = TextView(this).apply {
+            text = "Pause"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = nativeVideoPanelBackground(235, Color.rgb(24, 24, 24), radius = 14f)
+            setPadding(12, 0, 12, 0)
+        }
+        val timeText = TextView(this).apply {
+            text = "0:00 / 0:00"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(10, 0, 10, 0)
+        }
+        val seekBar = SeekBar(this).apply {
+            max = 1000
+            progress = 0
+        }
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(12, 8, 12, 8)
+            background = nativeVideoPanelBackground(220, radius = 18f)
+            elevation = 30f
+            visibility = View.VISIBLE
+            addView(playButton, LinearLayout.LayoutParams(96, 48))
+            addView(timeText, LinearLayout.LayoutParams(140, 48))
+            addView(seekBar, LinearLayout.LayoutParams(0, 48, 1f))
+        }
+        overlay.addView(
+            controls,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                72,
+                Gravity.BOTTOM
+            ).apply {
+                leftMargin = 28
+                rightMargin = 28
+                bottomMargin = 20
+            }
+        )
+
+        mainContainer.addView(
+            overlay,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        return try {
+            val player = ExoPlayer.Builder(this)
+                .setAudioAttributes(
+                    androidx.media3.common.AudioAttributes.Builder()
+                        .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                        .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+                        .build(),
+                    true
+                )
+                .build()
+            player.addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    DebugLog.w("NativeVideo", "Playback error: ${error.message}")
+                    dualWebViewGroup.showToast(error.message ?: "Video playback failed", 3500L)
+                }
+            })
+            playerView.player = player
+            player.setMediaItem(
+                MediaItem.Builder()
+                    .setUri(uri)
+                    .setMimeType(mime)
+                    .build()
+            )
+            player.prepare()
+            player.playWhenReady = true
+            nativeVideoOverlay = overlay
+            nativeVideoPlayerView = playerView
+            nativeVideoCloseButton = closeButton
+            nativeVideoControlsView = controls
+            nativeVideoPlayPauseButton = playButton
+            nativeVideoSeekBar = seekBar
+            nativeVideoTimeText = timeText
+            nativeVideoPlayer = player
+            showNativeVideoControls()
+            startNativeVideoProgressTicker()
+            raiseCursorAboveNativeVideoOverlay()
+            overlay.requestFocus()
+            JSONObject()
+                .put("status", "opened")
+                .put("engine", "media3")
+                .toString()
+        } catch (e: Exception) {
+            DebugLog.w("NativeVideo", "Failed to open $uri: ${e.message}")
+            try { mainContainer.removeView(overlay) } catch (_: Exception) {}
+            JSONObject().put("error", e.localizedMessage ?: "Video playback failed").toString()
+        }
+    }
+
+    private fun hideNativeVideoOverlay() {
+        val player = nativeVideoPlayer
+        val playerView = nativeVideoPlayerView
+        val overlay = nativeVideoOverlay
+        nativeVideoPlayer = null
+        nativeVideoPlayerView = null
+        nativeVideoOverlay = null
+        nativeVideoCloseButton = null
+        nativeVideoControlsView = null
+        nativeVideoPlayPauseButton = null
+        nativeVideoSeekBar = null
+        nativeVideoTimeText = null
+        nativeVideoPressedControl = null
+        uiHandler.removeCallbacks(hideNativeVideoControlsRunnable)
+        uiHandler.removeCallbacks(nativeVideoProgressTicker)
+        try {
+            playerView?.player = null
+        } catch (_: Exception) {}
+        try {
+            player?.stop()
+            player?.release()
+        } catch (_: Exception) {}
+        if (overlay != null && ::mainContainer.isInitialized) {
+            try { mainContainer.removeView(overlay) } catch (_: Exception) {}
+        }
+    }
+
+    private fun raiseCursorAboveNativeVideoOverlay() {
+        if (!::mainContainer.isInitialized ||
+            !::cursorLeftView.isInitialized ||
+            !::cursorRightView.isInitialized
+        ) {
+            return
+        }
+        cursorLeftView.elevation = 30_000f
+        cursorRightView.elevation = 30_000f
+        cursorLeftView.translationZ = 30_000f
+        cursorRightView.translationZ = 30_000f
+        mainContainer.bringChildToFront(cursorLeftView)
+        mainContainer.bringChildToFront(cursorRightView)
+    }
+
+    private fun showNativeVideoControls() {
+        nativeVideoControlsView?.visibility = View.VISIBLE
+        uiHandler.removeCallbacks(hideNativeVideoControlsRunnable)
+        uiHandler.postDelayed(hideNativeVideoControlsRunnable, 3000L)
+        updateNativeVideoControlsState()
+    }
+
+    private fun startNativeVideoProgressTicker() {
+        uiHandler.removeCallbacks(nativeVideoProgressTicker)
+        uiHandler.post(nativeVideoProgressTicker)
+    }
+
+    private fun updateNativeVideoControlsState() {
+        val player = nativeVideoPlayer ?: return
+        nativeVideoPlayPauseButton?.text = if (player.isPlaying) "Pause" else "Play"
+        val duration = player.duration.takeIf { it > 0L && it != androidx.media3.common.C.TIME_UNSET } ?: 0L
+        val position = player.currentPosition.coerceAtLeast(0L)
+        nativeVideoTimeText?.text = "${formatNativeVideoTime(position)} / ${formatNativeVideoTime(duration)}"
+        nativeVideoSeekBar?.let { bar ->
+            if (duration > 0L) {
+                bar.progress = ((position.coerceAtMost(duration) * bar.max) / duration).toInt()
+            } else {
+                bar.progress = 0
+            }
+        }
+    }
+
+    private fun formatNativeVideoTime(ms: Long): String {
+        val totalSeconds = (ms / 1000L).coerceAtLeast(0L)
+        val minutes = totalSeconds / 60L
+        val seconds = totalSeconds % 60L
+        return "$minutes:${seconds.toString().padStart(2, '0')}"
+    }
+
+    private fun isPointInViewWithSlop(view: View?, screenX: Float, screenY: Float, slop: Float = 14f): Boolean {
+        val target = view ?: return false
+        if (!target.isShown) return false
+        val loc = IntArray(2)
+        target.getLocationOnScreen(loc)
+        return screenX >= loc[0] - slop &&
+            screenX <= loc[0] + target.width + slop &&
+            screenY >= loc[1] - slop &&
+            screenY <= loc[1] + target.height + slop
+    }
+
+    private fun nativeVideoControlAt(screenX: Float, screenY: Float): String? {
+        if (nativeVideoOverlay == null) return null
+        // [screenX]/[screenY] are absolute screen coords derived from the VISIBLE
+        // cursor (see cursorInteractionPoint) — the same space the control views
+        // report via getLocationOnScreen — so a single direct rect check is
+        // correct. The old multi-candidate / eye-width-shifted guessing caused
+        // taps far from a control to register as a hit on the dual-eye display.
+        if (isPointInViewWithSlop(nativeVideoCloseButton, screenX, screenY, 22f)) return "close"
+        if (isPointInViewWithSlop(nativeVideoPlayPauseButton, screenX, screenY)) return "play"
+        if (isPointInViewWithSlop(nativeVideoSeekBar, screenX, screenY, 18f)) return "seek"
+        return null
+    }
+
+    private fun seekNativeVideoFromScreenPoint(screenX: Float, screenY: Float) {
+        val player = nativeVideoPlayer ?: return
+        val seekBar = nativeVideoSeekBar ?: return
+        val duration = player.duration.takeIf { it > 0L && it != androidx.media3.common.C.TIME_UNSET } ?: return
+        // screenX is already in the seek bar's coordinate space (cursor-derived).
+        val loc = IntArray(2)
+        seekBar.getLocationOnScreen(loc)
+        val pct = ((screenX - loc[0]).coerceIn(0f, seekBar.width.toFloat()) /
+            seekBar.width.toFloat())
+        player.seekTo((duration * pct).toLong())
+        updateNativeVideoControlsState()
+    }
+
+    private fun consumedByNativeVideoControls(ev: MotionEvent): Boolean {
+        if (nativeVideoOverlay == null) return false
+        // Hit-test against the VISIBLE cursor's screen position (the same point
+        // the working overlay hit-test uses), NOT the raw event coordinates. On
+        // the dual-eye display the raw mouse coordinate doesn't line up with the
+        // rendered cursor, which is why taps didn't map to the on-screen
+        // controls. cursorInteractionPoint() matches getLocationOnScreen space.
+        val point = if (::dualWebViewGroup.isInitialized) {
+            cursorInteractionPoint()
+        } else {
+            resolveMouseScreenPoint(ev)
+        }
+        if (ev.actionMasked == MotionEvent.ACTION_HOVER_MOVE ||
+            ev.actionMasked == MotionEvent.ACTION_MOVE ||
+            ev.actionMasked == MotionEvent.ACTION_HOVER_ENTER
+        ) {
+            showNativeVideoControls()
+        }
+
+        return when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN,
+            MotionEvent.ACTION_BUTTON_PRESS -> {
+                // Hit-test BEFORE revealing controls: if the controls were
+                // auto-hidden, the close button isn't shown so this returns
+                // "surface" and the press simply reveals the controls (it does
+                // NOT close). Only a press that actually lands on the visible X
+                // closes — and it closes IMMEDIATELY here on press, so there's no
+                // ambiguity about a drifting release being what shut the window.
+                val pressed = nativeVideoControlAt(point.first, point.second) ?: "surface"
+                nativeVideoPressedControl = pressed
+                showNativeVideoControls()
+                if (pressed == "close") {
+                    nativeVideoPressedControl = null
+                    hideNativeVideoOverlay()
+                }
+                true
+            }
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_BUTTON_RELEASE -> {
+                showNativeVideoControls()
+                val releaseTarget = nativeVideoControlAt(point.first, point.second)
+                // Use the PRESSED control authoritatively. A press on the empty
+                // video surface stays "surface" even if the release drifts onto a
+                // control — that drift is exactly what made it unclear what was
+                // closing the window. (The X already closed on press above.)
+                val target = nativeVideoPressedControl ?: releaseTarget ?: "surface"
+                nativeVideoPressedControl = null
+                when (target) {
+                    "close" -> {
+                        hideNativeVideoOverlay()
+                        true
+                    }
+                    "play" -> {
+                        val player = nativeVideoPlayer
+                        if (player != null) {
+                            if (player.isPlaying) player.pause() else player.play()
+                            updateNativeVideoControlsState()
+                        }
+                        true
+                    }
+                    "seek" -> {
+                        seekNativeVideoFromScreenPoint(point.first, point.second)
+                        true
+                    }
+                    "surface" -> true
+                    else -> true
+                }
+            }
+            MotionEvent.ACTION_CANCEL,
+            MotionEvent.ACTION_HOVER_EXIT -> {
+                nativeVideoPressedControl = null
+                true
+            }
+            // Movement (hover/move/enter) must NOT be consumed. The cursor still
+            // needs to visually track the pointer while a native video is open —
+            // consuming move events here is what froze the pointer. We already
+            // revealed the controls above on movement; returning false lets the
+            // normal cursor-repositioning path run. Only press/release (the real
+            // control interactions) are consumed so taps don't leak to the WebView.
+            else -> false
+        }
+    }
+
+    private fun dispatchNativeVideoControlAt(screenX: Float, screenY: Float): Boolean {
+        if (nativeVideoOverlay == null) return false
+        showNativeVideoControls()
+        return when (nativeVideoControlAt(screenX, screenY)) {
+            "close" -> {
+                hideNativeVideoOverlay()
+                true
+            }
+            "play" -> {
+                nativeVideoPlayer?.let { player ->
+                    if (player.isPlaying) player.pause() else player.play()
+                }
+                updateNativeVideoControlsState()
+                true
+            }
+            "seek" -> {
+                seekNativeVideoFromScreenPoint(screenX, screenY)
+                true
+            }
+            else -> {
+                // Plain video surface tap: just reveal controls, then leave playback alone.
+                true
+            }
+        }
     }
 
     private fun buildNativeRadioPlaybackStateJson(): String {
@@ -13102,6 +13595,10 @@ class MainActivity :
         cursorRightView.scaleY = scale
         cursorRightView.visibility = if (showRight) View.VISIBLE else View.GONE
 
+        if (nativeVideoOverlay != null) {
+            raiseCursorAboveNativeVideoOverlay()
+        }
+
         // Force layout and redraw for both cursors to ensure visibility
         cursorLeftView.requestLayout()
         cursorRightView.requestLayout()
@@ -13331,6 +13828,9 @@ class MainActivity :
         autoEnterMouseModeForMudraInput(ev)
 
         val isMouseEvent = isMousePointerEvent(ev)
+        if (consumedByNativeVideoControls(ev)) {
+            return true
+        }
 
         // Track state at start of touch to prevent double-dispatch issues
         if (ev.action == MotionEvent.ACTION_DOWN) {
@@ -13664,6 +14164,9 @@ class MainActivity :
         autoEnterMouseModeForMudraInput(ev)
 
         if (isMousePointerEvent(ev) && ::dualWebViewGroup.isInitialized) {
+            if (consumedByNativeVideoControls(ev)) {
+                return true
+            }
             val mousePoint = resolveMouseScreenPoint(ev)
             val rawX = mousePoint.first
             val rawY = mousePoint.second
@@ -13903,6 +14406,7 @@ class MainActivity :
         // background after the Activity is destroyed (holds WAKE_MODE_LOCAL lock).
         // On AR glasses with limited RAM, the system frequently destroys TapBrowser
         // when the user switches back to VisionClaw, creating orphaned players.
+        hideNativeVideoOverlay()
         releaseNativeRadioPlayer(clearMetadata = true, abandonFocus = true)
         // Release browser agent resources
         stopBrowserAgent("Activity destroyed")

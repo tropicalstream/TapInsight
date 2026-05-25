@@ -411,6 +411,20 @@ var mediaType = (params.get('type') || '').toLowerCase();  // text, audio, video
 var mediaTitle = params.get('title') || '';
 var captionUrl = params.get('srt') || params.get('captions') || '';
 
+// Compatibility for sessions/bookmarks created by older builds. Direct DCIM
+// videos used to route through shouldInterceptRequest at /local-video/, but
+// RayNeo's Chromium video pipeline rejects those intercepted 206 tail ranges.
+// Rewrite stale player URLs to the loopback HTTPS media server before the
+// <video> element sees them.
+try {
+  if (mediaUrl.indexOf('/local-video/') !== -1 &&
+      window.TapMedia &&
+      typeof TapMedia.resolveDcimVideoPlaybackUrl === 'function') {
+    var resolvedDcimVideoUrl = TapMedia.resolveDcimVideoPlaybackUrl(mediaUrl);
+    if (resolvedDcimVideoUrl) mediaUrl = resolvedDcimVideoUrl;
+  }
+} catch (_) {}
+
 // Stamp a tiny diagnostic trail onto the spinner so a blank hang is
 // actually debuggable from the glasses — we don't have console access
 // in production, so the only failure signal we've got is the overlay.
@@ -1193,6 +1207,23 @@ Object.defineProperty(window, 'ttsBridgeAudio', {
 });
 function getTtsBridgeAudio() { return getActiveTtsAudio(); }
 
+function hardStopTtsAudioElement(el) {
+  if (!el) return;
+  try { el.pause(); } catch(_){}
+  try {
+    el.onended = null;
+    el.onerror = null;
+    el.onloadedmetadata = null;
+    el.oncanplaythrough = null;
+    el.onplay = null;
+  } catch(_){}
+  try { el.currentTime = 0; } catch(_){}
+  try { el.srcObject = null; } catch(_){}
+  try { el.removeAttribute('src'); } catch(_){}
+  try { if (typeof el.load === 'function') el.load(); } catch(_){}
+  try { el._loadedUrl = null; } catch(_){}
+}
+
 // ─── Async TTS pipeline ────────────────────────────────────────────────
 //
 // The bridge has two entry points:
@@ -1600,14 +1631,16 @@ function stopTts() {
     var pool = ttsAudioPool;
     if (pool) {
       for (var i = 0; i < pool.length; i++) {
-        var el = pool[i];
-        if (!el) continue;
-        try { el.pause(); } catch(_){}
-        try { el.removeAttribute('src'); } catch(_){}
-        try { if (typeof el.load === 'function') el.load(); } catch(_){}
-        try { el._loadedUrl = null; } catch(_){}
+        hardStopTtsAudioElement(pool[i]);
+        try { pool[i] && pool[i].remove(); } catch(_){}
       }
     }
+    document.querySelectorAll('audio[id^="ttsBridgeAudio_"]').forEach(function(el) {
+      hardStopTtsAudioElement(el);
+      try { el.remove(); } catch(_){}
+    });
+    ttsAudioPool = null;
+    ttsAudioActiveSlot = 0;
   } catch (_) {}
   // Reset the highlight diff cache so the next session starts with a
   // clean full-pass rather than diffing against stale state.

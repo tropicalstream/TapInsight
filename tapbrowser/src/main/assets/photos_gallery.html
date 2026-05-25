@@ -693,6 +693,33 @@ function humanDuration(ms) {
   return m + ':' + (rem < 10 ? '0' : '') + rem;
 }
 
+function needsNativeVideoPlayback(p) {
+  const codec = String(p && p.videoCodecMime || '').toLowerCase();
+  const rel = String(p && p.relativeDisplayPath || '').replace(/\\/g, '/').toLowerCase();
+  const source = String(p && p.source || '').toLowerCase();
+  const hasNativeUri = !!(p && (p.nativeVideoUri || p.dcimUri));
+  return codec.indexOf('hevc') !== -1 ||
+         codec.indexOf('h265') !== -1 ||
+         (hasNativeUri && source.indexOf('dcim') === 0 && rel.indexOf('dcim/camera/') === 0);
+}
+
+function tryOpenNativeVideo(p) {
+  if (!needsNativeVideoPlayback(p)) return false;
+  if (!window.TapMedia || typeof TapMedia.openNativeVideo !== 'function') return false;
+  const nativeUri = p.nativeVideoUri || p.dcimUri || '';
+  if (!nativeUri) return false;
+  try {
+    console.log('[NativeVideo] routing', p.name || 'Video', p.videoCodecMime || '', nativeUri);
+    const raw = TapMedia.openNativeVideo(nativeUri, p.mimeType || 'video/mp4', p.name || 'Video');
+    const resp = raw ? JSON.parse(raw) : {};
+    if (resp && resp.status === 'opened') return true;
+    if (resp && resp.error) toast(resp.error);
+  } catch (e) {
+    console.warn('Native video handoff failed', e);
+  }
+  return false;
+}
+
 /**
  * Entry-point dispatcher for grid clicks. Photos open the lightbox;
  * videos hand off to media_player.html (same player audio/video
@@ -704,6 +731,7 @@ function openEntry(idx) {
   const p = photos[idx];
   if (!p) return;
   if (p.kind === 'VIDEO') {
+    if (tryOpenNativeVideo(p)) return;
     const url = entryUrl(p);
     if (!url) { toast('Cannot play this video'); return; }
     const qp = '?type=video' +

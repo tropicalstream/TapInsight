@@ -812,6 +812,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
                 uri == "/api/library/root" && method == Method.GET -> serveLibraryRootInfo()
                 uri == "/api/library/ensure-dashboard-icon" && method == Method.POST -> ensureLibraryDashboardIcon(session)
                 uri == "/media/file" && method == Method.GET -> serveMediaFile(session)
+                uri == "/media/dcim-video" && method == Method.GET -> serveDcimVideoFile(session)
                 // ── Fish.audio TTS proxy (engine = "fish") ─────────────────────
                 // The companion HTML never talks to api.fish.audio directly; the
                 // glasses proxy every call so the API key stays inside the
@@ -3943,6 +3944,123 @@ window.__companionToken = '${sessionToken}';
         response.addHeader("Content-Range", "bytes $start-$end/$fileLength")
         response.addHeader("Content-Length", contentLength.toString())
         return response
+    }
+
+    /**
+     * GET /media/dcim-video?path=<DCIM-relative-video>&token=<session-token>
+     *
+     * Local camera videos do not play reliably when streamed through
+     * WebViewClient.shouldInterceptRequest: RayNeo's Chromium video stack
+     * repeatedly fails intercepted 206 tail ranges with net::ERR_FAILED.
+     * This endpoint serves the same DCIM file over the real loopback HTTPS
+     * server, while keeping the path contained to /storage/emulated/0/DCIM.
+     */
+    private fun serveDcimVideoFile(session: IHTTPSession): Response {
+        if (!isAuthorizedApiRequest(session)) {
+            return newFixedLengthResponse(
+                Response.Status.UNAUTHORIZED, "text/plain", "Unauthorized"
+            )
+        }
+        val path = session.parms?.get("path")
+            ?: return badRequest("Missing ?path=")
+        val decoded = try { URLDecoder.decode(path, "UTF-8") } catch (e: Exception) { path }
+        val relative = decoded
+            .substringBefore('?')
+            .substringBefore('#')
+            .trimStart('/')
+        if (relative.isBlank() || relative.contains("..") || relative.contains('\\')) {
+            return newFixedLengthResponse(
+                Response.Status.FORBIDDEN, "text/plain", "Bad DCIM path"
+            )
+        }
+
+        val root = File("/storage/emulated/0/DCIM")
+        val file = File(root, relative)
+        val canonicalRoot = try { root.canonicalPath } catch (_: Exception) { root.absolutePath }
+        val canonicalFile = try { file.canonicalPath } catch (_: Exception) { file.absolutePath }
+        if (!canonicalFile.startsWith(canonicalRoot + File.separator)) {
+            return newFixedLengthResponse(
+                Response.Status.FORBIDDEN, "text/plain", "Path escapes DCIM root"
+            )
+        }
+        if (!file.exists() || !file.isFile) {
+            return newFixedLengthResponse(
+                Response.Status.NOT_FOUND, "text/plain", "Not found"
+            )
+        }
+
+        val mime = when (file.extension.lowercase(Locale.ROOT)) {
+            "mp4", "m4v" -> "video/mp4"
+            "webm" -> "video/webm"
+            "mkv" -> "video/x-matroska"
+            "mov" -> "video/quicktime"
+            "3gp" -> "video/3gpp"
+            else -> return newFixedLengthResponse(
+                Response.Status.BAD_REQUEST, "text/plain", "Unsupported video type"
+            )
+        }
+
+        return serveDcimFileWithRange(file, mime, session.headers?.get("range"))
+    }
+
+    private fun serveDcimFileWithRange(file: File, mime: String, rangeHeader: String?): Response {
+        val fileLength = file.length()
+        if (rangeHeader.isNullOrBlank()) {
+            val fis = FileInputStream(file)
+            val response = newFixedLengthResponse(Response.Status.OK, mime, fis, fileLength)
+            response.addHeader("Accept-Ranges", "bytes")
+            response.addHeader("Cache-Control", "no-store")
+            return response
+        }
+
+        val range = parseDcimRangeHeader(rangeHeader, fileLength)
+            ?: return newFixedLengthResponse(
+                Response.Status.RANGE_NOT_SATISFIABLE, "text/plain", "Range out of bounds"
+            ).also {
+                it.addHeader("Accept-Ranges", "bytes")
+                it.addHeader("Content-Range", "bytes */$fileLength")
+            }
+        val (start, end) = range
+        val contentLength = end - start + 1
+        val fis = FileInputStream(file)
+        try {
+            fis.channel.position(start)
+        } catch (e: Exception) {
+            fis.close()
+            return newFixedLengthResponse(
+                Response.Status.INTERNAL_ERROR, "text/plain", "Seek failed: ${e.message}"
+            )
+        }
+
+        val response = newFixedLengthResponse(
+            Response.Status.PARTIAL_CONTENT, mime, fis, contentLength
+        )
+        response.addHeader("Accept-Ranges", "bytes")
+        response.addHeader("Content-Range", "bytes $start-$end/$fileLength")
+        response.addHeader("Cache-Control", "no-store")
+        return response
+    }
+
+    private fun parseDcimRangeHeader(rangeHeader: String, totalLength: Long): Pair<Long, Long>? {
+        if (totalLength <= 0L) return null
+        val raw = rangeHeader.trim().removePrefix("bytes=").substringBefore(',').trim()
+        val dash = raw.indexOf('-')
+        if (dash < 0) return null
+        val startStr = raw.substring(0, dash).trim()
+        val endStr = raw.substring(dash + 1).trim()
+        val start: Long
+        val end: Long
+        if (startStr.isEmpty()) {
+            val suffixLen = endStr.toLongOrNull() ?: return null
+            if (suffixLen <= 0L) return null
+            start = (totalLength - suffixLen).coerceAtLeast(0L)
+            end = totalLength - 1
+        } else {
+            start = startStr.toLongOrNull() ?: return null
+            end = endStr.toLongOrNull()?.coerceAtMost(totalLength - 1) ?: (totalLength - 1)
+        }
+        if (start < 0L || start >= totalLength || end < start) return null
+        return start to end
     }
 
     // ── Fish.audio proxy ───────────────────────────────────────────────────
