@@ -240,6 +240,15 @@ class GeminiRouter(
                 "(3) The user said YES to an offer you made on the immediately prior turn. The offer must have been " +
                 "explicit ('want me to pull up a video?', 'should I open YouTube?'). A vague 'more detail?' offer does " +
                 "NOT count. " +
+                "(3b) ACT ON OPTIONS YOU OFFERED: If on your immediately prior turn YOU presented a set of choices or " +
+                "a list of options (e.g. 'I can play it on YouTube or search Google — which?', a numbered or lettered " +
+                "list of items, or 'do you want A or B?') and the user now SELECTS one — by number or ordinal ('the " +
+                "first', 'number 2', 'the last one'), by name ('the YouTube one', 'Spotify', 'the second video'), or by " +
+                "a selecting phrase ('that one', 'do that', 'go with that', 'yeah the second', 'sure, the first one') — " +
+                "treat it EXACTLY like an explicit command for the chosen option and PERFORM it immediately with the " +
+                "matching tool. Do NOT re-list the options, re-offer, ask which one again, or say you are unsure which " +
+                "one they mean — you just presented them this turn, so the selection is unambiguous. Resolve the chosen " +
+                "option to its full subject/title via RULE ZERO-B before calling the tool. " +
                 "If NONE of (1)/(2)/(3) is true, you MUST NOT call open_taplink, send_video_list, or open YouTube — not " +
                 "'as a helpful extra', not 'because the topic has good videos', not 'because the user might want to see " +
                 "it', not 'to illustrate what I'm saying'. Instead: speak the answer, and optionally close with a single " +
