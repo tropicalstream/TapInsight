@@ -553,11 +553,40 @@ class MainActivity :
                     return false
                 }
                 cancelPendingMaskSingleTap()
+                val dx = e2.x - e1.x
+                val dy = e2.y - e1.y
+                val absDx = kotlin.math.abs(dx)
+                val absDy = kotlin.math.abs(dy)
+                val absVx = kotlin.math.abs(velocityX)
+                val devInfo = describeDevice(e2)
                 DebugLog.d(
                     "MaskGesture",
-                    "fling ignored; swipe-to-skip is disabled ${describeDevice(e2)}"
+                    "fling candidate dx=${"%.0f".format(dx)} dy=${"%.0f".format(dy)} " +
+                        "vx=${"%.0f".format(velocityX)} $devInfo"
                 )
-                return true
+                // Only the RIGHT-arm temple pad (cyttsp5_mt) drives track-skip;
+                // the LEFT-arm volume pad (cyttsp6_mt) is filtered out so a
+                // volume swipe isn't mistaken for a skip.
+                if (isIgnoredMaskInputDevice(e2)) {
+                    DebugLog.d("MaskGesture", "fling IGNORED — left-arm device $devInfo")
+                    return false
+                }
+                // Horizontal swipe (clearly more horizontal than vertical, with
+                // enough distance + velocity) skips. Forward (L→R) = next,
+                // back (R→L) = previous. Drives the same prev/next handlers the
+                // on-screen </> buttons use (onMaskSwipeNext/Prev), which route
+                // to the active TapRadio station list or YouTube/media player.
+                if (absDx >= 80f && absDx > absDy * 1.4f && absVx > 250f) {
+                    if (dx > 0f) {
+                        DebugLog.d("MaskGesture", "swipe FORWARD → next track $devInfo")
+                        runCatching { dualWebViewGroup.onMaskSwipeNext() }
+                    } else {
+                        DebugLog.d("MaskGesture", "swipe BACK → prev track $devInfo")
+                        runCatching { dualWebViewGroup.onMaskSwipePrev() }
+                    }
+                    return true
+                }
+                return false
             }
         })
     }
