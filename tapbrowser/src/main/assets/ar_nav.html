@@ -441,6 +441,7 @@ var roadLabelMarkers = [];      // current road label markers on map
 var poiMarkers = [];            // current POI markers on map
 var keywordPinMarkers = [];     // explicit search result pushpins
 var Marker3DElement = null;     // stored reference to Marker3DElement constructor
+var PinElement = null;          // stored reference to PinElement (styled pins for origin/dest)
 var mapDisplayMode = 'day';     // 'day' | 'night' | 'dark'
 var MIN_RANGE = 80;
 var KEYWORD_PIN_HIDE_RANGE = 450;
@@ -1731,6 +1732,12 @@ async function init() {
     var Map3DElement = maps3dLib.Map3DElement;
     var Polyline3DElement = maps3dLib.Polyline3DElement;
     Marker3DElement = maps3dLib.Marker3DElement; // store globally for zoom re-render
+    // PinElement (from the 'marker' library) lets us give the origin and
+    // destination distinct, clearly-labeled pins instead of two identical
+    // default markers. Best-effort — falls back to plain labels if unavailable.
+    try {
+      PinElement = (await google.maps.importLibrary('marker')).PinElement;
+    } catch (e) { console.warn('[ARNav] PinElement unavailable:', e && e.message); }
 
     // Calculate optimal camera. For landmark/flyover mode, center tightly on the
     // destination. For route mode, use the bounding box of the full route.
@@ -1881,25 +1888,44 @@ async function init() {
     }
 
     // ── Step 6: Add origin and destination markers ──
+    // Give the two endpoints DISTINCT, clearly-labeled pins so it's obvious
+    // which is the start and which is the destination: a green "A" pin labeled
+    // "Start · You", and a red "B" pin labeled "Destination · <name>". Falls
+    // back to a plain text label if PinElement isn't available.
+    function buildEndpointMarker(lat, lng, glyph, bg, labelText) {
+      var marker = new Marker3DElement({
+        position: { lat: lat, lng: lng, altitude: 30 },
+        altitudeMode: 'RELATIVE_TO_GROUND',
+        label: labelText
+      });
+      if (PinElement) {
+        try {
+          marker.append(new PinElement({
+            background: bg,
+            borderColor: '#FFFFFF',
+            glyphColor: '#FFFFFF',
+            glyphText: glyph,
+            scale: 1.3
+          }));
+        } catch (pe) { console.warn('[ARNav] endpoint pin failed:', pe && pe.message); }
+      }
+      return marker;
+    }
+
     if (!isLandmarkMode) {
       try {
-        var originMarker = new Marker3DElement({
-          position: { lat: userCoords.lat, lng: userCoords.lng, altitude: 30 },
-          altitudeMode: 'RELATIVE_TO_GROUND',
-          label: 'You'
-        });
-        map3d.append(originMarker);
+        map3d.append(buildEndpointMarker(
+          userCoords.lat, userCoords.lng, 'A', '#00C853', 'Start · You'
+        ));
       } catch(me) { console.warn('[ARNav] Origin marker failed:', me.message); }
     }
 
     if (!hasKeywordPins) {
       try {
-        var destMarker = new Marker3DElement({
-          position: { lat: destCoords.lat, lng: destCoords.lng, altitude: 30 },
-          altitudeMode: 'RELATIVE_TO_GROUND',
-          label: destAddr.split(',')[0] || 'Destination'
-        });
-        map3d.append(destMarker);
+        var destName = (destAddr.split(',')[0] || '').trim() || 'Destination';
+        map3d.append(buildEndpointMarker(
+          destCoords.lat, destCoords.lng, 'B', '#FF1744', 'Destination · ' + destName
+        ));
       } catch(me) { console.warn('[ARNav] Dest marker failed:', me.message); }
     }
 
