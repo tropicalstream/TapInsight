@@ -55,10 +55,37 @@ class GeminiAudioPlayer(context: Context) {
     @Volatile private var writeGeneration = 0L
 
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { change ->
-        if (change <= AudioManager.AUDIOFOCUS_LOSS) {
-            synchronized(lock) {
-                hasAudioFocus = false
-                runCatching { audioTrack?.pause() }
+        synchronized(lock) {
+            when (change) {
+                AudioManager.AUDIOFOCUS_GAIN -> {
+                    // Focus came back — restore full volume and resume if a
+                    // transient loss had paused us.
+                    hasAudioFocus = true
+                    runCatching { audioTrack?.setVolume(1f) }
+                    runCatching {
+                        if (audioTrack?.playState == AudioTrack.PLAYSTATE_PAUSED) {
+                            audioTrack?.play()
+                        }
+                    }
+                }
+                AudioManager.AUDIOFOCUS_LOSS -> {
+                    // PERMANENT loss (a phone call, another app taking over for
+                    // good). Stop and release.
+                    hasAudioFocus = false
+                    runCatching { audioTrack?.pause() }
+                }
+                else -> {
+                    // Transient / duck loss (change == -2 or -3) — e.g. a PAUSED
+                    // YouTube video in the WebView momentarily re-asserting audio
+                    // focus. The old code did `change <= AUDIOFOCUS_LOSS`, which
+                    // is true for the transient values too (they are MORE
+                    // negative than AUDIOFOCUS_LOSS), so it paused Gemini and
+                    // never resumed — freezing speech mid-sentence. The
+                    // assistant's voice is the primary interaction, so we keep
+                    // speaking through transient losses. (We briefly duck; the
+                    // next audio chunk resets volume to 1f, so it self-heals.)
+                    runCatching { audioTrack?.setVolume(0.4f) }
+                }
             }
         }
     }
