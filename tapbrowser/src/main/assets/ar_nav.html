@@ -1693,7 +1693,14 @@ async function init() {
       }
     }
 
-    document.getElementById('dest-text').textContent = destAddr;
+    // Prefer the geocoded place name for the on-screen destination header so
+    // the user sees e.g. "Blue Bottle Coffee" rather than a raw street string.
+    // Fall back to the search topic, then the raw address.
+    var destHeaderName =
+      (destCoords && destCoords.name && destCoords.name.trim()) ||
+      (typeof searchTopic !== 'undefined' && searchTopic && searchTopic.trim()) ||
+      destAddr;
+    document.getElementById('dest-text').textContent = destHeaderName;
     renderCandidateList();
 
     // ── Step 3: Fetch route (ONLY in route mode) ──
@@ -1779,8 +1786,17 @@ async function init() {
       // Need extra range to account for tilt (camera is angled, not top-down).
       var tiltFactor = 1.6; // compensate for 55° tilt cutting off the far edge
       currentRange = Math.max(300, Math.min(routeDist * tiltFactor, 30000));
+      // Face along the user→destination bearing so the camera sits on the
+      // origin side and the route leads INTO the frame toward the centered
+      // destination.
       currentHeading = bearingDeg(userCoords, destCoords);
-      currentCenter = routeCenter;
+      // Center on the DESTINATION (not the route midpoint). This keeps the
+      // destination framed dead-center, and — crucially — means each press of
+      // the + button zooms toward the destination, eventually landing in its
+      // Street View, instead of converging on an arbitrary mid-route point.
+      // The origin still trails into the lower frame because we pulled the
+      // camera back along the user→dest bearing.
+      currentCenter = { lat: destCoords.lat, lng: destCoords.lng };
       currentTilt = 55;
 
       // For short routes (<1km), lower tilt for better overview
