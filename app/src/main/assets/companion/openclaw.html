@@ -368,6 +368,10 @@ ingress:
   <input type="number" id="openClawHeartbeatIntervalSeconds" placeholder="20" min="10" max="120">
   <div class="hint" id="openClawHeartbeatReadout" style="color:#8fdfff;font-weight:600">Currently polling every 20 seconds.</div>
   <div class="hint">How often to refresh the heartbeat HUD display (10–120 seconds). Lower = more frequent updates, but uses more battery. Default: 20s.</div>
+
+  <label>Agent Status Poll Interval (seconds)</label>
+  <input type="number" id="agentStatusPollSeconds" placeholder="30" min="10" max="300">
+  <div class="hint">The HUD heartbeat ticker stays permanently visible and refreshes the live Hermes / TapClaw reachability on this cadence (10–300 seconds, default 30) — so a stalled agent query is visible instead of leaving the ticker blank.</div>
 </div>
 
 <!-- Test & Pair -->
@@ -550,6 +554,7 @@ const FIELDS = {
   openClawSessionId:   { key: 'openclaw_session_id',       type: 'string' },
   openClawTimeoutSeconds: { key: 'openclaw_timeout_seconds', type: 'int' },
   openClawHeartbeatIntervalSeconds: { key: 'openclaw_heartbeat_interval_seconds', type: 'int' },
+  agentStatusPollSeconds: { key: 'agent_status_poll_seconds', type: 'int' },
   // Mode brackets — see OpenClawClient.consumeModePrefixForSession +
   // fireAfterTurnRestoreIfConfigured for how these drive sendMessage.
   openClawFastMode:        { key: 'openclaw_fast_mode',         type: 'string' },

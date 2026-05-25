@@ -288,6 +288,38 @@ class GeminiSessionForegroundService : LifecycleService() {
                 kotlinx.coroutines.delay(intervalMs)
             }
         }
+        // Persistent agent-status ticker. Keeps the HUD heartbeat ticker
+        // populated at all times with the live Hermes / TapClaw reachability,
+        // so a stalled agent query is visible instead of leaving the ticker
+        // blank ("limbo"). Polls every prefs.agentStatusPollSeconds (default
+        // 30s, configurable in the companion app). It publishes a PERSISTENT,
+        // non-scrolling heartbeat; live streaming step-labels from an in-flight
+        // agent call (which update far more often) override it in between, and
+        // the next tick restores the status line once they go quiet.
+        lifecycleScope.launch {
+            val prefs = com.rayneo.visionclaw.core.storage.AppPreferences(applicationContext)
+            fun gatewayWord(s: HudStateBridge.GatewayStatus): String? = when (s) {
+                HudStateBridge.GatewayStatus.GOOD -> "ready"
+                HudStateBridge.GatewayStatus.BAD -> "offline"
+                HudStateBridge.GatewayStatus.HIDDEN -> null
+            }
+            while (true) {
+                val cur = HudStateBridge.current()
+                val parts = mutableListOf<String>()
+                gatewayWord(cur.hermesStatus)?.let { parts.add("Hermes: $it") }
+                gatewayWord(cur.openClawStatus)?.let { parts.add("TapClaw: $it") }
+                val line = if (parts.isEmpty()) "Assistant ready" else parts.joinToString("   ·   ")
+                HudStateBridge.update {
+                    it.copy(
+                        heartbeatMessage = line,
+                        heartbeatPersistent = true,
+                        heartbeatShouldScroll = false
+                    )
+                }
+                val intervalMs = (prefs.agentStatusPollSeconds * 1000L).coerceAtLeast(10_000L)
+                kotlinx.coroutines.delay(intervalMs)
+            }
+        }
         // Phase 4k — own the companion config server here. It used to be
         // started by visionclaw MainActivity, but that Activity doesn't
         // run in unipanel mode, so https://localhost:19110 was dead even

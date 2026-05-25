@@ -87,6 +87,16 @@ class AppPreferences(context: Context) {
         get() = prefs.getInt(KEY_OPENCLAW_HEARTBEAT_INTERVAL_SECONDS, 20).coerceIn(10, 120)
         set(value) = prefs.edit().putInt(KEY_OPENCLAW_HEARTBEAT_INTERVAL_SECONDS, value.coerceIn(10, 120)).apply()
 
+    /**
+     * How often (seconds) the HUD heartbeat ticker refreshes the persistent
+     * agent-status line (Hermes / TapClaw reachability). Default 30. Keeps the
+     * ticker permanently populated so a stalled agent query is visible instead
+     * of leaving the ticker blank ("limbo"). 10–300s.
+     */
+    var agentStatusPollSeconds: Int
+        get() = prefs.getInt(KEY_AGENT_STATUS_POLL_SECONDS, 30).coerceIn(10, 300)
+        set(value) = prefs.edit().putInt(KEY_AGENT_STATUS_POLL_SECONDS, value.coerceIn(10, 300)).apply()
+
     // ── OpenClaw mode brackets ──────────────────────────────────────────
     // OpenClaw / TapClaw exposes per-turn slash commands like /fast and
     // /think <low|medium|high> that select the inference profile for
@@ -821,6 +831,7 @@ class AppPreferences(context: Context) {
         private const val DEFAULT_OPENCLAW_ENDPOINT = ""
 
         private const val KEY_OPENCLAW_HEARTBEAT_INTERVAL_SECONDS = "openclaw_heartbeat_interval_seconds"
+        private const val KEY_AGENT_STATUS_POLL_SECONDS = "agent_status_poll_seconds"
         private const val KEY_OPENCLAW_FAST_MODE = "openclaw_fast_mode"
         private const val KEY_OPENCLAW_THINK_LEVEL = "openclaw_think_level"
         private const val KEY_OPENCLAW_AFTER_FAST_MODE = "openclaw_after_fast_mode"

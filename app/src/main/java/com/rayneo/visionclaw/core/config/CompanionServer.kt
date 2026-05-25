@@ -525,6 +525,8 @@ document.addEventListener('DOMContentLoaded', loadAll);
         // OpenClaw
         "openclaw_timeout_seconds" to 0,
         "openclaw_heartbeat_interval_seconds" to 20,
+        // HUD agent-status ticker poll interval (seconds, default 30).
+        "agent_status_poll_seconds" to 30,
         // Hermes per-request timeout (seconds). 0 = default 30s.
         "hermes_timeout_seconds" to 0,
         // Battery Saver
@@ -647,6 +649,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "openclaw_timeout_seconds",
         "openclaw_enabled",
         "openclaw_heartbeat_interval_seconds",
+        "agent_status_poll_seconds",
         // OpenClaw mode brackets (per-turn slash-command prefix +
         // after-turn restore). See AppPreferences.openClawFastMode etc.
         "openclaw_fast_mode",
