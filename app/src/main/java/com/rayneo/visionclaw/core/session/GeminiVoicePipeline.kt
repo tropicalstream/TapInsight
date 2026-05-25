@@ -180,6 +180,8 @@ class GeminiVoicePipeline(context: Context) {
             calendarClient = injectedCalendarClient,
             tasksClient = injectedTasksClient,
             airQualityClient = injectedAirQualityClient,
+            placesClient = injectedPlacesClient,
+            directionsClient = injectedDirectionsClient,
             locationProvider = injectedLocationProvider,
             recentCardsProvider = { viewModel.getAssistantCardsSnapshot().map { it.text } },
             hermesClient = hermesClient,
@@ -225,6 +227,10 @@ class GeminiVoicePipeline(context: Context) {
         com.rayneo.visionclaw.core.network.GoogleTasksClient? = null
     @Volatile private var injectedAirQualityClient:
         com.rayneo.visionclaw.core.network.GoogleAirQualityClient? = null
+    @Volatile private var injectedPlacesClient:
+        com.rayneo.visionclaw.core.network.GooglePlacesClient? = null
+    @Volatile private var injectedDirectionsClient:
+        com.rayneo.visionclaw.core.network.GoogleDirectionsClient? = null
     @Volatile private var injectedLocationProvider:
         (() -> com.rayneo.visionclaw.core.model.DeviceLocationContext?)? = null
 
@@ -237,12 +243,16 @@ class GeminiVoicePipeline(context: Context) {
         calendarClient: com.rayneo.visionclaw.core.network.GoogleCalendarClient?,
         tasksClient: com.rayneo.visionclaw.core.network.GoogleTasksClient?,
         airQualityClient: com.rayneo.visionclaw.core.network.GoogleAirQualityClient?,
-        locationProvider: (() -> com.rayneo.visionclaw.core.model.DeviceLocationContext?)?
+        locationProvider: (() -> com.rayneo.visionclaw.core.model.DeviceLocationContext?)?,
+        placesClient: com.rayneo.visionclaw.core.network.GooglePlacesClient? = null,
+        directionsClient: com.rayneo.visionclaw.core.network.GoogleDirectionsClient? = null
     ) {
         injectedCalendarClient = calendarClient
         injectedTasksClient = tasksClient
         injectedAirQualityClient = airQualityClient
         injectedLocationProvider = locationProvider
+        injectedPlacesClient = placesClient
+        injectedDirectionsClient = directionsClient
     }
 
     /**

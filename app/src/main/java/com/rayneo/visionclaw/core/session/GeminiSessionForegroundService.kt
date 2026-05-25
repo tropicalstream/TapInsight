@@ -426,6 +426,19 @@ class GeminiSessionForegroundService : LifecycleService() {
                 context = applicationContext
             )
             vm.setAirQualityClient(airQualityClient)
+            // Places + Directions for the voice tool path (google_places /
+            // google_routes / ask_maps). Both read the SAME Google Maps key the
+            // companion app's Places/Traffic tests use. Without injecting these
+            // the pipeline's ToolDispatcher fell back to no-key stubs, so Gemini
+            // reported "Maps API key not configured" even though the key is set.
+            val placesClient = com.rayneo.visionclaw.core.network.GooglePlacesClient(
+                apiKeyProvider = { prefs.googleMapsApiKey },
+                context = applicationContext
+            )
+            val directionsClient = com.rayneo.visionclaw.core.network.GoogleDirectionsClient(
+                apiKeyProvider = { prefs.googleMapsApiKey },
+                context = applicationContext
+            )
 
             // Share the SAME authenticated clients with the voice tool path so
             // google_calendar / google_tasks (and AQI / places / daily_briefing
@@ -438,6 +451,8 @@ class GeminiSessionForegroundService : LifecycleService() {
                     calendarClient = calendarClient,
                     tasksClient = tasksClient,
                     airQualityClient = airQualityClient,
+                    placesClient = placesClient,
+                    directionsClient = directionsClient,
                     locationProvider = {
                         vm.getDeviceLocationContext()
                             ?: runCatching {
