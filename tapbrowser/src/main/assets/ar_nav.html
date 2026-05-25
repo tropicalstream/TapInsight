@@ -1428,8 +1428,9 @@ async function geocode(address) {
     var d = await r.json();
     if (d.places && d.places.length && d.places[0].location) {
       var loc = d.places[0].location;
-      console.log('[ARNav] geocode OK:', loc.latitude, loc.longitude);
-      return {lat:loc.latitude, lng:loc.longitude};
+      var nm = (d.places[0].displayName && d.places[0].displayName.text) || '';
+      console.log('[ARNav] geocode OK:', loc.latitude, loc.longitude, 'name=', nm);
+      return {lat:loc.latitude, lng:loc.longitude, name: nm};
     }
   } catch(e) { console.error('[ARNav] geocode error:', e); }
   if (clean !== address) {
@@ -1915,16 +1916,20 @@ async function init() {
     if (!isLandmarkMode) {
       try {
         map3d.append(buildEndpointMarker(
-          userCoords.lat, userCoords.lng, 'A', '#00C853', 'Start · You'
+          userCoords.lat, userCoords.lng, 'A', '#00C853', 'Start'
         ));
       } catch(me) { console.warn('[ARNav] Origin marker failed:', me.message); }
     }
 
     if (!hasKeywordPins) {
       try {
-        var destName = (destAddr.split(',')[0] || '').trim() || 'Destination';
+        var destDisplayName =
+          (destCoords && destCoords.name && destCoords.name.trim()) ||
+          (typeof searchTopic !== 'undefined' && searchTopic && searchTopic.trim()) ||
+          (destAddr.split(',')[0] || '').trim() ||
+          'Destination';
         map3d.append(buildEndpointMarker(
-          destCoords.lat, destCoords.lng, 'B', '#FF1744', 'Destination · ' + destName
+          destCoords.lat, destCoords.lng, 'B', '#FF1744', destDisplayName
         ));
       } catch(me) { console.warn('[ARNav] Dest marker failed:', me.message); }
     }
