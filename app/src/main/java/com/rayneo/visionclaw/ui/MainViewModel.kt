@@ -666,6 +666,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         latestDeviceLocationContext = context
+        persistLastKnownLocation(context)
         refreshHudAirQuality(force = true)
     }
 
@@ -714,6 +715,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return latestDeviceLocationContext
     }
 
+    // Last-known device location, persisted across sessions/restarts so the
+    // glasses ALWAYS have a location to ground "places near me" / routes — even
+    // before a fresh GPS fix, or when GPS/permission/IP all fail this session.
+    // Better a slightly-stale location (timestamp tells Gemini its age) than
+    // "I don't know where you are".
+    private val locationPrefs by lazy {
+        getApplication<android.app.Application>()
+            .getSharedPreferences("device_location", android.content.Context.MODE_PRIVATE)
+    }
+
+    private fun persistLastKnownLocation(ctx: DeviceLocationContext) {
+        runCatching {
+            locationPrefs.edit()
+                .putString("lat", ctx.latitude.toString())
+                .putString("lon", ctx.longitude.toString())
+                .putFloat("acc", ctx.accuracyMeters ?: -1f)
+                .putString("provider", ctx.provider ?: "")
+                .putLong("ts", ctx.timestampMs)
+                .apply()
+        }
+    }
+
+    private fun loadLastKnownLocation(): DeviceLocationContext? = runCatching {
+        val lat = locationPrefs.getString("lat", null)?.toDoubleOrNull() ?: return@runCatching null
+        val lon = locationPrefs.getString("lon", null)?.toDoubleOrNull() ?: return@runCatching null
+        DeviceLocationContext(
+            latitude = lat,
+            longitude = lon,
+            accuracyMeters = locationPrefs.getFloat("acc", -1f).takeIf { it >= 0f },
+            provider = locationPrefs.getString("provider", null)?.takeIf { it.isNotBlank() }
+                ?: "last_known",
+            timestampMs = locationPrefs.getLong("ts", 0L).takeIf { it > 0L }
+                ?: System.currentTimeMillis()
+        )
+    }.getOrNull()
+
     /**
      * Ensure a usable device location is published before a Live session
      * connects, so the router's CURRENT LOCATION block (built once at
@@ -736,7 +773,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
             }
         }.getOrNull()
-        if (resolved != null) updateDeviceLocationContext(resolved)
+        if (resolved != null) {
+            updateDeviceLocationContext(resolved)
+        } else if (latestDeviceLocationContext == null) {
+            // No fresh fix this session — fall back to the persisted last-known
+            // location so Gemini still knows roughly where the user is (and
+            // 'places near me' / routes can ground) instead of saying it has no
+            // idea. Set the field directly (don't re-persist a stale value).
+            loadLastKnownLocation()?.let { latestDeviceLocationContext = it }
+        }
     }
 
     private fun hasFreshVisionLocationContext(context: DeviceLocationContext?): Boolean {

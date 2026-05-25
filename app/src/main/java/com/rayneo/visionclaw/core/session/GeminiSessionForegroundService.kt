@@ -305,16 +305,22 @@ class GeminiSessionForegroundService : LifecycleService() {
             }
             while (true) {
                 val cur = HudStateBridge.current()
-                val parts = mutableListOf<String>()
-                gatewayWord(cur.hermesStatus)?.let { parts.add("Hermes: $it") }
-                gatewayWord(cur.openClawStatus)?.let { parts.add("TapClaw: $it") }
-                val line = if (parts.isEmpty()) "Assistant ready" else parts.joinToString("   ·   ")
-                HudStateBridge.update {
-                    it.copy(
-                        heartbeatMessage = line,
-                        heartbeatPersistent = true,
-                        heartbeatShouldScroll = false
-                    )
+                // Don't overwrite a live in-flight agent query's progress ("Asking
+                // Hermes…" / streamed step-labels) with the idle status line — that
+                // made a working query look idle. Only publish the status line when
+                // no agent is busy.
+                if (!cur.agentBusy) {
+                    val parts = mutableListOf<String>()
+                    gatewayWord(cur.hermesStatus)?.let { parts.add("Hermes: $it") }
+                    gatewayWord(cur.openClawStatus)?.let { parts.add("TapClaw: $it") }
+                    val line = if (parts.isEmpty()) "Assistant ready" else parts.joinToString("   ·   ")
+                    HudStateBridge.update {
+                        it.copy(
+                            heartbeatMessage = line,
+                            heartbeatPersistent = true,
+                            heartbeatShouldScroll = false
+                        )
+                    }
                 }
                 val intervalMs = (prefs.agentStatusPollSeconds * 1000L).coerceAtLeast(10_000L)
                 kotlinx.coroutines.delay(intervalMs)

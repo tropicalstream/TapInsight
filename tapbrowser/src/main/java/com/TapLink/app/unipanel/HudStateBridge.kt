@@ -109,7 +109,12 @@ object HudStateBridge {
         val heartbeatPersistent: Boolean = false,
         val heartbeatShouldScroll: Boolean = true,
         val openClawStatus: GatewayStatus = GatewayStatus.HIDDEN,
-        val hermesStatus: GatewayStatus = GatewayStatus.HIDDEN
+        val hermesStatus: GatewayStatus = GatewayStatus.HIDDEN,
+        // True while a Hermes / TapClaw / research agent query is in flight.
+        // The persistent agent-status ticker poll skips publishing its idle
+        // status line while this is set, so an in-flight query's progress (and
+        // the "Asking <agent>…" line) isn't clobbered to look idle.
+        val agentBusy: Boolean = false
     )
 
     private val state = AtomicReference(State())

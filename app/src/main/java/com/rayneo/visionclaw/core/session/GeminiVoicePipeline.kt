@@ -630,6 +630,25 @@ class GeminiVoicePipeline(context: Context) {
         scope.launch {
             if (!isSessionEpochCurrent(epoch)) return@launch
             HudStateBridge.update { it.copy(notification = "Running $toolName…") }
+            // Mark agent queries busy + show "Asking <agent>…" on the ticker for
+            // the whole in-flight duration, so the persistent status-line poll
+            // doesn't overwrite the live progress and make a working query look
+            // idle ("Hermes: ready"). Cleared when the readout finishes.
+            if (toolName in AGENT_READOUT_TOOLS) {
+                val agentLabel = when (toolName) {
+                    "hermes_agent" -> "Hermes"
+                    "tapclaw_agent" -> "TapClaw"
+                    else -> "Research"
+                }
+                HudStateBridge.update {
+                    it.copy(
+                        agentBusy = true,
+                        heartbeatMessage = "Asking $agentLabel…",
+                        heartbeatPersistent = true,
+                        heartbeatShouldScroll = false
+                    )
+                }
+            }
             // When the user tells an agent to "look at my screen", capture the
             // current browser screen and fold its description into the agent's
             // context before dispatching, so the agent acts on what's shown.
@@ -653,7 +672,20 @@ class GeminiVoicePipeline(context: Context) {
                 suppressGeminiOutputUntilMs =
                     android.os.SystemClock.uptimeMillis() + 30_000L
                 runCatching { audioPlayer.release() }
-                runCatching { liveSession?.sendToolResponse(callId, toolName, "ok") }
+                // Send the agent's ACTUAL output back to Gemini Live (not a bare
+                // "ok") so Gemini can REFERENCE it on later turns — e.g. "what did
+                // Hermes say about that?". Previously Gemini only saw "ok" and had
+                // no idea what the agent returned. It's wrapped as reference-only:
+                // the reply was already spoken via the readout engine and shown
+                // verbatim on the chat card, and Gemini's own audio + transcript
+                // are suppressed (above / in onModelAudio / onOutputTranscription),
+                // so this does NOT cause a duplicate spoken readout.
+                val agentToolResponse =
+                    "[The agent's reply below was ALREADY spoken to the user via the " +
+                        "readout voice and shown verbatim on the chat card. Do NOT read it " +
+                        "aloud, summarize, or repeat it now. Keep it ONLY as reference so you " +
+                        "can answer follow-up questions about it later.]\n\n" + resultText
+                runCatching { liveSession?.sendToolResponse(callId, toolName, agentToolResponse) }
                 HudStateBridge.update {
                     it.copy(notification = null, phase = HudStateBridge.VoicePhase.THINKING)
                 }
@@ -767,6 +799,7 @@ class GeminiVoicePipeline(context: Context) {
         val text = cleanReadoutText(rawText)
         if (text.isBlank()) {
             suppressGeminiOutputUntilMs = 0L
+            HudStateBridge.update { it.copy(agentBusy = false) }
             return
         }
         val epoch = activeSessionEpoch
@@ -810,6 +843,9 @@ class GeminiVoicePipeline(context: Context) {
                 Log.w(TAG, "agent readout failed: ${e.message}", e)
             } finally {
                 agentReadoutActive = false
+                // Agent work is done — clear the busy flag so the persistent
+                // status-line poll can resume showing idle reachability.
+                HudStateBridge.update { it.copy(agentBusy = false) }
                 // Let the queued audio drain, then stop dropping Gemini's
                 // audio and return to the listening state for follow-ups.
                 suppressGeminiOutputUntilMs = 0L
