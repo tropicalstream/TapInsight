@@ -151,10 +151,12 @@ class GeminiRouter(
                 "    \n" +
                 "    https://archive.org/details/sf-tape-music-festival\n" +
                 "    Internet Archive collection of festival recordings.\n" +
-                "The chat card auto-renders that shape as bold tappable headers. Announce 'I have N links for " +
-                "you in the chat card — tap any of them or say \"open the first link\".' Do NOT read the raw " +
-                "URLs aloud. Always include URLs by default in the relayed result — never wait for the user to " +
-                "ask 'do you have links?'. " +
+                "The chat card auto-renders that shape as bold tappable headers, BUT do not rely on the user " +
+                "seeing them — the unipanel overlay card may be hidden. So OFFER TO OPEN them rather than " +
+                "claiming they are 'in the chat card': say 'I found N sources on X — want me to open the top " +
+                "one? Or say \"open the KPFA one\".' Do NOT read the raw URLs aloud, and do NOT assert the " +
+                "links are visible on screen. Still include the URLs in the relayed result text so the open- " +
+                "command resolution works — never wait for the user to ask 'do you have links?'. " +
                 "CURRENT-TURN ONLY (CRITICAL): the words 'tapclaw'/'tap claw'/'openclaw'/'open claw' must appear " +
                 "in the user's CURRENT spoken message THIS turn. NEVER route to tapclaw_agent because one of " +
                 "those words appears in the PREVIOUS CONVERSATION block, an earlier chat card, cached context, " +
@@ -489,11 +491,17 @@ class GeminiRouter(
                 "always call google_calendar. Never ask for calendar provider.\n" +
                 "2) For reminders, todos, or task lists, call google_tasks (query/create/complete).\n" +
                 "3) For personal notes or quick memos, call google_keep.\n" +
-                "4) For ANY question about directions, traffic, commute time, ETA, travel time, " +
-                "how long to get somewhere, route planning, 'car to X', 'drive to X', or 'take me to X', " +
-                "ALWAYS call google_routes. Never say you cannot check traffic — always call the tool. " +
-                "Use origin='current' if the user doesn't specify a starting point. " +
-                "For standalone traffic queries without a destination, ask the user where they're headed.\n" +
+                "4) NAVIGATION & DIRECTIONS — two cases. " +
+                "(a) INFO-ONLY queries — traffic, commute time, ETA, travel time, 'how long to get to X', " +
+                "route planning where the user wants a NUMBER (not to be guided there): ALWAYS call google_routes. " +
+                "Never say you cannot check traffic — always call the tool. Use origin='current' if the user doesn't " +
+                "specify a starting point. For standalone traffic queries without a destination, ask where they're headed. " +
+                "(b) GO-THERE requests — 'navigate to X', 'take me to X', 'directions to X', 'drive to X', 'car to X', " +
+                "'how do I get to X': do NOT dump turn-by-turn first. INITIALLY OFFER the 3D map view — e.g. " +
+                "'I can show you the route to X in the 3D map — want me to open it?'. If the user says yes (or already " +
+                "asked for it in 3D), call ask_maps with action='navigate_3d'. If the user instead asks for spoken " +
+                "turn-by-turn or the ETA, call google_routes. NEVER offer to 'send the directions/map to your phone' — " +
+                "there is no such capability and it will not work; offer the 3D map or spoken directions instead.\n" +
                 "5) For music playback ONLY when the user explicitly asks for Spotify, Sonos, or music streaming " +
                 "(e.g. 'play on Spotify', 'Sonos play', 'stream music'). Do NOT use spotify_player or sonos_control " +
                 "for generic 'play' or 'open' media requests.\n" +
@@ -1039,9 +1047,11 @@ class GeminiRouter(
                 "general links into the browser. Always include the tag for every URL you emit; the user-facing " +
                 "card strips it before display so they never see `(type:X)` themselves. The chat card auto-" +
                 "renders these as bold tappable headers, and prefixes each one with its index (`1.`, `2.`, …) " +
-                "so the user can disambiguate ordinal commands at a glance. DO NOT read the raw URL aloud — say " +
-                "'I have N links for you in the chat card. Tap any of them, or say \"open the second\" / \"open " +
-                "the KPFA one\".' " +
+                "so the user can disambiguate ordinal commands at a glance. DO NOT read the raw URL aloud, and " +
+                "do NOT assert the links are visible on screen (the unipanel overlay card may be hidden). " +
+                "Instead OFFER TO OPEN them: 'I found N sources — want me to open the first one? Or say \"open " +
+                "the second\" / \"open the KPFA one\".' When the user accepts, open the chosen link with " +
+                "open_taplink. " +
                 "CONTEXT-AWARE OPEN COMMANDS — when the user voice-references one of the listed URLs, you " +
                 "MUST resolve the reference against the chat card's URL list (which lives in the toolResponse " +
                 "you just received and in the PREVIOUS CONVERSATION block on subsequent turns). Resolution " +
