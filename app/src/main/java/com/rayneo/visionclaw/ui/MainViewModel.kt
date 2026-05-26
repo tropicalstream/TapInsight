@@ -764,23 +764,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val freshEnough = current != null &&
             (System.currentTimeMillis() - current.timestampMs) <= 10 * 60 * 1000L
         if (freshEnough) return
-        val resolved = runCatching {
+
+        // FAST PATH ONLY — never block the Live connect on a fresh GPS/IP
+        // resolve(). On a cold start that resolve loops up to ~4 providers at
+        // ~4.5s each, then wifi triangulation, then IP geolocation — easily
+        // 20-30s during which the user just stares at "Connecting…". Seed the
+        // CURRENT LOCATION block from the cheap, synchronous sources only
+        // (phone-bridge / in-memory cache via peekCached, else persisted
+        // last-known) so Gemini still knows roughly where the user is, then
+        // let the connect proceed immediately.
+        val cached = runCatching {
             withContext(Dispatchers.IO) {
                 deviceLocationResolver.peekCached(allowApproximate = true)
-                    ?: deviceLocationResolver.resolve(
-                        requirePrecise = false,
-                        allowApproximateFallback = true
-                    )
             }
         }.getOrNull()
-        if (resolved != null) {
-            updateDeviceLocationContext(resolved)
+        if (cached != null) {
+            updateDeviceLocationContext(cached)
         } else if (latestDeviceLocationContext == null) {
-            // No fresh fix this session — fall back to the persisted last-known
-            // location so Gemini still knows roughly where the user is (and
-            // 'places near me' / routes can ground) instead of saying it has no
-            // idea. Set the field directly (don't re-persist a stale value).
+            // No cached fix — fall back to the persisted last-known location so
+            // 'places near me' / routes can still ground instead of Gemini
+            // saying it has no idea. Set the field directly (don't re-persist
+            // a stale value).
             loadLastKnownLocation()?.let { latestDeviceLocationContext = it }
+        }
+
+        // Warm a precise fix in the BACKGROUND — this does NOT gate the
+        // current connect. When it lands it refreshes latestDeviceLocationContext
+        // and the resolver cache, so the next turn / next session has an
+        // accurate location (and AQI / places re-ground). Fire-and-forget;
+        // viewModelScope is Application-scoped so it outlives this connect.
+        viewModelScope.launch(Dispatchers.IO) {
+            val fresh = runCatching {
+                deviceLocationResolver.resolve(
+                    requirePrecise = false,
+                    allowApproximateFallback = true
+                )
+            }.getOrNull()
+            if (fresh != null) {
+                withContext(Dispatchers.Main) { updateDeviceLocationContext(fresh) }
+            }
         }
     }
 
