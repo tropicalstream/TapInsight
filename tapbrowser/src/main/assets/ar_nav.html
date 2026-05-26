@@ -877,44 +877,63 @@ function openStreetView(target) {
   }
   var position = { lat: target.lat, lng: target.lng };
   var service = new google.maps.StreetViewService();
-  service.getPanorama({
-    location: position,
-    radius: 90,
-    source: google.maps.StreetViewSource.OUTDOOR
-  }, function(data, status) {
-    if (status !== google.maps.StreetViewStatus.OK || !data || !data.location || !data.location.latLng) {
+  // Search the TIGHTEST radius first so we land on the panorama CLOSEST to the
+  // destination. getPanorama returns Google's single "best" pano within the
+  // radius, so a wide search (the old flat 90m) often snapped to a nearby
+  // intersection instead of the destination frontage — which is why pressing +
+  // dropped the user a block away rather than at the place itself. Step the
+  // radius up only if nothing closer exists, and fall back to any source
+  // (not just OUTDOOR) before giving up.
+  var attempts = [
+    { radius: 30,  source: google.maps.StreetViewSource.OUTDOOR },
+    { radius: 75,  source: google.maps.StreetViewSource.OUTDOOR },
+    { radius: 160, source: google.maps.StreetViewSource.DEFAULT }
+  ];
+  function tryPano(i) {
+    if (i >= attempts.length) {
       showStreetViewUnavailable(target);
       hideLoading();
       return;
     }
-    var panoLatLng = data.location.latLng;
-    var panoPoint = { lat: panoLatLng.lat(), lng: panoLatLng.lng() };
-    var heading = bearingDeg(panoPoint, position);
-    container.innerHTML = '';
-    container.classList.add('visible');
-    document.body.classList.add('streetview-active');
-    showStreetViewTopBanner(target);
-    try {
-      streetViewPanorama = new google.maps.StreetViewPanorama(container, {
-        pano: data.location.pano,
-        pov: { heading: heading, pitch: 0 },
-        zoom: 1,
-        addressControl: false,
-        fullscreenControl: false,
-        linksControl: true,
-        motionTracking: false,
-        motionTrackingControl: false,
-        panControl: false,
-        zoomControl: false,
-        visible: true
-      });
-      showStreetViewLabel(target, data.location.description || '');
-    } catch(e) {
-      console.warn('[ARNav] Street View render failed:', e);
-      showStreetViewUnavailable(target);
-    }
-    hideLoading();
-  });
+    service.getPanorama({
+      location: position,
+      radius: attempts[i].radius,
+      source: attempts[i].source
+    }, function(data, status) {
+      if (status !== google.maps.StreetViewStatus.OK || !data || !data.location || !data.location.latLng) {
+        tryPano(i + 1);
+        return;
+      }
+      var panoLatLng = data.location.latLng;
+      var panoPoint = { lat: panoLatLng.lat(), lng: panoLatLng.lng() };
+      var heading = bearingDeg(panoPoint, position);
+      container.innerHTML = '';
+      container.classList.add('visible');
+      document.body.classList.add('streetview-active');
+      showStreetViewTopBanner(target);
+      try {
+        streetViewPanorama = new google.maps.StreetViewPanorama(container, {
+          pano: data.location.pano,
+          pov: { heading: heading, pitch: 0 },
+          zoom: 1,
+          addressControl: false,
+          fullscreenControl: false,
+          linksControl: true,
+          motionTracking: false,
+          motionTrackingControl: false,
+          panControl: false,
+          zoomControl: false,
+          visible: true
+        });
+        showStreetViewLabel(target, data.location.description || '');
+      } catch(e) {
+        console.warn('[ARNav] Street View render failed:', e);
+        showStreetViewUnavailable(target);
+      }
+      hideLoading();
+    });
+  }
+  tryPano(0);
 }
 
 function exitStreetView(options) {
