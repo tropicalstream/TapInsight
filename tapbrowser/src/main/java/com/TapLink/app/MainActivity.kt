@@ -4318,6 +4318,17 @@ class MainActivity :
     private fun setUnipanelHudVisible(visible: Boolean) {
         runCatching {
             val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return
+            // Dim mode owns the screen — never reveal the HUD while masked. A
+            // background publish (the ~30s heartbeat/agent-status poll) or a
+            // stray show request must not pop the overlay over a dimmed
+            // browser. The legit exit path calls unmaskScreen() first, which
+            // clears isScreenMasked() before this runs, so unmasking still
+            // shows the HUD normally.
+            if (visible && ::dualWebViewGroup.isInitialized && dualWebViewGroup.isScreenMasked()) {
+                overlay.visibility = View.GONE
+                updateMinimalIndicators()
+                return@runCatching
+            }
             if (visible) {
                 // Always clear any roll transform so dim-mode restore can't
                 // leave the HUD slid off-screen / transparent, and restore the
@@ -4398,12 +4409,22 @@ class MainActivity :
                 overlay?.visibility = View.GONE
             } else {
                 hudRolledUp = false
-                runCatching { dualWebViewGroup.setHudLaneReserved(true) }
-                runCatching { dualWebViewGroup.setNavBarsHidden(false) }
-                overlay?.animate()?.cancel()
-                overlay?.translationY = 0f
-                overlay?.alpha = 1f
-                overlay?.visibility = View.VISIBLE
+                // A YouTube fullscreen-EXIT event must not reveal the HUD if
+                // the user is in dim mode (e.g. watching a video dark) — the
+                // player fires these events on its own and would otherwise pop
+                // the overlay over the dimmed browser. Keep it hidden while
+                // masked; it's restored when the user unmasks.
+                if (::dualWebViewGroup.isInitialized && dualWebViewGroup.isScreenMasked()) {
+                    overlay?.animate()?.cancel()
+                    overlay?.visibility = View.GONE
+                } else {
+                    runCatching { dualWebViewGroup.setHudLaneReserved(true) }
+                    runCatching { dualWebViewGroup.setNavBarsHidden(false) }
+                    overlay?.animate()?.cancel()
+                    overlay?.translationY = 0f
+                    overlay?.alpha = 1f
+                    overlay?.visibility = View.VISIBLE
+                }
             }
             updateMinimalIndicators()
         }
