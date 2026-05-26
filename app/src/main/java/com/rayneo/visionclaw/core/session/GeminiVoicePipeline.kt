@@ -171,6 +171,53 @@ class GeminiVoicePipeline(context: Context) {
                 seconds.coerceAtLeast(5) * 1000
             }
         )
+        // TapClaw / OpenClaw client. Without this the lazy dispatcher left
+        // openClawClient null, so OpenClawTool ('tapclaw_agent') was never
+        // registered — yet GeminiRouter still DECLARES tapclaw_agent to
+        // Gemini, so a direct TapClaw query came back "Unknown tool:
+        // tapclaw_agent". Build it the same way MainActivity does (endpoint
+        // + pairing-token fallback, mode-bracket providers) so a query routes
+        // to the user's gateway. Reads live from prefs/pairing each turn.
+        val pairing = appContext.getSharedPreferences(
+            "visionclaw_prefs", Context.MODE_PRIVATE
+        )
+        val openClawClient = com.rayneo.visionclaw.core.network.OpenClawClient(
+            gatewayUrlProvider = {
+                prefs.openClawEndpoint.takeIf { it.isNotBlank() }
+                    ?: pairing.getString("openclaw_pair_device_token_gateway", null)
+                        ?.takeIf { it.isNotBlank() }
+            },
+            fallbackGatewayUrlProvider = {
+                pairing.getString("openclaw_pair_device_token_gateway", null)
+                    ?.takeIf {
+                        it.isNotBlank() &&
+                            !it.equals(prefs.openClawEndpoint.takeIf { e -> e.isNotBlank() }, ignoreCase = true)
+                    }
+            },
+            gatewayTokenProvider = {
+                prefs.openClawToken.takeIf { it.isNotBlank() }
+                    ?: pairing.getString("openclaw_pair_device_token", null)
+                        ?.takeIf { it.isNotBlank() }
+            },
+            deviceIdProvider = {
+                pairing.getString("openclaw_pair_device_id", null)?.takeIf { it.isNotBlank() }
+            },
+            publicKeyProvider = {
+                pairing.getString("openclaw_pair_public_key", null)?.takeIf { it.isNotBlank() }
+            },
+            privateKeyProvider = {
+                pairing.getString("openclaw_pair_private_key", null)?.takeIf { it.isNotBlank() }
+            },
+            sessionIdProvider = { prefs.openClawSessionId.ifBlank { "main" } },
+            timeoutMsProvider = {
+                val t = prefs.openClawTimeoutSeconds
+                if (t > 0) t * 1000 else 30_000
+            },
+            fastModeProvider = { prefs.openClawFastMode },
+            thinkLevelProvider = { prefs.openClawThinkLevel },
+            afterFastModeProvider = { prefs.openClawAfterFastMode },
+            afterThinkLevelProvider = { prefs.openClawAfterThinkLevel }
+        )
         ToolDispatcher(
             context = appContext,
             // Authenticated Google clients injected by the Service so the
@@ -184,6 +231,7 @@ class GeminiVoicePipeline(context: Context) {
             directionsClient = injectedDirectionsClient,
             locationProvider = injectedLocationProvider,
             recentCardsProvider = { viewModel.getAssistantCardsSnapshot().map { it.text } },
+            openClawClient = openClawClient,
             hermesClient = hermesClient,
             cameraFrameProvider = { latestCameraFrame },
             browserFrameProvider = ::captureWebViewBase64Logged
