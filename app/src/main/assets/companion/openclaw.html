@@ -141,7 +141,7 @@ ingress:
 
   <label>Timeout (seconds)</label>
   <input type="number" id="hermesTimeoutSeconds" placeholder="0 (default 30s)" min="0" max="600">
-  <div class="hint">Per-request timeout. 0 = 30s default. Raise for slow reasoning runs. Read timeout is fixed at 5 min for streamed responses.</div>
+  <div class="hint">Streaming budget — the longest Hermes may go between streamed chunks while it reasons or runs tools before the glasses give up. 0 = 30s. The effective wait is floored at 5 min, so raise this above 300 only for very long agent runs (max 600 = 10 min). If Hermes "sticks in limbo", a higher value here keeps the glasses from dropping the stream and killing the task mid-run.</div>
 
   <!-- ── Hermes follow-up toggle ──
        When enabled, Gemini Live keeps the mic open for ~30 s after a

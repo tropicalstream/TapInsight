@@ -262,11 +262,25 @@ class HermesClient(
     }
 
     private fun httpClient(timeoutMs: Int): OkHttpClient {
-        val connect = if (timeoutMs > 0) timeoutMs.toLong() else 30_000L
+        // The configured Hermes timeout (companion app "Hermes timeout") must
+        // govern how long we wait for the slow agent loop to STREAM — i.e. the
+        // maximum gap between SSE chunks while gpt-5.5 reasons / runs tools —
+        // NOT the TCP connect. It used to be wired to connectTimeout, so
+        // "raise the timeout" did nothing for slow reasoning, and the stream
+        // was capped at a hardcoded 5-min read gap. When the agent went quiet
+        // longer than that, OkHttp aborted the read, the client dropped the
+        // SSE connection, and the gateway killed the task ("SSE client
+        // disconnected; interrupted agent task") — leaving Hermes in limbo.
+        //
+        // Connecting itself should be quick (the tunnel answers in a second or
+        // two when it's up), so bound that separately and short.
+        val configured = if (timeoutMs > 0) timeoutMs.toLong() else 30_000L
+        // Floor the read gap at 5 min so a low/default setting still tolerates
+        // multi-minute reasoning; a higher companion setting extends it.
+        val readGapMs = maxOf(configured, 5 * 60_000L)
         return OkHttpClient.Builder()
-            .connectTimeout(connect, TimeUnit.MILLISECONDS)
-            // 5 min read so slow reasoning models don't time out
-            .readTimeout(5, TimeUnit.MINUTES)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(readGapMs, TimeUnit.MILLISECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .build()
     }
