@@ -7320,7 +7320,9 @@ class MainActivity :
         val width = available.coerceAtMost(maxWidth)
 
         val heartbeatVisible = heartbeat != null && heartbeat.visibility == View.VISIBLE
-        val top = if (heartbeatVisible) dp(70) else dp(50)
+        // Nudged up ~8dp (≈15px at the glasses' density) so the collapsed
+        // card's bottom edge no longer overlaps the top of the browser panel.
+        val top = if (heartbeatVisible) dp(62) else dp(42)
         // Expanded reader fills the remaining vertical space; collapsed is the
         // compact 76dp scroll box.
         val height = if (expanded) {
