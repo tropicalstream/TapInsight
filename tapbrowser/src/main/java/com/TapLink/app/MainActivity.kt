@@ -2832,6 +2832,32 @@ class MainActivity :
 
                     bindAll();
                     setInterval(bindAll, 1500);
+
+                    // ── DIAGNOSTIC (temporary) ──
+                    // Log what the player actually exposes on pause so we can
+                    // see whether this mode even has the desktop .ytp-* chrome
+                    // (the mobile UA may serve a different player, or the player
+                    // may live in an iframe we can't reach). Counts only — never
+                    // touches caption nodes.
+                    try {
+                        var dvids = document.querySelectorAll('video');
+                        console.log('[TapLink-YTPause] bound; videos=' + dvids.length +
+                            ' chromeBottom=' + document.querySelectorAll('.ytp-chrome-bottom').length +
+                            ' iframes=' + document.querySelectorAll('iframe').length +
+                            ' ua=' + (navigator.userAgent || '').slice(0, 40));
+                        for (var d = 0; d < dvids.length; d++) {
+                            dvids[d].addEventListener('pause', function() {
+                                try {
+                                    console.log('[TapLink-YTPause] PAUSE' +
+                                        ' chromeBottom=' + document.querySelectorAll('.ytp-chrome-bottom').length +
+                                        ' players=' + document.querySelectorAll('.html5-video-player,#movie_player').length +
+                                        ' mobileCtrls=' + document.querySelectorAll('.player-controls,.ytmCustomControlsContainer,.ytp-mobile,.mobile-topbar-header').length +
+                                        ' iframes=' + document.querySelectorAll('iframe').length +
+                                        ' holdClass=' + document.documentElement.classList.contains('__tl_hold_yt_chrome'));
+                                } catch(e) {}
+                            }, true);
+                        }
+                    } catch(e) {}
                 } catch(e) {
                     console.log('[TapLink-YT] standalone pause chrome bind failed: ' + e);
                 }
@@ -3650,7 +3676,9 @@ class MainActivity :
                                     'html.__tl_hold_yt_chrome .ytp-chrome-bottom,' +
                                     'html.__tl_hold_yt_chrome .ytp-chrome-top,' +
                                     'html.__tl_hold_yt_chrome .ytp-gradient-bottom,' +
-                                    'html.__tl_hold_yt_chrome .ytp-gradient-top{' +
+                                    'html.__tl_hold_yt_chrome .ytp-gradient-top,' +
+                                    'html.__tl_hold_yt_chrome .ytp-chrome-controls,' +
+                                    'html.__tl_hold_yt_chrome .ytp-progress-bar-container{' +
                                     'opacity:1!important;visibility:visible!important;pointer-events:auto!important}' +
                                     'html.__tl_hold_yt_chrome .html5-video-player{' +
                                     'cursor:auto!important}';
@@ -3680,6 +3708,7 @@ class MainActivity :
                                 }
                                 holdUntil = Date.now() + HOLD_MS;
                                 try { document.documentElement.classList.add('__tl_hold_yt_chrome'); } catch(e) {}
+                                keepChromeVisible();
                                 if (!holdTimer) {
                                     holdTimer = setInterval(function() {
                                         try {
@@ -3687,14 +3716,27 @@ class MainActivity :
                                                 releaseHold();
                                                 return;
                                             }
-                                            var players = document.querySelectorAll('.html5-video-player,#movie_player');
-                                            for (var i = 0; i < players.length; i++) {
-                                                players[i].classList.remove('ytp-autohide');
-                                                players[i].classList.add('ytp-user-active');
-                                            }
+                                            keepChromeVisible();
                                         } catch(e) {}
                                     }, 250);
                                 }
+                            }
+
+                            function keepChromeVisible() {
+                                try {
+                                    var players = document.querySelectorAll('.html5-video-player,#movie_player');
+                                    for (var i = 0; i < players.length; i++) {
+                                        players[i].classList.remove('ytp-autohide');
+                                        players[i].classList.add('ytp-user-active');
+                                        players[i].dispatchEvent(new MouseEvent('mousemove', {
+                                            bubbles: true,
+                                            cancelable: true,
+                                            view: window,
+                                            clientX: Math.max(1, Math.floor(window.innerWidth / 2)),
+                                            clientY: Math.max(1, Math.floor(window.innerHeight / 2))
+                                        }));
+                                    }
+                                } catch(e) {}
                             }
 
                             function bindVideo(v) {
@@ -9862,6 +9904,7 @@ class MainActivity :
                                 // ── YouTube autoplay automation ──
                                 val isYouTubePage = url.contains("youtube.com") || url.contains("youtu.be")
                                 if (isYouTubePage) {
+                                    view?.let { injectYouTubePausedChromeHold(it) }
                                     view?.let { injectYouTubePlaylistAutomation(it, url) }
                                 }
 
