@@ -1271,7 +1271,7 @@ class GeminiVoicePipeline(context: Context) {
                         rawLower.startsWith("appassets.androidplatform.net")
                     if (fetchable) {
                         val norm = AssistantIntentParser.normalizeTapLinkUrl(raw)
-                        if (norm.isNotBlank()) {
+                        if (!norm.isNullOrBlank()) {
                             url = norm
                             continue // drop the directive line from the readable text
                         }
