@@ -165,7 +165,15 @@ class GeminiVoicePipeline(context: Context) {
         val hermesClient = HermesClient(
             endpointUrlProvider = { prefs.hermesEndpoint.trim().takeIf { it.isNotBlank() } },
             apiKeyProvider = { prefs.hermesApiKey.trim().takeIf { it.isNotBlank() } },
-            sessionIdProvider = { prefs.hermesSessionId.trim().takeIf { it.isNotBlank() } ?: "main" },
+            sessionIdProvider = {
+                // The unipanel Service should not share Hermes' desktop/default
+                // "main" session. A busy/bloated main session can queue a tiny
+                // glasses turn for 1-2 minutes while the Hermes console appears
+                // fast in its own context.
+                prefs.hermesSessionId.trim()
+                    .takeUnless { it.isBlank() || it.equals("main", ignoreCase = true) }
+                    ?: "glasses"
+            },
             timeoutMsProvider = {
                 val seconds = prefs.hermesTimeoutSeconds.takeIf { it > 0 } ?: 30
                 seconds.coerceAtLeast(5) * 1000
@@ -246,6 +254,8 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var lastLocalVisionTriggerMs: Long = 0L
     @Volatile private var visionInFlight: Boolean = false
     @Volatile private var lastReaderModeTriggerMs: Long = 0L
+    @Volatile private var lastGoogleWebAppLaunchMs: Long = 0L
+    @Volatile private var lastGoogleWebAppLaunchUrl: String? = null
 
     /** Phase 4e — callback the Service installs so the pipeline can
      *  ask it to auto-start CameraX when a vision phrase fires. Set
@@ -544,6 +554,7 @@ class GeminiVoicePipeline(context: Context) {
                 // Deterministic "reader mode" trigger — re-render the current
                 // page in a clean dark reader view when the user asks for it.
                 maybeTriggerReaderModeLocally(text)
+                maybeOpenGoogleWebAppLocally(text)
             }
 
             override fun onOutputTranscription(text: String) {
@@ -1119,6 +1130,47 @@ class GeminiVoicePipeline(context: Context) {
     }
 
     /**
+     * Deterministic web-app trigger for "show/open my tasks/calendar/news".
+     * These are display requests, not data-summary requests: open the real
+     * Google web app in TapBrowser immediately. Query-style requests ("what
+     * are my tasks?", "what's on my calendar?") still flow to Gemini/tools.
+     */
+    private fun maybeOpenGoogleWebAppLocally(transcript: String) {
+        val lower = transcript.lowercase().trim()
+        if (lower.isBlank()) return
+        val wantsDisplay = GOOGLE_WEB_APP_DISPLAY_VERBS.any { lower.contains(it) }
+        if (!wantsDisplay) return
+
+        val target = when {
+            GOOGLE_TASKS_TERMS.any { lower.contains(it) } -> GoogleWebAppTarget(
+                url = "https://tasks.google.com",
+                label = "Google Tasks"
+            )
+            GOOGLE_CALENDAR_TERMS.any { lower.contains(it) } -> GoogleWebAppTarget(
+                url = "https://calendar.google.com",
+                label = "Google Calendar"
+            )
+            GOOGLE_NEWS_TERMS.any { lower.contains(it) } -> GoogleWebAppTarget(
+                url = "https://news.google.com",
+                label = "Google News"
+            )
+            else -> null
+        } ?: return
+
+        val now = System.currentTimeMillis()
+        if (target.url == lastGoogleWebAppLaunchUrl &&
+            now - lastGoogleWebAppLaunchMs < MIN_GOOGLE_WEB_APP_LAUNCH_INTERVAL_MS
+        ) {
+            return
+        }
+        lastGoogleWebAppLaunchUrl = target.url
+        lastGoogleWebAppLaunchMs = now
+        Log.i(TAG, "google_web_app trigger url=${target.url} transcript='${transcript.take(80)}'")
+        HudStateBridge.update { it.copy(notification = "Opening ${target.label}…") }
+        launchTapBrowserFromService(target.url)
+    }
+
+    /**
      * Phase 4c — the shared body for both trigger paths. Captures
      * via [captureWebViewBase64Logged] (which logs nonblack pixel
      * count), runs [BrowserVisionTool], and delivers the result.
@@ -1447,6 +1499,56 @@ class GeminiVoicePipeline(context: Context) {
          *  so a single 2-3-second utterance (which emits many partials)
          *  doesn't fire the tool more than once. */
         private const val MIN_LOCAL_VISION_INTERVAL_MS = 3_000L
+        private const val MIN_GOOGLE_WEB_APP_LAUNCH_INTERVAL_MS = 5_000L
+
+        private data class GoogleWebAppTarget(val url: String, val label: String)
+
+        private val GOOGLE_WEB_APP_DISPLAY_VERBS = listOf(
+            "show ",
+            "show me ",
+            "open ",
+            "open my ",
+            "open the ",
+            "display ",
+            "display my ",
+            "pull up ",
+            "pull up my ",
+            "bring up ",
+            "bring up my ",
+            "launch ",
+            "go to "
+        )
+
+        private val GOOGLE_TASKS_TERMS = listOf(
+            "my tasks",
+            "tasks",
+            "my task list",
+            "task list",
+            "my reminders",
+            "reminders",
+            "my todos",
+            "my to dos",
+            "todo list",
+            "to do list"
+        )
+
+        private val GOOGLE_CALENDAR_TERMS = listOf(
+            "my events",
+            "my upcoming events",
+            "events on my calendar",
+            "calendar events",
+            "my calendar",
+            "calendar",
+            "google calendar"
+        )
+
+        private val GOOGLE_NEWS_TERMS = listOf(
+            "the news",
+            "news",
+            "google news",
+            "headlines",
+            "top stories"
+        )
 
         /** Phrases that locally trigger browser_vision when Gemini
          *  Live doesn't elect to call the tool itself. All matched

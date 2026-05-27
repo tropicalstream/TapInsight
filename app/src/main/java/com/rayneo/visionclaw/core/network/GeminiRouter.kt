@@ -487,6 +487,14 @@ class GeminiRouter(
                 "This rule OVERRIDES every downstream rule when a shorthand reference is in play. Downstream " +
                 "rules describe how to pick a tool for FRESH requests; this rule governs how to interpret " +
                 "FOLLOW-UP requests before picking a tool.\n" +
+                "0-GOOGLE-WEB-APP DISPLAY OVERRIDE: When the user explicitly asks to SHOW, OPEN, DISPLAY, " +
+                "PULL UP, BRING UP, LAUNCH, or GO TO their Google web app data, call open_taplink with " +
+                "the exact app URL and do NOT call the data-summary tools in that turn. " +
+                "Tasks / reminders / todos → https://tasks.google.com. " +
+                "Events / calendar → https://calendar.google.com. " +
+                "News / headlines / top stories → https://news.google.com. " +
+                "This override is only for display/open wording. Query wording like 'what are my tasks?', " +
+                "'what is on my calendar?', or 'what are the headlines?' should use the normal tools below.\n" +
                 "1) For calendar questions (today, tomorrow, rest of day, upcoming, what's next, am I free, schedule, meetings), " +
                 "always call google_calendar. Never ask for calendar provider.\n" +
                 "2) For reminders, todos, or task lists, call google_tasks (query/create/complete).\n" +
@@ -3004,6 +3012,8 @@ class GeminiRouter(
                 .put("name", "open_taplink")
                 .put("description", "Display or play content on the AR glasses by opening a URL in the TapBrowser viewer. " +
                     "Supports images (JPEG, PNG), videos (YouTube, MP4), audio (MP3, WAV, OGG, M4A, FLAC), web pages, and text files. " +
+                    "For explicit Google web-app display requests, use exact URLs: tasks/reminders/todos → https://tasks.google.com, " +
+                    "events/calendar → https://calendar.google.com, news/headlines/top stories → https://news.google.com. " +
                     "CONSENT REQUIRED (per RULE ZERO-E): Call this tool ONLY when the user's CURRENT message contains " +
                     "one of these explicit triggers: (a) an action verb aimed at media — 'play', 'watch', 'show me', " +
                     "'open', 'pull up', 'put on', 'turn on', 'queue up', 'listen to', 'start', 'load'; OR " +

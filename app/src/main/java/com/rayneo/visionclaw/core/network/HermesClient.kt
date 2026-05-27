@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
@@ -99,20 +100,23 @@ class HermesClient(
             append(message)
         }
 
-        Log.d(TAG, "Hermes send: url=$baseUrl session=$sessionId msg=${message.take(100)}")
-
         val body = buildChatCompletionsBody(fullMessage, imageBase64)
+        val bodyText = body.toString()
+        Log.d(
+            TAG,
+            "Hermes send: url=$baseUrl session=$sessionId hasImage=${!imageBase64.isNullOrBlank()} msg=${message.take(100)}"
+        )
         val request = Request.Builder()
             .url(baseUrl + CHAT_PATH)
             .addHeader("Authorization", "Bearer $apiKey")
             .addHeader("Accept", "text/event-stream")
             .addHeader(SESSION_HEADER, sessionId)
-            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .post(bodyText.toRequestBody("application/json".toMediaType()))
             .build()
 
         var success = false
         try {
-            httpClient(timeoutMsProvider()).newCall(request).execute().use { response ->
+            httpClient(timeoutMsProvider(), streaming = true).newCall(request).execute().use { response ->
                 val result = handleResponse(response, sessionId)
                 success = result is ClawResult.Success
                 return@withContext result
@@ -139,7 +143,7 @@ class HermesClient(
         if (apiKey.isBlank()) return@withContext ClawResult.Error("Hermes API key not configured.")
 
         try {
-            httpClient(10_000).newCall(
+            httpClient(10_000, streaming = false).newCall(
                 Request.Builder()
                     .url(baseUrl + MODELS_PATH)
                     .addHeader("Authorization", "Bearer $apiKey")
@@ -209,8 +213,9 @@ class HermesClient(
                 }
                 val choices = chunk.optJSONArray("choices") ?: continue
                 if (choices.length() == 0) continue
-                val delta = choices.optJSONObject(0)?.optJSONObject("delta") ?: continue
-                val partial = delta.optString("content", "")
+                val choice = choices.optJSONObject(0) ?: continue
+                val delta = choice.optJSONObject("delta")
+                val partial = delta?.optString("content", "").orEmpty()
                 if (partial.isNotBlank()) {
                     assembled.append(partial)
                     // Forward the ACCUMULATED text (last 200 chars worth
@@ -219,6 +224,12 @@ class HermesClient(
                     runCatching {
                         onProgressUpdate?.invoke(assembled.toString().takeLast(200))
                     }.onFailure { Log.w(TAG, "onProgressUpdate threw: ${it.message}") }
+                }
+                val finishReason = choice.optString("finish_reason", "")
+                    .ifBlank { choice.optString("finishReason", "") }
+                    .trim()
+                if (finishReason.isNotBlank() && finishReason != "null") {
+                    break
                 }
             }
         } catch (e: Exception) {
@@ -261,26 +272,20 @@ class HermesClient(
         return withScheme
     }
 
-    private fun httpClient(timeoutMs: Int): OkHttpClient {
-        // The configured Hermes timeout (companion app "Hermes timeout") must
-        // govern how long we wait for the slow agent loop to STREAM — i.e. the
-        // maximum gap between SSE chunks while gpt-5.5 reasons / runs tools —
-        // NOT the TCP connect. It used to be wired to connectTimeout, so
-        // "raise the timeout" did nothing for slow reasoning, and the stream
-        // was capped at a hardcoded 5-min read gap. When the agent went quiet
-        // longer than that, OkHttp aborted the read, the client dropped the
-        // SSE connection, and the gateway killed the task ("SSE client
-        // disconnected; interrupted agent task") — leaving Hermes in limbo.
-        //
-        // Connecting itself should be quick (the tunnel answers in a second or
-        // two when it's up), so bound that separately and short.
+    private fun httpClient(timeoutMs: Int, streaming: Boolean): OkHttpClient {
         val configured = if (timeoutMs > 0) timeoutMs.toLong() else 30_000L
-        // Floor the read gap at 5 min so a low/default setting still tolerates
-        // multi-minute reasoning; a higher companion setting extends it.
-        val readGapMs = maxOf(configured, 5 * 60_000L)
+        val readTimeoutMs = if (streaming) {
+            // Streaming waits on gaps between SSE chunks, so keep this generous.
+            // Force HTTP/1.1 below: the failing glasses logs showed the stuck
+            // path was OkHttp HTTP/2, which is a poor fit for Cloudflare SSE.
+            maxOf(configured, 5 * 60_000L)
+        } else {
+            configured.coerceAtLeast(10_000L)
+        }
         return OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(readGapMs, TimeUnit.MILLISECONDS)
+            .protocols(listOf(Protocol.HTTP_1_1))
+            .connectTimeout(configured.coerceAtLeast(10_000L), TimeUnit.MILLISECONDS)
+            .readTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .build()
     }
