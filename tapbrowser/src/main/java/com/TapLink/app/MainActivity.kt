@@ -2371,6 +2371,14 @@ class MainActivity :
                             """,
                                     null
                             )
+                            // Keep YouTube's native pause overlay (timeline +
+                            // size/fullscreen buttons) usable on EVERY watch
+                            // page — including manually-browsed ones. The
+                            // automation bootstrap (and its paused-chrome hold)
+                            // is skipped when there's no autoplay query/mode, so
+                            // manual videos otherwise got YouTube's near-instant
+                            // autohide and the controls only flashed. Idempotent.
+                            injectYouTubePausedChromeHold(webView)
                             injectYouTubePlaylistAutomation(webView, url)
                         }
                     }
@@ -2728,6 +2736,109 @@ class MainActivity :
                         ?.lowercase(Locale.US)
                         ?.takeIf { it == "video" || it == "music" || it == "subscriptions" || it == "history" }
                         ?: youtubeAutoplayMode
+    }
+
+    /**
+     * Hold YouTube's native pause overlay (the timeline + the size /
+     * fullscreen "expand" buttons in .ytp-chrome-bottom) visible for a
+     * usable tap window after the user pauses, on ANY YouTube watch page.
+     *
+     * This is the same hold the automation bootstrap installs, lifted out so
+     * it runs even when the bootstrap is skipped (manual browsing has no
+     * autoplay query/mode, so injectYouTubePlaylistAutomation returns early —
+     * which left manual videos with YouTube's near-instant autohide and made
+     * the official controls flash for a fraction of a second). Idempotent via
+     * window.__tl_pause_chrome_bound, so running here AND in the bootstrap is
+     * harmless. Touches only .ytp-chrome-* / autohide — NOT the captions.
+     */
+    private fun injectYouTubePausedChromeHold(view: WebView) {
+        view.evaluateJavascript(
+            """
+            (function extendPausedPlayerChrome() {
+                try {
+                    if (window.__tl_pause_chrome_bound) return;
+                    window.__tl_pause_chrome_bound = true;
+                    var HOLD_MS = 6000;
+                    var holdUntil = 0;
+                    var holdTimer = null;
+
+                    if (!document.getElementById('__tl_pause_chrome_style')) {
+                        var s = document.createElement('style');
+                        s.id = '__tl_pause_chrome_style';
+                        s.textContent =
+                            'html.__tl_hold_yt_chrome .ytp-chrome-bottom,' +
+                            'html.__tl_hold_yt_chrome .ytp-chrome-top,' +
+                            'html.__tl_hold_yt_chrome .ytp-gradient-bottom,' +
+                            'html.__tl_hold_yt_chrome .ytp-gradient-top{' +
+                            'opacity:1!important;visibility:visible!important;pointer-events:auto!important}' +
+                            'html.__tl_hold_yt_chrome .html5-video-player{' +
+                            'cursor:auto!important}';
+                        document.head.appendChild(s);
+                    }
+
+                    function inTapLinkMode() {
+                        return !!(
+                            document.getElementById('__taplink_fs_style') ||
+                            document.getElementById('__tl_theater_style') ||
+                            document.getElementById('__tl_mini_style')
+                        );
+                    }
+
+                    function releaseHold() {
+                        try { document.documentElement.classList.remove('__tl_hold_yt_chrome'); } catch(e) {}
+                        if (holdTimer) {
+                            try { clearInterval(holdTimer); } catch(e) {}
+                            holdTimer = null;
+                        }
+                    }
+
+                    function applyHold() {
+                        if (inTapLinkMode()) {
+                            releaseHold();
+                            return;
+                        }
+                        holdUntil = Date.now() + HOLD_MS;
+                        try { document.documentElement.classList.add('__tl_hold_yt_chrome'); } catch(e) {}
+                        if (!holdTimer) {
+                            holdTimer = setInterval(function() {
+                                try {
+                                    if (Date.now() >= holdUntil || inTapLinkMode()) {
+                                        releaseHold();
+                                        return;
+                                    }
+                                    var players = document.querySelectorAll('.html5-video-player,#movie_player');
+                                    for (var i = 0; i < players.length; i++) {
+                                        players[i].classList.remove('ytp-autohide');
+                                        players[i].classList.add('ytp-user-active');
+                                    }
+                                } catch(e) {}
+                            }, 250);
+                        }
+                    }
+
+                    function bindVideo(v) {
+                        if (!v || v.__tl_pause_chrome_listener) return;
+                        v.__tl_pause_chrome_listener = true;
+                        v.addEventListener('pause', applyHold, true);
+                        v.addEventListener('play', releaseHold, true);
+                    }
+
+                    function bindAll() {
+                        try {
+                            var vids = document.querySelectorAll('video');
+                            for (var i = 0; i < vids.length; i++) bindVideo(vids[i]);
+                        } catch(e) {}
+                    }
+
+                    bindAll();
+                    setInterval(bindAll, 1500);
+                } catch(e) {
+                    console.log('[TapLink-YT] standalone pause chrome bind failed: ' + e);
+                }
+            })();
+            """,
+            null
+        )
     }
 
     private fun injectYouTubePlaylistAutomation(view: WebView, url: String) {
@@ -3514,6 +3625,98 @@ class MainActivity :
                     try { window.GroqBridge.injectNavButtons(); } catch(e) {
                         console.log('[TapLink-YT] injectNavButtons bridge failed: ' + e);
                     }
+
+                    /* ── PAUSED PLAYER CHROME ──
+                     * In standard browser mode, YouTube's own pause overlay
+                     * can auto-hide almost immediately in this WebView, which
+                     * makes the official timeline / expand controls impossible
+                     * to hit. Hold the native YouTube chrome visible for a
+                     * normal tap target window after pause, then hand control
+                     * back to YouTube. TapLink Full/Theater/Mini layouts are
+                     * excluded because they have their own overlay controls.
+                     */
+                    (function extendPausedPlayerChrome() {
+                        try {
+                            if (window.__tl_pause_chrome_bound) return;
+                            window.__tl_pause_chrome_bound = true;
+                            var HOLD_MS = 6000;
+                            var holdUntil = 0;
+                            var holdTimer = null;
+
+                            if (!document.getElementById('__tl_pause_chrome_style')) {
+                                var s = document.createElement('style');
+                                s.id = '__tl_pause_chrome_style';
+                                s.textContent =
+                                    'html.__tl_hold_yt_chrome .ytp-chrome-bottom,' +
+                                    'html.__tl_hold_yt_chrome .ytp-chrome-top,' +
+                                    'html.__tl_hold_yt_chrome .ytp-gradient-bottom,' +
+                                    'html.__tl_hold_yt_chrome .ytp-gradient-top{' +
+                                    'opacity:1!important;visibility:visible!important;pointer-events:auto!important}' +
+                                    'html.__tl_hold_yt_chrome .html5-video-player{' +
+                                    'cursor:auto!important}';
+                                document.head.appendChild(s);
+                            }
+
+                            function inTapLinkMode() {
+                                return !!(
+                                    document.getElementById('__taplink_fs_style') ||
+                                    document.getElementById('__tl_theater_style') ||
+                                    document.getElementById('__tl_mini_style')
+                                );
+                            }
+
+                            function releaseHold() {
+                                try { document.documentElement.classList.remove('__tl_hold_yt_chrome'); } catch(e) {}
+                                if (holdTimer) {
+                                    try { clearInterval(holdTimer); } catch(e) {}
+                                    holdTimer = null;
+                                }
+                            }
+
+                            function applyHold() {
+                                if (inTapLinkMode()) {
+                                    releaseHold();
+                                    return;
+                                }
+                                holdUntil = Date.now() + HOLD_MS;
+                                try { document.documentElement.classList.add('__tl_hold_yt_chrome'); } catch(e) {}
+                                if (!holdTimer) {
+                                    holdTimer = setInterval(function() {
+                                        try {
+                                            if (Date.now() >= holdUntil || inTapLinkMode()) {
+                                                releaseHold();
+                                                return;
+                                            }
+                                            var players = document.querySelectorAll('.html5-video-player,#movie_player');
+                                            for (var i = 0; i < players.length; i++) {
+                                                players[i].classList.remove('ytp-autohide');
+                                                players[i].classList.add('ytp-user-active');
+                                            }
+                                        } catch(e) {}
+                                    }, 250);
+                                }
+                            }
+
+                            function bindVideo(v) {
+                                if (!v || v.__tl_pause_chrome_listener) return;
+                                v.__tl_pause_chrome_listener = true;
+                                v.addEventListener('pause', applyHold, true);
+                                v.addEventListener('play', releaseHold, true);
+                            }
+
+                            function bindAll() {
+                                try {
+                                    var vids = document.querySelectorAll('video');
+                                    for (var i = 0; i < vids.length; i++) bindVideo(vids[i]);
+                                } catch(e) {}
+                            }
+
+                            bindAll();
+                            setInterval(bindAll, 1500);
+                        } catch(e) {
+                            console.log('[TapLink-YT] pause chrome bind failed: ' + e);
+                        }
+                    })();
 
                     /* ── CC ── */
                     function captionTrackLoaded(videoEl) {
