@@ -61,7 +61,12 @@ class HermesTool(
         Log.d(TAG, "Hermes call: vision=$includeImage hasFrame=$hasImage query=${query.take(100)}")
         val context = args["context"]?.takeIf { it.isNotBlank() }
 
-        return when (val result = hermesClient.sendMessage(query, context, imageBase64)) {
+        // Append the media-delivery contract so Hermes knows HOW to actually
+        // play / show media on the glasses (not just describe a link). The
+        // glasses act on an `open_taplink:<url>` directive line in the reply.
+        val augmentedQuery = query + mediaRoutingHint()
+
+        return when (val result = hermesClient.sendMessage(augmentedQuery, context, imageBase64)) {
             is HermesClient.ClawResult.Success -> {
                 val response = buildString {
                     append(result.text)
@@ -85,6 +90,35 @@ class HermesTool(
             is HermesClient.ClawResult.Error ->
                 Result.failure(Exception(result.message))
         }
+    }
+
+    /**
+     * Media-delivery contract appended to every Hermes query. Tells Hermes how
+     * to make the glasses actually PLAY/SHOW media (audio, video, images) — not
+     * just speak a link — and how to SAVE it into the on-glasses Media Library.
+     * The glasses parse an `open_taplink:<url>` directive line out of the reply,
+     * open it in the native TapInsight player, and strip it from the spoken /
+     * displayed text. Guidance only — it has no effect when no media is involved.
+     */
+    private fun mediaRoutingHint(): String {
+        return "\n\n[TapInsight media delivery — how to PLAY or SHOW media on the user's AR glasses " +
+            "(not just send a link the user must tap): end your reply with a directive on its OWN " +
+            "final line, exactly 'open_taplink:<URL>'. The <URL> MUST be an absolute, publicly " +
+            "fetchable http(s) URL pointing at the media in its NATIVE format (e.g. .mp3/.m4a/.aac " +
+            "audio, .mp4/.webm video, .jpg/.png image) — NEVER a Hermes server-local path such as " +
+            "/home/.../song.mp3 (the glasses cannot read your filesystem). If the file only exists " +
+            "locally, first expose it at a public URL (your media relay) and use that. Pick the " +
+            "player by type: " +
+            "AUDIO → open_taplink:https://appassets.androidplatform.net/assets/media_player.html?type=audio&url=<URL-ENCODED-AUDIO-URL>&title=<NAME>; " +
+            "VIDEO → the same with type=video; " +
+            "IMAGE → open_taplink:<direct-image-URL> (the viewer displays it); " +
+            "a direct video page like YouTube → open_taplink:<watch-url>. " +
+            "Keep the SPOKEN sentence short (e.g. 'Playing Woven Strings Atlas.') — the directive " +
+            "line is consumed by the glasses and is never read aloud. " +
+            "To additionally SAVE media into the on-glasses Media Library (folders Music/, Videos/, " +
+            "Text/, Playlists/) rather than only playing it, use the TapInsight companion API " +
+            "(POST /api/library/write); only state it was saved after the write or a library " +
+            "listing confirms it.]"
     }
 
     private fun extractReadableText(resultText: String): String {

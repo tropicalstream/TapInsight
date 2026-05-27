@@ -739,11 +739,19 @@ class GeminiVoicePipeline(context: Context) {
                 // verbatim on the chat card, and Gemini's own audio + transcript
                 // are suppressed (above / in onModelAudio / onOutputTranscription),
                 // so this does NOT cause a duplicate spoken readout.
+                // If the agent attached playable media (a line like
+                // 'open_taplink:<url>' or 'MEDIA:<url>'), pull it out and open it
+                // on the glasses so Hermes / TapClaw can actually PLAY audio /
+                // video / show images — not just speak a link. The directive line
+                // is stripped from what we show + read aloud.
+                val mediaDirective = extractAgentMediaDirective(resultText)
+                val displayText =
+                    mediaDirective?.cleanedText?.takeIf { it.isNotBlank() } ?: resultText
                 val agentToolResponse =
                     "[The agent's reply below was ALREADY spoken to the user via the " +
                         "readout voice and shown verbatim on the chat card. Do NOT read it " +
                         "aloud, summarize, or repeat it now. Keep it ONLY as reference so you " +
-                        "can answer follow-up questions about it later.]\n\n" + resultText
+                        "can answer follow-up questions about it later.]\n\n" + displayText
                 runCatching { liveSession?.sendToolResponse(callId, toolName, agentToolResponse) }
                 HudStateBridge.update {
                     it.copy(notification = null, phase = HudStateBridge.VoicePhase.THINKING)
@@ -752,8 +760,22 @@ class GeminiVoicePipeline(context: Context) {
                 // as TEXT in the chat card (not just spoken). This appends it to
                 // the ViewModel's message list, which the Service collects and
                 // publishes to ChatCardBridge → the unipanel reply card.
-                runCatching { viewModel.appendDirectAssistantResponse(resultText) }
-                speakAgentReplyViaEngine(resultText)
+                runCatching { viewModel.appendDirectAssistantResponse(displayText) }
+                if (mediaDirective != null) {
+                    // The media player is the output: open it and do NOT also run a
+                    // TTS readout — launching audio ends the voice session anyway,
+                    // so a parallel readout would fight the media. The directive URL
+                    // was already removed from displayText so it isn't spoken.
+                    Log.i(
+                        TAG,
+                        "agent $toolName media directive → opening ${mediaDirective.url.take(140)}"
+                    )
+                    suppressGeminiOutputUntilMs = 0L
+                    HudStateBridge.update { it.copy(agentBusy = false) }
+                    launchTapBrowserFromService(mediaDirective.url)
+                } else {
+                    speakAgentReplyViaEngine(displayText)
+                }
                 return@launch
             }
 
@@ -1218,6 +1240,48 @@ class GeminiVoicePipeline(context: Context) {
             }.getOrDefault(false)
             Log.i(TAG, "sendClientText (localRegex fallback) returned $ok")
         }
+    }
+
+    /** A media/open directive an agent (Hermes / TapClaw) embedded in its reply. */
+    private data class AgentMediaDirective(val url: String, val cleanedText: String)
+
+    /**
+     * Scan an agent reply for a media/open directive — a line beginning with
+     * `open_taplink:` or `MEDIA:` whose value is an absolute, fetchable URL
+     * (http/https or the appassets player host, optionally taplink://-wrapped).
+     * Returns the normalized URL plus the reply with that directive line removed
+     * (so it is neither spoken nor shown). Returns null when there's no usable
+     * directive — e.g. a Hermes server-local `MEDIA:/home/...` path the glasses
+     * can't fetch, which is left untouched in the text.
+     */
+    private fun extractAgentMediaDirective(resultText: String): AgentMediaDirective? {
+        if (resultText.isBlank()) return null
+        val lines = resultText.split("\n")
+        var url: String? = null
+        val kept = ArrayList<String>(lines.size)
+        for (line in lines) {
+            if (url == null) {
+                val t = line.trim()
+                val lower = t.lowercase()
+                if (lower.startsWith("open_taplink:") || lower.startsWith("media:")) {
+                    val raw = t.substringAfter(":", "").trim().removePrefix("taplink://").trim()
+                    val rawLower = raw.lowercase()
+                    val fetchable = rawLower.startsWith("http://") ||
+                        rawLower.startsWith("https://") ||
+                        rawLower.startsWith("appassets.androidplatform.net")
+                    if (fetchable) {
+                        val norm = AssistantIntentParser.normalizeTapLinkUrl(raw)
+                        if (norm.isNotBlank()) {
+                            url = norm
+                            continue // drop the directive line from the readable text
+                        }
+                    }
+                }
+            }
+            kept.add(line)
+        }
+        val resolved = url ?: return null
+        return AgentMediaDirective(resolved, kept.joinToString("\n").trim())
     }
 
     private fun maybeOpenTapLinkResult(toolName: String, resultText: String) {
