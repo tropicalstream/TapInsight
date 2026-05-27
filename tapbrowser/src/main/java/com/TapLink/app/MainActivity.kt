@@ -2740,8 +2740,10 @@ class MainActivity :
 
     /**
      * Hold YouTube's native pause overlay (the timeline + the size /
-     * fullscreen "expand" buttons in .ytp-chrome-bottom) visible for a
-     * usable tap window after the user pauses, on ANY YouTube watch page.
+     * fullscreen "expand" buttons) visible for a usable tap window after
+     * the user pauses, on ANY YouTube watch page. Desktop YouTube exposes
+     * .ytp-chrome-bottom; m.youtube.com uses a separate .player-controls /
+     * ytmCustomControlsContainer layer, so both are handled here.
      *
      * This is the same hold the automation bootstrap installs, lifted out so
      * it runs even when the bootstrap is skipped (manual browsing has no
@@ -2749,7 +2751,8 @@ class MainActivity :
      * which left manual videos with YouTube's near-instant autohide and made
      * the official controls flash for a fraction of a second). Idempotent via
      * window.__tl_pause_chrome_bound, so running here AND in the bootstrap is
-     * harmless. Touches only .ytp-chrome-* / autohide — NOT the captions.
+     * harmless. Touches only player chrome/control containers — NOT the
+     * caption windows or caption text.
      */
     private fun injectYouTubePausedChromeHold(view: WebView) {
         view.evaluateJavascript(
@@ -2769,8 +2772,30 @@ class MainActivity :
                             'html.__tl_hold_yt_chrome .ytp-chrome-bottom,' +
                             'html.__tl_hold_yt_chrome .ytp-chrome-top,' +
                             'html.__tl_hold_yt_chrome .ytp-gradient-bottom,' +
-                            'html.__tl_hold_yt_chrome .ytp-gradient-top{' +
+                            'html.__tl_hold_yt_chrome .ytp-gradient-top,' +
+                            'html.__tl_hold_yt_chrome .ytp-chrome-controls,' +
+                            'html.__tl_hold_yt_chrome .ytp-progress-bar-container,' +
+                            'html.__tl_hold_yt_chrome .player-controls,' +
+                            'html.__tl_hold_yt_chrome .player-controls *,' +
+                            'html.__tl_hold_yt_chrome .player-controls-background,' +
+                            'html.__tl_hold_yt_chrome .player-controls-content,' +
+                            'html.__tl_hold_yt_chrome .ytmCustomControlsContainer,' +
+                            'html.__tl_hold_yt_chrome .ytmCustomControlsContainer *,' +
+                            'html.__tl_hold_yt_chrome .ytp-mobile,' +
+                            'html.__tl_hold_yt_chrome .mobile-topbar-header,' +
+                            'html.__tl_hold_yt_chrome ytm-player button,' +
+                            'html.__tl_hold_yt_chrome ytm-watch-player button,' +
+                            'html.__tl_hold_yt_chrome .html5-video-player button,' +
+                            'html.__tl_hold_yt_chrome .html5-video-player [role=\"button\"],' +
+                            'html.__tl_hold_yt_chrome .html5-video-player [role=\"slider\"],' +
+                            'html.__tl_hold_yt_chrome .html5-video-player input[type=\"range\"],' +
+                            'html.__tl_hold_yt_chrome .progress-bar,' +
+                            'html.__tl_hold_yt_chrome .progress-bar-line,' +
+                            'html.__tl_hold_yt_chrome .ytm-progress-bar{' +
                             'opacity:1!important;visibility:visible!important;pointer-events:auto!important}' +
+                            'html.__tl_hold_yt_chrome .player-controls,' +
+                            'html.__tl_hold_yt_chrome .ytmCustomControlsContainer{' +
+                            'display:block!important}' +
                             'html.__tl_hold_yt_chrome .html5-video-player{' +
                             'cursor:auto!important}';
                         document.head.appendChild(s);
@@ -2790,6 +2815,7 @@ class MainActivity :
                             try { clearInterval(holdTimer); } catch(e) {}
                             holdTimer = null;
                         }
+                        clearForcedChromeStyles();
                     }
 
                     function applyHold() {
@@ -2799,6 +2825,7 @@ class MainActivity :
                         }
                         holdUntil = Date.now() + HOLD_MS;
                         try { document.documentElement.classList.add('__tl_hold_yt_chrome'); } catch(e) {}
+                        keepChromeVisible();
                         if (!holdTimer) {
                             holdTimer = setInterval(function() {
                                 try {
@@ -2806,14 +2833,61 @@ class MainActivity :
                                         releaseHold();
                                         return;
                                     }
-                                    var players = document.querySelectorAll('.html5-video-player,#movie_player');
-                                    for (var i = 0; i < players.length; i++) {
-                                        players[i].classList.remove('ytp-autohide');
-                                        players[i].classList.add('ytp-user-active');
-                                    }
+                                    keepChromeVisible();
                                 } catch(e) {}
                             }, 250);
                         }
+                    }
+
+                    function keepChromeVisible() {
+                        try {
+                            var players = document.querySelectorAll('.html5-video-player,#movie_player');
+                            for (var i = 0; i < players.length; i++) {
+                                players[i].classList.remove('ytp-autohide');
+                                players[i].classList.add('ytp-user-active');
+                                players[i].dispatchEvent(new MouseEvent('mousemove', {
+                                    bubbles: true,
+                                    cancelable: true,
+                                    view: window,
+                                    clientX: Math.max(1, Math.floor(window.innerWidth / 2)),
+                                    clientY: Math.max(1, Math.floor(window.innerHeight / 2))
+                                }));
+                            }
+                            var mobileControls = document.querySelectorAll(
+                                '.player-controls,.player-controls-background,.player-controls-content,' +
+                                '.ytmCustomControlsContainer,.ytp-mobile,.mobile-topbar-header,' +
+                                'ytm-player button,ytm-watch-player button,.html5-video-player button,' +
+                                '.html5-video-player [role=\"button\"],.html5-video-player [role=\"slider\"],' +
+                                '.html5-video-player input[type=\"range\"],.progress-bar,.progress-bar-line,.ytm-progress-bar'
+                            );
+                            for (var j = 0; j < mobileControls.length; j++) {
+                                mobileControls[j].style.setProperty('opacity', '1', 'important');
+                                mobileControls[j].style.setProperty('visibility', 'visible', 'important');
+                                mobileControls[j].style.setProperty('pointer-events', 'auto', 'important');
+                            }
+                        } catch(e) {}
+                    }
+
+                    function clearForcedChromeStyles() {
+                        try {
+                            var players = document.querySelectorAll('.html5-video-player,#movie_player');
+                            for (var i = 0; i < players.length; i++) {
+                                players[i].classList.remove('ytp-user-active');
+                                players[i].classList.add('ytp-autohide');
+                            }
+                            var mobileControls = document.querySelectorAll(
+                                '.player-controls,.player-controls-background,.player-controls-content,' +
+                                '.ytmCustomControlsContainer,.ytp-mobile,.mobile-topbar-header,' +
+                                'ytm-player button,ytm-watch-player button,.html5-video-player button,' +
+                                '.html5-video-player [role=\"button\"],.html5-video-player [role=\"slider\"],' +
+                                '.html5-video-player input[type=\"range\"],.progress-bar,.progress-bar-line,.ytm-progress-bar'
+                            );
+                            for (var j = 0; j < mobileControls.length; j++) {
+                                mobileControls[j].style.removeProperty('opacity');
+                                mobileControls[j].style.removeProperty('visibility');
+                                mobileControls[j].style.removeProperty('pointer-events');
+                            }
+                        } catch(e) {}
                     }
 
                     function bindVideo(v) {
@@ -2832,32 +2906,6 @@ class MainActivity :
 
                     bindAll();
                     setInterval(bindAll, 1500);
-
-                    // ── DIAGNOSTIC (temporary) ──
-                    // Log what the player actually exposes on pause so we can
-                    // see whether this mode even has the desktop .ytp-* chrome
-                    // (the mobile UA may serve a different player, or the player
-                    // may live in an iframe we can't reach). Counts only — never
-                    // touches caption nodes.
-                    try {
-                        var dvids = document.querySelectorAll('video');
-                        console.log('[TapLink-YTPause] bound; videos=' + dvids.length +
-                            ' chromeBottom=' + document.querySelectorAll('.ytp-chrome-bottom').length +
-                            ' iframes=' + document.querySelectorAll('iframe').length +
-                            ' ua=' + (navigator.userAgent || '').slice(0, 40));
-                        for (var d = 0; d < dvids.length; d++) {
-                            dvids[d].addEventListener('pause', function() {
-                                try {
-                                    console.log('[TapLink-YTPause] PAUSE' +
-                                        ' chromeBottom=' + document.querySelectorAll('.ytp-chrome-bottom').length +
-                                        ' players=' + document.querySelectorAll('.html5-video-player,#movie_player').length +
-                                        ' mobileCtrls=' + document.querySelectorAll('.player-controls,.ytmCustomControlsContainer,.ytp-mobile,.mobile-topbar-header').length +
-                                        ' iframes=' + document.querySelectorAll('iframe').length +
-                                        ' holdClass=' + document.documentElement.classList.contains('__tl_hold_yt_chrome'));
-                                } catch(e) {}
-                            }, true);
-                        }
-                    } catch(e) {}
                 } catch(e) {
                     console.log('[TapLink-YT] standalone pause chrome bind failed: ' + e);
                 }
@@ -7389,13 +7437,17 @@ class MainActivity :
             if (browserPanelHidden) showBrowserPanel() else hideBrowserPanel()
         }
         findViewById<View?>(R.id.unipanelHudStrip)?.setOnClickListener(browserToggleHandler)
-        // Transparent empty regions must NOT intercept the tap at all — drop
-        // any previously-installed handler and make them non-clickable so a
-        // tap on genuinely empty space falls through the overlay hit-test to
-        // the standard browser toggle in the cursor pipeline.
-        findViewById<View?>(R.id.unipanelHudFeedStrip)?.let {
-            it.setOnClickListener(null); it.isClickable = false
-        }
+        // Empty space within the HUD strip toggles the browser too. The feed
+        // strip (the empty area on the right of the top row) routes to the same
+        // toggle so the user has a real HUD target to collapse/restore the
+        // browser. It used to be left non-clickable so taps fell THROUGH to the
+        // in-page emptiness classifier — but that classifier mis-read some real
+        // web-page buttons as "empty" and collapsed the browser unexpectedly,
+        // so we no longer drive the toggle from page taps at all (see the
+        // taphud_empty handler). The tier panel (events/tasks/news) stays inert
+        // so reading it never toggles the browser, and the parent row stays
+        // non-clickable so a tap on the events text isn't hijacked.
+        findViewById<View?>(R.id.unipanelHudFeedStrip)?.setOnClickListener(browserToggleHandler)
         findViewById<View?>(R.id.unipanelTopHudRow)?.let {
             it.setOnClickListener(null); it.isClickable = false
         }
@@ -8679,15 +8731,21 @@ class MainActivity :
                 val shouldCancelSyntheticClick = handledAsMediaToggle || tapLinkOverlayButton
                 if (emptySpaceTap) {
                     Handler(Looper.getMainLooper()).post {
-                        // When the HUD/chat are rolled up, empty space becomes
-                        // a media pause/unpause surface instead of collapsing
-                        // the browser into a black focus state.
+                        // On a YouTube watch page an empty tap toggles playback;
+                        // when the HUD/chat are rolled up it toggles media. It
+                        // NO LONGER collapses the browser: the in-page emptiness
+                        // classifier mis-reads some real web-page buttons as
+                        // "empty", and that was hiding the browser on a genuine
+                        // button tap. Browser hide/show is now driven ONLY by
+                        // empty HUD/chat space (the HUD strip + feed strip
+                        // toggle), never by a tap on the web page itself. When
+                        // neither branch applies, the synthetic click completes
+                        // as a normal page click (so a mis-read button still
+                        // actually fires instead of vanishing the page).
                         if (isViewingYoutubeWatchPage()) {
                             toggleYoutubeVideoPlayback()
                         } else if (hudRolledUp) {
                             dualWebViewGroup.toggleMediaPlayback()
-                        } else {
-                            hideBrowserPanel()
                         }
                     }
                 }
@@ -9907,7 +9965,6 @@ class MainActivity :
                                     view?.let { injectYouTubePausedChromeHold(it) }
                                     view?.let { injectYouTubePlaylistAutomation(it, url) }
                                 }
-
                                 // Restore media listeners and scrollbar logic from DualWebViewGroup
                                 view?.let { syncActiveBrowserChrome(it) }
                                 dualWebViewGroup.refreshMaskedNowPlaying()
