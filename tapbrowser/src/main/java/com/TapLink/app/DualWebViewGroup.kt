@@ -551,6 +551,19 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 isFocusable = true
             }
 
+    // Swipe-unlock boot screen overlay. Lives in the same clip parent as the
+    // fullscreen-video overlay so BinocularSbsLayout mirrors it to both eyes,
+    // and sits above everything (including fullscreen video) when visible.
+    private val lockOverlayContainer =
+            FrameLayout(context).apply {
+                clipChildren = true
+                clipToOutline = true
+                setBackgroundColor(Color.BLACK)
+                visibility = View.GONE
+                isClickable = true
+                isFocusable = true
+            }
+
     // UI scale factor (0.5 to 1.0) - controlled by screen size slider
     var uiScale = 1.0f
 
@@ -3087,6 +3100,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         leftEyeClipParent.addView(
                 fullScreenOverlayContainer
         ) // Add to clip parent for proper clipping
+        // Lock overlay added last so it draws above the fullscreen overlay.
+        leftEyeClipParent.addView(lockOverlayContainer)
 
         // Add views to UI container
         leftEyeUIContainer.apply {
@@ -3577,6 +3592,26 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 """
             (function() {
                 try {
+                    // ROOT CAUSE of "scroll dead after fullscreen": the CSS
+                    // fullscreen (enterCssFullscreen) injects a style node that
+                    // pins html,body{overflow:hidden!important}. On some exit
+                    // routes that node is never removed, so the page — and the
+                    // custom scroll bar that mirrors it — stays frozen even
+                    // after leaving fullscreen. Strip it here, the single
+                    // chokepoint every fullscreen-exit path runs through.
+                    //
+                    // We deliberately remove ONLY __taplink_fs_style and never
+                    // the Theater/Mini nodes: Full->Theater/Mini transitions
+                    // call exitImmersiveMode (which lands here) and then inject
+                    // the Theater/Mini style immediately AFTER, so touching
+                    // those ids would strip a freshly-applied mode.
+                    var fs = document.getElementById('__taplink_fs_style');
+                    if (fs && fs.parentNode) fs.parentNode.removeChild(fs);
+                    var de = document.documentElement, b = document.body;
+                    if (de && de.style) { de.style.overflow = ''; de.style.overflowY = ''; de.style.overflowX = ''; }
+                    if (b && b.style) { b.style.overflow = ''; b.style.overflowY = ''; b.style.overflowX = ''; }
+                } catch (e) {}
+                try {
                     if (window.__taplinkReportScroll) window.__taplinkReportScroll();
                     if (window.__taplinkWarmupScroll) window.__taplinkWarmupScroll();
                 } catch (e) {}
@@ -3789,6 +3824,38 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     fun isFullScreenOverlayVisible() = fullScreenOverlayContainer.visibility == View.VISIBLE
+
+    // ── Swipe-unlock boot screen ──────────────────────────────────────────
+    /** Show [view] (a LockScreenView) full-bleed in both eyes, above all UI. */
+    fun showLockScreen(view: View) {
+        if (view.parent is ViewGroup) (view.parent as ViewGroup).removeView(view)
+        lockOverlayContainer.removeAllViews()
+        lockOverlayContainer.addView(
+                view,
+                FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                )
+        )
+        lockOverlayContainer.visibility = View.VISIBLE
+        lockOverlayContainer.elevation = 3000f
+        lockOverlayContainer.bringToFront()
+        lockOverlayContainer.invalidate()
+        startRefreshing()
+    }
+
+    /** Remove the lock screen and let the browser UI show through again. */
+    fun hideLockScreen() {
+        lockOverlayContainer.removeAllViews()
+        lockOverlayContainer.visibility = View.GONE
+        lockOverlayContainer.elevation = 0f
+        leftEyeUIContainer.invalidate()
+        leftEyeUIContainer.requestLayout()
+        this.invalidate()
+        startRefreshing()
+    }
+
+    fun isLockScreenVisible() = lockOverlayContainer.visibility == View.VISIBLE
 
     fun dispatchMaskOverlayTouch(screenX: Float, screenY: Float) {
         // Global debounce: prevent the same physical tap from triggering this method

@@ -1107,6 +1107,41 @@
 </div>
 
 
+<!-- Security: Swipe Unlock -->
+<div class="step" id="sSecurity">
+  <div class="step-head">
+    <div class="step-num" style="background:#c62828;color:#fff">&#128274;</div>
+    <div class="step-title">Swipe Unlock</div>
+  </div>
+  <p class="step-desc">Show an animated swipe-code lock when the glasses boot. This is a light deterrent to keep casual hands out &mdash; not encryption. Off by default.</p>
+
+  <label>Enable lock screen</label>
+  <select id="securityEnabled" onchange="renderSwipePreview()"><option value="false">Off</option><option value="true">On</option></select>
+  <div class="hint">When on, set a 3&ndash;6 swipe code below. The glasses stay locked at cold launch until the code is swiped in. (Backgrounding/resuming does not re-lock.)</div>
+
+  <hr style="border-color:#333;margin:14px 0">
+  <label>Unlock code (3&ndash;6 swipes)</label>
+  <p class="step-desc">Tap the arrows to build your sequence &mdash; this is the order you'll swipe on the temple trackpad to unlock.</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:12px 0">
+    <button type="button" onclick="addSwipe('U')" style="width:52px;height:52px;font-size:22px;border-radius:10px;border:1px solid #444;background:#1b1b1b;color:#00e5ff;cursor:pointer">&#9650;</button>
+    <button type="button" onclick="addSwipe('D')" style="width:52px;height:52px;font-size:22px;border-radius:10px;border:1px solid #444;background:#1b1b1b;color:#00e5ff;cursor:pointer">&#9660;</button>
+    <button type="button" onclick="addSwipe('L')" style="width:52px;height:52px;font-size:22px;border-radius:10px;border:1px solid #444;background:#1b1b1b;color:#00e5ff;cursor:pointer">&#9664;</button>
+    <button type="button" onclick="addSwipe('R')" style="width:52px;height:52px;font-size:22px;border-radius:10px;border:1px solid #444;background:#1b1b1b;color:#00e5ff;cursor:pointer">&#9654;</button>
+    <span style="flex:1"></span>
+    <button type="button" onclick="undoSwipe()" style="padding:10px 14px;font-size:13px;border-radius:8px;border:none;background:#555;color:#fff;cursor:pointer">Undo</button>
+    <button type="button" onclick="clearSwipe()" style="padding:10px 14px;font-size:13px;border-radius:8px;border:none;background:#7a2020;color:#fff;cursor:pointer">Clear</button>
+  </div>
+  <div id="swipePreview" style="min-height:46px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;background:#0d1117;border:1px solid #333;border-radius:8px;font-size:26px;color:#fff"></div>
+  <div id="swipeStatus" class="hint" style="margin-top:6px"></div>
+  <input type="hidden" id="securitySequence" value="">
+
+  <hr style="border-color:#333;margin:14px 0">
+  <label>Wrong tries before cooldown</label>
+  <input type="number" id="securityAttemptLimit" placeholder="3" min="1" max="10" value="3">
+  <div class="hint">After this many wrong codes in a row, the lock briefly pauses before accepting input again.</div>
+</div>
+
+
 <!-- QR Scanner Modal -->
 <div class="modal" id="qrModal">
   <div class="modal-content" style="max-width:400px;padding:16px;text-align:center">
@@ -1280,7 +1315,11 @@ const FIELDS = {
   hudFontScale:        { key: 'hud_font_scale',         type: 'float'  },
   hudHighContrast:     { key: 'hud_high_contrast',      type: 'bool'   },
   ttsSpeechRate:       { key: 'tts_speech_rate',        type: 'float'  },
-  ttsAutoRead:         { key: 'tts_auto_read',          type: 'bool'   }
+  ttsAutoRead:         { key: 'tts_auto_read',          type: 'bool'   },
+  // Swipe-unlock boot screen
+  securityEnabled:     { key: 'security_enabled',       type: 'bool'   },
+  securitySequence:    { key: 'security_sequence',      type: 'string' },
+  securityAttemptLimit:{ key: 'security_attempt_limit', type: 'int'    }
 };
 
 const HELP = {
@@ -2805,6 +2844,53 @@ function syncInterruptRadio() {
   toggleInterruptFields();
 }
 
+// ── Swipe-unlock code builder ───────────────────────────────────────────
+const SWIPE_GLYPH = { U:'⬆', D:'⬇', L:'⬅', R:'➡' };
+function getSwipeSeq(){
+  const raw = (document.getElementById('securitySequence')?.value || '').trim();
+  return raw ? raw.split(',').map(s=>s.trim().toUpperCase()).filter(s=>SWIPE_GLYPH[s]) : [];
+}
+function setSwipeSeq(arr){
+  const el = document.getElementById('securitySequence');
+  if(el) el.value = arr.join(',');
+  renderSwipePreview();
+}
+function addSwipe(dir){
+  const seq = getSwipeSeq();
+  if(seq.length >= 6){ showToast('Code is at most 6 swipes','err'); return; }
+  seq.push(dir);
+  setSwipeSeq(seq);
+}
+function undoSwipe(){ const seq=getSwipeSeq(); seq.pop(); setSwipeSeq(seq); }
+function clearSwipe(){ setSwipeSeq([]); }
+function renderSwipePreview(){
+  const preview = document.getElementById('swipePreview');
+  const status = document.getElementById('swipeStatus');
+  if(!preview) return;
+  const seq = getSwipeSeq();
+  preview.innerHTML = seq.length
+    ? seq.map(d=>'<span>'+SWIPE_GLYPH[d]+'</span>').join('')
+    : '<span style="font-size:13px;color:#777">No code set</span>';
+  if(!status) return;
+  const enabled = document.getElementById('securityEnabled')?.value === 'true';
+  if(!enabled){ status.textContent = 'Lock is off. Saved codes are kept but not enforced.'; status.style.color='#777'; }
+  else if(seq.length < 3){ status.textContent = '⚠ Add at least 3 swipes to enable the lock.'; status.style.color='#ff9800'; }
+  else if(seq.length > 6){ status.textContent = '⚠ Code is too long (max 6).'; status.style.color='#ff9800'; }
+  else { status.textContent = '✓ '+seq.length+'-swipe code ready.'; status.style.color='#2e7d32'; }
+}
+// Block saving an enabled-but-invalid lock so the glasses never boot into an
+// unsatisfiable code. Returns true when the security config is OK to save.
+function validateSecurityBeforeSave(){
+  const enabled = document.getElementById('securityEnabled')?.value === 'true';
+  if(!enabled) return true;
+  const n = getSwipeSeq().length;
+  if(n < 3 || n > 6){
+    showToast('Set a 3–6 swipe code before enabling the lock','err');
+    return false;
+  }
+  return true;
+}
+
 async function loadAll(){
   if(hasBridge()){
     // WebView bridge path (on-device)
@@ -2858,6 +2944,7 @@ async function loadAll(){
     }
   })();
   refreshResearchPresetHint();
+  renderSwipePreview();
   renderHudOrderList();
   // Surface the saved engine choice + the saved voice list right after
   // /api/config returns so the panel matches persisted state on refresh.
@@ -2871,6 +2958,7 @@ async function loadAll(){
   return true;
 }
 async function saveAll(){
+  if(!validateSecurityBeforeSave()) return false;
   const payload=collectConfigPayload();
   const savedCount=Object.keys(FIELDS).length;
   showStatus('Saving configuration...');

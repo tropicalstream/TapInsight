@@ -443,6 +443,14 @@ class MainActivity :
     lateinit var dualWebViewGroup: DualWebViewGroup
     private lateinit var webView: WebView
     private lateinit var mainContainer: FrameLayout
+
+    // ── Swipe-unlock boot screen ──────────────────────────────────────────
+    private var lockScreenView: LockScreenView? = null
+    private var securityLocked = false
+    private var lockSwipeTracking = false
+    private var lockSwipeDownX = 0f
+    private var lockSwipeDownY = 0f
+
     private lateinit var gestureDetector: GestureDetector
     private lateinit var templeDoubleTapDetector: GestureDetector
     private var pendingMaskSingleTapRunnable: Runnable? = null
@@ -2535,6 +2543,13 @@ class MainActivity :
         } else {
             DebugLog.d("Sensor", "Rotation vector sensor found")
         }
+
+        // Swipe-unlock boot screen. Engaged last in onCreate so cursor views
+        // are initialized (we hide them while locked) and the lock overlay
+        // paints over a fully-built hierarchy on the first frame. Reads the
+        // security_* keys from the shared visionclaw_prefs (written by the
+        // companion app); a no-op unless enabled with a valid 3–6 swipe code.
+        maybeEngageSecurityLock()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -7447,6 +7462,7 @@ class MainActivity :
         // hijacked by an ancestor.
         installHudStripGestureHandler(findViewById(R.id.unipanelHudStrip))
         installHudStripGestureHandler(findViewById(R.id.unipanelHudFeedStrip))
+        installGatewayBadgeTapHandlers()
         findViewById<View?>(R.id.unipanelTopHudRow)?.let {
             it.setOnClickListener(null); it.isClickable = false
         }
@@ -7547,14 +7563,265 @@ class MainActivity :
 
     /**
      * Open [url] in the in-process browser WebView, restoring the browser
-     * panel first if it's currently collapsed. Used by the tier-row taps so
-     * tapping EVENTS / TASKS / NEWS lands the user on the matching Google
-     * web app immediately.
+     * panel first if it's currently collapsed. Used by HUD taps so the user
+     * lands on the matching Google / agent dashboard immediately.
      */
-    private fun openInTapBrowser(url: String) {
+    private fun openInTapBrowser(url: String, headers: Map<String, String> = emptyMap()) {
         if (browserPanelHidden) showBrowserPanel()
-        runCatching { webView.loadUrl(url) }
+        runCatching {
+            if (headers.isEmpty()) webView.loadUrl(url) else webView.loadUrl(url, headers)
+        }
             .onFailure { DebugLog.w("HudTap", "loadUrl($url) failed: ${it.message}") }
+    }
+
+    private fun installGatewayBadgeTapHandlers() {
+        findViewById<View?>(R.id.unipanelHudHermesBadge)?.apply {
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { openHermesDashboardFromHud() }
+        }
+        findViewById<View?>(R.id.unipanelHudOpenClawBadge)?.apply {
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { openOpenClawDashboardFromHud() }
+        }
+    }
+
+    private fun openHermesDashboardFromHud() {
+        val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+        val sessionId = prefs.getString("hermes_session_id", "").orEmpty().trim()
+            .takeUnless { it.isBlank() || it.equals("main", ignoreCase = true) }
+            ?: "glasses"
+
+        // Hermes is configured here as an OpenAI-compatible API server; the
+        // API root is not a guaranteed web dashboard and can hang in WebView.
+        // Render a local status page instead of navigating to localhost.
+        DebugLog.d("HudTap", "Hermes badge -> local status page session=$sessionId")
+        openAgentStatusPage("hermes")
+    }
+
+    private fun openOpenClawDashboardFromHud() {
+        val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+        val configuredDashboard = prefs.getString("openclaw_dashboard_url", "").orEmpty().trim()
+        val sessionId = prefs.getString("openclaw_session_id", "").orEmpty().trim().ifBlank { "main" }
+        val username = prefs.getString("openclaw_dashboard_username", "").orEmpty().trim()
+        val password = prefs.getString("openclaw_dashboard_password", "").orEmpty()
+        val token = prefs.getString("openclaw_token", "").orEmpty().trim()
+            .ifBlank { prefs.getString("openclaw_pair_device_token", "").orEmpty().trim() }
+
+        // Only use the dashboard URL the user explicitly saved in the
+        // companion app. Guessing localhost/ports produced 404/empty-response
+        // pages on real devices. If no dashboard URL is saved, render the
+        // in-app status page instead of navigating to localhost.
+        val url = normalizeHttpDashboardUrl(configuredDashboard)
+            ?: return openAgentStatusPage("openclaw")
+        val headers = if (token.isNotBlank()) mapOf("Authorization" to "Bearer $token") else emptyMap()
+
+        DebugLog.d("HudTap", "OpenClaw badge -> $url session=$sessionId")
+        openInTapBrowser(url, headers)
+        scheduleDashboardLoginAutofill(username, password)
+    }
+
+    private fun normalizeHttpDashboardUrl(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank()) return null
+        val httpish = when {
+            trimmed.startsWith("http://", ignoreCase = true) ||
+                trimmed.startsWith("https://", ignoreCase = true) -> trimmed
+            trimmed.startsWith("ws://", ignoreCase = true) ->
+                "http://" + trimmed.substringAfter("://")
+            trimmed.startsWith("wss://", ignoreCase = true) ->
+                "https://" + trimmed.substringAfter("://")
+            trimmed.contains(".") || trimmed.contains(":") -> "http://$trimmed"
+            else -> return null
+        }
+        return httpish
+    }
+
+    private fun openAgentStatusPage(agent: String) {
+        if (browserPanelHidden) showBrowserPanel()
+        val html = buildAgentStatusPageHtml(agent)
+        runCatching {
+            webView.loadDataWithBaseURL(
+                "https://appassets.androidplatform.net/assets/agent_status.html",
+                html,
+                "text/html",
+                "UTF-8",
+                null
+            )
+        }.onFailure {
+            DebugLog.w("HudTap", "load local agent status failed: ${it.message}")
+        }
+    }
+
+    private fun buildAgentStatusPageHtml(initialAgent: String): String {
+        val safeInitial = if (initialAgent.equals("openclaw", ignoreCase = true)) "openclaw" else "hermes"
+        return """
+            <!doctype html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width,initial-scale=1">
+              <title>Agent Status</title>
+              <style>
+                html,body{margin:0;background:#05070b;color:#e9f3ff;font-family:system-ui,-apple-system,Segoe UI,sans-serif;font-size:14px}
+                body{padding:22px 28px}
+                .wrap{max-width:760px;margin:0 auto}
+                .tabs{display:flex;gap:8px;margin:0 0 14px}
+                button{border:1px solid #25415a;background:#101926;color:#d8ebff;border-radius:6px;padding:8px 12px;font-weight:700}
+                button.active{background:#0b4b39;border-color:#00e676;color:#fff}
+                .panel{background:rgba(8,14,22,.9);border:1px solid #213044;border-radius:8px;padding:14px 16px}
+                h1{font-size:20px;margin:0 0 6px}
+                .sub{color:#8fa8bd;margin:0 0 14px}
+                .grid{display:grid;grid-template-columns:160px 1fr;gap:7px 12px}
+                .k{color:#7fc7ff;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.04em}
+                .v{color:#edf6ff;overflow-wrap:anywhere}
+                .ok{color:#00e676}.bad{color:#ff5b5b}.muted{color:#8fa8bd}
+                .ticker{margin-top:14px;padding:10px 12px;border-radius:6px;background:#120b12;border:1px solid #4a263e;color:#ff8dac}
+                .note{margin-top:14px;color:#9eb3c6;font-size:12px;line-height:1.45}
+              </style>
+            </head>
+            <body>
+              <div class="wrap">
+                <div class="tabs">
+                  <button id="tab-hermes" onclick="setAgent('hermes')">Hermes</button>
+                  <button id="tab-openclaw" onclick="setAgent('openclaw')">OpenClaw</button>
+                </div>
+                <div class="panel">
+                  <h1 id="title">Agent Status</h1>
+                  <p class="sub" id="subtitle">Loading...</p>
+                  <div class="grid" id="grid"></div>
+                  <div class="ticker" id="ticker" style="display:none"></div>
+                  <div class="note" id="note"></div>
+                </div>
+              </div>
+              <script>
+                var current = ${JSONObject.quote(safeInitial)};
+                function esc(v){return String(v==null?'':v).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+                function clsStatus(v){return v==='GOOD'?'ok':(v==='BAD'?'bad':'muted');}
+                function row(k,v,cls){return '<div class="k">'+esc(k)+'</div><div class="v '+(cls||'')+'">'+esc(v||'-')+'</div>';}
+                function setAgent(a){current=a; render();}
+                function read(){
+                  try { return JSON.parse(AndroidInterface.getAgentStatusJson()); }
+                  catch(e){ return {error:String(e)}; }
+                }
+                function render(){
+                  var s = read();
+                  document.getElementById('tab-hermes').className = current==='hermes'?'active':'';
+                  document.getElementById('tab-openclaw').className = current==='openclaw'?'active':'';
+                  var a = current==='openclaw' ? s.openclaw : s.hermes;
+                  document.getElementById('title').textContent = current==='openclaw' ? 'OpenClaw Status' : 'Hermes Status';
+                  document.getElementById('subtitle').textContent = a.enabled ? 'Configured from companion app preferences.' : 'Disabled in companion app preferences.';
+                  var html = '';
+                  html += row('Reachability', a.status, clsStatus(a.status));
+                  html += row('Session', a.sessionId);
+                  html += row('Endpoint', a.endpoint);
+                  if (current==='openclaw') html += row('Dashboard URL', a.dashboardUrl || 'Not set');
+                  html += row('Credentials', a.credentials);
+                  html += row('Gemini phase', s.voicePhase);
+                  html += row('Connection', s.connection);
+                  document.getElementById('grid').innerHTML = html;
+                  var ticker = s.notification || s.heartbeat || '';
+                  var t = document.getElementById('ticker');
+                  if (ticker) { t.style.display='block'; t.textContent=ticker; } else { t.style.display='none'; }
+                  document.getElementById('note').textContent =
+                    current==='openclaw' && !a.dashboardUrl
+                      ? 'No OpenClaw Dashboard URL is saved, so this local page is shown instead of guessing a localhost URL.'
+                      : 'This page is rendered inside TapBrowser, so it does not depend on the companion localhost server.';
+                }
+                render();
+                setInterval(render, 1500);
+              </script>
+            </body>
+            </html>
+        """.trimIndent()
+    }
+
+    private fun buildAgentStatusJson(): String {
+        val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+        val state = com.TapLink.app.unipanel.HudStateBridge.current()
+        fun boolKey(key: String): Boolean = prefs.getBoolean(key, false)
+        fun strKey(key: String): String = prefs.getString(key, "").orEmpty().trim()
+        fun configured(value: String): String = if (value.isBlank()) "Not configured" else "Configured"
+        fun hermesSession(): String =
+            strKey("hermes_session_id")
+                .takeUnless { it.isBlank() || it.equals("main", ignoreCase = true) }
+                ?: "glasses"
+        fun openClawToken(): String =
+            strKey("openclaw_token")
+                .ifBlank { strKey("openclaw_pair_device_token") }
+
+        return JSONObject().apply {
+            put("voicePhase", state.phase.name)
+            put("connection", state.connection.name)
+            put("heartbeat", state.heartbeatMessage.orEmpty())
+            put("notification", state.notification.orEmpty())
+            put("agentBusy", state.agentBusy)
+            put("hermes", JSONObject().apply {
+                put("enabled", boolKey("hermes_enabled"))
+                put("status", state.hermesStatus.name)
+                put("sessionId", hermesSession())
+                put("endpoint", strKey("hermes_endpoint").ifBlank { "Not configured" })
+                put("credentials", configured(strKey("hermes_api_key")))
+            })
+            put("openclaw", JSONObject().apply {
+                put("enabled", boolKey("openclaw_enabled"))
+                put("status", state.openClawStatus.name)
+                put("sessionId", strKey("openclaw_session_id").ifBlank { "main" })
+                put(
+                    "endpoint",
+                    strKey("openclaw_endpoint")
+                        .ifBlank { strKey("openclaw_pair_device_token_gateway") }
+                        .ifBlank { "Not configured" }
+                )
+                put("dashboardUrl", strKey("openclaw_dashboard_url"))
+                put(
+                    "credentials",
+                    buildString {
+                        append(configured(openClawToken()))
+                        val user = strKey("openclaw_dashboard_username")
+                        if (user.isNotBlank()) append(" / login saved for ").append(user)
+                    }
+                )
+            })
+        }.toString()
+    }
+
+    private fun scheduleDashboardLoginAutofill(username: String, password: String) {
+        if (username.isBlank() && password.isBlank()) return
+        val js = buildDashboardAutofillJs(username, password)
+        listOf(900L, 2200L, 4500L).forEach { delayMs ->
+            uiHandler.postDelayed({
+                runCatching { webView.evaluateJavascript(js, null) }
+            }, delayMs)
+        }
+    }
+
+    private fun buildDashboardAutofillJs(username: String, password: String): String {
+        return """
+            (function(){
+              try {
+                var user = ${JSONObject.quote(username)};
+                var pass = ${JSONObject.quote(password)};
+                function fire(el){
+                  if (!el) return;
+                  try { el.dispatchEvent(new Event('input', {bubbles:true})); } catch(e) {}
+                  try { el.dispatchEvent(new Event('change', {bubbles:true})); } catch(e) {}
+                }
+                if (user) {
+                  var u = document.querySelector(
+                    'input[type="email"],input[name*="user" i],input[id*="user" i],' +
+                    'input[name*="email" i],input[id*="email" i],input[type="text"]'
+                  );
+                  if (u && !u.value) { u.value = user; fire(u); }
+                }
+                if (pass) {
+                  var p = document.querySelector('input[type="password"]');
+                  if (p && !p.value) { p.value = pass; fire(p); }
+                }
+              } catch(e) {}
+            })();
+        """.trimIndent()
     }
 
     /** Last camera on/off state from CameraStateBridge, for the minimal
@@ -8317,7 +8584,18 @@ class MainActivity :
         interactionX: Float,
         interactionY: Float
     ): Boolean {
-        val hit = findUnipanelHit(interactionX, interactionY) ?: return false
+        val hit = findUnipanelHit(interactionX, interactionY)
+        if (hit == null) {
+            if (isUnipanelGeminiActivationZone(interactionX, interactionY)) {
+                DebugLog.d(
+                    "Unipanel",
+                    "Overlay empty HUD zone tap -> activate Gemini screen=($interactionX,$interactionY)"
+                )
+                onHudStripSingleTap()
+                return true
+            }
+            return false
+        }
 
         if (!hit.isInteractive) {
             DebugLog.d(
@@ -8350,6 +8628,51 @@ class MainActivity :
                 "screen=($interactionX,$interactionY) local=($localX,$localY)"
         )
         return true
+    }
+
+    /**
+     * Empty top-left HUD/chat lane: single tap activates Gemini. This catches
+     * the glasses cursor path, which bypasses normal Android click listeners,
+     * without stealing taps from H/O, the avatar, heartbeat, chat card, or the
+     * Events/Tasks/News rows because [findUnipanelHit] gets first refusal.
+     */
+    private fun isUnipanelGeminiActivationZone(screenX: Float, screenY: Float): Boolean {
+        val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return false
+        if (overlay.visibility != View.VISIBLE) return false
+
+        val loc = IntArray(2)
+        overlay.getLocationOnScreen(loc)
+        val density = resources.displayMetrics.density
+        fun dp(value: Int): Int = (value * density).toInt()
+
+        val overlayLeft = loc[0].toFloat()
+        val overlayTop = loc[1].toFloat()
+        val overlayRight = overlayLeft + overlay.width
+        if (screenX < overlayLeft || screenX >= overlayRight || screenY < overlayTop) return false
+
+        val tierPanel = findViewById<View?>(R.id.unipanelHudTierPanel)
+        val tierLoc = IntArray(2)
+        val rightLimit = if (tierPanel != null && tierPanel.width > 0) {
+            tierPanel.getLocationOnScreen(tierLoc)
+            (tierLoc[0] - dp(4)).toFloat()
+        } else {
+            overlayLeft + dp(520)
+        }
+        if (screenX >= rightLimit) return false
+
+        val topHud = findViewById<View?>(R.id.unipanelTopHudColumn)
+        val card = findViewById<View?>(R.id.unipanelMiniCardScroll)
+        val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText)
+        val bottomCandidates = mutableListOf(overlayTop + dp(112))
+        listOf(topHud, heartbeat, card).forEach { view ->
+            if (view != null && view.visibility == View.VISIBLE && view.height > 0) {
+                val vLoc = IntArray(2)
+                view.getLocationOnScreen(vLoc)
+                bottomCandidates += (vLoc[1] + view.height + dp(8)).toFloat()
+            }
+        }
+        val bottomLimit = bottomCandidates.maxOrNull() ?: (overlayTop + dp(112))
+        return screenY < bottomLimit
     }
 
     private fun findUnipanelHit(screenX: Float, screenY: Float): UnipanelHit? {
@@ -12093,9 +12416,20 @@ class MainActivity :
         fun exitImmersiveMode() {
             activity.runOnUiThread {
                 try {
+                    // Stay in the app's immersive layout on exit. The old value
+                    // (LAYOUT_STABLE only) re-exposed the system status/nav bars,
+                    // which on these glasses are normally hidden app-wide and
+                    // whose reappearance shifts the WebView's measured height —
+                    // leaving the scroll metrics stale until the next relayout.
+                    // Mirror the immersive flag set used on fullscreen entry.
                     @Suppress("DEPRECATION")
                     activity.window.decorView.systemUiVisibility =
-                        (View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+                        (View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
                     runCatching { activity.dualWebViewGroup.setYoutubeCssFullModeActive(false) }
                     runCatching { activity.dualWebViewGroup.restoreScrollBarsAfterFullscreen() }
                     // Theater/Mini: bring the app HUD + browser nav bars back.
@@ -14218,7 +14552,100 @@ class MainActivity :
                 )
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // Swipe-unlock boot screen
+    // ══════════════════════════════════════════════════════════════════════
+    private fun maybeEngageSecurityLock() {
+        if (securityLocked) return
+        val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+        if (!prefs.getBoolean("security_enabled", false)) return
+        val seq = parseSwipeSequence(prefs.getString("security_sequence", "").orEmpty())
+        if (seq.size !in 3..6) {
+            DebugLog.w(
+                "LockScreen",
+                "security_enabled but code invalid (size=${seq.size}); not locking"
+            )
+            return
+        }
+        val attemptLimit = runCatching { prefs.getInt("security_attempt_limit", 3) }.getOrDefault(3)
+
+        val view = LockScreenView(this)
+        view.bind(seq, attemptLimit) { onSecurityUnlocked() }
+        lockScreenView = view
+        securityLocked = true
+        lockSwipeTracking = false
+
+        // Hide the trackpad cursors while the lock owns the screen.
+        runCatching {
+            cursorLeftView.visibility = View.GONE
+            cursorRightView.visibility = View.GONE
+        }
+
+        dualWebViewGroup.showLockScreen(view)
+        view.post { view.onShown() }
+        DebugLog.d("LockScreen", "Engaged swipe lock (${seq.size}-swipe code, limit=$attemptLimit)")
+    }
+
+    private fun onSecurityUnlocked() {
+        securityLocked = false
+        lockSwipeTracking = false
+        runCatching { dualWebViewGroup.hideLockScreen() }
+        runCatching { lockScreenView?.release() }
+        lockScreenView = null
+        runCatching {
+            cursorLeftView.visibility = View.VISIBLE
+            cursorRightView.visibility = View.VISIBLE
+        }
+        DebugLog.d("LockScreen", "Unlocked")
+    }
+
+    private fun parseSwipeSequence(raw: String): List<Char> {
+        return raw.split(',')
+            .map { it.trim().uppercase() }
+            .mapNotNull { it.firstOrNull() }
+            .filter { it == 'U' || it == 'D' || it == 'L' || it == 'R' }
+    }
+
+    /**
+     * While locked, classify raw trackpad touches into directional swipes from
+     * net DOWN→UP displacement and feed them to the lock view. Consumes every
+     * event so nothing reaches the browser / cursor stack.
+     */
+    private fun handleLockTouch(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                lockSwipeTracking = true
+                lockSwipeDownX = ev.x
+                lockSwipeDownY = ev.y
+            }
+            MotionEvent.ACTION_UP -> {
+                if (lockSwipeTracking) {
+                    lockSwipeTracking = false
+                    classifyAndSubmitLockSwipe(ev.x - lockSwipeDownX, ev.y - lockSwipeDownY)
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> lockSwipeTracking = false
+        }
+        return true
+    }
+
+    private fun classifyAndSubmitLockSwipe(dx: Float, dy: Float) {
+        val minPx = 55f
+        val dominance = 1.3f
+        val adx = kotlin.math.abs(dx)
+        val ady = kotlin.math.abs(dy)
+        val dir: Char? = when {
+            adx >= ady * dominance && adx >= minPx -> if (dx < 0) 'L' else 'R'
+            ady >= adx * dominance && ady >= minPx -> if (dy < 0) 'U' else 'D'
+            else -> null
+        }
+        if (dir != null) lockScreenView?.submitSwipe(dir)
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // While locked, swallow all keys so a temple double-tap (etc.) can't
+        // reach the Gemini-exit / back handlers behind the lock screen.
+        if (securityLocked) return true
         // Right-arm (cyttsp5_mt) physical-tap KEY double-tap → full Gemini exit.
         // Checked first so a double-tap can't be swallowed by the WebView /
         // focused view. Only consumes the event when it actually fires the exit.
@@ -14245,6 +14672,12 @@ class MainActivity :
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // ── Swipe-unlock short-circuit ─────────────────────────────
+        // While the boot lock is up it owns ALL touch input: classify the
+        // gesture into a directional swipe and consume the event so nothing
+        // reaches the cursor/gesture/webview stack behind it.
+        if (securityLocked) return handleLockTouch(ev)
+
         // ── Dim-mode short-circuit ─────────────────────────────────
         // While the mask overlay is up, ALL touch events route through
         // a single dedicated GestureDetector that owns the two
@@ -14631,6 +15064,9 @@ class MainActivity :
     }
 
     override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
+        // While locked, swallow generic scroll/hover so the cursor can't move
+        // behind the lock screen. Swipes are read from the touch path.
+        if (securityLocked) return true
         autoEnterMouseModeForMudraInput(ev)
 
         if (isMousePointerEvent(ev) && ::dualWebViewGroup.isInitialized) {
@@ -15116,6 +15552,21 @@ class MainActivity :
             } catch (e: Exception) {
                 DebugLog.e("AndroidInterface", "Error reading dashboard data", e)
                 ""
+            }
+        }
+
+        /**
+         * Local agent status page data. This intentionally avoids exposing raw
+         * API keys or bearer tokens; it only reports whether credentials are
+         * configured plus the live HUD/heartbeat status for the current session.
+         */
+        @JavascriptInterface
+        fun getAgentStatusJson(): String {
+            return try {
+                activity.buildAgentStatusJson()
+            } catch (e: Exception) {
+                DebugLog.e("AndroidInterface", "Error reading agent status", e)
+                JSONObject().put("error", e.message ?: "agent status unavailable").toString()
             }
         }
 

@@ -505,7 +505,12 @@ document.addEventListener('DOMContentLoaded', loadAll);
         // colon slash slash...") is jarring, and the chat card already shows
         // the URLs as bold tappable headers. Toggle in companion app under
         // Readout Cleanup if you want URLs spoken.
-        "strip_urls_readout" to true
+        "strip_urls_readout" to true,
+        // Swipe-unlock boot screen. Default OFF — most users want the
+        // glasses to boot straight into the unipanel. When on, the launcher
+        // shows an animated swipe-sequence lock at cold launch. Purely a
+        // visual deterrent ("dissuade common folk"); no encryption.
+        "security_enabled" to false
     )
 
     /** Known integer config keys and their defaults. */
@@ -530,7 +535,9 @@ document.addEventListener('DOMContentLoaded', loadAll);
         // Hermes per-request timeout (seconds). 0 = default 30s.
         "hermes_timeout_seconds" to 0,
         // Battery Saver
-        "battery_saver_auto_threshold" to 20
+        "battery_saver_auto_threshold" to 20,
+        // Swipe-unlock: number of wrong sequences before a brief cooldown.
+        "security_attempt_limit" to 3
     )
 
     /** Known float config keys and their defaults. */
@@ -706,7 +713,14 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "fish_normalize",
         "fish_dramatize",
         "fish_clean_text",
-        "strip_urls_readout"
+        "strip_urls_readout",
+        // Swipe-unlock boot screen (Security card in companion app).
+        // security_enabled (bool) gates it; security_sequence is the
+        // comma-separated 3–6 direction code (e.g. "U,R,D,L");
+        // security_attempt_limit (int) sets wrong-tries-before-cooldown.
+        "security_enabled",
+        "security_sequence",
+        "security_attempt_limit"
     )
 
     /** Keys readable via /api/oauth/status (no secrets exposed). */
