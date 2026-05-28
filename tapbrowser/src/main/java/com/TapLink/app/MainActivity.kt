@@ -7433,23 +7433,20 @@ class MainActivity :
         // top HUD row + feed strip + clock strip shared this handler, so a
         // tap on empty HUD space activated voice by accident.
         orb.setOnClickListener(toggleHandler)
-        // The clock / status pill is not the avatar, so it follows the
-        // predefined gesture instead: toggle the browser view.
-        val browserToggleHandler = View.OnClickListener {
-            if (browserPanelHidden) showBrowserPanel() else hideBrowserPanel()
-        }
-        findViewById<View?>(R.id.unipanelHudStrip)?.setOnClickListener(browserToggleHandler)
-        // Empty space within the HUD strip toggles the browser too. The feed
-        // strip (the empty area on the right of the top row) routes to the same
-        // toggle so the user has a real HUD target to collapse/restore the
-        // browser. It used to be left non-clickable so taps fell THROUGH to the
-        // in-page emptiness classifier — but that classifier mis-read some real
-        // web-page buttons as "empty" and collapsed the browser unexpectedly,
-        // so we no longer drive the toggle from page taps at all (see the
-        // taphud_empty handler). The tier panel (events/tasks/news) stays inert
-        // so reading it never toggles the browser, and the parent row stays
-        // non-clickable so a tap on the events text isn't hijacked.
-        findViewById<View?>(R.id.unipanelHudFeedStrip)?.setOnClickListener(browserToggleHandler)
+        // Empty space within the top HUD strips:
+        //   • single tap → activate Gemini (matches the avatar orb's activation;
+        //     no-op when a session is already active)
+        //   • double tap → cancel the Gemini session if active, then toggle
+        //     the browser hide/show.
+        // Implemented as a short-window double-tap detector — a single tap is
+        // posted with a small delay (HUD_STRIP_DOUBLE_TAP_WINDOW_MS) so a second
+        // tap inside the window preempts it and runs the double-tap action.
+        // The tier panel rows (events/tasks/news) are wired separately in
+        // renderUnipanelTieredHud so each row opens its Google web app. The
+        // parent top row stays non-clickable so a tap on the tier text isn't
+        // hijacked by an ancestor.
+        installHudStripGestureHandler(findViewById(R.id.unipanelHudStrip))
+        installHudStripGestureHandler(findViewById(R.id.unipanelHudFeedStrip))
         findViewById<View?>(R.id.unipanelTopHudRow)?.let {
             it.setOnClickListener(null); it.isClickable = false
         }
@@ -7466,6 +7463,98 @@ class MainActivity :
                     updateMinimalIndicators()
                 }
             }
+    }
+
+    /** Pending delayed single-tap action for the top HUD strips. Held while we
+     *  wait one DOUBLE_TAP window to see whether a second tap arrives. */
+    @Volatile private var pendingHudStripSingleTap: Runnable? = null
+
+    /** How long after a HUD-strip tap we wait for a second tap before firing
+     *  the single-tap action. Short enough not to feel laggy on activation. */
+    private val HUD_STRIP_DOUBLE_TAP_WINDOW_MS: Long = 280L
+
+    /**
+     * Install the single-tap / double-tap gesture handler on a top HUD strip
+     * (clock strip or feed strip). Single tap activates Gemini (idle only);
+     * double tap cancels an active Gemini session, then toggles the browser
+     * panel hide/show. Double tap is detected by holding the single-tap action
+     * for HUD_STRIP_DOUBLE_TAP_WINDOW_MS — a second tap inside that window
+     * preempts it.
+     */
+    private fun installHudStripGestureHandler(view: View?) {
+        if (view == null) return
+        view.isClickable = true
+        view.setOnClickListener {
+            val pending = pendingHudStripSingleTap
+            if (pending != null) {
+                uiHandler.removeCallbacks(pending)
+                pendingHudStripSingleTap = null
+                onHudStripDoubleTap()
+            } else {
+                val r = object : Runnable {
+                    override fun run() {
+                        pendingHudStripSingleTap = null
+                        onHudStripSingleTap()
+                    }
+                }
+                pendingHudStripSingleTap = r
+                uiHandler.postDelayed(r, HUD_STRIP_DOUBLE_TAP_WINDOW_MS)
+            }
+        }
+    }
+
+    /** Single tap on the empty top HUD strip → activate Gemini (no-op when a
+     *  session is already running; that branch is handled by double-tap). */
+    private fun onHudStripSingleTap() {
+        val api = voiceServiceApi
+        if (api == null) {
+            DebugLog.w(
+                "VoiceBind",
+                "HUD strip single-tap: voiceServiceApi null — queuing activation until bind"
+            )
+            pendingVoiceActivateUntilMs = SystemClock.uptimeMillis() + 4000L
+            runCatching { startVoiceServiceBinding() }
+            return
+        }
+        val phase = com.TapLink.app.unipanel.HudStateBridge.current().phase
+        if (phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE) {
+            DebugLog.d("VoiceBind", "HUD strip single-tap: activateVoice()")
+            runCatching { api.activateVoice() }
+        } else {
+            DebugLog.d(
+                "VoiceBind",
+                "HUD strip single-tap (phase=$phase): session already active, no-op"
+            )
+        }
+    }
+
+    /** Double tap on the empty top HUD strip → cancel Gemini if active, then
+     *  toggle the browser hide/show. */
+    private fun onHudStripDoubleTap() {
+        val api = voiceServiceApi
+        if (api != null) {
+            val phase = com.TapLink.app.unipanel.HudStateBridge.current().phase
+            if (phase != com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE) {
+                DebugLog.d(
+                    "VoiceBind",
+                    "HUD strip double-tap: shutdownVoice() before browser toggle"
+                )
+                runCatching { api.shutdownVoice() }
+            }
+        }
+        if (browserPanelHidden) showBrowserPanel() else hideBrowserPanel()
+    }
+
+    /**
+     * Open [url] in the in-process browser WebView, restoring the browser
+     * panel first if it's currently collapsed. Used by the tier-row taps so
+     * tapping EVENTS / TASKS / NEWS lands the user on the matching Google
+     * web app immediately.
+     */
+    private fun openInTapBrowser(url: String) {
+        if (browserPanelHidden) showBrowserPanel()
+        runCatching { webView.loadUrl(url) }
+            .onFailure { DebugLog.w("HudTap", "loadUrl($url) failed: ${it.message}") }
     }
 
     /** Last camera on/off state from CameraStateBridge, for the minimal
@@ -7749,12 +7838,16 @@ class MainActivity :
             findViewById<android.widget.TextView?>(R.id.unipanelHudTier1),
             findViewById<android.widget.TextView?>(R.id.unipanelHudTier2)
         )
-        val order = state.hudDisplayOrder
+        // Filter to keys we render so the parallel `filteredKeys` list lines
+        // up 1:1 with the `tiers` list — slot i ↔ filteredKeys[i] ↔ tiers[i].
+        // The order itself comes from the companion app (state.hudDisplayOrder),
+        // so each slot's tap target follows whatever key the user put there.
+        val filteredKeys = state.hudDisplayOrder
             .split(",")
             .map { it.trim().lowercase(Locale.US) }
-            .filter { it.isNotBlank() }
+            .filter { it == "calendar" || it == "tasks" || it == "news" }
             .ifEmpty { listOf("calendar", "tasks", "news") }
-        val tiers = order.mapNotNull { key ->
+        val tiers = filteredKeys.map { key ->
             when (key) {
                 "calendar" -> UnipanelHudTier(
                     "Events", unipanelHudFieldBody("Events", state.calendarSummary),
@@ -7764,21 +7857,43 @@ class MainActivity :
                     "Tasks", unipanelHudFieldBody("Tasks", state.tasksSummary),
                     0xFF00E676.toInt()
                 )
-                "news" -> UnipanelHudTier(
+                else /* "news" */ -> UnipanelHudTier(
                     "News", unipanelHudFieldBody("News", state.newsSummary),
                     0xFFFFB14A.toInt()
                 )
-                else -> null
             }
         }
         for (i in slots.indices) {
             val slot = slots[i] ?: continue
             val tier = tiers.getOrNull(i)
-            if (tier == null) {
+            val key = filteredKeys.getOrNull(i)
+            if (tier == null || key == null) {
                 slot.visibility = View.GONE
+                slot.setOnClickListener(null)
+                slot.isClickable = false
+                continue
+            }
+            slot.text = buildUnipanelTierLine(tier)
+            slot.visibility = View.VISIBLE
+            // Tap on a tier row → open its Google web app in the browser.
+            // The slot→URL mapping follows the per-slot key, NOT the slot
+            // index, so it stays correct regardless of how the user has
+            // ordered the rows in the companion app.
+            val url = when (key) {
+                "calendar" -> "https://calendar.google.com"
+                "tasks" -> "https://tasks.google.com"
+                "news" -> "https://news.google.com"
+                else -> null
+            }
+            if (url != null) {
+                slot.isClickable = true
+                slot.setOnClickListener {
+                    DebugLog.d("HudTap", "tier slot $i ($key) → $url")
+                    openInTapBrowser(url)
+                }
             } else {
-                slot.text = buildUnipanelTierLine(tier)
-                slot.visibility = View.VISIBLE
+                slot.isClickable = false
+                slot.setOnClickListener(null)
             }
         }
         findViewById<View?>(R.id.unipanelHudTierPanel)?.post {
