@@ -45,6 +45,12 @@ class ToolDispatcher(
      * "what does this say" / "summarize this page" prompts.
      */
     browserFrameProvider: (() -> String?)? = null,
+    /**
+     * Returns full DOM/body text for the active TapBrowser page.
+     * Used for "read/summarize the web page" requests where OCR of
+     * the visible viewport would miss off-screen content.
+     */
+    browserPageTextProvider: ((Int) -> com.TapLink.app.media.BrowserFrameHolder.PageTextResult?)? = null,
     batteryLevelProvider: (() -> Int)? = null,
     isChargingProvider: (() -> Boolean)? = null,
     toggleBatterySaver: ((Boolean) -> Unit)? = null
@@ -109,6 +115,10 @@ class ToolDispatcher(
         register(BrowserVisionTool(
             context,
             frameProvider = browserFrameProvider ?: { null }
+        ))
+        register(BrowserPageTextTool(
+            context,
+            pageTextProvider = browserPageTextProvider ?: { null }
         ))
         register(TapLinkTool(context))
         register(SendVideoListTool(context))

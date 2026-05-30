@@ -1170,6 +1170,9 @@ class MainActivity : AppCompatActivity() {
             // module via the cross-Activity holder. Returns null when
             // the browser isn't currently up.
             browserFrameProvider = { com.TapLink.app.media.BrowserFrameHolder.captureBase64Jpeg() },
+            browserPageTextProvider = { maxChars ->
+                com.TapLink.app.media.BrowserFrameHolder.capturePageText(maxChars)
+            },
             batteryLevelProvider = { getBatteryLevel() },
             isChargingProvider = { isBatteryCharging() },
             toggleBatterySaver = { enabled -> onBatterySaverToggled(enabled) }

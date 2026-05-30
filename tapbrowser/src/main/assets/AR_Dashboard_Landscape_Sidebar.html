@@ -785,7 +785,7 @@
     </div>
   </div>
 
-  <div class="hud" data-taplink-scroll="true">
+  <div class="hud">
     <div class="topbar">
       <strong style="color:var(--text)">TapLinkX3 Dashboard</strong>
       <div style="flex:1"></div>
@@ -798,7 +798,7 @@
       <input id="appSearch" class="search" placeholder="Filter apps." />
     </div>
 
-    <div class="content">
+    <div class="content" data-taplink-scroll="true">
       <!-- Left: Categories (single column), each with 2-column apps -->
       <div class="card" id="leftPane">
         <h3>Apps</h3>
@@ -1563,10 +1563,10 @@
     setEditingMode(false);
 
     /* The Android scroll buttons issue scrollBy() calls, but this layout keeps the body fixed
-       and scrolls the inner .hud container instead. Bridge those calls so scroll buttons work. */
-    (function bridgeScrollByToHud() {
-      const hud = document.querySelector('.hud');
-      if (!hud) { return; }
+       and scrolls the inner .content container instead. Bridge those calls so scroll buttons work. */
+    (function bridgeScrollByToDashboardContent() {
+      const scroller = document.querySelector('.content');
+      if (!scroller) { return; }
 
       const originalScrollBy = window.scrollBy.bind(window);
       const originalScrollTo = window.scrollTo.bind(window);
@@ -1585,37 +1585,37 @@
         };
       }
 
-      function scrollHudBy(left, top, behavior) {
+      function scrollContentBy(left, top, behavior) {
         try {
-          if (typeof hud.scrollBy === 'function') {
-            hud.scrollBy({ left, top, behavior });
+          if (typeof scroller.scrollBy === 'function') {
+            scroller.scrollBy({ left, top, behavior });
             return;
           }
         } catch (e) { }
-        if (typeof left === 'number') { hud.scrollLeft += left; }
-        if (typeof top === 'number') { hud.scrollTop += top; }
+        if (typeof left === 'number') { scroller.scrollLeft += left; }
+        if (typeof top === 'number') { scroller.scrollTop += top; }
       }
 
-      function scrollHudTo(left, top, behavior) {
+      function scrollContentTo(left, top, behavior) {
         try {
-          if (typeof hud.scrollTo === 'function') {
-            hud.scrollTo({ left, top, behavior });
+          if (typeof scroller.scrollTo === 'function') {
+            scroller.scrollTo({ left, top, behavior });
             return;
           }
         } catch (e) { }
-        if (typeof left === 'number') { hud.scrollLeft = left; }
-        if (typeof top === 'number') { hud.scrollTop = top; }
+        if (typeof left === 'number') { scroller.scrollLeft = left; }
+        if (typeof top === 'number') { scroller.scrollTop = top; }
       }
 
       window.scrollBy = function (arg0, arg1) {
         const { left, top, behavior } = normalizeScrollArgs(arg0, arg1);
-        scrollHudBy(left, top, behavior);
+        scrollContentBy(left, top, behavior);
         return originalScrollBy(arg0, arg1);
       };
 
       window.scrollTo = function (arg0, arg1) {
         const { left, top, behavior } = normalizeScrollArgs(arg0, arg1);
-        scrollHudTo(left, top, behavior);
+        scrollContentTo(left, top, behavior);
         return originalScrollTo(arg0, arg1);
       };
     })();
@@ -1624,17 +1624,17 @@
       if (window.__taplinkNativeScrollReporterInstalled) { return; }
       window.__taplinkNativeScrollReporterInstalled = true;
 
-      const hud = document.querySelector('.hud');
-      if (!hud) { return; }
+      const scroller = document.querySelector('.content');
+      if (!scroller) { return; }
 
       let scheduled = false;
       function report() {
-        const rangeX = Math.max(hud.scrollWidth || 0, hud.clientWidth || 0);
-        const extentX = hud.clientWidth || 0;
-        const offsetX = hud.scrollLeft || 0;
-        const rangeY = Math.max(hud.scrollHeight || 0, hud.clientHeight || 0);
-        const extentY = hud.clientHeight || 0;
-        const offsetY = hud.scrollTop || 0;
+        const rangeX = Math.max(scroller.scrollWidth || 0, scroller.clientWidth || 0);
+        const extentX = scroller.clientWidth || 0;
+        const offsetX = scroller.scrollLeft || 0;
+        const rangeY = Math.max(scroller.scrollHeight || 0, scroller.clientHeight || 0);
+        const extentY = scroller.clientHeight || 0;
+        const offsetY = scroller.scrollTop || 0;
         if (window.AndroidInterface && typeof window.AndroidInterface.onScrollMetrics === 'function') {
           window.AndroidInterface.onScrollMetrics(
             rangeX, extentX, offsetX, rangeY, extentY, offsetY
@@ -1662,7 +1662,7 @@
       }
 
       window.__taplinkReportScrollMetrics = report;
-      hud.addEventListener('scroll', schedule, { passive: true });
+      scroller.addEventListener('scroll', schedule, { passive: true });
       window.addEventListener('resize', schedule);
       report();
     })();

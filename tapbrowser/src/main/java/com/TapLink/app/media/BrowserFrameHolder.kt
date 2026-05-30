@@ -13,6 +13,8 @@ import android.util.Log
 import android.view.PixelCopy
 import android.view.View
 import android.webkit.WebView
+import org.json.JSONObject
+import org.json.JSONTokener
 import java.io.ByteArrayOutputStream
 import java.lang.ref.WeakReference
 import java.util.concurrent.CountDownLatch
@@ -91,6 +93,137 @@ object BrowserFrameHolder {
      *  least theoretically possible. Doesn't actually capture. */
     @JvmStatic
     fun hasWebView(): Boolean = webViewRef?.get() != null
+
+    data class PageTextResult(
+        val title: String,
+        val url: String,
+        val text: String,
+        val originalLength: Int,
+        val truncated: Boolean
+    ) {
+        fun toToolText(): String {
+            val note = if (truncated) {
+                "\n\n[Page text was truncated from $originalLength characters to ${text.length} characters.]"
+            } else {
+                ""
+            }
+            return "Title: $title\nURL: $url\n\nFull page body text:\n$text$note"
+        }
+    }
+
+    /**
+     * Extract the active WebView's full DOM/body text, not just the
+     * visible viewport. This is the path Gemini should use for
+     * "read/summarize the web page"; [captureBase64Jpeg] remains the
+     * visible-screen OCR/vision path.
+     */
+    @JvmStatic
+    fun capturePageText(maxChars: Int = 30000): PageTextResult? {
+        val webView = webViewRef?.get() ?: run {
+            Log.d(TAG, "capturePageText: no WebView attached")
+            return null
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Log.w(TAG, "capturePageText: refusing to block main thread")
+            return null
+        }
+
+        val resultHolder = arrayOfNulls<String>(1)
+        val latch = CountDownLatch(1)
+        val limit = maxChars.coerceIn(1000, 250000)
+        val js = """
+            (function() {
+              function clean(s) {
+                return (s || '')
+                  .replace(/\u00a0/g, ' ')
+                  .replace(/[ \t]+\n/g, '\n')
+                  .replace(/\n[ \t]+/g, '\n')
+                  .replace(/\n{3,}/g, '\n\n')
+                  .replace(/[ \t]{2,}/g, ' ')
+                  .trim();
+              }
+              function visibleText(el) {
+                if (!el) return '';
+                try {
+                  var cs = window.getComputedStyle(el);
+                  if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) return '';
+                } catch(e) {}
+                return clean(el.innerText || el.textContent || '');
+              }
+              function longest(selectors) {
+                var best = '';
+                for (var i = 0; i < selectors.length; i++) {
+                  var nodes = document.querySelectorAll(selectors[i]);
+                  for (var n = 0; n < nodes.length; n++) {
+                    var t = visibleText(nodes[n]);
+                    if (t.length > best.length) best = t;
+                  }
+                }
+                return best;
+              }
+              var priority = longest([
+                'article',
+                'main',
+                '[role="main"]',
+                '.article',
+                '.post',
+                '.content',
+                '#content'
+              ]);
+              var body = visibleText(document.body);
+              var text = body.length >= priority.length ? body : priority;
+              var originalLength = text.length;
+              var truncated = false;
+              if (text.length > $limit) {
+                text = text.substring(0, $limit);
+                truncated = true;
+              }
+              return JSON.stringify({
+                title: document.title || '',
+                url: location.href || '',
+                text: text,
+                originalLength: originalLength,
+                truncated: truncated
+              });
+            })();
+        """.trimIndent()
+        mainHandler.post {
+            try {
+                webView.evaluateJavascript(js) { value ->
+                    resultHolder[0] = value
+                    latch.countDown()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "capturePageText: evaluateJavascript failed: ${e.message}")
+                latch.countDown()
+            }
+        }
+        try {
+            if (!latch.await(CAPTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "capturePageText: timed out after ${CAPTURE_TIMEOUT_MS}ms")
+                return null
+            }
+        } catch (_: InterruptedException) {
+            Log.w(TAG, "capturePageText: interrupted")
+            return null
+        }
+
+        val raw = resultHolder[0]?.takeUnless { it == "null" } ?: return null
+        return try {
+            val decoded = JSONTokener(raw).nextValue() as? String ?: raw
+            val json = JSONObject(decoded)
+            PageTextResult(
+                title = json.optString("title"),
+                url = json.optString("url"),
+                text = json.optString("text").trim(),
+                originalLength = json.optInt("originalLength"),
+                truncated = json.optBoolean("truncated")
+            ).takeIf { it.text.isNotBlank() }
+        } catch (e: Exception) {
+            Log.w(TAG, "capturePageText: parse failed: ${e.message}")
+            null
+        }
+    }
 
     /**
      * Phase 4c (codex diagnostic) — surfaces the current WebView's

@@ -96,6 +96,8 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var latestInputTranscript: String = ""
     @Volatile private var latestCameraFrame: String? = null
     @Volatile private var activeSessionEpoch: Long = 0L
+    @Volatile private var youtubePlaybackPreemptInFlight: Boolean = false
+    @Volatile private var lastYouTubePlaybackPreemptMs: Long = 0L
 
     /** Audio playback for Gemini's model audio responses. Lazy so we
      *  only allocate the AudioTrack when voice actually activates. */
@@ -242,7 +244,10 @@ class GeminiVoicePipeline(context: Context) {
             openClawClient = openClawClient,
             hermesClient = hermesClient,
             cameraFrameProvider = { latestCameraFrame },
-            browserFrameProvider = ::captureWebViewBase64Logged
+            browserFrameProvider = ::captureWebViewBase64Logged,
+            browserPageTextProvider = { maxChars ->
+                com.TapLink.app.media.BrowserFrameHolder.capturePageText(maxChars)
+            }
         )
     }
 
@@ -253,6 +258,7 @@ class GeminiVoicePipeline(context: Context) {
      *  phrases and call BrowserVisionTool directly. */
     @Volatile private var lastLocalVisionTriggerMs: Long = 0L
     @Volatile private var visionInFlight: Boolean = false
+    @Volatile private var pageTextInFlight: Boolean = false
     @Volatile private var lastReaderModeTriggerMs: Long = 0L
     @Volatile private var lastGoogleWebAppLaunchMs: Long = 0L
     @Volatile private var lastGoogleWebAppLaunchUrl: String? = null
@@ -360,6 +366,7 @@ class GeminiVoicePipeline(context: Context) {
         // accidentally concatenate with the previous one.
         runCatching { viewModel.resetLiveAssistantStream() }
         runCatching { viewModel.activateVoiceAssistant() }
+        youtubePlaybackPreemptInFlight = false
 
         HudStateBridge.update {
             it.copy(
@@ -544,13 +551,18 @@ class GeminiVoicePipeline(context: Context) {
                 // sees what Gemini heard. Final commit to viewModel
                 // happens on turnComplete to avoid mid-utterance noise.
                 HudStateBridge.update { it.copy(transcript = text) }
+                if (maybePreemptYouTubePlaybackLocally(text, epoch)) return
+                // Full-page reading is DOM text, not visible-screen OCR.
+                // Check it before the screenshot fallback so phrases like
+                // "read this page" do not get trapped in browser_vision.
+                val pageTextHandled = maybeTriggerBrowserPageTextLocally(text, epoch)
                 // Phase 4c (codex) — deterministic browser_vision trigger.
                 // Gemini Live doesn't always pick the browser_vision
                 // tool even when the user clearly asks "look at this" /
                 // "what does this say". Sniff the partial transcript
                 // and fire the tool ourselves with the latest text as
                 // the question.
-                maybeTriggerBrowserVisionLocally(text, epoch)
+                if (!pageTextHandled) maybeTriggerBrowserVisionLocally(text, epoch)
                 // Deterministic "reader mode" trigger — re-render the current
                 // page in a clean dark reader view when the user asks for it.
                 maybeTriggerReaderModeLocally(text)
@@ -1124,6 +1136,100 @@ class GeminiVoicePipeline(context: Context) {
     }
 
     /**
+     * Local fallback for full web-page reading. Gemini Live sometimes
+     * hears "read this page" and fails to choose a tool; if we let the
+     * old vision fallback run, it only OCRs the visible viewport. This
+     * path extracts DOM/body text from the WebView and injects it back
+     * into the Live session as page context.
+     */
+    private fun maybeTriggerBrowserPageTextLocally(transcript: String, epoch: Long): Boolean {
+        val now = System.currentTimeMillis()
+        if (pageTextInFlight) return true
+        if (now - lastLocalVisionTriggerMs < MIN_LOCAL_VISION_INTERVAL_MS) return false
+        if (liveSession == null || !isSessionEpochCurrent(epoch)) return false
+        val lower = transcript.lowercase().trim()
+        val matched = PAGE_TEXT_TRIGGER_PHRASES.any { phrase -> lower.contains(phrase) }
+        if (!matched) return false
+
+        lastLocalVisionTriggerMs = now
+        pageTextInFlight = true
+        Log.i(TAG, "browser_page_text trigger source=localRegex transcript='${transcript.take(80)}'")
+        HudStateBridge.update { it.copy(notification = "Reading the full page…") }
+        scope.launch {
+            try {
+                if (!isSessionEpochCurrent(epoch)) return@launch
+                val result = toolDispatcher.dispatch(
+                    "browser_page_text",
+                    org.json.JSONObject().put("max_chars", "200000").toString()
+                )
+                val responseText = result.getOrElse { err ->
+                    Log.w(TAG, "BrowserPageTextTool failure: ${err.message}")
+                    "I couldn't read the full page: ${err.message ?: "unknown error"}"
+                }
+                HudStateBridge.update { it.copy(notification = null) }
+                val injection = "The user asked to read or summarize the full current web page. " +
+                    "Here is the page text extracted from the browser DOM, not a screenshot:\n\n" +
+                    responseText + "\n\nAnswer the user's request from this full page text in a spoken-friendly way."
+                val ok = runCatching {
+                    liveSession?.sendClientText(injection) == true
+                }.getOrDefault(false)
+                Log.i(TAG, "sendClientText (browser_page_text localRegex fallback) returned $ok")
+            } finally {
+                pageTextInFlight = false
+            }
+        }
+        return true
+    }
+
+    /**
+     * Hermes-era guardrail for voice mode: "play <keyword> on YouTube" is a
+     * command, not a question. Preempt Gemini Live as soon as the transcript is
+     * clear, launch TapBrowser's deterministic autoplay queue, and tear down the
+     * voice session before Gemini can ask clarification questions or keep the
+     * audio path.
+     */
+    private fun maybePreemptYouTubePlaybackLocally(transcript: String, epoch: Long): Boolean {
+        if (youtubePlaybackPreemptInFlight) return true
+        if (!isSessionEpochCurrent(epoch)) return false
+        val now = System.currentTimeMillis()
+        if (now - lastYouTubePlaybackPreemptMs < 3000L) return false
+        val spec = AssistantIntentParser.parseExplicitYouTubePlaybackRequest(transcript) ?: return false
+        val first = spec.items.firstOrNull()?.trim().orEmpty()
+        if (first.isBlank()) return false
+
+        youtubePlaybackPreemptInFlight = true
+        lastYouTubePlaybackPreemptMs = now
+        latestInputTranscript = transcript
+        suppressGeminiOutputUntilMs = android.os.SystemClock.uptimeMillis() + 10_000L
+
+        val url = buildYouTubeAutoplaySearchUrl(first, spec.mode)
+        Log.i(
+            TAG,
+            "YouTube playback preempt: transcript='${transcript.take(100)}' " +
+                "query='$first' mode=${spec.mode} queue=${spec.items.size} url=$url"
+        )
+        val msg = if (spec.items.size > 1) {
+            "Queuing YouTube videos for $first."
+        } else {
+            "Playing $first on YouTube."
+        }
+        runCatching { viewModel.appendUserUtterance(transcript) }
+        runCatching { viewModel.appendDirectAssistantResponse("$msg Captions are enabled.") }
+        HudStateBridge.update {
+            it.copy(
+                transcript = transcript,
+                notification = msg,
+                phase = HudStateBridge.VoicePhase.IDLE
+            )
+        }
+
+        scope.launch {
+            launchTapBrowserFromService(url, forcedYouTubeSpec = spec)
+        }
+        return true
+    }
+
+    /**
      * Deterministic "reader mode" trigger. When the user asks Gemini to
      * render the shown page in reader mode, sniff the input transcript for
      * reader-mode phrases and signal the tapbrowser WebView (which lives in
@@ -1299,8 +1405,12 @@ class GeminiVoicePipeline(context: Context) {
         launchTapBrowserFromService(openUrl)
     }
 
-    private fun launchTapBrowserFromService(openUrl: String) {
-        val initialUrl = openUrl.removePrefix("taplink://").trim().ifBlank { return }
+    private fun launchTapBrowserFromService(
+        openUrl: String,
+        forcedYouTubeSpec: AssistantIntentParser.YouTubePlaybackSpec? = null
+    ) {
+        val rawInitialUrl = openUrl.removePrefix("taplink://").trim().ifBlank { return }
+        val initialUrl = canonicalizeYouTubeLaunchUrl(rawInitialUrl, forcedYouTubeSpec)
         val intent = Intent().apply {
             component = ComponentName("com.rayneo.visionclaw", TAPBROWSER_ACTIVITY)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -1309,7 +1419,8 @@ class GeminiVoicePipeline(context: Context) {
 
         val lower = initialUrl.lowercase()
         if (lower.contains("youtube.com") || lower.contains("youtu.be")) {
-            val spec = AssistantIntentParser.parseExplicitYouTubePlaybackRequest(latestInputTranscript)
+            val spec = forcedYouTubeSpec
+                ?: AssistantIntentParser.parseExplicitYouTubePlaybackRequest(latestInputTranscript)
             val query = spec?.items?.firstOrNull()?.takeIf { it.isNotBlank() }
                 ?: extractYouTubeSearchQuery(initialUrl)
             val mode = spec?.mode
@@ -1321,7 +1432,7 @@ class GeminiVoicePipeline(context: Context) {
             }
         }
 
-        Log.i(TAG, "Launching TapBrowser from Service url=${initialUrl.take(180)}")
+        Log.i(TAG, "Launching TapBrowser from Service url=${initialUrl.take(180)} raw=${rawInitialUrl.take(120)}")
         runCatching { appContext.startActivity(intent) }
             .onFailure { Log.w(TAG, "TapBrowser launch failed: ${it.message}") }
 
@@ -1335,6 +1446,37 @@ class GeminiVoicePipeline(context: Context) {
             Log.i(TAG, "Media URL launched — ending voice session so it can play audio")
             shutdown(reason = null)
         }
+    }
+
+    private fun canonicalizeYouTubeLaunchUrl(
+        url: String,
+        forcedYouTubeSpec: AssistantIntentParser.YouTubePlaybackSpec? = null
+    ): String {
+        val lower = url.lowercase()
+        if (!lower.contains("youtube.com") && !lower.contains("youtu.be")) return url
+        if (lower.contains("taplink_autoplay=")) return url
+
+        val spec = forcedYouTubeSpec
+            ?: AssistantIntentParser.parseExplicitYouTubePlaybackRequest(latestInputTranscript)
+        val query = spec?.items?.firstOrNull()?.takeIf { it.isNotBlank() }
+            ?: extractYouTubeSearchQuery(url)
+            ?: return url
+        val mode = spec?.mode
+            ?: if (latestInputTranscript.contains("music", ignoreCase = true) ||
+                latestInputTranscript.contains("song", ignoreCase = true)
+            ) "music" else "video"
+        return buildYouTubeAutoplaySearchUrl(query, mode)
+    }
+
+    private fun buildYouTubeAutoplaySearchUrl(query: String, mode: String): String {
+        val searchPhrase =
+            if (mode == "music" && !Regex("(?i)\\b(?:music|songs?|audio|track)\\b").containsMatchIn(query)) {
+                "$query music"
+            } else {
+                query
+            }
+        val encoded = java.net.URLEncoder.encode(searchPhrase, "UTF-8")
+        return "https://www.youtube.com/results?search_query=$encoded&taplink_autoplay=$mode"
     }
 
     /** True for URLs that will play audio (radio streams, YouTube, media
@@ -1634,6 +1776,34 @@ class GeminiVoicePipeline(context: Context) {
             "describe the screen",
             "describe this page",
             "what am i looking at"
+        )
+
+        /** Whole-page/article text extraction. These must run before
+         *  [VISION_TRIGGER_PHRASES], because some phrases overlap with
+         *  the old screenshot fallback ("read this page"). */
+        private val PAGE_TEXT_TRIGGER_PHRASES = listOf(
+            "read the web page",
+            "read this web page",
+            "read the webpage",
+            "read this webpage",
+            "read this page",
+            "read the page",
+            "read the whole page",
+            "read the full page",
+            "read the entire page",
+            "read the article",
+            "read this article",
+            "read the whole article",
+            "summarize this page",
+            "summarise this page",
+            "summarize the page",
+            "summarise the page",
+            "summarize the web page",
+            "summarise the web page",
+            "summarize this article",
+            "summarise this article",
+            "what does this article say",
+            "what does this page say"
         )
 
         /** Phrases that ENTER the bold dark reader view. */

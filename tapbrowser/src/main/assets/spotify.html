@@ -530,6 +530,7 @@
   const urlExpiresAtMs = parseInt(params.get('expires_at_ms') || '0', 10) || 0;
   const urlQueueRaw = params.get('queue') || '';
   const urlIndex = parseInt(params.get('index') || '0', 10) || 0;
+  const urlAutoplay = params.get('autoplay') !== '0' && params.get('start_paused') !== '1';
 
   // ── localStorage state ────────────────────────────────────────────────
   const LS_KEY = 'tapinsight_spotify_state_v1';
@@ -538,7 +539,14 @@
       const raw = localStorage.getItem(LS_KEY);
       if (raw) return JSON.parse(raw);
     } catch (e) { console.warn('[Spotify] loadState', e); }
-    return { queue: [], index: 0, accessToken: '', expiresAtMs: 0, outputMode: 'sdk' };
+    return {
+      queue: [],
+      index: 0,
+      accessToken: '',
+      expiresAtMs: 0,
+      outputMode: 'sdk',
+      wantPlaying: false
+    };
   }
   function saveState(s) {
     try { localStorage.setItem(LS_KEY, JSON.stringify(s)); } catch (e) {}
@@ -546,6 +554,7 @@
 
   let state = loadState();
   if (!state.outputMode) state.outputMode = 'sdk';
+  if (typeof state.wantPlaying !== 'boolean') state.wantPlaying = false;
 
   if (urlQueueRaw) {
     try {
@@ -553,6 +562,8 @@
       if (Array.isArray(q) && q.length > 0) {
         state.queue = q;
         state.index = Math.max(0, Math.min(urlIndex, q.length - 1));
+        state.wantPlaying = urlAutoplay;
+        if (!urlAutoplay) state.outputMode = 'sdk';
       }
     } catch (e) { console.warn('[Spotify] bad queue param', e); }
   }
@@ -576,6 +587,25 @@
   }
   function clearError() { document.getElementById('error').style.display = 'none'; }
 
+  function currentTrack() {
+    return (state.queue && state.queue[state.index]) || {};
+  }
+
+  function displayArtist(item) {
+    return (item && item.artist) || '';
+  }
+
+  function displayTitle(item) {
+    return (item && item.title) || '(untitled)';
+  }
+
+  function updateDocumentTitle() {
+    const t = currentTrack();
+    const title = displayTitle(t);
+    const artist = displayArtist(t);
+    document.title = 'Spotify · ' + title + (artist ? ' — ' + artist : '');
+  }
+
   function renderMeta() {
     if (!state.queue || state.queue.length === 0) {
       document.getElementById('trackTitle').textContent = 'No queue';
@@ -583,14 +613,16 @@
       document.getElementById('queuePos').textContent = '';
       document.getElementById('artworkPh').style.display = 'flex';
       document.getElementById('artworkImg').style.display = 'none';
+      document.title = 'Spotify — TapInsight';
       return;
     }
-    const t = state.queue[state.index] || {};
-    document.getElementById('trackTitle').textContent = t.title || '(untitled)';
+    const t = currentTrack();
+    document.getElementById('trackTitle').textContent = displayTitle(t);
     document.getElementById('trackArtist').textContent = t.artist || '';
     document.getElementById('queuePos').textContent =
       'Track ' + (state.index + 1) + ' of ' + state.queue.length +
       (t.album ? '  \u2022  ' + t.album : '');
+    updateDocumentTitle();
     const img = document.getElementById('artworkImg');
     const ph = document.getElementById('artworkPh');
     if (t.albumArtUrl) {
@@ -744,8 +776,19 @@
       sdkReady = true;
       populateMenu();
       if (state.outputMode === 'sdk') {
-        setStatus('Playing on this glasses via Spotify SDK. <span class="badge">SDK</span>', 'ok');
-        transferPlaybackToSdk().then(() => playCurrentOnSdk());
+        setStatus(
+          state.wantPlaying
+            ? 'Playing on this glasses via Spotify SDK. <span class="badge">SDK</span>'
+            : 'Ready on this glasses via Spotify SDK. Press play when ready. <span class="badge">SDK</span>',
+          'ok'
+        );
+        transferPlaybackToSdk().then(() => {
+          if (state.wantPlaying) playCurrentOnSdk();
+          else {
+            sdkPaused = true;
+            syncPlayButtonIcon();
+          }
+        });
       }
     });
     sdkPlayer.addListener('not_ready', () => {
@@ -880,6 +923,62 @@
     btn.innerHTML = sdkPaused ? '&#9658;' : '&#10074;&#10074;';
   }
 
+  function trackFromSpotifyItem(item) {
+    if (!item) return null;
+    const artists = Array.isArray(item.artists)
+      ? item.artists.map(a => a && a.name).filter(Boolean).join(', ')
+      : '';
+    const album = item.album || {};
+    let art = '';
+    if (Array.isArray(album.images) && album.images.length) {
+      const sorted = album.images.slice().sort((a, b) =>
+        Math.abs((a.width || 0) - 300) - Math.abs((b.width || 0) - 300));
+      art = (sorted[0] && sorted[0].url) || '';
+    }
+    return {
+      uri: item.uri || '',
+      title: item.name || '(untitled)',
+      artist: artists,
+      album: album.name || '',
+      albumArtUrl: art,
+      durationMs: item.duration_ms || 0,
+      openUrl: item.external_urls && item.external_urls.spotify || ''
+    };
+  }
+
+  function syncQueueToSpotifyItem(item) {
+    const track = trackFromSpotifyItem(item);
+    if (!track || !track.uri) return false;
+    const old = currentTrack();
+    if (old && old.uri === track.uri) {
+      // Metadata can still improve after the first search result (for
+      // example album art from the active item), so merge and re-render.
+      state.queue[state.index] = Object.assign({}, old, track);
+      saveState(state);
+      renderMeta();
+      return false;
+    }
+    const existingIdx = (state.queue || []).findIndex(t => t && t.uri === track.uri);
+    if (existingIdx >= 0) {
+      state.index = existingIdx;
+      state.queue[existingIdx] = Object.assign({}, state.queue[existingIdx], track);
+    } else {
+      if (!Array.isArray(state.queue) || state.queue.length === 0) {
+        state.queue = [track];
+        state.index = 0;
+      } else {
+        state.queue[state.index] = track;
+      }
+    }
+    saveState(state);
+    renderMeta();
+    if (lyricsState.panelOpen) {
+      updateLyricsHeader();
+      fetchLyricsForCurrent(track.uri, item);
+    }
+    return true;
+  }
+
   /**
    * Poll /v1/me/player and mirror is_playing onto sdkPaused (plus the
    * play-button glyph).  Used in Connect mode where we have no event
@@ -915,8 +1014,11 @@
           recordPosition(body.progress_ms, body.is_playing);
         }
         // If the Connect target jumped to a different track while we were
-        // idle (e.g. user skipped on the phone), refresh lyrics.
+        // idle (e.g. user skipped on the phone), update the glasses UI too.
         const curUri = body.item && body.item.uri;
+        if (body.item && curUri) {
+          syncQueueToSpotifyItem(body.item);
+        }
         if (curUri && lyricsState.panelOpen && curUri !== lyricsState.loadedForUri) {
           fetchLyricsForCurrent(curUri, body.item);
         }
@@ -935,7 +1037,8 @@
   function syncConnectPollTimer() {
     const inConnect = state.outputMode && state.outputMode.indexOf('connect:') === 0;
     if (inConnect && !connectPollTimer) {
-      connectPollTimer = setInterval(pollCurrentPlaybackState, 4000);
+      connectPollTimer = setInterval(pollCurrentPlaybackState, 2000);
+      pollCurrentPlaybackState();
     } else if (!inConnect && connectPollTimer) {
       clearInterval(connectPollTimer);
       connectPollTimer = null;
@@ -980,6 +1083,12 @@
     console.warn('[Spotify] auto-routing off SDK:', reason);
     // Make sure the device list is fresh before we pick a target.
     await refreshConnectDevices();
+    if (!state.wantPlaying) {
+      setStatus('Spotify is loaded paused. Choose an output device, then press play.', 'ok');
+      populateMenu();
+      syncConnectPollTimer();
+      return;
+    }
     const phone = findPhoneDevice();
     if (phone) {
       setStatus('Playing on your phone (' + (phone.name || 'Smartphone') +
@@ -1033,6 +1142,12 @@
         },
         body: JSON.stringify({ device_ids: [deviceId], play: false })
       });
+      if (!state.wantPlaying) {
+        sdkPaused = true;
+        syncPlayButtonIcon();
+        setTimeout(pollCurrentPlaybackState, 800);
+        return;
+      }
       // Then start the queue.  Both calls target the same deviceId so
       // the user's pick sticks even if another device was briefly active.
       const r = await fetch('https://api.spotify.com/v1/me/player/play?device_id=' + encodeURIComponent(deviceId), {
@@ -1070,8 +1185,10 @@
     if (!state.queue || state.queue.length === 0) return;
     renderMeta();
     if (state.outputMode === 'sdk') {
-      if (sdkReady) await playCurrentOnSdk();
-      else if (sdkFailed) await autoRouteToPhoneOrBest('sdk selected but sdkFailed');
+      if (sdkReady) {
+        await transferPlaybackToSdk();
+        if (state.wantPlaying) await playCurrentOnSdk();
+      } else if (sdkFailed) await autoRouteToPhoneOrBest('sdk selected but sdkFailed');
       // else: SDK still initialising — ready-event handler will kick it off.
     } else if (state.outputMode && state.outputMode.indexOf('connect:') === 0) {
       const id = state.outputMode.slice('connect:'.length);
@@ -1099,6 +1216,18 @@
     }
     // Start/stop the Connect-mode poll timer to match the new output.
     syncConnectPollTimer();
+    if (!state.wantPlaying) {
+      if (mode === 'sdk') {
+        await transferPlaybackToSdk();
+        setStatus('Spotify is paused on this glasses. Press play when ready.', 'ok');
+      } else if (mode.indexOf('connect:') === 0) {
+        const id = mode.slice('connect:'.length);
+        await playCurrentOnConnect(id);
+        const d = (connectDevices || []).find(x => x.id === id);
+        setStatus('Spotify is paused on ' + (d ? d.name : 'the selected device') + '. Press play when ready.', 'ok');
+      }
+      return;
+    }
     await playCurrent();
   }
 
@@ -1467,14 +1596,38 @@
   async function spotifyTogglePlay() {
     if (!(await ensureFreshToken())) return;
     if (state.outputMode === 'sdk' && sdkReady && sdkPlayer) {
-      try { await sdkPlayer.togglePlay(); } catch (e) { console.warn(e); }
+      try {
+        if (sdkPaused) {
+          state.wantPlaying = true;
+          saveState(state);
+          await playCurrent();
+        } else {
+          state.wantPlaying = false;
+          saveState(state);
+          await sdkPlayer.pause();
+          sdkPaused = true;
+          syncPlayButtonIcon();
+        }
+      } catch (e) { console.warn(e); }
+      return;
+    }
+    if (state.outputMode === 'sdk' && sdkFailed) {
+      state.wantPlaying = true;
+      saveState(state);
+      await autoRouteToPhoneOrBest('user pressed play while SDK unavailable');
       return;
     }
     if (state.outputMode && state.outputMode.indexOf('connect:') === 0) {
       const id = state.outputMode.slice('connect:'.length);
-      const url = sdkPaused
-        ? 'https://api.spotify.com/v1/me/player/play?device_id=' + encodeURIComponent(id)
-        : 'https://api.spotify.com/v1/me/player/pause?device_id=' + encodeURIComponent(id);
+      if (sdkPaused) {
+        state.wantPlaying = true;
+        saveState(state);
+        await playCurrent();
+        return;
+      }
+      state.wantPlaying = false;
+      saveState(state);
+      const url = 'https://api.spotify.com/v1/me/player/pause?device_id=' + encodeURIComponent(id);
       try {
         await fetch(url, {
           method: 'PUT',
@@ -1483,7 +1636,7 @@
         // Flip optimistically so the glyph matches the user's intent
         // right away, then confirm against the server so it self-heals
         // if Spotify rejected the command (e.g. device just went offline).
-        sdkPaused = !sdkPaused;
+        sdkPaused = true;
         syncPlayButtonIcon();
         setTimeout(pollCurrentPlaybackState, 600);
       } catch (e) { console.warn(e); }
@@ -1512,6 +1665,31 @@
   window.tapSpotifyNext = spotifyNext;
   window.tapSpotifyPrev = spotifyPrev;
   window.tapSpotifyTogglePlay = spotifyTogglePlay;
+  window.gestureNextTrack = spotifyNext;
+  window.gesturePrevTrack = spotifyPrev;
+  window.tapInsightTogglePlayback = spotifyTogglePlay;
+  window.tapSpotifyOpenLyrics = openLyrics;
+  window.tapSpotifyToggleLyrics = function() {
+    if (lyricsState.panelOpen) closeLyrics(); else openLyrics();
+  };
+  window.tapSpotifyNowPlaying = function() {
+    const t = currentTrack();
+    return JSON.stringify({
+      service: 'Spotify',
+      title: t.title || '',
+      artist: t.artist || '',
+      album: t.album || '',
+      uri: t.uri || '',
+      albumArtUrl: t.albumArtUrl || '',
+      progressMs: Math.max(0, Math.round(estimatedPositionMs() || 0)),
+      durationMs: t.durationMs || 0,
+      isPlaying: !!isPlayingNow,
+      paused: !!sdkPaused,
+      lyricsOpen: !!lyricsState.panelOpen,
+      lyricsLoaded: (lyricsState.linesSynced && lyricsState.linesSynced.length > 0) ||
+        (lyricsState.linesPlain && lyricsState.linesPlain.length > 0)
+    });
+  };
 
   // ── Startup ──────────────────────────────────────────────────────────
   renderMeta();
@@ -1544,7 +1722,14 @@
   if (!state.queue || state.queue.length === 0) {
     setStatus('Ready. Ask Gemini to play something on Spotify.', 'ok');
   } else {
-    setStatus('Connecting Spotify Premium SDK on this glasses&hellip;');
+    setStatus(
+      state.wantPlaying
+        ? 'Connecting Spotify Premium SDK on this glasses&hellip;'
+        : 'Spotify loaded paused. Choose an output device, then press play.',
+      'ok'
+    );
+    sdkPaused = !state.wantPlaying;
+    syncPlayButtonIcon();
   }
 
   window.onSpotifyWebPlaybackSDKReady = function() {

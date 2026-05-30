@@ -156,21 +156,24 @@
                      placeholder values, but the slots are present so
                      the HUD visually matches the Hermes layout. -->
 
-                <!-- AI status badge "G" — tinted from HudStateBridge
-                     connection status. Green when Gemini connected,
-                     amber while connecting, red on error/idle. -->
+                <!-- Phase 4k.3 — OpenClaw (TapClaw) status badge. Moved
+                     into the old G position so it is not adjacent to the
+                     avatar tap target. Driven by HudStateBridge.openClawStatus
+                     (Service-side OpenClaw health ping). Hidden when the
+                     OpenClaw integration is switched off. -->
                 <TextView
-                    android:id="@+id/unipanelHudAiBadge"
+                    android:id="@+id/unipanelHudOpenClawBadge"
                     android:layout_width="18dp"
                     android:layout_height="18dp"
                     android:layout_marginStart="10dp"
                     android:gravity="center"
                     android:fontFamily="sans-serif-medium"
-                    android:text="G"
+                    android:text="O"
                     android:textColor="#FFFFFFFF"
                     android:textSize="10sp"
                     android:textStyle="bold"
                     android:background="@drawable/bg_unipanel_voice_pill"
+                    android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
                 <!-- AQI text — placeholder until a follow-up wires
@@ -209,24 +212,22 @@
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
-                <!-- Phase 4k.3 — OpenClaw (TapClaw) status badge, sits
-                     right next to "H". Same green/red tint convention as
-                     the Hermes badge, driven by HudStateBridge.openClawStatus
-                     (Service-side OpenClaw health ping). Hidden when the
-                     OpenClaw integration is switched off. -->
+                <!-- AI status badge "G" — moved into the old O slot so
+                     OpenClaw is no longer next to the avatar. Tinted from
+                     HudStateBridge connection status. Green when Gemini
+                     connected, amber while connecting, red on error/idle. -->
                 <TextView
-                    android:id="@+id/unipanelHudOpenClawBadge"
+                    android:id="@+id/unipanelHudAiBadge"
                     android:layout_width="18dp"
                     android:layout_height="18dp"
                     android:layout_marginStart="6dp"
                     android:gravity="center"
                     android:fontFamily="sans-serif-medium"
-                    android:text="O"
+                    android:text="G"
                     android:textColor="#FFFFFFFF"
                     android:textSize="10sp"
                     android:textStyle="bold"
                     android:background="@drawable/bg_unipanel_voice_pill"
-                    android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
                 <!-- Phase 4k (Mars revision) — the "MIC" text pill is

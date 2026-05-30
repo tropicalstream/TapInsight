@@ -199,6 +199,15 @@ class GeminiRouter(
                 "Respond with EXACTLY ONE very short confirmation and nothing else: 'Reader mode " +
                 "on.' when turning it on, 'Reader mode off.' when turning it off. Do NOT call any " +
                 "tool, do NOT repeat the confirmation, and NEVER say you are unable to do it.\n" +
+                "RULE ZERO-P — FULL WEB PAGE READING USES DOM TEXT, NOT SCREENSHOT VISION (HIGH PRIORITY): " +
+                "If the user asks to read, summarize, or explain the whole/current web page, article, or page body " +
+                "(for example 'read the web page', 'read this page', 'summarize the current page', " +
+                "'read the whole article'), call browser_page_text. This returns the full DOM/body text, including " +
+                "off-screen content. DO NOT use browser_vision for whole-page reading; browser_vision only sees the " +
+                "currently visible viewport and is for visual/screen questions like 'what does this say here', " +
+                "'what am I looking at', or 'look at this image'. After browser_page_text returns, answer from that " +
+                "text in a spoken-friendly way; if the user said 'read', read the important page text rather than " +
+                "describing the screenshot.\n" +
                 "RULE ZERO-D — LEARNING IS CONVERSATIONAL, NOT A MEDIA LOOKUP (HIGH PRIORITY): " +
                 "The user's default mode is learning by conversation. When they ask to understand, learn, explore, " +
                 "or analyze a topic — ANY question that starts with or implies 'tell me about', 'what is', 'why', " +
@@ -2974,9 +2983,9 @@ class GeminiRouter(
 
             // browser_vision — ask Gemini what the user is looking at
             // in the on-glasses TapBrowser. Triggered by phrases like
-            // "look at this", "what does this say", "summarize this
-            // page", "read this", "translate this", "explain this",
-            // "what's on screen". Tool captures a JPEG of the browser
+            // "look at this", "what does this say", "read this label",
+            // "translate this", "explain this", "what's on screen".
+            // Tool captures a JPEG of the browser
             // viewport, posts image + question to gemini-2.5-flash via
             // generateContent, returns the answer text.
             tools.put(JSONObject()
@@ -2985,11 +2994,12 @@ class GeminiRouter(
                     "Answer a question about what the user is currently SEEING in their on-glasses browser (TapBrowser). " +
                         "Use this when the user says any of: " +
                         "'look at this', 'look at the screen', 'what does this say', 'what's on screen', " +
-                        "'what's on this page', 'summarize this', 'summarize this page', 'read this', " +
-                        "'read this page', 'translate this', 'translate this page', 'explain this', " +
+                        "'what's on this visible screen', 'read this visible label', " +
+                        "'translate this visible text', 'explain what is shown here', " +
                         "'what's that', 'tell me about this page', 'what am I looking at', " +
                         "'what's the price', 'who wrote this', 'when was this published', or any other " +
                         "question that clearly refers to the visible browser content rather than general knowledge. " +
+                        "Do NOT use this for whole-page/article/body text reading or summarization; use browser_page_text instead. " +
                         "DO NOT use this tool when the user is in the chat surface with no browser visible, or " +
                         "when they're asking a generic knowledge question that doesn't reference the page. " +
                         "If the browser isn't currently open or the screenshot can't be captured, the tool " +
@@ -3006,6 +3016,23 @@ class GeminiRouter(
                                     "'what's the headline' (from 'look at this, what's the headline'). " +
                                     "Always pass a clean question — never the bare wake phrase.")))
                     .put("required", JSONArray().put("question"))))
+
+            // browser_page_text — read the complete DOM/body text from
+            // the active TapBrowser page, not just the visible viewport.
+            tools.put(JSONObject()
+                .put("name", "browser_page_text")
+                .put("description",
+                    "Read the full text content of the current TapBrowser web page from the DOM/body, including " +
+                        "content below the fold that is not currently visible on screen. Use this when the user asks " +
+                        "to read, summarize, explain, or extract the current web page, page body, article, or whole page. " +
+                        "Examples: 'read the web page', 'read this page', 'read the whole article', " +
+                        "'summarize the current page', 'what does this article say'. Do NOT use browser_vision for these, " +
+                        "because browser_vision only sees the currently displayed viewport.")
+                .put("parameters", JSONObject()
+                    .put("type", "OBJECT")
+                    .put("properties", JSONObject()
+                        .put("max_chars", JSONObject().put("type", "STRING")
+                            .put("description", "Optional maximum characters of page text to return. Default is 30000.")))))
 
             // open_taplink
             tools.put(JSONObject()

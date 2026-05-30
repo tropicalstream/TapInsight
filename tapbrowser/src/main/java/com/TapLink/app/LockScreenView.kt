@@ -5,7 +5,6 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.media.AudioAttributes
-import android.media.MediaPlayer
 import android.media.SoundPool
 import android.os.CountDownTimer
 import android.util.TypedValue
@@ -36,7 +35,7 @@ class LockScreenView(context: Context) : FrameLayout(context) {
         private const val GLYPH_DOWN = "▼"  // ▼
         private const val GLYPH_LEFT = "◀"  // ◀
         private const val GLYPH_RIGHT = "▶" // ▶
-        private const val COOLDOWN_SECONDS = 5L
+        private const val COOLDOWN_SECONDS = 10L
         private const val ACCENT = 0xFF00E5FF.toInt()
         private const val WARN = 0xFFFF5252.toInt()
         private const val OK = 0xFF69F0AE.toInt()
@@ -54,6 +53,7 @@ class LockScreenView(context: Context) : FrameLayout(context) {
     private val content: LinearLayout
     private val titleText: TextView
     private val arrowText: TextView
+    private val loadingText: TextView
     private val pipRow: LinearLayout
     private val statusText: TextView
 
@@ -63,9 +63,24 @@ class LockScreenView(context: Context) : FrameLayout(context) {
     private var wrongAttempts = 0
     private var inCooldown = false
     private var unlocked = false
+    private var inputReady = false
     private var onUnlocked: (() -> Unit)? = null
 
     private var cooldownTimer: CountDownTimer? = null
+    private val armInputRunnable = Runnable {
+        if (isAttachedToWindow && !unlocked && !inCooldown && expected.isNotEmpty()) {
+            inputReady = true
+            loadingText.animate().cancel()
+            loadingText.visibility = View.GONE
+            arrowText.visibility = View.VISIBLE
+            pipRow.visibility = View.VISIBLE
+            arrowText.text = "↑  ↓  ←  →"
+            arrowText.alpha = 1f
+            arrowText.translationX = 0f
+            arrowText.translationY = 0f
+            updateStatus("Swipe your code to unlock")
+        }
+    }
 
     // ── Audio ────────────────────────────────────────────────────────────
     private val soundPool: SoundPool =
@@ -80,7 +95,6 @@ class LockScreenView(context: Context) : FrameLayout(context) {
             .build()
     private var swipeSoundId = 0
     private var swipeSoundLoaded = false
-    private var bootPlayer: MediaPlayer? = null
 
     init {
         setBackgroundColor(Color.BLACK)
@@ -115,6 +129,7 @@ class LockScreenView(context: Context) : FrameLayout(context) {
             setTextSize(TypedValue.COMPLEX_UNIT_PX, 96f)
             gravity = Gravity.CENTER
             alpha = 0f
+            visibility = View.INVISIBLE
         }
         content.addView(
             arrowText,
@@ -124,9 +139,24 @@ class LockScreenView(context: Context) : FrameLayout(context) {
             ).apply { topMargin = 8; bottomMargin = 8 }
         )
 
+        loadingText = TextView(context).apply {
+            text = "•"
+            setTextColor(ACCENT)
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, 34f)
+            gravity = Gravity.CENTER
+        }
+        content.addView(
+            loadingText,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = 8 }
+        )
+
         pipRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+            visibility = View.INVISIBLE
         }
         content.addView(pipRow)
 
@@ -155,35 +185,40 @@ class LockScreenView(context: Context) : FrameLayout(context) {
         this.onUnlocked = onUnlocked
         entered.clear()
         wrongAttempts = 0
+        inputReady = false
+        removeCallbacks(armInputRunnable)
+        showLoadingState()
         rebuildPips()
-        updateStatus("Swipe your code to unlock")
     }
 
-    /** Call once the view is attached/visible: play the boot flourish + fade in. */
+    /** Call once the view is attached/visible: reveal quickly, then arm input. */
     fun onShown() {
-        if (swipeSoundLoaded.not() && swipeSoundId == 0) {
+        if (swipeSoundId == 0) {
             soundPool.setOnLoadCompleteListener { _, sampleId, status ->
                 if (sampleId == swipeSoundId && status == 0) swipeSoundLoaded = true
             }
             swipeSoundId = soundPool.load(context, R.raw.swipe_tick, 1)
         }
-        playBootChime()
+        // Appear fast, but don't accept swipes until the reveal finishes — an
+        // early swipe landing during layout/fade-in could be mis-counted.
+        inputReady = false
+        removeCallbacks(armInputRunnable)
+        showLoadingState()
         content.alpha = 0f
-        content.animate().alpha(1f).setDuration(450).start()
+        content.animate().cancel()
+        content.animate()
+            .alpha(1f)
+            .setDuration(160)
+            .withEndAction {
+                post {
+                    postDelayed(armInputRunnable, 240L)
+                }
+            }
+            .start()
     }
 
-    private fun playBootChime() {
-        runCatching {
-            bootPlayer?.release()
-            bootPlayer = MediaPlayer.create(context, R.raw.boot_chime)?.apply {
-                setOnCompletionListener { mp ->
-                    runCatching { mp.release() }
-                    if (bootPlayer === mp) bootPlayer = null
-                }
-                start()
-            }
-        }
-    }
+    fun canAcceptSwipeInput(): Boolean =
+        inputReady && !unlocked && !inCooldown && expected.isNotEmpty()
 
     private fun playSwipeTick() {
         if (swipeSoundLoaded && swipeSoundId != 0) {
@@ -196,7 +231,7 @@ class LockScreenView(context: Context) : FrameLayout(context) {
      * Ignored while in cooldown or already unlocked.
      */
     fun submitSwipe(dir: Char) {
-        if (unlocked || inCooldown) return
+        if (!inputReady || unlocked || inCooldown) return
         if (dir != 'U' && dir != 'D' && dir != 'L' && dir != 'R') return
         if (expected.isEmpty()) return
 
@@ -261,6 +296,7 @@ class LockScreenView(context: Context) : FrameLayout(context) {
     // ── Visuals ────────────────────────────────────────────────────────────
     private fun flickArrow(dir: Char) {
         arrowText.text = glyphFor(dir)
+        arrowText.visibility = View.VISIBLE
         arrowText.setTextColor(ACCENT)
         arrowText.alpha = 1f
         arrowText.translationX = 0f
@@ -315,12 +351,40 @@ class LockScreenView(context: Context) : FrameLayout(context) {
         statusText.setTextColor(color)
     }
 
+    private fun showLoadingState() {
+        loadingText.visibility = View.VISIBLE
+        loadingText.alpha = 1f
+        loadingText.rotation = 0f
+        loadingText.animate().cancel()
+        loadingText.animate()
+            .rotation(360f)
+            .setDuration(760L)
+            .withEndAction {
+                if (!inputReady && loadingText.visibility == View.VISIBLE) {
+                    loadingText.rotation = 0f
+                    loadingText.animate()
+                        .rotation(360f)
+                        .setDuration(760L)
+                        .start()
+                }
+            }
+            .start()
+        arrowText.animate().cancel()
+        arrowText.text = ""
+        arrowText.alpha = 0f
+        arrowText.visibility = View.INVISIBLE
+        pipRow.visibility = View.INVISIBLE
+        titleText.setTextColor(Color.WHITE)
+        updateStatus("Loading unlock HUD")
+    }
+
     /** Release audio resources. Call from the host's hide/teardown path. */
     fun release() {
         cooldownTimer?.cancel()
         cooldownTimer = null
-        runCatching { bootPlayer?.release() }
-        bootPlayer = null
+        removeCallbacks(armInputRunnable)
+        loadingText.animate().cancel()
+        arrowText.animate().cancel()
         runCatching { soundPool.release() }
     }
 }

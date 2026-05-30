@@ -137,12 +137,15 @@ class SpotifyTool(private val context: Context) : AiTapTool {
             // Route through spotify.html (Web Playback SDK) for full-track
             // streaming. The queue param carries Spotify URIs that the SDK
             // plays via Connect-device transfer; FF/Rewind on the media
-            // toolbar walk through the queue.
+            // toolbar walk through the queue. Start paused so the user can
+            // choose the real output device before Spotify begins playing
+            // on whatever Connect target was last active.
             val playLink = buildSpotifySdkTapLink(
                 queue = hits,
                 startIndex = 0,
                 accessToken = userToken!!,
-                expiryMs = prefs.spotifyAccessTokenExpiryMs
+                expiryMs = prefs.spotifyAccessTokenExpiryMs,
+                startPaused = true
             )
             val lead = hits.first()
             val artistLine = lead.artist?.let { " by $it" } ?: ""
@@ -150,7 +153,8 @@ class SpotifyTool(private val context: Context) : AiTapTool {
                 " (queued ${hits.size - 1} more track${if (hits.size - 1 == 1) "" else "s"})"
             } else ""
             return Result.success(
-                "$playLink\nPlaying \"${lead.title}\"$artistLine on Spotify (full track)$queueTail."
+                "$playLink\nLoaded \"${lead.title}\"$artistLine on Spotify (full track)$queueTail. " +
+                    "It is paused so you can choose the output device, then press play."
             )
         }
 
@@ -687,12 +691,15 @@ class SpotifyTool(private val context: Context) : AiTapTool {
      *   playName       — "Title — Artist" for the media toolbar
      *   playArtist     — artist
      *   playKind       — "spotify_sdk" (distinguishes from "spotify" preview mode)
+     *   autoplay        — "0" means load the queue paused; user must pick
+     *                    output/play explicitly.
      */
     private fun buildSpotifySdkTapLink(
         queue: List<SpotifyTrackHit>,
         startIndex: Int,
         accessToken: String,
-        expiryMs: Long
+        expiryMs: Long,
+        startPaused: Boolean = false
     ): String {
         val startIdx = startIndex.coerceIn(0, queue.size - 1)
         val lead = queue[startIdx]
@@ -728,6 +735,10 @@ class SpotifyTool(private val context: Context) : AiTapTool {
             "playGenre=${URLEncoder.encode("Spotify", "UTF-8")}",
             "playKind=${URLEncoder.encode("spotify_sdk", "UTF-8")}"
         )
+        if (startPaused) {
+            params += "autoplay=0"
+            params += "start_paused=1"
+        }
         lead.artist?.let {
             params += "playSubtitle=${URLEncoder.encode(it, "UTF-8")}"
             params += "playArtist=${URLEncoder.encode(it, "UTF-8")}"

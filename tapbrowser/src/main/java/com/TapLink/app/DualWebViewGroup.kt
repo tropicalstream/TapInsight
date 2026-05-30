@@ -1348,8 +1348,25 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         val now = SystemClock.uptimeMillis()
         val external =
                 externalScrollMetrics?.takeIf { now - it.timestamp <= externalScrollMetricsStaleMs }
-        return external != null &&
-                (metrics.rangeX > metrics.extentX || metrics.rangeY > metrics.extentY)
+                        ?: return false
+
+        val externalDeltaX = (external.rangeX - external.extentX).coerceAtLeast(0)
+        val externalDeltaY = (external.rangeY - external.extentY).coerceAtLeast(0)
+        // If resolveScrollMetrics selected the page-reported scroller, use the
+        // JS path. The dashboard keeps the WebView/body stationary and scrolls
+        // an inner .content element, so native WebView.scrollTo() can move the
+        // thumb while leaving the visible page fixed.
+        val metricsUseExternalX =
+                external.extentX > 0 &&
+                        externalDeltaX > 0 &&
+                        metrics.rangeX == external.rangeX &&
+                        metrics.extentX == external.extentX
+        val metricsUseExternalY =
+                external.extentY > 0 &&
+                        externalDeltaY > 0 &&
+                        metrics.rangeY == external.rangeY &&
+                        metrics.extentY == external.extentY
+        return metricsUseExternalX || metricsUseExternalY
     }
 
     private fun scrollWebViewByJs(left: Int?, top: Int?, smooth: Boolean, useScrollTo: Boolean) {
@@ -1473,11 +1490,21 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private fun updateHorizontalScroll(percent: Float) {
         if (isWebViewScrollEnabled()) {
             val metrics = resolveScrollMetrics(SystemClock.uptimeMillis())
-            val range = metrics.rangeX
-            val extent = metrics.extentX
+            var range = metrics.rangeX
+            var extent = metrics.extentX
+            // Native fallback (see updateVerticalScroll for the full rationale):
+            // when nav-bars-hidden full-screen resizes the viewport the cached
+            // JS metrics can go stale and report range<=extent, so the drag
+            // moved nothing. Trust the live native range if it disagrees.
+            var forceNative = false
+            if (range - extent <= 0) {
+                val nr = webView.getHorizontalScrollRange()
+                val ne = webView.getHorizontalScrollExtent()
+                if (nr - ne > 0) { range = nr; extent = ne; forceNative = true }
+            }
             if (range > extent) {
                 val targetX = percent * (range - extent)
-                if (shouldUseJsScroll(metrics)) {
+                if (!forceNative && shouldUseJsScroll(metrics)) {
                     scrollWebViewByJs(
                             left = targetX.toInt(),
                             top = null,
@@ -1499,11 +1526,27 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private fun updateVerticalScroll(percent: Float) {
         if (isWebViewScrollEnabled()) {
             val metrics = resolveScrollMetrics(SystemClock.uptimeMillis())
-            val range = metrics.rangeY
-            val extent = metrics.extentY
+            var range = metrics.rangeY
+            var extent = metrics.extentY
+            // Native fallback. Dragging the scroll bar while nav bars are hidden
+            // ("full screen") could scroll nothing: hiding the bars resizes the
+            // WebView, and the cached external JS scroll metrics can lag a frame
+            // and report range<=extent — so this method computed no movement.
+            // If the live native WebView range says the page IS scrollable,
+            // trust it and scroll natively (the JS path was keyed off the stale
+            // metrics). Purely additive: only runs when the old code did nothing.
+            var forceNative = false
+            if (range - extent <= 0) {
+                val nr = webView.getVerticalScrollRange()
+                val ne = webView.getVerticalScrollExtent()
+                if (nr - ne > 0) {
+                    range = nr; extent = ne; forceNative = true
+                    DebugLog.d("ScrollDebug", "updateVerticalScroll native fallback: range=$nr extent=$ne")
+                }
+            }
             if (range > extent) {
                 val targetY = percent * (range - extent)
-                if (shouldUseJsScroll(metrics)) {
+                if (!forceNative && shouldUseJsScroll(metrics)) {
                     scrollWebViewByJs(
                             left = null,
                             top = targetY.toInt(),
@@ -1631,6 +1674,24 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private lateinit var btnMaskNextTrack: FontIconView // Skip to next song
     private lateinit var btnMaskUnmask: ImageButton
     private lateinit var maskNowPlayingText: TextView
+    private lateinit var maskCaptionText: TextView
+    private lateinit var maskSpotifyInfoContainer: LinearLayout
+    private lateinit var maskSpotifyTitleText: TextView
+    private lateinit var maskSpotifyArtistText: TextView
+    private lateinit var maskSpotifyAlbumText: TextView
+    private lateinit var maskSpotifyProgressTrack: FrameLayout
+    private lateinit var maskSpotifyProgressFill: View
+    private lateinit var maskSpotifyLyricsText: TextView
+    private data class MaskSpotifyInfo(
+        val title: String,
+        val artist: String,
+        val album: String,
+        val progressMs: Long,
+        val durationMs: Long,
+        val isPlaying: Boolean,
+        val lyricsLoaded: Boolean
+    )
+    private var lastMaskedSpotifyInfo: MaskSpotifyInfo? = null
     // Minimal dim-mode metadata: battery (with charging indicator) + time.
     // Only these three pieces of text appear in dim mode now — no
     // toolbar, no visualizer, no exit button. Gestures handle media
@@ -1649,12 +1710,15 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private var lastMaskedDomTitleUrl: String? = null
     private var lastMaskedDomTitleAt: Long = 0L
     private val maskedDomTitleFreshMs = 15000L
+    private var lastMaskedCaptionText: String? = null
+    private var lastMaskedCaptionAt: Long = 0L
+    private val maskedCaptionFreshMs = 2500L
     private val maskNowPlayingPeriodicRefresh: Runnable = object : Runnable {
         override fun run() {
             if (!isScreenMasked) return
             refreshMaskedNowPlayingFromJs()
             refreshMaskedNowPlaying()
-            postDelayed(this, 5000L)
+            postDelayed(this, maskedNowPlayingRefreshDelayMs())
         }
     }
     private var maskOverlayTouchDownX = 0f
@@ -2751,6 +2815,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             // rung. No-op on non-YouTube pages.
                             // See VideoQualityHints.kt for rationale.
                             if (view != null) {
+                                YouTubeCaptionEnforcer.maybeInject(view, url)
                                 VideoQualityHints.maybeApplyYouTubeQualityShim(view, url)
                             }
                         } catch (e: Exception) {
@@ -3775,9 +3840,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
         refreshMaskedNowPlaying()
         refreshMaskedNowPlayingFromJs()
-        // Start periodic now-playing refresh (every 5s) — remove first to guarantee single handler
+        // Start periodic now-playing/caption refresh — remove first to guarantee single handler.
         removeCallbacks(maskNowPlayingPeriodicRefresh)
-        postDelayed(maskNowPlayingPeriodicRefresh, 5000L)
+        postDelayed(maskNowPlayingPeriodicRefresh, maskedNowPlayingRefreshDelayMs())
         // Reset double-tap state so a stale single-tap doesn't fire an
         // unintended exit on first interaction after entering dim mode.
         lastMaskOverlayTapTime = 0L
@@ -3800,6 +3865,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         lastMaskedDomTitle = null
         lastMaskedDomTitleUrl = null
         lastMaskedDomTitleAt = 0L
+        lastMaskedCaptionText = null
+        lastMaskedCaptionAt = 0L
         maskOverlay.visibility = View.GONE
         if (::maskNowPlayingText.isInitialized) {
             // INVISIBLE not GONE — see setupMaskOverlayUI for why.
@@ -3807,6 +3874,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             // even when hidden so its dimensions are non-zero by the
             // time we flip to VISIBLE on the next dim-mode entry.
             maskNowPlayingText.visibility = View.INVISIBLE
+        }
+        if (::maskCaptionText.isInitialized) {
+            maskCaptionText.visibility = View.INVISIBLE
         }
         // Let MainActivity handle cursor visibility restoration - cursors will be shown
         // if they were visible before masking through updateCursorPosition call
@@ -3952,6 +4022,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             val isYoutube = url.contains("youtube.com", ignoreCase = true) ||
                 url.contains("youtu.be", ignoreCase = true)
             val isMediaPlayer = url.contains("media_player.html", ignoreCase = true)
+            val isSpotify = isSpotifyPlayerUrl(url)
             val activity = resolveHostingActivity()
             val hasNextInQueue = activity?.hasNextYoutubePlaylistEntry() == true
             val queueActive = activity?.hasActiveYoutubePlaylist() == true
@@ -4002,6 +4073,15 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 scheduleTrackChangeRefresh()
                 return
             }
+            if (isSpotify) {
+                targetWebView.evaluateJavascript(
+                    "(function(){try{if(typeof window.gestureNextTrack==='function'){return window.gestureNextTrack();}if(typeof window.tapSpotifyNext==='function'){return window.tapSpotifyNext();}return 'no-fn';}catch(e){return 'err:'+e;}})();"
+                ) { r ->
+                    android.util.Log.d("DimMaskHud", "swipe-next spotify → ${r?.trim('"', ' ')}")
+                }
+                scheduleTrackChangeRefresh()
+                return
+            }
             // Non-YouTube media (TapRadio etc.) — keep prev/next station
             // semantics via the existing per-site bridge JS.
             evaluateMediaControlCommand(
@@ -4023,6 +4103,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             val isYoutube = url.contains("youtube.com", ignoreCase = true) ||
                 url.contains("youtu.be", ignoreCase = true)
             val isMediaPlayer = url.contains("media_player.html", ignoreCase = true)
+            val isSpotify = isSpotifyPlayerUrl(url)
             val activity = resolveHostingActivity()
             val hasPrevInQueue = activity?.hasPrevYoutubePlaylistEntry() == true
             val queueActive = activity?.hasActiveYoutubePlaylist() == true
@@ -4063,6 +4144,15 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 scheduleTrackChangeRefresh()
                 return
             }
+            if (isSpotify) {
+                targetWebView.evaluateJavascript(
+                    "(function(){try{if(typeof window.gesturePrevTrack==='function'){return window.gesturePrevTrack();}if(typeof window.tapSpotifyPrev==='function'){return window.tapSpotifyPrev();}return 'no-fn';}catch(e){return 'err:'+e;}})();"
+                ) { r ->
+                    android.util.Log.d("DimMaskHud", "swipe-prev spotify → ${r?.trim('"', ' ')}")
+                }
+                scheduleTrackChangeRefresh()
+                return
+            }
             // Non-YouTube media
             evaluateMediaControlCommand(
                 targetWebView,
@@ -4072,6 +4162,22 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             scheduleTrackChangeRefresh()
         } catch (e: Exception) {
             android.util.Log.w("DimMaskHud", "onMaskSwipePrev failed", e)
+        }
+    }
+
+    fun onMaskShowLyrics() {
+        try {
+            val targetWebView = getMediaControlWebView()
+            val url = targetWebView.url.orEmpty()
+            if (!isSpotifyPlayerUrl(url)) return
+            unmaskScreen()
+            targetWebView.evaluateJavascript(
+                "(function(){try{if(typeof window.tapSpotifyOpenLyrics==='function'){window.tapSpotifyOpenLyrics();return 'lyrics';}return 'no-fn';}catch(e){return 'err:'+e;}})();"
+            ) { r ->
+                android.util.Log.d("DimMaskHud", "show lyrics → ${r?.trim('"', ' ')}")
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("DimMaskHud", "onMaskShowLyrics failed", e)
         }
     }
 
@@ -4198,6 +4304,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             val isYoutube = url.contains("youtube.com", ignoreCase = true) ||
                 url.contains("youtu.be", ignoreCase = true)
             val isMediaPlayer = url.contains("media_player.html", ignoreCase = true)
+            val isSpotify = isSpotifyPlayerUrl(url)
 
             // 1. YouTube — direct JS toggle. Bypasses isMediaPlaying so
             //    we never accidentally trigger the fallback radio path
@@ -4281,6 +4388,33 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                 post { handleMediaStateChanged(webView, false) }
                     }
                     scheduleMaskedNowPlayingRefresh()
+                }
+                pendingMaskFallbackStation = null
+                return
+            }
+
+            if (isSpotify && webView != null) {
+                android.util.Log.d("DimMaskHud", "onMaskSingleTap: spotify toggle on $url")
+                webView.evaluateJavascript(
+                    """
+                    (function() {
+                        try {
+                            if (typeof window.tapSpotifyTogglePlay === 'function') {
+                                window.tapSpotifyTogglePlay();
+                                return 'toggle';
+                            }
+                            if (typeof window.tapInsightTogglePlayback === 'function') {
+                                window.tapInsightTogglePlayback();
+                                return 'toggle';
+                            }
+                        } catch(e) { return 'err:' + e; }
+                        return 'no-fn';
+                    })();
+                    """.trimIndent()
+                ) { result ->
+                    android.util.Log.d("DimMaskHud", "spotify toggle → ${result?.trim('"', ' ')}")
+                    postDelayed({ refreshMaskedNowPlayingFromJs() }, 500L)
+                    postDelayed({ refreshMaskedNowPlayingFromJs() }, 1400L)
                 }
                 pendingMaskFallbackStation = null
                 return
@@ -5241,8 +5375,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
         // Layout scroll bars for non-anchored mode
         // Eye button size is 40px with 8px margin from bottom/right, so reserve 48px for it
+        val scrollChromeHidden = isInScrollMode || isNavBarsHidden
         val eyeButtonSpace =
-                if (isInScrollMode && btnShowNavBars.visibility == View.VISIBLE) 48 else 0
+                if (scrollChromeHidden && btnShowNavBars.visibility == View.VISIBLE) 48 else 0
 
         if (horizontalScrollBar.visibility == View.VISIBLE) {
             val hScrollHeight = 20
@@ -5250,7 +5385,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     if (leftNavigationBar.visibility == View.VISIBLE) eyeHeight - navBarHeight
                     else eyeHeight
             val hScrollY =
-                    if (isInScrollMode) eyeHeight - hScrollHeight
+                    if (scrollChromeHidden) eyeHeight - hScrollHeight
                     else navBarTop - hScrollHeight // Sit right above nav bar
 
             val leftInset =
@@ -5261,7 +5396,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     }
             val scrollLeft = leftInset
             var scrollWidth =
-                    if (isInScrollMode) halfWidth - leftInset - eyeButtonSpace
+                    if (scrollChromeHidden) halfWidth - leftInset - eyeButtonSpace
                     else halfWidth - leftInset
 
             // Prevent overlap with vertical scrollbar if visible
@@ -5286,9 +5421,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             val vScrollRight = halfWidth // Align to right edge
             val vScrollTop = topReserve // Start below the unipanel HUD/card lane
 
-            // In scroll mode, stop above eye button. Normal mode, stop at nav bar.
+            // In scroll/nav-hidden mode, stop above the eye button. Normal
+            // mode stops at the nav bar.
             val vScrollBottom =
-                    if (isInScrollMode) eyeHeight - eyeButtonSpace else eyeHeight - navBarHeight
+                    if (scrollChromeHidden) eyeHeight - eyeButtonSpace else eyeHeight - navBarHeight
             val vScrollHeight = vScrollBottom - vScrollTop
 
             verticalScrollBar.measure(
@@ -6863,89 +6999,145 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
     // Helper method to check if a point is within any visible scrollbar
     fun isPointInScrollbar(screenX: Float, screenY: Float): Boolean {
-        return isOver(horizontalScrollBar, screenX, screenY) ||
-                isOver(verticalScrollBar, screenX, screenY)
+        return mirroredScreenXCandidates(screenX).any { candidateX ->
+            isOver(horizontalScrollBar, candidateX, screenY) ||
+                    isOver(verticalScrollBar, candidateX, screenY)
+        }
     }
 
     // Dispatch touch/click to the appropriate scrollbar element
     fun dispatchScrollbarTouch(screenX: Float, screenY: Float) {
-        fun getLocalPoint(container: ViewGroup): Pair<Float, Float>? {
-            if (container.visibility != View.VISIBLE) return null
+        val xCandidates = mirroredScreenXCandidates(screenX)
+
+        fun visibleRect(view: View?): android.graphics.Rect? {
+            if (view == null || view.visibility != View.VISIBLE) return null
             val rect = android.graphics.Rect()
-            if (!container.getGlobalVisibleRect(rect)) return null
-            if (screenX < rect.left ||
-                            screenX > rect.right ||
-                            screenY < rect.top ||
-                            screenY > rect.bottom
-            ) {
-                return null
+            if (!view.getGlobalVisibleRect(rect)) return null
+            if (rect.width() <= 0 || rect.height() <= 0) return null
+            return rect
+        }
+
+        fun contains(rect: android.graphics.Rect?, x: Float, y: Float): Boolean {
+            if (rect == null) return false
+            return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
+        }
+
+        fun dispatchHorizontal(testX: Float): Boolean {
+            if (horizontalScrollBar.visibility != View.VISIBLE) return false
+
+            val leftArrow = horizontalScrollBar.getChildAt(0)
+            val track = horizontalScrollBar.getChildAt(1) as? FrameLayout
+            val rightArrow = horizontalScrollBar.getChildAt(2)
+
+            if (contains(visibleRect(leftArrow), testX, screenY)) {
+                clickScrollBarArrow { scrollPageHorizontal(-10) }
+                return true
             }
-            val scaleX = if (container.scaleX == 0f) 1f else container.scaleX
-            val scaleY = if (container.scaleY == 0f) 1f else container.scaleY
-            val localX = (screenX - rect.left) / scaleX
-            val localY = (screenY - rect.top) / scaleY
-            return localX to localY
+            if (contains(visibleRect(rightArrow), testX, screenY)) {
+                clickScrollBarArrow { scrollPageHorizontal(10) }
+                return true
+            }
+
+            val trackRect = visibleRect(track) ?: return false
+            if (!contains(trackRect, testX, screenY)) return false
+
+            beginScrollBarInteraction()
+            val thumbWidth =
+                    visibleRect(hScrollThumb)?.width()?.takeIf { it > 0 }
+                            ?: hScrollThumb.width.takeIf { it > 0 }
+                            ?: 60
+            val trackableWidth = (trackRect.width() - thumbWidth).coerceAtLeast(1)
+            val percent =
+                    ((testX - trackRect.left) - (thumbWidth / 2f)) / trackableWidth.toFloat()
+            val clamped = percent.coerceIn(0f, 1f)
+            updateHorizontalScroll(clamped)
+            val localTrackable = ((track?.width ?: 0) - hScrollThumb.width).coerceAtLeast(0)
+            hScrollThumb.translationX = clamped * localTrackable
+            hScrollThumb.invalidate()
+            finishScrollBarInteraction()
+            return true
         }
 
-        fun dispatchToContainer(container: ViewGroup) {
-            val localPoint = getLocalPoint(container) ?: return
-            val localX = localPoint.first
-            val localY = localPoint.second
-            // Check which child is hit
-            for (i in 0 until container.childCount) {
-                val child = container.getChildAt(i)
-                if (localX >= child.left &&
-                                localX <= child.right &&
-                                localY >= child.top &&
-                                localY <= child.bottom
-                ) {
+        fun dispatchVertical(testX: Float): Boolean {
+            if (verticalScrollBar.visibility != View.VISIBLE) return false
 
-                    if (child.hasOnClickListeners()) {
-                        child.performClick()
-                    } else {
-                        // For track/thumb, we need to simulate touch events
-                        // The track listener reacts to ACTION_UP
-                        val childLocalX = localX - child.left
-                        val childLocalY = localY - child.top
+            val upArrow = verticalScrollBar.getChildAt(0)
+            val track = verticalScrollBar.getChildAt(1) as? FrameLayout
+            val downArrow = verticalScrollBar.getChildAt(2)
 
-                        val downEvent =
-                                MotionEvent.obtain(
-                                        SystemClock.uptimeMillis(),
-                                        SystemClock.uptimeMillis(),
-                                        MotionEvent.ACTION_DOWN,
-                                        childLocalX,
-                                        childLocalY,
-                                        0
-                                )
-                        child.dispatchTouchEvent(downEvent)
-                        downEvent.recycle()
+            if (contains(visibleRect(upArrow), testX, screenY)) {
+                clickScrollBarArrow { scrollPageVertical(-10) }
+                return true
+            }
+            if (contains(visibleRect(downArrow), testX, screenY)) {
+                clickScrollBarArrow { scrollPageVertical(10) }
+                return true
+            }
 
-                        val upEvent =
-                                MotionEvent.obtain(
-                                        SystemClock.uptimeMillis(),
-                                        SystemClock.uptimeMillis(),
-                                        MotionEvent.ACTION_UP,
-                                        childLocalX,
-                                        childLocalY,
-                                        0
-                                )
-                        child.dispatchTouchEvent(upEvent)
-                        upEvent.recycle()
-                    }
-                    return
-                }
+            val trackRect = visibleRect(track) ?: return false
+            if (!contains(trackRect, testX, screenY)) return false
+
+            beginScrollBarInteraction()
+            val thumbHeight =
+                    visibleRect(vScrollThumb)?.height()?.takeIf { it > 0 }
+                            ?: vScrollThumb.height.takeIf { it > 0 }
+                            ?: 60
+            val trackableHeight = (trackRect.height() - thumbHeight).coerceAtLeast(1)
+            val percent =
+                    ((screenY - trackRect.top) - (thumbHeight / 2f)) /
+                            trackableHeight.toFloat()
+            val clamped = percent.coerceIn(0f, 1f)
+            updateVerticalScroll(clamped)
+            val localTrackable = ((track?.height ?: 0) - vScrollThumb.height).coerceAtLeast(0)
+            vScrollThumb.translationY = clamped * localTrackable
+            vScrollThumb.invalidate()
+            finishScrollBarInteraction()
+            return true
+        }
+
+        for (candidateX in xCandidates) {
+            if (dispatchVertical(candidateX)) return
+            if (dispatchHorizontal(candidateX)) return
+        }
+    }
+
+    private fun mirroredScreenXCandidates(screenX: Float): List<Float> {
+        val candidates = ArrayList<Float>(3)
+        fun add(x: Float) {
+            if (x.isFinite() && candidates.none { kotlin.math.abs(it - x) < 0.5f }) {
+                candidates.add(x)
             }
         }
 
-        if (isOver(horizontalScrollBar, screenX, screenY)) {
-            dispatchToContainer(horizontalScrollBar)
-            return
-        }
+        add(screenX)
 
-        if (isOver(verticalScrollBar, screenX, screenY)) {
-            dispatchToContainer(verticalScrollBar)
-            return
+        // BinocularSbsLayout draws the logical viewport twice. Android view
+        // bounds only exist for the logical copy, so a cursor/tap that lands on
+        // the mirrored copy must be folded back into logical screen space for
+        // custom views like our scrollbars.
+        val sbsView = findBinocularSbsHost() ?: return candidates
+        val sbsLocation = IntArray(2)
+        sbsView.getLocationOnScreen(sbsLocation)
+        val sbsWidth = sbsView.width.takeIf { it > 0 } ?: return candidates
+        val eyeWidth = (sbsWidth / 2f).takeIf { it > 0f } ?: return candidates
+        val xInParent = screenX - sbsLocation[0]
+        if (xInParent >= eyeWidth) {
+            add(screenX - eyeWidth)
+        } else {
+            add(screenX + eyeWidth)
         }
+        return candidates
+    }
+
+    private fun findBinocularSbsHost(): View? {
+        var current: View? = this
+        while (current != null) {
+            if (current.javaClass.simpleName == "BinocularSbsLayout") {
+                return current
+            }
+            current = current.parent as? View
+        }
+        return null
     }
 
     fun isNavBarVisible(): Boolean {
@@ -9142,6 +9334,149 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         }
         maskOverlay.addView(maskNowPlayingText, nowPlayingParams)
 
+        maskCaptionText =
+                TextView(context).apply {
+                    setTextColor(Color.WHITE)
+                    textSize = 18f
+                    gravity = Gravity.CENTER
+                    maxLines = 3
+                    ellipsize = TextUtils.TruncateAt.END
+                    visibility = View.INVISIBLE
+                    alpha = 0.88f
+                    includeFontPadding = false
+                    setShadowLayer(5f, 0f, 2f, Color.BLACK)
+                }
+        val captionParams =
+                FrameLayout.LayoutParams(
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                FrameLayout.LayoutParams.WRAP_CONTENT
+                        )
+                        .apply {
+                            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                            leftMargin = 54
+                            rightMargin = 54
+                            bottomMargin = 172
+                        }
+        maskOverlay.addView(maskCaptionText, captionParams)
+
+        maskSpotifyInfoContainer =
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    alpha = 0.62f
+                    visibility = View.INVISIBLE
+                    setPadding(44, 0, 44, 0)
+                }
+        val spotifyParams =
+                FrameLayout.LayoutParams(
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                FrameLayout.LayoutParams.WRAP_CONTENT
+                        )
+                        .apply {
+                            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                            leftMargin = 42
+                            rightMargin = 42
+                            bottomMargin = 96
+                        }
+        maskOverlay.addView(maskSpotifyInfoContainer, spotifyParams)
+
+        maskSpotifyTitleText = TextView(context).apply {
+            setTextColor(Color.WHITE)
+            textSize = 17f
+            gravity = Gravity.CENTER
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            includeFontPadding = false
+        }
+        maskSpotifyInfoContainer.addView(
+            maskSpotifyTitleText,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        maskSpotifyArtistText = TextView(context).apply {
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            alpha = 0.82f
+            gravity = Gravity.CENTER
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            includeFontPadding = false
+        }
+        maskSpotifyInfoContainer.addView(
+            maskSpotifyArtistText,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = 5 }
+        )
+
+        maskSpotifyAlbumText = TextView(context).apply {
+            setTextColor(Color.WHITE)
+            textSize = 11.5f
+            alpha = 0.62f
+            gravity = Gravity.CENTER
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            includeFontPadding = false
+        }
+        maskSpotifyInfoContainer.addView(
+            maskSpotifyAlbumText,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = 4 }
+        )
+
+        maskSpotifyProgressTrack = FrameLayout(context).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 2f
+                setColor(0x35FFFFFF)
+            }
+        }
+        maskSpotifyInfoContainer.addView(
+            maskSpotifyProgressTrack,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                4
+            ).apply {
+                leftMargin = 46
+                rightMargin = 46
+                topMargin = 12
+            }
+        )
+        maskSpotifyProgressFill = View(context).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 2f
+                setColor(0xFF1DB954.toInt())
+            }
+        }
+        maskSpotifyProgressTrack.addView(
+            maskSpotifyProgressFill,
+            FrameLayout.LayoutParams(0, FrameLayout.LayoutParams.MATCH_PARENT)
+        )
+
+        maskSpotifyLyricsText = TextView(context).apply {
+            setTextColor(0xFF1DB954.toInt())
+            textSize = 11f
+            alpha = 0.72f
+            gravity = Gravity.CENTER
+            maxLines = 1
+            includeFontPadding = false
+            text = "Lyrics"
+        }
+        maskSpotifyInfoContainer.addView(
+            maskSpotifyLyricsText,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = 9 }
+        )
+
         // Time text (top-center) — minimal HH:MM clock.
         maskTimeText = TextView(context).apply {
             setTextColor(Color.WHITE)
@@ -10010,6 +10345,19 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
         post {
             val label = resolveMaskedNowPlayingLabel()
+            val currentUrl = try { getMediaControlWebView().url.orEmpty() } catch (_: Exception) { "" }
+            val isYoutubePage = isYoutubePlayerUrl(currentUrl)
+            if (!isSpotifyPlayerUrl(currentUrl)) {
+                lastMaskedSpotifyInfo = null
+            }
+            if (!isYoutubePage) {
+                lastMaskedCaptionText = null
+                lastMaskedCaptionAt = 0L
+            }
+            val spotifyInfo =
+                if (isSpotifyPlayerUrl(currentUrl)) lastMaskedSpotifyInfo else null
+            updateMaskSpotifyInfo(spotifyInfo)
+            updateMaskCaption(if (isYoutubePage) getFreshMaskedCaption(currentUrl) else null)
             // ALWAYS commit text + visibility when we have a label. The
             // previous "skip if label unchanged" cache made the path
             // dependent on the TextView's last *intended* state, but
@@ -10020,6 +10368,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             // no-op inside TextView, so re-committing is free.
             when {
                 !isScreenMasked -> {
+                    maskNowPlayingText.visibility = View.INVISIBLE
+                    lastShownMaskLabel = null
+                }
+                spotifyInfo != null && spotifyInfo.title.isNotBlank() -> {
                     maskNowPlayingText.visibility = View.INVISIBLE
                     lastShownMaskLabel = null
                 }
@@ -10085,6 +10437,69 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
+    private fun getFreshMaskedCaption(currentUrl: String? = null): String? {
+        val caption = lastMaskedCaptionText?.trim().orEmpty()
+        if (caption.isBlank()) return null
+        if (SystemClock.uptimeMillis() - lastMaskedCaptionAt > maskedCaptionFreshMs) return null
+        if (!currentUrl.isNullOrBlank() && !isYoutubePlayerUrl(currentUrl)) return null
+        return caption
+    }
+
+    private fun updateMaskCaption(caption: String?) {
+        if (!::maskCaptionText.isInitialized) return
+        if (!isScreenMasked || caption.isNullOrBlank()) {
+            maskCaptionText.visibility = View.INVISIBLE
+            return
+        }
+        if (maskCaptionText.text?.toString() != caption) {
+            maskCaptionText.text = caption
+        }
+        if (maskCaptionText.alpha < 0.8f) {
+            maskCaptionText.alpha = 0.88f
+        }
+        maskCaptionText.visibility = View.VISIBLE
+        maskCaptionText.bringToFront()
+        if (maskCaptionText.width == 0 || maskCaptionText.height == 0) {
+            maskCaptionText.requestLayout()
+            (maskCaptionText.parent as? View)?.requestLayout()
+        }
+    }
+
+    private fun updateMaskSpotifyInfo(info: MaskSpotifyInfo?) {
+        if (!::maskSpotifyInfoContainer.isInitialized) return
+        if (!isScreenMasked || info == null || info.title.isBlank()) {
+            maskSpotifyInfoContainer.visibility = View.INVISIBLE
+            return
+        }
+        maskSpotifyTitleText.text = info.title
+        maskSpotifyArtistText.text = info.artist.ifBlank { "Spotify" }
+        maskSpotifyAlbumText.text = info.album
+        maskSpotifyAlbumText.visibility = if (info.album.isBlank()) View.GONE else View.VISIBLE
+        maskSpotifyLyricsText.visibility = View.VISIBLE
+        maskSpotifyLyricsText.alpha = if (info.lyricsLoaded) 0.84f else 0.52f
+
+        val duration = info.durationMs.coerceAtLeast(0L)
+        val progress = info.progressMs.coerceIn(0L, duration.takeIf { it > 0L } ?: info.progressMs)
+        if (duration > 0L) {
+            maskSpotifyProgressTrack.visibility = View.VISIBLE
+            maskSpotifyProgressTrack.post {
+                val trackWidth = maskSpotifyProgressTrack.width.coerceAtLeast(0)
+                val fillWidth = ((trackWidth * progress.toDouble()) / duration.toDouble())
+                    .roundToInt()
+                    .coerceIn(0, trackWidth)
+                val lp = maskSpotifyProgressFill.layoutParams
+                if (lp.width != fillWidth) {
+                    lp.width = fillWidth
+                    maskSpotifyProgressFill.layoutParams = lp
+                }
+            }
+        } else {
+            maskSpotifyProgressTrack.visibility = View.INVISIBLE
+        }
+        maskSpotifyInfoContainer.visibility = View.VISIBLE
+        maskSpotifyInfoContainer.bringToFront()
+    }
+
     /**
      * After a track skip (next/prev), YouTube SPA navigations take several
      * seconds to update document.title.  We probe at multiple intervals and
@@ -10101,6 +10516,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         lastMaskedDomTitle = null
         lastMaskedDomTitleUrl = null
         lastMaskedDomTitleAt = 0L
+        lastMaskedCaptionText = null
+        lastMaskedCaptionAt = 0L
         refreshMaskedNowPlaying()
 
         val delays = longArrayOf(300L, 800L, 1500L, 2500L, 4000L, 6000L, 8500L, 12000L)
@@ -10144,26 +10561,48 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
      */
     private fun isSameMaskedTitleFamily(a: String, b: String): Boolean {
         if (a.isBlank() || b.isBlank()) return false
-        val ytA = a.contains("youtube.com", true) || a.contains("youtu.be", true)
-        val ytB = b.contains("youtube.com", true) || b.contains("youtu.be", true)
+        val ytA = isYoutubePlayerUrl(a)
+        val ytB = isYoutubePlayerUrl(b)
         if (ytA && ytB) return true
         val mpA = a.contains("media_player.html", true)
         val mpB = b.contains("media_player.html", true)
         if (mpA && mpB) return true
+        val spA = isSpotifyPlayerUrl(a)
+        val spB = isSpotifyPlayerUrl(b)
+        if (spA && spB) return true
         return false
+    }
+
+    private fun isYoutubePlayerUrl(url: String): Boolean {
+        val lower = url.lowercase(java.util.Locale.US)
+        return lower.contains("youtube.com") || lower.contains("youtu.be")
+    }
+
+    private fun isSpotifyPlayerUrl(url: String): Boolean {
+        val lower = url.lowercase(java.util.Locale.US)
+        return lower.contains("spotify.html") ||
+            lower.contains("open.spotify.com") ||
+            lower.contains("spotify.com")
+    }
+
+    private fun maskedNowPlayingRefreshDelayMs(): Long {
+        val currentUrl = try { getMediaControlWebView().url.orEmpty() } catch (_: Exception) { "" }
+        return when {
+            isSpotifyPlayerUrl(currentUrl) || lastMaskedSpotifyInfo != null -> 1000L
+            isYoutubePlayerUrl(currentUrl) -> 750L
+            else -> 5000L
+        }
     }
 
     /**
      * Use JS to extract the now-playing title directly from the DOM.
      *
-     * On YouTube the element `yt-formatted-string.ytd-watch-metadata`
-     * (or its older variants) updates BEFORE `WebView.getTitle()`
-     * reflects it across SPA route changes — so we read the DOM
-     * directly there. On `media_player.html` the page assigns the
-     * track name to `document.title` whenever a track loads or the
-     * playlist advances, so we just read `document.title`. The same
-     * JS handles both: try the YouTube-specific selectors first, then
-     * fall back to `document.title`.
+     * On YouTube the title and caption nodes update before WebView title
+     * callbacks settle across SPA route changes, so we sample the DOM directly
+     * and mirror active captions into the native dim overlay. We do not move or
+     * hide YouTube's own captions; this is only a low-brightness copy for dim mode.
+     * On `media_player.html` the page assigns the track name to `document.title`
+     * whenever a track loads or the playlist advances.
      */
     private fun refreshMaskedNowPlayingFromJs() {
         if (!isScreenMasked || !::maskNowPlayingText.isInitialized) return
@@ -10174,9 +10613,154 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // requires updating isSameMaskedTitleFamily() and ideally
         // detectStreamingService() so the resulting label gets a
         // service-name prefix.
-        val isYoutube = url.contains("youtube.com", true) || url.contains("youtu.be", true)
+        val isYoutube = isYoutubePlayerUrl(url)
         val isMediaPlayer = url.contains("media_player.html", true)
-        if (!isYoutube && !isMediaPlayer) return
+        val isSpotify = isSpotifyPlayerUrl(url)
+        if (isSpotify) {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                    try {
+                        if (typeof window.tapSpotifyNowPlaying === 'function') {
+                            return window.tapSpotifyNowPlaying();
+                        }
+                        return JSON.stringify({
+                            title: (document.getElementById('trackTitle') || {}).textContent || '',
+                            artist: (document.getElementById('trackArtist') || {}).textContent || '',
+                            album: '',
+                            progressMs: 0,
+                            durationMs: 0,
+                            isPlaying: false,
+                            lyricsLoaded: false
+                        });
+                    } catch(e) {
+                        return '';
+                    }
+                })();
+                """.trimIndent()
+            ) { result ->
+                val raw = result ?: return@evaluateJavascript
+                val decoded = runCatching {
+                    org.json.JSONTokener(raw).nextValue() as? String
+                }.getOrNull() ?: raw.trim('"')
+                if (decoded.isBlank() || decoded == "null") return@evaluateJavascript
+                val info = runCatching {
+                    val obj = JSONObject(decoded)
+                    MaskSpotifyInfo(
+                        title = obj.optString("title").trim(),
+                        artist = obj.optString("artist").trim(),
+                        album = obj.optString("album").trim(),
+                        progressMs = obj.optLong("progressMs", 0L).coerceAtLeast(0L),
+                        durationMs = obj.optLong("durationMs", 0L).coerceAtLeast(0L),
+                        isPlaying = obj.optBoolean("isPlaying", false),
+                        lyricsLoaded = obj.optBoolean("lyricsLoaded", false)
+                    )
+                }.getOrNull() ?: return@evaluateJavascript
+                post {
+                    if (isScreenMasked) {
+                        lastMaskedSpotifyInfo = info
+                        lastMaskedDomTitle =
+                            listOf(info.title, info.artist).filter { it.isNotBlank() }.joinToString(" — ")
+                        lastMaskedDomTitleUrl = url
+                        lastMaskedDomTitleAt = SystemClock.uptimeMillis()
+                        refreshMaskedNowPlaying()
+                    }
+                }
+            }
+            return
+        }
+        if (isYoutube) {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                    try {
+                        function clean(value) {
+                            return String(value || '').replace(/\s+/g, ' ').trim();
+                        }
+                        function firstText(selectors) {
+                            for (var i = 0; i < selectors.length; i++) {
+                                var el = document.querySelector(selectors[i]);
+                                var text = clean(el && (el.textContent || el.innerText));
+                                if (text) return text;
+                            }
+                            return '';
+                        }
+
+                        var title = firstText([
+                            'yt-formatted-string.style-scope.ytd-watch-metadata',
+                            '#info-contents yt-formatted-string',
+                            'h1.title yt-formatted-string',
+                            'h1 yt-formatted-string'
+                        ]);
+                        if (!title) title = clean(document.title || '');
+                        title = title
+                            .replace(/ - YouTube${'$'}/, '')
+                            .replace(/ - YouTube Music${'$'}/, '')
+                            .trim();
+                        if (/^youtube$/i.test(title) || /^youtube music$/i.test(title)) title = '';
+
+                        var parts = [];
+                        var seen = {};
+                        function addCaptionText(text) {
+                            text = clean(text);
+                            if (!text || seen[text]) return;
+                            seen[text] = true;
+                            parts.push(text);
+                        }
+
+                        Array.prototype.slice.call(document.querySelectorAll(
+                            '.ytp-caption-segment, .caption-visual-line'
+                        )).forEach(function(node) {
+                            addCaptionText(node.textContent || node.innerText || '');
+                        });
+
+                        if (!parts.length) {
+                            Array.prototype.slice.call(document.querySelectorAll(
+                                '.ytp-caption-window-container'
+                            )).forEach(function(node) {
+                                addCaptionText(node.textContent || node.innerText || '');
+                            });
+                        }
+
+                        var caption = clean(parts.join(' '));
+                        if (caption.length > 220) {
+                            caption = caption.substring(0, 220).replace(/\s+\S*${'$'}/, '').trim();
+                        }
+                        return JSON.stringify({ title: title, caption: caption });
+                    } catch(e) {
+                        return JSON.stringify({ title: '', caption: '' });
+                    }
+                })();
+                """.trimIndent()
+            ) { result ->
+                val raw = result ?: return@evaluateJavascript
+                val decoded = runCatching {
+                    org.json.JSONTokener(raw).nextValue() as? String
+                }.getOrNull() ?: raw.trim('"')
+                if (decoded.isBlank() || decoded == "null") return@evaluateJavascript
+                val obj = runCatching { JSONObject(decoded) }.getOrNull() ?: return@evaluateJavascript
+                val title = obj.optString("title").trim()
+                val caption = obj.optString("caption").trim()
+                post {
+                    if (!isScreenMasked) return@post
+                    if (title.isNotBlank()) {
+                        lastMaskedDomTitle = title
+                        lastMaskedDomTitleUrl = url
+                        lastMaskedDomTitleAt = SystemClock.uptimeMillis()
+                    }
+                    if (caption.isNotBlank()) {
+                        lastMaskedCaptionText = caption
+                        lastMaskedCaptionAt = SystemClock.uptimeMillis()
+                    } else {
+                        lastMaskedCaptionText = null
+                        lastMaskedCaptionAt = 0L
+                    }
+                    refreshMaskedNowPlaying()
+                }
+            }
+            return
+        }
+        if (!isMediaPlayer) return
         webView.evaluateJavascript(
             """
             (function() {
@@ -10332,7 +10916,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         return when {
             isYoutubeMusic -> "YouTube Music"
             lower.contains("youtube.com") || lower.contains("youtu.be") -> "YouTube"
-            lower.contains("open.spotify.com") || lower.contains("spotify.com") -> "Spotify"
+            lower.contains("spotify.html") ||
+                lower.contains("open.spotify.com") ||
+                lower.contains("spotify.com") -> "Spotify"
             lower.contains("soundcloud.com") -> "SoundCloud"
             lower.contains("bandcamp.com") -> "Bandcamp"
             lower.contains("twitch.tv") -> "Twitch"
@@ -10560,7 +11146,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             const rect = el.getBoundingClientRect();
                             const width = Math.max(0, Math.min(rect.width, window.innerWidth));
                             const height = Math.max(0, Math.min(rect.height, window.innerHeight));
-                            const score = width * height;
+                            const explicit = el.getAttribute && el.getAttribute('data-taplink-scroll') === 'true';
+                            const score = (width * height) + (explicit ? 1000000000 : 0);
                             if (score > bestScore) {
                                 bestScore = score;
                                 best = el;
