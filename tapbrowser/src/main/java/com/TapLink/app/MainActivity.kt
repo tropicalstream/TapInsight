@@ -444,12 +444,14 @@ class MainActivity :
     private lateinit var webView: WebView
     private lateinit var mainContainer: FrameLayout
 
-    // ── Swipe-unlock boot screen ──────────────────────────────────────────
+    // ── Swipe-unlock boot screen + retro intro ────────────────────────────
     private var lockScreenView: LockScreenView? = null
     private var securityLocked = false
     private var lockSwipeTracking = false
     private var lockSwipeDownX = 0f
     private var lockSwipeDownY = 0f
+    private var bootIntroView: BootIntroView? = null
+    private var bootIntroActive = false
 
     private lateinit var gestureDetector: GestureDetector
     private lateinit var templeDoubleTapDetector: GestureDetector
@@ -477,8 +479,8 @@ class MainActivity :
     /**
      * Dim-mode gesture detector. Owns single-tap (play/pause) and
      * double-tap (exit dim mode) for the entire duration the mask
-     * overlay is up. Horizontal flings are consumed but intentionally
-     * ignored so arm swipes cannot misfire as media skip commands.
+     * overlay is up. Right-arm horizontal flings skip tracks/stations;
+     * swipe-up opens Spotify lyrics when the Spotify page is active.
      * Lazy so we don't construct it before MainActivity.onCreate runs
      * (it captures `this` as the detector context).
      *
@@ -566,6 +568,7 @@ class MainActivity :
                 val absDx = kotlin.math.abs(dx)
                 val absDy = kotlin.math.abs(dy)
                 val absVx = kotlin.math.abs(velocityX)
+                val absVy = kotlin.math.abs(velocityY)
                 val devInfo = describeDevice(e2)
                 DebugLog.d(
                     "MaskGesture",
@@ -592,6 +595,11 @@ class MainActivity :
                         DebugLog.d("MaskGesture", "swipe BACK → prev track $devInfo")
                         runCatching { dualWebViewGroup.onMaskSwipePrev() }
                     }
+                    return true
+                }
+                if (absDy >= 80f && absDy > absDx * 1.4f && absVy > 250f && dy < 0f) {
+                    DebugLog.d("MaskGesture", "swipe UP → lyrics $devInfo")
+                    runCatching { dualWebViewGroup.onMaskShowLyrics() }
                     return true
                 }
                 return false
@@ -787,6 +795,8 @@ class MainActivity :
     private var youtubePlaylistIndex: Int = 0
     /** Last URL we injected the bootstrap script for (prevents double-injection) */
     private var lastYouTubeInjectionUrl: String? = null
+    private var lastYouTubeDnsRetryUrl: String? = null
+    private var youtubeDnsRetryCount: Int = 0
     /** Set true during nuclear WebView clearing so onPageStarted's about:blank
      *  recovery doesn't reload the old YouTube page. */
     @Volatile private var nuclearCleanupInProgress = false
@@ -2269,6 +2279,15 @@ class MainActivity :
                         }
                     }
 
+                    override fun onReceivedError(
+                        view: WebView?,
+                        request: WebResourceRequest?,
+                        error: android.webkit.WebResourceError?
+                    ) {
+                        if (maybeRetryYouTubeHostLookup(view, request, error)) return
+                        super.onReceivedError(view, request, error)
+                    }
+
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
 
@@ -2343,6 +2362,9 @@ class MainActivity :
                         // Auto-unmute YouTube videos that start muted due to autoplay policy
                         DebugLog.d("YouTubeAuto", "onPageFinished: url=$url")
                         if (url != null && (url.contains("youtube.com") || url.contains("youtu.be"))) {
+                            youtubeDnsRetryCount = 0
+                            lastYouTubeDnsRetryUrl = null
+                            YouTubeCaptionEnforcer.maybeInject(webView, url)
                             webView.evaluateJavascript(
                                     """
                             (function() {
@@ -2471,7 +2493,7 @@ class MainActivity :
         startupUrlOverride
                 ?.takeIf { it.isNotBlank() }
                 ?.let { overrideUrl ->
-                    val formatted = formatUrl(overrideUrl)
+                    val formatted = canonicalizeYouTubeAutoplayUrl(formatUrl(overrideUrl))
                     val isYouTube = formatted.contains("youtube.com") || formatted.contains("youtu.be")
                     // Force desktop UA for YouTube autoplay
                     if (!youtubeAutoplayQuery.isNullOrBlank() &&
@@ -2490,6 +2512,8 @@ class MainActivity :
                     // browsing history so the WebView doesn't try to load
                     // old pages (CNN, Fox News, etc.) from the back stack.
                     if (isYouTube) {
+                        lastYouTubeDnsRetryUrl = null
+                        youtubeDnsRetryCount = 0
                         webView = dualWebViewGroup.resetToSingleWindow(loadDefaultUrl = false)
                         com.TapLink.app.media.BrowserFrameHolder.attach(webView)
                         webView.stopLoading()
@@ -2544,12 +2568,10 @@ class MainActivity :
             DebugLog.d("Sensor", "Rotation vector sensor found")
         }
 
-        // Swipe-unlock boot screen. Engaged last in onCreate so cursor views
-        // are initialized (we hide them while locked) and the lock overlay
-        // paints over a fully-built hierarchy on the first frame. Reads the
-        // security_* keys from the shared visionclaw_prefs (written by the
-        // companion app); a no-op unless enabled with a valid 3–6 swipe code.
-        maybeEngageSecurityLock()
+        // Boot sequence. Engaged last in onCreate so cursor views are
+        // initialized (we hide them during lock/intro) and the overlays paint
+        // over a fully-built hierarchy on the first frame.
+        runBootSequence()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -2574,7 +2596,7 @@ class MainActivity :
         parseTapClawLaunchIntent(intent)
         val overrideUrl = startupUrlOverride
         if (::webView.isInitialized && !overrideUrl.isNullOrBlank()) {
-            val formatted = formatUrl(overrideUrl)
+            val formatted = canonicalizeYouTubeAutoplayUrl(formatUrl(overrideUrl))
             val isYouTube = formatted.contains("youtube.com") || formatted.contains("youtu.be")
             DebugLog.d("YouTubeAuto", "onNewIntent: url=$formatted isYouTube=$isYouTube " +
                 "query='${youtubeAutoplayQuery}' mode='${youtubeAutoplayMode}' " +
@@ -2604,6 +2626,8 @@ class MainActivity :
             // down the old page (and its media pipeline) before building
             // the new one, which is sufficient.
             if (isYouTube) {
+                lastYouTubeDnsRetryUrl = null
+                youtubeDnsRetryCount = 0
                 webView = dualWebViewGroup.resetToSingleWindow(loadDefaultUrl = false)
                 com.TapLink.app.media.BrowserFrameHolder.attach(webView)
                 // 1. Stop everything
@@ -3932,58 +3956,37 @@ class MainActivity :
                     }
 
                     function enableCC() {
+                        // The previous "rearm" cycle (OFF → 520ms → ON, retried up
+                        // to 12× and then RESET infinitely after a 3s pause) was
+                        // visibly turning captions OFF every cycle when
+                        // captionsReady() raced ahead of YouTube actually rendering
+                        // a cue — that's the "captions flash for a second then
+                        // stop" the user sees. captionsReady's "no DOM caption
+                        // node yet" can be perfectly normal at the start of a video
+                        // (before the first cue's timestamp), so it's a poor signal
+                        // to drive an OFF/ON toggle on. Trust the button once it's
+                        // pressed: click it on the first tick where it isn't, prime
+                        // a track via the player API, and then leave it alone.
                         var ccBtn = document.querySelector('.ytp-subtitles-button');
                         if (!ccBtn) return;
-                        var v = document.querySelector('video');
                         var pressed = ccBtn.getAttribute('aria-pressed') === 'true';
-                        var ready = captionsReady(v);
-
-                        if (ccDone && pressed && ready) {
-                            return;
-                        }
-
-                        if (pressed && ready) {
-                            ccDone = true;
-                            return;
-                        }
-
-                        if (!pressed) {
-                            ccBtn.click();
-                            console.log('[TapLink-YT] CC enable requested');
-                            setTimeout(function() {
-                                primeCaptions(document.querySelector('video'));
-                            }, 180);
-                            ccDone = false;
-                            return;
-                        }
-
-                        // Button is pressed but captions are NOT actually
-                        // rendering. Try the player-API priming first — it's
-                        // cheap, and if a tracklist is available it will force
-                        // a track. If that doesn't take within a tick, rearm.
-                        var primed = primeCaptions(v);
-                        if (primed) {
-                            // Give the player a beat to render, then verify.
-                            setTimeout(function() {
-                                if (!captionsReady(document.querySelector('video'))) {
-                                    rearmCaptionsButton();
-                                }
-                            }, 350);
-                            return;
-                        }
-                        var retryCount = window.__taplink_cc_retry_count || 0;
-                        if (retryCount < 12) {
-                            window.__taplink_cc_retry_count = retryCount + 1;
-                            window.__taplink_cc_last_retry_ms = Date.now();
-                            console.log('[TapLink-YT] CC button on but no captions — rearming attempt ' + (retryCount + 1));
-                            rearmCaptionsButton();
-                        } else {
-                            var lastRetryMs = window.__taplink_cc_last_retry_ms || 0;
-                            if (Date.now() - lastRetryMs > 3000) {
-                                console.log('[TapLink-YT] CC still not ready — starting another retry cycle');
-                                window.__taplink_cc_retry_count = 0;
+                        if (pressed) {
+                            if (!ccDone) {
+                                ccDone = true;
+                                // Best-effort: ensure a track is actually selected on
+                                // the player API side. No verify, no rearm.
+                                try { primeCaptions(document.querySelector('video')); } catch(e) {}
                             }
+                            return;
                         }
+                        // Button isn't pressed yet — click it on. ccDone stays false
+                        // so the next tick can see whether the click took; if it did,
+                        // we'll latch ccDone above and stop touching the button. If
+                        // it didn't, we'll click again on the next tick (without the
+                        // OFF/ON toggle that was causing the flash).
+                        ccBtn.click();
+                        console.log('[TapLink-YT] CC enable requested');
+                        try { primeCaptions(document.querySelector('video')); } catch(e) {}
                     }
 
                     /* ── ENSURE PLAY (only until playback first starts) ──
@@ -5007,6 +5010,91 @@ class MainActivity :
             url.contains(".") -> "https://$url"
             else -> "https://www.google.com/search?q=${Uri.encode(url)}"
         }
+    }
+
+    private fun canonicalizeYouTubeAutoplayUrl(url: String): String {
+        val lower = url.lowercase(Locale.US)
+        val isYouTube = lower.contains("youtube.com") || lower.contains("youtu.be")
+        if (!isYouTube || lower.contains("taplink_autoplay=")) return url
+        val query = youtubeAutoplayQuery?.trim()?.takeIf { it.isNotBlank() } ?: return url
+        val mode = youtubeAutoplayMode?.trim()?.lowercase(Locale.US)
+            ?.takeIf { it == "video" || it == "music" || it == "subscriptions" || it == "history" }
+            ?: "video"
+        if (mode == "subscriptions" && lower.contains("/feed/subscriptions")) {
+            return appendQueryParam(url, "taplink_autoplay", mode)
+        }
+        if (mode == "history" && lower.contains("/feed/history")) {
+            return appendQueryParam(url, "taplink_autoplay", mode)
+        }
+        val rebuilt = buildYouTubeAutoplaySearchUrl(query, mode)
+        DebugLog.d("YouTubeAuto", "canonicalized YouTube launch url: $url -> $rebuilt")
+        return rebuilt
+    }
+
+    private fun buildYouTubeAutoplaySearchUrl(query: String, mode: String): String {
+        val searchPhrase =
+            if (mode == "music" && !Regex("(?i)\\b(?:music|songs?|audio|track)\\b").containsMatchIn(query)) {
+                "$query music"
+            } else {
+                query
+            }
+        val encoded = java.net.URLEncoder.encode(searchPhrase, "UTF-8")
+        return "https://www.youtube.com/results?search_query=$encoded&taplink_autoplay=$mode"
+    }
+
+    private fun appendQueryParam(url: String, key: String, value: String): String {
+        val separator = if (url.contains("?")) "&" else "?"
+        return "$url$separator${Uri.encode(key)}=${Uri.encode(value)}"
+    }
+
+    private fun maybeRetryYouTubeHostLookup(
+        view: WebView?,
+        request: WebResourceRequest?,
+        error: android.webkit.WebResourceError?
+    ): Boolean {
+        val webView = view ?: return false
+        if (request?.isForMainFrame != true) return false
+        val url = request.url?.toString().orEmpty()
+        val lower = url.lowercase(Locale.US)
+        if (!lower.contains("youtube.com") && !lower.contains("youtu.be")) return false
+
+        val errorCode = try { error?.errorCode } catch (_: Exception) { null }
+        val desc = try { error?.description?.toString()?.lowercase(Locale.US).orEmpty() } catch (_: Exception) { "" }
+        val isHostLookup =
+            errorCode == WebViewClient.ERROR_HOST_LOOKUP ||
+                desc.contains("name_not_resolved") ||
+                desc.contains("host")
+        if (!isHostLookup) return false
+        if (youtubeDnsRetryCount >= 4) return false
+
+        val withAutoplay = canonicalizeYouTubeAutoplayUrl(url)
+        val retryUrl = when {
+            withAutoplay.startsWith("https://www.youtube.com", ignoreCase = true) ->
+                withAutoplay.replaceFirst("https://www.youtube.com", "https://m.youtube.com", ignoreCase = true)
+            withAutoplay.startsWith("http://www.youtube.com", ignoreCase = true) ->
+                withAutoplay.replaceFirst("http://www.youtube.com", "https://m.youtube.com", ignoreCase = true)
+            withAutoplay.startsWith("https://youtube.com", ignoreCase = true) ->
+                withAutoplay.replaceFirst("https://youtube.com", "https://m.youtube.com", ignoreCase = true)
+            withAutoplay.startsWith("https://m.youtube.com", ignoreCase = true) ->
+                withAutoplay.replaceFirst("https://m.youtube.com", "https://www.youtube.com", ignoreCase = true)
+            withAutoplay.startsWith("http://m.youtube.com", ignoreCase = true) ->
+                withAutoplay.replaceFirst("http://m.youtube.com", "https://www.youtube.com", ignoreCase = true)
+            else -> withAutoplay
+        }
+        lastYouTubeDnsRetryUrl = url
+        youtubeDnsRetryCount += 1
+        val delayMs = if (youtubeDnsRetryCount == 1) 450L else 1400L
+        DebugLog.w(
+            "YouTubeAuto",
+            "main-frame YouTube host lookup failed; retry=$youtubeDnsRetryCount delay=${delayMs}ms " +
+                "code=$errorCode desc=$desc url=$url retryUrl=$retryUrl"
+        )
+        webView.postDelayed({
+            webView.stopLoading()
+            webView.loadUrl(retryUrl)
+            persistActiveUrl("youtube_dns_retry", retryUrl, webView)
+        }, delayMs)
+        return true
     }
 
     // ── AR Navigation interception ────────────────────────────────────────
@@ -10233,6 +10321,7 @@ class MainActivity :
                             request: WebResourceRequest?,
                             error: android.webkit.WebResourceError?
                         ) {
+                            if (maybeRetryYouTubeHostLookup(view, request, error)) return
                             val url = request?.url?.toString().orEmpty()
                             if (url.contains("appassets.androidplatform.net")) {
                                 val code = try { error?.errorCode } catch (_: Exception) { null }
@@ -10402,6 +10491,9 @@ class MainActivity :
                                 // ── YouTube autoplay automation ──
                                 val isYouTubePage = url.contains("youtube.com") || url.contains("youtu.be")
                                 if (isYouTubePage) {
+                                    youtubeDnsRetryCount = 0
+                                    lastYouTubeDnsRetryUrl = null
+                                    YouTubeCaptionEnforcer.maybeInject(view, url)
                                     view?.let { injectYouTubePausedChromeHold(it) }
                                     view?.let { injectYouTubePlaylistAutomation(it, url) }
                                 }
@@ -11089,11 +11181,13 @@ class MainActivity :
                 // Restored pages may skip onPageFinished; inject observers and refresh scrollbars.
                 webView.post {
                     syncActiveBrowserChrome(webView, includeDelayedPasses = false)
+                    YouTubeCaptionEnforcer.maybeInject(webView, webView.url)
                     syncTapRadioPlaybackUi()
                 }
                 webView.postDelayed(
                         {
                             syncActiveBrowserChrome(webView, includeDelayedPasses = false)
+                            YouTubeCaptionEnforcer.maybeInject(webView, webView.url)
                             syncTapRadioPlaybackUi()
                         },
                         750
@@ -14555,17 +14649,28 @@ class MainActivity :
     // ══════════════════════════════════════════════════════════════════════
     // Swipe-unlock boot screen
     // ══════════════════════════════════════════════════════════════════════
-    private fun maybeEngageSecurityLock() {
-        if (securityLocked) return
+    /**
+     * Cold-launch flow. If the swipe lock is enabled with a valid code, show it
+     * first; the retro intro then plays after a correct swipe. Otherwise the
+     * intro plays straight away. The app keeps loading behind both overlays.
+     */
+    private fun runBootSequence() {
+        if (!tryEngageSecurityLock()) {
+            playBootIntro()
+        }
+    }
+
+    private fun tryEngageSecurityLock(): Boolean {
+        if (securityLocked) return true
         val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
-        if (!prefs.getBoolean("security_enabled", false)) return
+        if (!prefs.getBoolean("security_enabled", false)) return false
         val seq = parseSwipeSequence(prefs.getString("security_sequence", "").orEmpty())
         if (seq.size !in 3..6) {
             DebugLog.w(
                 "LockScreen",
                 "security_enabled but code invalid (size=${seq.size}); not locking"
             )
-            return
+            return false
         }
         val attemptLimit = runCatching { prefs.getInt("security_attempt_limit", 3) }.getOrDefault(3)
 
@@ -14574,16 +14679,12 @@ class MainActivity :
         lockScreenView = view
         securityLocked = true
         lockSwipeTracking = false
-
-        // Hide the trackpad cursors while the lock owns the screen.
-        runCatching {
-            cursorLeftView.visibility = View.GONE
-            cursorRightView.visibility = View.GONE
-        }
+        hideTrackpadCursors()
 
         dualWebViewGroup.showLockScreen(view)
         view.post { view.onShown() }
         DebugLog.d("LockScreen", "Engaged swipe lock (${seq.size}-swipe code, limit=$attemptLimit)")
+        return true
     }
 
     private fun onSecurityUnlocked() {
@@ -14592,11 +14693,62 @@ class MainActivity :
         runCatching { dualWebViewGroup.hideLockScreen() }
         runCatching { lockScreenView?.release() }
         lockScreenView = null
+        DebugLog.d("LockScreen", "Unlocked -> boot intro")
+        // Cursors stay hidden; the intro restores them when it finishes.
+        playBootIntro()
+    }
+
+    /**
+     * Binocular-safe boot intro. Plays on every cold launch - after unlock when
+     * locked, immediately otherwise - inside DualWebViewGroup's lock overlay so
+     * BinocularSbsLayout mirrors one complete logical scene to both lenses.
+     * Non-blocking: the browser/app continue initializing behind it.
+     */
+    private fun playBootIntro() {
+        if (bootIntroActive) return
+        if (!::dualWebViewGroup.isInitialized) {
+            restoreTrackpadCursors()
+            return
+        }
+        hideTrackpadCursors()
+        val view = BootIntroView(this).apply {
+            elevation = 40_000f // above the cursor layer (30,000f)
+            onComplete = { onBootIntroDone() }
+        }
+        bootIntroView = view
+        bootIntroActive = true
+        dualWebViewGroup.showLockScreen(view)
+        view.post { view.start() }
+        DebugLog.d("LockScreen", "Boot intro started")
+    }
+
+    private fun onBootIntroDone() {
+        bootIntroActive = false
+        runCatching {
+            val v = bootIntroView
+            (v?.parent as? android.view.ViewGroup)?.removeView(v)
+            v?.release()
+            if (::dualWebViewGroup.isInitialized) {
+                dualWebViewGroup.hideLockScreen()
+            }
+        }
+        bootIntroView = null
+        restoreTrackpadCursors()
+        DebugLog.d("LockScreen", "Boot intro done")
+    }
+
+    private fun hideTrackpadCursors() {
+        runCatching {
+            cursorLeftView.visibility = View.GONE
+            cursorRightView.visibility = View.GONE
+        }
+    }
+
+    private fun restoreTrackpadCursors() {
         runCatching {
             cursorLeftView.visibility = View.VISIBLE
             cursorRightView.visibility = View.VISIBLE
         }
-        DebugLog.d("LockScreen", "Unlocked")
     }
 
     private fun parseSwipeSequence(raw: String): List<Char> {
@@ -14612,6 +14764,11 @@ class MainActivity :
      * event so nothing reaches the browser / cursor stack.
      */
     private fun handleLockTouch(ev: MotionEvent): Boolean {
+        val lockView = lockScreenView
+        if (lockView == null || !lockView.canAcceptSwipeInput()) {
+            lockSwipeTracking = false
+            return true
+        }
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 lockSwipeTracking = true
@@ -14643,9 +14800,9 @@ class MainActivity :
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        // While locked, swallow all keys so a temple double-tap (etc.) can't
-        // reach the Gemini-exit / back handlers behind the lock screen.
-        if (securityLocked) return true
+        // While locked or during the boot intro, swallow all keys so a temple
+        // double-tap (etc.) can't reach the Gemini-exit / back handlers behind.
+        if (securityLocked || bootIntroActive) return true
         // Right-arm (cyttsp5_mt) physical-tap KEY double-tap → full Gemini exit.
         // Checked first so a double-tap can't be swallowed by the WebView /
         // focused view. Only consumes the event when it actually fires the exit.
@@ -14675,8 +14832,10 @@ class MainActivity :
         // ── Swipe-unlock short-circuit ─────────────────────────────
         // While the boot lock is up it owns ALL touch input: classify the
         // gesture into a directional swipe and consume the event so nothing
-        // reaches the cursor/gesture/webview stack behind it.
+        // reaches the cursor/gesture/webview stack behind it. The retro intro
+        // that follows is non-interactive — just swallow touches under it.
         if (securityLocked) return handleLockTouch(ev)
+        if (bootIntroActive) return true
 
         // ── Dim-mode short-circuit ─────────────────────────────────
         // While the mask overlay is up, ALL touch events route through
@@ -15064,9 +15223,9 @@ class MainActivity :
     }
 
     override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
-        // While locked, swallow generic scroll/hover so the cursor can't move
-        // behind the lock screen. Swipes are read from the touch path.
-        if (securityLocked) return true
+        // While locked or during the boot intro, swallow generic scroll/hover
+        // so the cursor can't move behind the overlay.
+        if (securityLocked || bootIntroActive) return true
         autoEnterMouseModeForMudraInput(ev)
 
         if (isMousePointerEvent(ev) && ::dualWebViewGroup.isInitialized) {
