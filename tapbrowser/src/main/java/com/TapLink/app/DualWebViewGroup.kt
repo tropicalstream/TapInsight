@@ -10497,19 +10497,16 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // instrumental gap between lines.
         maskSpotifyLyricsText.visibility = View.VISIBLE
         val syncedLine = info.currentLyricLine.takeIf { it.isNotBlank() }
-        val priorText = maskSpotifyLyricsText.text?.toString()
         if (syncedLine != null) {
             maskSpotifyLyricsText.text = syncedLine
             maskSpotifyLyricsText.textSize = 18f
             maskSpotifyLyricsText.alpha = 0.95f
             maskSpotifyLyricsText.maxLines = 2
-            // Force the parent LinearLayout (wrap_content height) to remeasure
-            // — without this the cached small-text height clips the karaoke
-            // line's bottom half on the first transition.
-            if (priorText != syncedLine) {
-                maskSpotifyLyricsText.requestLayout()
-                maskSpotifyInfoContainer.requestLayout()
-            }
+            // The reserved minHeight at view creation (64dp) is enough for the
+            // karaoke line; the parent's wrap_content remeasures naturally when
+            // setText changes the measured size. Earlier manual requestLayout
+            // calls here were suspected of disrupting the dim-mode update path
+            // — removed.
         } else if (info.hasSyncedLyrics) {
             // Lyrics are loaded and timed, but we're between lines (intro /
             // outro / instrumental). Show a quiet marker so the row doesn't

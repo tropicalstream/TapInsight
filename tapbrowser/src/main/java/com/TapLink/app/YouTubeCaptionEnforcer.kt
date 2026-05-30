@@ -50,12 +50,14 @@ object YouTubeCaptionEnforcer {
                 }
                 window.__taplink_caption_enforcer_bound = true;
 
-                // ── CSS guarantee: caption containers stay visible ───────
-                // YouTube's auto-hide can briefly drop opacity on the caption
-                // window alongside the chrome. Force the caption layer to
-                // always render once we've enabled it, so the user actually
-                // sees the line that's playing. Selectors cover desktop and
-                // mobile layouts.
+                // ── CSS guarantee: caption layer stays visible ───────────
+                // YouTube's auto-hide can drop opacity on the caption WINDOW
+                // alongside the player chrome. Force just the outer container
+                // visible — DO NOT touch inner `.ytp-caption-segment` /
+                // `.captions-text`, because YouTube relies on those nodes' own
+                // visibility/display to swap one cue out and the next one in,
+                // and forcing them on kept stale lines on screen (which read
+                // as captions out-of-sync with the audio).
                 try {
                     if (!document.getElementById('__tl_caption_visible_style')) {
                         var s = document.createElement('style');
@@ -63,16 +65,11 @@ object YouTubeCaptionEnforcer {
                         s.textContent =
                             '.ytp-caption-window-container,' +
                             '.caption-window,' +
-                            '.ytp-caption-window-rollup,' +
-                            '.ytp-caption-window-bottom,' +
-                            '.captions-text,' +
-                            '.ytp-caption-segment,' +
                             '.ytm-caption-window-container,' +
                             '.ytm-caption-window,' +
-                            '.ytm-caption-text,' +
                             '.ytp-mobile-caption-window-container{' +
                             'opacity:1!important;visibility:visible!important;' +
-                            'display:block!important;pointer-events:none}';
+                            'pointer-events:none}';
                         document.head.appendChild(s);
                     }
                 } catch (e) {}
@@ -93,22 +90,44 @@ object YouTubeCaptionEnforcer {
                         }
                         if (typeof p.getOption !== 'function' ||
                             typeof p.setOption !== 'function') return false;
+                        // If YouTube already has a track selected (cc_load_policy=1,
+                        // user preference, or a previous call took), DO NOT
+                        // re-pick — re-setting the track on every retry was the
+                        // most likely source of the captions-out-of-sync drift:
+                        // setOption('captions','track',...) can nudge the caption
+                        // renderer's clock relative to playback.
+                        try {
+                            var cur = p.getOption('captions', 'track');
+                            if (cur && (cur.languageCode || cur.id || cur.name)) return true;
+                        } catch (e) {}
                         var tracks = [];
                         try { tracks = p.getOption('captions', 'tracklist') || []; } catch (e) {}
                         if (!tracks || !tracks.length) {
                             try { tracks = p.getOption('cc', 'tracklist') || []; } catch (e) {}
                         }
                         if (!tracks || !tracks.length) return false;
-                        // Prefer English; otherwise first available.
+                        // Prefer English; AVOID the auto-generated track if an
+                        // authored one exists (auto-generated timing is noticeably
+                        // looser and would surface as desync).
                         var pick = null;
                         for (var i = 0; i < tracks.length; i++) {
                             var lc = ((tracks[i].languageCode || '') + '').toLowerCase();
-                            if (lc === 'en' || lc.indexOf('en-') === 0) { pick = tracks[i]; break; }
+                            var kind = String(tracks[i].kind || '').toLowerCase();
+                            if ((lc === 'en' || lc.indexOf('en-') === 0) && kind !== 'asr') {
+                                pick = tracks[i]; break;
+                            }
+                        }
+                        if (!pick) {
+                            for (var k = 0; k < tracks.length; k++) {
+                                var klc = ((tracks[k].languageCode || '') + '').toLowerCase();
+                                if (klc === 'en' || klc.indexOf('en-') === 0) {
+                                    pick = tracks[k]; break;
+                                }
+                            }
                         }
                         if (!pick) pick = tracks[0];
                         try { p.setOption('captions', 'track', pick); } catch (e) {}
                         try { p.setOption('cc',       'track', pick); } catch (e) {}
-                        try { p.setOption('captions', 'reload', true); } catch (e) {}
                         return true;
                     } catch (e) { return false; }
                 }
