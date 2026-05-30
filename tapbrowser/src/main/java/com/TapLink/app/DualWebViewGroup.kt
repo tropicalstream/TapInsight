@@ -506,17 +506,22 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 
     /**
      * Hard-suspend every WebView while the boot intro / swipe-login is on
-     * screen. Pairs with [resumeMediaAfterBoot]. Combines three guards:
+     * screen. Pairs with [resumeMediaAfterBoot]. Two guards:
      *   1. JS `<video>/<audio>.pause()+mute` sweep — catches anything that's
      *      already mid-playback (Spotify SDK, restored YouTube, media_player).
      *   2. `WebView.onPause()` per window — Chromium suspends HTML5 media,
      *      animations, and geolocation processing for that view.
-     *   3. `mediaPlaybackRequiresUserGesture = true` per window — JS-initiated
-     *      `audio.play()` / `video.play()` calls during boot are rejected, so
-     *      pages that try to autoplay after restore won't slip past.
      * A second sweep is posted ~1.5s later to catch slow-loading pages whose
-     * audio elements weren't yet in the DOM at suspend time. The Service-owned
-     * Gemini Live audio is NOT affected — only browser-side playback.
+     * audio elements weren't yet in the DOM at suspend time.
+     *
+     * History note: an earlier revision also flipped
+     * `settings.mediaPlaybackRequiresUserGesture = true` per window. That
+     * broke the media-library text reader TTS — synthesized audio is played
+     * via `<audio>.play()` from a JavaScriptInterface callback, which has no
+     * user gesture, so the play() promise rejected silently. The JS sweep +
+     * `onPause()` are enough to keep boot-time silence without the gesture
+     * flag. The Service-owned Gemini Live audio is NOT affected here — only
+     * browser-side playback.
      */
     fun suspendMediaForBoot() {
         bootMediaSuspended = true
@@ -530,9 +535,6 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                 "}); } catch (err) {}",
                             null
                         )
-                    } catch (_: Exception) {}
-                    try {
-                        win.webView.settings.mediaPlaybackRequiresUserGesture = true
                     } catch (_: Exception) {}
                     try { win.webView.onPause() } catch (_: Exception) {}
                 }
@@ -574,9 +576,6 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             try {
                 win.webView.post {
                     try { win.webView.onResume() } catch (_: Exception) {}
-                    try {
-                        win.webView.settings.mediaPlaybackRequiresUserGesture = false
-                    } catch (_: Exception) {}
                 }
             } catch (_: Exception) {}
         }
