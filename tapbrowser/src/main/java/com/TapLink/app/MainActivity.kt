@@ -14645,15 +14645,12 @@ class MainActivity :
      * intro plays straight away. The app keeps loading behind both overlays.
      */
     private fun runBootSequence() {
-        // Silence any browser-side media (Spotify SDK, YouTube IFrame, native
-        // <video>/<audio>) before the lock / boot intro paints. We don't want
-        // the swipe-login screen to be serenaded by whatever the user had
-        // playing last session. The corresponding resume happens in
-        // [onBootIntroDone] so the WebViews stay suspended through both the
-        // lock screen AND the intro.
-        if (::dualWebViewGroup.isInitialized) {
-            runCatching { dualWebViewGroup.suspendMediaForBoot() }
-        }
+        // NOTE: boot-time media suspension intentionally disabled here while
+        // we hunt a text-reader TTS regression that started after the suspend
+        // feature shipped. The original goal (no browser-side audio bleeding
+        // through the swipe-login screen) is parked until we can implement
+        // it without touching anything that affects the text reader's
+        // bridge-spawned <audio>.play() path.
         if (!tryEngageSecurityLock()) {
             playBootIntro()
         }
@@ -14733,12 +14730,8 @@ class MainActivity :
         }
         bootIntroView = null
         restoreTrackpadCursors()
-        // Re-enable WebView processing that was suspended in [runBootSequence].
-        // Pages stay muted/paused at the JS layer; this only restores the
-        // WebView's Chromium-side timers so the user can manually start media.
-        if (::dualWebViewGroup.isInitialized) {
-            runCatching { dualWebViewGroup.resumeMediaAfterBoot() }
-        }
+        // Resume call intentionally omitted — see runBootSequence() for why
+        // the matching suspend is currently disabled.
         DebugLog.d("LockScreen", "Boot intro done")
     }
 
