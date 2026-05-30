@@ -504,6 +504,86 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
+    /**
+     * Hard-suspend every WebView while the boot intro / swipe-login is on
+     * screen. Pairs with [resumeMediaAfterBoot]. Combines three guards:
+     *   1. JS `<video>/<audio>.pause()+mute` sweep — catches anything that's
+     *      already mid-playback (Spotify SDK, restored YouTube, media_player).
+     *   2. `WebView.onPause()` per window — Chromium suspends HTML5 media,
+     *      animations, and geolocation processing for that view.
+     *   3. `mediaPlaybackRequiresUserGesture = true` per window — JS-initiated
+     *      `audio.play()` / `video.play()` calls during boot are rejected, so
+     *      pages that try to autoplay after restore won't slip past.
+     * A second sweep is posted ~1.5s later to catch slow-loading pages whose
+     * audio elements weren't yet in the DOM at suspend time. The Service-owned
+     * Gemini Live audio is NOT affected — only browser-side playback.
+     */
+    fun suspendMediaForBoot() {
+        bootMediaSuspended = true
+        windows.forEach { win ->
+            try {
+                win.webView.post {
+                    try {
+                        win.webView.evaluateJavascript(
+                            "try { document.querySelectorAll('video, audio').forEach(function(e) { " +
+                                "try { e.pause(); e.muted = true; } catch (err) {} " +
+                                "}); } catch (err) {}",
+                            null
+                        )
+                    } catch (_: Exception) {}
+                    try {
+                        win.webView.settings.mediaPlaybackRequiresUserGesture = true
+                    } catch (_: Exception) {}
+                    try { win.webView.onPause() } catch (_: Exception) {}
+                }
+                mediaStateByWindowId[win.id] = false
+            } catch (_: Exception) {}
+        }
+        // Belt-and-suspenders: re-sweep after the page has had a chance to load
+        // any restored Spotify / YouTube DOM. Only fires if the boot lock is
+        // still up — if the user already unlocked, the resume path takes over.
+        postDelayed({
+            if (!bootMediaSuspended) return@postDelayed
+            windows.forEach { win ->
+                try {
+                    win.webView.post {
+                        try {
+                            win.webView.evaluateJavascript(
+                                "try { document.querySelectorAll('video, audio').forEach(function(e) { " +
+                                    "try { e.pause(); e.muted = true; } catch (err) {} " +
+                                    "}); } catch (err) {}",
+                                null
+                            )
+                        } catch (_: Exception) {}
+                    }
+                } catch (_: Exception) {}
+            }
+        }, 1500)
+        nativeTapRadioPlaying = false
+        updateMediaState(false)
+    }
+
+    /**
+     * Counterpart to [suspendMediaForBoot]: re-enables WebView processing after
+     * the lock + boot intro overlay tears down. Does not auto-play anything;
+     * pages remain paused/muted until the user explicitly resumes them.
+     */
+    fun resumeMediaAfterBoot() {
+        bootMediaSuspended = false
+        windows.forEach { win ->
+            try {
+                win.webView.post {
+                    try { win.webView.onResume() } catch (_: Exception) {}
+                    try {
+                        win.webView.settings.mediaPlaybackRequiresUserGesture = false
+                    } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private var bootMediaSuspended = false
+
     fun clearTrackedMediaPlayback() {
         mediaStateByWindowId.keys.forEach { id ->
             mediaStateByWindowId[id] = false
@@ -8708,12 +8788,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     .withEndAction { leftNavigationBar.visibility = View.GONE }
                     .start()
 
-            // Show force-show button
-            btnShowNavBars.visibility = View.VISIBLE
-            btnShowNavBars.bringToFront()
-            btnShowNavBars.alpha = 0f
-            btnShowNavBars.animate().alpha(1.0f).setDuration(200).start()
-            btnShowNavBars.requestLayout()
+            // Eye/force-show button intentionally suppressed (Mars 2026-05-30):
+            // user found the bottom-right eyeball overlay distracting in
+            // fullscreen / scroll-mode. Navbars can still be restored via the
+            // double-tap right-arm gesture and the empty-HUD toggle.
+            btnShowNavBars.visibility = View.GONE
         } else {
             // Only restore UI if the other mode (isNavBarsHidden) is NOT active
             if (!isNavBarsHidden) {
@@ -8781,12 +8860,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     .withEndAction { leftNavigationBar.visibility = View.GONE }
                     .start()
 
-            // Show force-show button
-            btnShowNavBars.visibility = View.VISIBLE
-            btnShowNavBars.bringToFront()
-            btnShowNavBars.alpha = 0f
-            btnShowNavBars.animate().alpha(1.0f).setDuration(200).start()
-            btnShowNavBars.requestLayout()
+            // Eye/force-show button intentionally suppressed (Mars 2026-05-30):
+            // gestures (double-tap right arm + empty-HUD tap) restore the
+            // navbars, so the bottom-right eyeball overlay is unnecessary.
+            btnShowNavBars.visibility = View.GONE
         } else {
             // Only restore UI if the other mode (isInScrollMode) is NOT active
             if (!isInScrollMode) {
