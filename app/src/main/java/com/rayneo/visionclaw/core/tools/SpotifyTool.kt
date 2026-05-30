@@ -137,15 +137,16 @@ class SpotifyTool(private val context: Context) : AiTapTool {
             // Route through spotify.html (Web Playback SDK) for full-track
             // streaming. The queue param carries Spotify URIs that the SDK
             // plays via Connect-device transfer; FF/Rewind on the media
-            // toolbar walk through the queue. Start paused so the user can
-            // choose the real output device before Spotify begins playing
-            // on whatever Connect target was last active.
+            // toolbar walk through the queue. Auto-play on launch — the
+            // device dropdown defaults to the last device the user picked
+            // (typically their phone), so the request "play X on spotify"
+            // starts playing X immediately without a manual press.
             val playLink = buildSpotifySdkTapLink(
                 queue = hits,
                 startIndex = 0,
                 accessToken = userToken!!,
                 expiryMs = prefs.spotifyAccessTokenExpiryMs,
-                startPaused = true
+                startPaused = false
             )
             val lead = hits.first()
             val artistLine = lead.artist?.let { " by $it" } ?: ""
@@ -153,8 +154,7 @@ class SpotifyTool(private val context: Context) : AiTapTool {
                 " (queued ${hits.size - 1} more track${if (hits.size - 1 == 1) "" else "s"})"
             } else ""
             return Result.success(
-                "$playLink\nLoaded \"${lead.title}\"$artistLine on Spotify (full track)$queueTail. " +
-                    "It is paused so you can choose the output device, then press play."
+                "$playLink\nPlaying \"${lead.title}\"$artistLine on Spotify (full track)$queueTail."
             )
         }
 

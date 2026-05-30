@@ -1815,6 +1815,19 @@
     );
     sdkPaused = !state.wantPlaying;
     syncPlayButtonIcon();
+    // Gemini-launched autoplay against a Connect target (typically the
+    // user's phone, restored from lastUserPick): kick off the transfer +
+    // play right away. The SDK-ready handler covers the 'sdk' output
+    // case; without this branch a Connect target would sit idle waiting
+    // for a manual play press.
+    if (state.wantPlaying &&
+        state.outputMode &&
+        state.outputMode.indexOf('connect:') === 0) {
+      // Defer briefly so refreshConnectDevices has a chance to confirm
+      // the target is online before we transfer. playCurrentOnConnect
+      // surfaces a clean error toast if the device went offline.
+      setTimeout(function(){ try { playCurrent(); } catch(e) { console.warn(e); } }, 250);
+    }
   }
 
   window.onSpotifyWebPlaybackSDKReady = function() {

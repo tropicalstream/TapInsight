@@ -1488,6 +1488,7 @@ class GeminiVoicePipeline(context: Context) {
             lowerUrl.contains("radio") ||
             lowerUrl.contains("somafm") ||
             lowerUrl.contains("media_player") ||
+            lowerUrl.contains("spotify.html") ||
             lowerUrl.contains("/stream") ||
             lowerUrl.contains("stream.") ||
             lowerUrl.contains(".mp3") ||
