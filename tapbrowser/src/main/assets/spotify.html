@@ -556,6 +556,19 @@
   if (!state.outputMode) state.outputMode = 'sdk';
   if (typeof state.wantPlaying !== 'boolean') state.wantPlaying = false;
 
+  // Persisted last device pick the user manually made — used to default the
+  // dropdown back to e.g. "my phone" on subsequent Gemini-launched sessions
+  // instead of always resetting to 'sdk'. Stored separately from
+  // [state.outputMode] so the Gemini reset can read it.
+  const LS_LAST_PICK_KEY = 'tapSpotifyLastUserPick.v1';
+  function loadLastUserPick() {
+    try { return localStorage.getItem(LS_LAST_PICK_KEY) || ''; }
+    catch (e) { return ''; }
+  }
+  function saveLastUserPick(mode) {
+    try { localStorage.setItem(LS_LAST_PICK_KEY, mode); } catch (e) {}
+  }
+
   if (urlQueueRaw) {
     try {
       const q = JSON.parse(urlQueueRaw);
@@ -563,7 +576,13 @@
         state.queue = q;
         state.index = Math.max(0, Math.min(urlIndex, q.length - 1));
         state.wantPlaying = urlAutoplay;
-        if (!urlAutoplay) state.outputMode = 'sdk';
+        // Gemini-launched non-autoplay session: default output to the user's
+        // last manual pick (typically their phone) so they don't have to
+        // re-select it every time. Falls back to SDK when no pick is saved.
+        if (!urlAutoplay) {
+          const lastPick = loadLastUserPick();
+          state.outputMode = lastPick || 'sdk';
+        }
       }
     } catch (e) { console.warn('[Spotify] bad queue param', e); }
   }
@@ -1018,8 +1037,19 @@
         }
         // If the Connect target jumped to a different track while we were
         // idle (e.g. user skipped on the phone), update the glasses UI too.
+        //
+        // EXCEPTION: when the user has a Gemini-queued track that they
+        // haven't pressed play on yet (state.wantPlaying === false and
+        // state.queue is populated), don't let the target device's
+        // previously-active track stomp the requested one. The user
+        // explicitly asked Gemini for THIS song; the glasses should keep
+        // showing it until they press play (which transfers + starts the
+        // queue) or skip away. Once playback is intentionally underway,
+        // we resume tracking the device freely.
         const curUri = body.item && body.item.uri;
-        if (body.item && curUri) {
+        const haveQueuedButNotPlaying =
+          !state.wantPlaying && Array.isArray(state.queue) && state.queue.length > 0;
+        if (body.item && curUri && !haveQueuedButNotPlaying) {
           syncQueueToSpotifyItem(body.item);
         }
         if (curUri && lyricsState.panelOpen && curUri !== lyricsState.loadedForUri) {
@@ -1203,6 +1233,10 @@
     if (state.outputMode === mode) { closeMenu(); return; }
     state.outputMode = mode;
     saveState(state);
+    // Remember manual picks so future Gemini-launched sessions default to
+    // the same device. Auto-routes (e.g. SDK failed → fallback to phone)
+    // are excluded so they don't overwrite the user's preference.
+    if (!auto) saveLastUserPick(mode);
     closeMenu();
     populateMenu();
     if (mode !== 'sdk' && sdkPlayer) {
@@ -1220,12 +1254,18 @@
     // Start/stop the Connect-mode poll timer to match the new output.
     syncConnectPollTimer();
     if (!state.wantPlaying) {
+      // User hasn't pressed play yet — they're just choosing the target
+      // device for the Gemini-queued song. DO NOT transfer playback here:
+      // calling /v1/me/player would let Spotify report whatever was last
+      // playing on that device, and the subsequent poll's
+      // syncQueueToSpotifyItem would stomp the Gemini-requested track off
+      // the glasses display. Just remember the pick + show a status. The
+      // actual transfer happens inside playCurrent() when the user
+      // presses play, against the correct queue.
       if (mode === 'sdk') {
-        await transferPlaybackToSdk();
         setStatus('Spotify is paused on this glasses. Press play when ready.', 'ok');
       } else if (mode.indexOf('connect:') === 0) {
         const id = mode.slice('connect:'.length);
-        await playCurrentOnConnect(id);
         const d = (connectDevices || []).find(x => x.id === id);
         setStatus('Spotify is paused on ' + (d ? d.name : 'the selected device') + '. Press play when ready.', 'ok');
       }

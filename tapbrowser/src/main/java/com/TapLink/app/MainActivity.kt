@@ -597,11 +597,9 @@ class MainActivity :
                     }
                     return true
                 }
-                if (absDy >= 80f && absDy > absDx * 1.4f && absVy > 250f && dy < 0f) {
-                    DebugLog.d("MaskGesture", "swipe UP → lyrics $devInfo")
-                    runCatching { dualWebViewGroup.onMaskShowLyrics() }
-                    return true
-                }
+                // Swipe-up-for-lyrics gesture intentionally removed (Mars
+                // 2026-05-30): dim mode auto-loads + auto-displays the active
+                // synced lyric line, so no gesture is needed.
                 return false
             }
         })

@@ -4230,21 +4230,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
-    fun onMaskShowLyrics() {
-        try {
-            val targetWebView = getMediaControlWebView()
-            val url = targetWebView.url.orEmpty()
-            if (!isSpotifyPlayerUrl(url)) return
-            unmaskScreen()
-            targetWebView.evaluateJavascript(
-                "(function(){try{if(typeof window.tapSpotifyOpenLyrics==='function'){window.tapSpotifyOpenLyrics();return 'lyrics';}return 'no-fn';}catch(e){return 'err:'+e;}})();"
-            ) { r ->
-                android.util.Log.d("DimMaskHud", "show lyrics → ${r?.trim('"', ' ')}")
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("DimMaskHud", "onMaskShowLyrics failed", e)
-        }
-    }
+    // Dim-mode "show lyrics" gesture intentionally removed (Mars
+    // 2026-05-30). Synced lyrics auto-load on track change and the active
+    // line is rendered in dim mode by [refreshMaskedNowPlaying]; no
+    // explicit gesture is required.
 
     /**
      * When there's no Gemini-built queue (or the queue has finished),
@@ -10571,11 +10560,12 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             maskSpotifyLyricsText.alpha = 0.40f
             maskSpotifyLyricsText.maxLines = 1
         } else {
-            // No synced lyrics for this track — show the swipe-up hint label.
-            maskSpotifyLyricsText.text = "Lyrics"
-            maskSpotifyLyricsText.textSize = 11f
-            maskSpotifyLyricsText.alpha = if (info.lyricsLoaded) 0.84f else 0.52f
-            maskSpotifyLyricsText.maxLines = 1
+            // No synced lyrics for this track (LRClib has no timed lyrics for
+            // it or the fetch hasn't completed yet). Hide the lyric row
+            // entirely — no swipe-up gesture exists, so a hint would be
+            // misleading. The row will re-appear automatically once the
+            // background fetch returns timed lyrics.
+            maskSpotifyLyricsText.visibility = View.GONE
         }
 
         val duration = info.durationMs.coerceAtLeast(0L)
