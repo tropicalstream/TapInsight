@@ -9472,14 +9472,16 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             textSize = 11f
             alpha = 0.72f
             gravity = Gravity.CENTER
-            maxLines = 1
+            maxLines = 2
             // includeFontPadding stays at default (true): the karaoke render
             // dynamically grows the text to 18sp/2 lines, and disabling font
             // padding was clipping the descenders ('y', 'p', 'g') in dim mode.
             includeFontPadding = true
-            // Generous vertical padding so two-line karaoke lines never collide
-            // with the progress track above or the row below.
-            setPadding(paddingLeft, 4, paddingRight, 6)
+            // Reserve enough vertical room for the karaoke render up-front
+            // (~2 lines at 18sp + line spacing) so the wrap_content parent
+            // doesn't cache a small 11sp height and clip the larger text.
+            minHeight = 64
+            setPadding(paddingLeft, 6, paddingRight, 10)
             text = "Lyrics"
         }
         maskSpotifyInfoContainer.addView(
@@ -10495,11 +10497,19 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // instrumental gap between lines.
         maskSpotifyLyricsText.visibility = View.VISIBLE
         val syncedLine = info.currentLyricLine.takeIf { it.isNotBlank() }
+        val priorText = maskSpotifyLyricsText.text?.toString()
         if (syncedLine != null) {
             maskSpotifyLyricsText.text = syncedLine
             maskSpotifyLyricsText.textSize = 18f
             maskSpotifyLyricsText.alpha = 0.95f
             maskSpotifyLyricsText.maxLines = 2
+            // Force the parent LinearLayout (wrap_content height) to remeasure
+            // — without this the cached small-text height clips the karaoke
+            // line's bottom half on the first transition.
+            if (priorText != syncedLine) {
+                maskSpotifyLyricsText.requestLayout()
+                maskSpotifyInfoContainer.requestLayout()
+            }
         } else if (info.hasSyncedLyrics) {
             // Lyrics are loaded and timed, but we're between lines (intro /
             // outro / instrumental). Show a quiet marker so the row doesn't

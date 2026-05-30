@@ -205,8 +205,12 @@ object YouTubeCaptionEnforcer {
                     return false;
                 }
 
+                // Latch once captions are confirmed rendering — every further
+                // call short-circuits, so we don't keep poking the page.
+                window.__taplink_captions_done = false;
                 window.__taplink_enable_captions_now = function() {
-                    if (captionsRendering()) return;
+                    if (window.__taplink_captions_done) return;
+                    if (captionsRendering()) { window.__taplink_captions_done = true; return; }
                     var api = viaPlayerApi();
                     var tracks = viaTextTracks();
                     if (!api && !tracks) viaButton();
@@ -225,7 +229,8 @@ object YouTubeCaptionEnforcer {
 
                 bindVideos();
                 window.__taplink_enable_captions_now();
-                // Brief burst of retries while the player's caption module
+
+                // Burst of one-shot retries while the player's caption module
                 // finishes loading (the tracklist isn't always populated
                 // immediately after the video element appears).
                 setTimeout(window.__taplink_enable_captions_now, 500);
@@ -233,22 +238,22 @@ object YouTubeCaptionEnforcer {
                 setTimeout(window.__taplink_enable_captions_now, 3500);
                 setTimeout(window.__taplink_enable_captions_now, 7500);
 
-                // Sparse keep-alive — once captions are rendering this is
-                // basically a no-op (captionsRendering() short-circuits it).
-                setInterval(function() {
+                // Sparse self-stopping keep-alive. NO MutationObserver: YouTube
+                // watch pages emit thousands of childList mutations during load
+                // (related videos, comments, chrome animations), and firing the
+                // enforcer on every one of them was hanging the WebView and
+                // freezing the app when a video was launched. Once captions are
+                // confirmed rendering, the latch above turns this into a no-op
+                // and the interval clears itself.
+                var keepalive = setInterval(function() {
+                    if (window.__taplink_captions_done) {
+                        try { clearInterval(keepalive); } catch (e) {}
+                        return;
+                    }
                     bindVideos();
                     window.__taplink_enable_captions_now();
-                }, 4000);
-
-                var observer = new MutationObserver(function() {
-                    bindVideos();
-                    window.__taplink_enable_captions_now();
-                });
-                observer.observe(document.documentElement || document.body, {
-                    childList: true,
-                    subtree: true
-                });
-                console.log('[TapLink-CC] enforcer active (player-API primary)');
+                }, 8000);
+                console.log('[TapLink-CC] enforcer active (player-API primary, MO-free)');
             } catch (e) {
                 try { console.log('[TapLink-CC] enforcer failed: ' + e); } catch (_e) {}
             }
