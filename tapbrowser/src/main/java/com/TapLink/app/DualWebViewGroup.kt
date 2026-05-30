@@ -505,58 +505,42 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     /**
-     * Hard-suspend every WebView while the boot intro / swipe-login is on
-     * screen. Pairs with [resumeMediaAfterBoot]. Two guards:
-     *   1. JS `<video>/<audio>.pause()+mute` sweep — catches anything that's
-     *      already mid-playback (Spotify SDK, restored YouTube, media_player).
-     *   2. `WebView.onPause()` per window — Chromium suspends HTML5 media,
-     *      animations, and geolocation processing for that view.
-     * A second sweep is posted ~1.5s later to catch slow-loading pages whose
-     * audio elements weren't yet in the DOM at suspend time.
-     *
-     * History note: an earlier revision also flipped
-     * `settings.mediaPlaybackRequiresUserGesture = true` per window. That
-     * broke the media-library text reader TTS — synthesized audio is played
-     * via `<audio>.play()` from a JavaScriptInterface callback, which has no
-     * user gesture, so the play() promise rejected silently. The JS sweep +
-     * `onPause()` are enough to keep boot-time silence without the gesture
-     * flag. The Service-owned Gemini Live audio is NOT affected here — only
-     * browser-side playback.
+     * Silence every WebView's media while the boot intro / swipe-login is on
+     * screen. The previous version of this method also flipped
+     * `mediaPlaybackRequiresUserGesture` and called `WebView.onPause()` per
+     * window — both of those caused regressions in bridge-driven audio
+     * (text-reader TTS plays synthesized chunks via `<audio>.play()` from a
+     * JavaScriptInterface callback, which has no user gesture and depends on
+     * the WebView being fully alive). The minimal-impact version is just a
+     * JS sweep that pauses + mutes every `<video>` / `<audio>` element
+     * already in the DOM, plus a +1500ms re-sweep for pages whose media
+     * elements weren't created yet at suspend time. This stops boot-time
+     * autoplay without touching settings or WebView lifecycle state — so
+     * post-boot TTS, bridge audio, and normal interactive playback all
+     * resume cleanly. The Service-owned Gemini Live audio is unaffected.
      */
     fun suspendMediaForBoot() {
         bootMediaSuspended = true
+        val sweep = "try { document.querySelectorAll('video, audio').forEach(function(e) { " +
+            "try { e.pause(); e.muted = true; } catch (err) {} " +
+            "}); } catch (err) {}"
         windows.forEach { win ->
             try {
                 win.webView.post {
-                    try {
-                        win.webView.evaluateJavascript(
-                            "try { document.querySelectorAll('video, audio').forEach(function(e) { " +
-                                "try { e.pause(); e.muted = true; } catch (err) {} " +
-                                "}); } catch (err) {}",
-                            null
-                        )
-                    } catch (_: Exception) {}
-                    try { win.webView.onPause() } catch (_: Exception) {}
+                    try { win.webView.evaluateJavascript(sweep, null) } catch (_: Exception) {}
                 }
                 mediaStateByWindowId[win.id] = false
             } catch (_: Exception) {}
         }
-        // Belt-and-suspenders: re-sweep after the page has had a chance to load
-        // any restored Spotify / YouTube DOM. Only fires if the boot lock is
-        // still up — if the user already unlocked, the resume path takes over.
+        // Re-sweep after the page has had a chance to load any restored Spotify
+        // / YouTube DOM. Only fires if the boot lock is still up — if the user
+        // already unlocked, the resume path takes over.
         postDelayed({
             if (!bootMediaSuspended) return@postDelayed
             windows.forEach { win ->
                 try {
                     win.webView.post {
-                        try {
-                            win.webView.evaluateJavascript(
-                                "try { document.querySelectorAll('video, audio').forEach(function(e) { " +
-                                    "try { e.pause(); e.muted = true; } catch (err) {} " +
-                                    "}); } catch (err) {}",
-                                null
-                            )
-                        } catch (_: Exception) {}
+                        try { win.webView.evaluateJavascript(sweep, null) } catch (_: Exception) {}
                     }
                 } catch (_: Exception) {}
             }
@@ -566,19 +550,14 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     /**
-     * Counterpart to [suspendMediaForBoot]: re-enables WebView processing after
-     * the lock + boot intro overlay tears down. Does not auto-play anything;
-     * pages remain paused/muted until the user explicitly resumes them.
+     * Counterpart to [suspendMediaForBoot]. With the minimal-impact version
+     * above this is essentially a flag clear — nothing was actually paused at
+     * the WebView level, so there's nothing to un-pause. Kept as a paired
+     * method for symmetry and in case future suspend logic needs to undo
+     * something.
      */
     fun resumeMediaAfterBoot() {
         bootMediaSuspended = false
-        windows.forEach { win ->
-            try {
-                win.webView.post {
-                    try { win.webView.onResume() } catch (_: Exception) {}
-                }
-            } catch (_: Exception) {}
-        }
     }
 
     private var bootMediaSuspended = false
