@@ -3956,37 +3956,21 @@ class MainActivity :
                     }
 
                     function enableCC() {
-                        // The previous "rearm" cycle (OFF → 520ms → ON, retried up
-                        // to 12× and then RESET infinitely after a 3s pause) was
-                        // visibly turning captions OFF every cycle when
-                        // captionsReady() raced ahead of YouTube actually rendering
-                        // a cue — that's the "captions flash for a second then
-                        // stop" the user sees. captionsReady's "no DOM caption
-                        // node yet" can be perfectly normal at the start of a video
-                        // (before the first cue's timestamp), so it's a poor signal
-                        // to drive an OFF/ON toggle on. Trust the button once it's
-                        // pressed: click it on the first tick where it isn't, prime
-                        // a track via the player API, and then leave it alone.
-                        var ccBtn = document.querySelector('.ytp-subtitles-button');
-                        if (!ccBtn) return;
-                        var pressed = ccBtn.getAttribute('aria-pressed') === 'true';
-                        if (pressed) {
-                            if (!ccDone) {
-                                ccDone = true;
-                                // Best-effort: ensure a track is actually selected on
-                                // the player API side. No verify, no rearm.
-                                try { primeCaptions(document.querySelector('video')); } catch(e) {}
-                            }
-                            return;
-                        }
-                        // Button isn't pressed yet — click it on. ccDone stays false
-                        // so the next tick can see whether the click took; if it did,
-                        // we'll latch ccDone above and stop touching the button. If
-                        // it didn't, we'll click again on the next tick (without the
-                        // OFF/ON toggle that was causing the flash).
-                        ccBtn.click();
-                        console.log('[TapLink-YT] CC enable requested');
-                        try { primeCaptions(document.querySelector('video')); } catch(e) {}
+                        // Intentional NO-OP. After seven attempts to keep both
+                        // auto-enable AND in-sync captions, the auto-enable path
+                        // here (`setOption('captions','track', pick)` via
+                        // primeCaptions) was resetting the caption renderer's
+                        // clock to t=0 every tick, leaving captions multiple
+                        // seconds behind the audio. The user (Mars) preferred
+                        // to enable captions manually via YouTube's own CC
+                        // button — that path keeps the captions properly synced
+                        // because YouTube starts the track at the CURRENT
+                        // playback position, not t=0. So we stop poking the
+                        // player and let YouTube handle activation. The
+                        // visibility CSS in YouTubeCaptionEnforcer still makes
+                        // sure the caption window isn't auto-hidden once the
+                        // user enables it. Don't restore the old logic without
+                        // a different (non-clock-resetting) enable strategy.
                     }
 
                     /* ── ENSURE PLAY (only until playback first starts) ──
@@ -4217,43 +4201,16 @@ class MainActivity :
                     }, 260);
                 }
                 function enableCC() {
-                    var btn = document.querySelector('.ytp-subtitles-button');
-                    if (!btn) return;
-                    var v = document.querySelector('video');
-                    var pressed = btn.getAttribute('aria-pressed') === 'true';
-                    var ready = captionsReady(v);
-                    if (ccDone && pressed && ready) {
-                        return;
-                    }
-                    if (pressed) {
-                        ready = primeCaptions(v) || ready;
-                        if (ready) {
-                            ccDone = true;
-                            return;
-                        }
-                    }
-                    if (!pressed) {
-                        btn.click();
-                        setTimeout(function() {
-                            primeCaptions(document.querySelector('video'));
-                        }, 180);
-                        ccDone = false;
-                        return;
-                    }
-                    // Pressed but captions not rendering — rearm regardless of playback readiness,
-                    // because cc_load_policy=1 leaves the button aria-pressed=true without actually
-                    // loading a track on first navigation.
-                    var retryCount = window.__taplink_watch_cc_retry_count || 0;
-                    if (retryCount < 12) {
-                        window.__taplink_watch_cc_retry_count = retryCount + 1;
-                        window.__taplink_watch_cc_last_retry_ms = Date.now();
-                        rearmCaptionsButton();
-                    } else {
-                        var lastRetryMs = window.__taplink_watch_cc_last_retry_ms || 0;
-                        if (Date.now() - lastRetryMs > 3000) {
-                            window.__taplink_watch_cc_retry_count = 0;
-                        }
-                    }
+                    // Intentional NO-OP, same reasoning as the bootstrap copy
+                    // above: auto-enabling captions via setOption / button.click
+                    // reset the caption renderer's clock to t=0 and left
+                    // captions multiple seconds out of sync with audio on the
+                    // RayNeo glasses. After seven attempts to keep both
+                    // auto-enable AND in-sync captions, captions are now opt-in:
+                    // tap YouTube's CC button on the player to enable them
+                    // properly synced at the current playback position. The
+                    // visibility CSS in YouTubeCaptionEnforcer keeps the window
+                    // from being auto-hidden once they're on.
                 }
                 function ensurePlay() {
                     if (window.__taplink_playback_started) return;
