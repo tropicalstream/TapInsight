@@ -9473,7 +9473,13 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             alpha = 0.72f
             gravity = Gravity.CENTER
             maxLines = 1
-            includeFontPadding = false
+            // includeFontPadding stays at default (true): the karaoke render
+            // dynamically grows the text to 18sp/2 lines, and disabling font
+            // padding was clipping the descenders ('y', 'p', 'g') in dim mode.
+            includeFontPadding = true
+            // Generous vertical padding so two-line karaoke lines never collide
+            // with the progress track above or the row below.
+            setPadding(paddingLeft, 4, paddingRight, 6)
             text = "Lyrics"
         }
         maskSpotifyInfoContainer.addView(

@@ -972,10 +972,13 @@
     }
     saveState(state);
     renderMeta();
-    if (lyricsState.panelOpen) {
-      updateLyricsHeader();
-      fetchLyricsForCurrent(track.uri, item);
-    }
+    // Auto-fetch lyrics for the new track ALWAYS, not only when the lyrics
+    // panel happens to be open. Karaoke-in-dim-mode needs synced lyrics
+    // loaded for the current track so the glasses can show the live line
+    // without the user opening the panel first.
+    try { lyricsState.autoFetchedUri = track.uri || ''; } catch (_e) {}
+    updateLyricsHeader();
+    fetchLyricsForCurrent(track.uri, item);
     return true;
   }
 
