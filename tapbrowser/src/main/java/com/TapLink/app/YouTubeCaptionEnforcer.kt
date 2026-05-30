@@ -90,16 +90,14 @@ object YouTubeCaptionEnforcer {
                         }
                         if (typeof p.getOption !== 'function' ||
                             typeof p.setOption !== 'function') return false;
-                        // If YouTube already has a track selected (cc_load_policy=1,
-                        // user preference, or a previous call took), DO NOT
-                        // re-pick — re-setting the track on every retry was the
-                        // most likely source of the captions-out-of-sync drift:
-                        // setOption('captions','track',...) can nudge the caption
-                        // renderer's clock relative to playback.
-                        try {
-                            var cur = p.getOption('captions', 'track');
-                            if (cur && (cur.languageCode || cur.id || cur.name)) return true;
-                        } catch (e) {}
+                        // We deliberately do NOT short-circuit on
+                        // getOption('captions','track') here: YouTube remembers
+                        // a user's last-selected track even when captions are
+                        // currently OFF, so a non-null `cur` was making us skip
+                        // the enable call entirely — captions never appeared.
+                        // The __taplink_captions_done latch above stops us
+                        // re-calling once captions are actually rendering, so
+                        // we won't compound a sync nudge after they're visible.
                         var tracks = [];
                         try { tracks = p.getOption('captions', 'tracklist') || []; } catch (e) {}
                         if (!tracks || !tracks.length) {
