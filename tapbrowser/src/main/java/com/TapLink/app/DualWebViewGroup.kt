@@ -1689,7 +1689,14 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         val progressMs: Long,
         val durationMs: Long,
         val isPlaying: Boolean,
-        val lyricsLoaded: Boolean
+        val lyricsLoaded: Boolean,
+        /** True when the loaded lyrics include per-line timestamps so the
+         *  dim-mode overlay can show one line at a time in sync with playback. */
+        val hasSyncedLyrics: Boolean = false,
+        /** The currently-singing lyric line for karaoke-style display in dim
+         *  mode. Empty between lines (instrumental gaps) or when only plain
+         *  (non-timed) lyrics are loaded. */
+        val currentLyricLine: String = ""
     )
     private var lastMaskedSpotifyInfo: MaskSpotifyInfo? = null
     // Minimal dim-mode metadata: battery (with charging indicator) + time.
@@ -10475,8 +10482,33 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         maskSpotifyArtistText.text = info.artist.ifBlank { "Spotify" }
         maskSpotifyAlbumText.text = info.album
         maskSpotifyAlbumText.visibility = if (info.album.isBlank()) View.GONE else View.VISIBLE
+        // Dim-mode karaoke: when the spotify page has SYNCED lyrics for the
+        // current track, show the active line by default (one line at a time,
+        // updates with playback). Fall back to a small "Lyrics" hint when
+        // lyrics aren't loaded yet, or to a tiny "♪" placeholder during an
+        // instrumental gap between lines.
         maskSpotifyLyricsText.visibility = View.VISIBLE
-        maskSpotifyLyricsText.alpha = if (info.lyricsLoaded) 0.84f else 0.52f
+        val syncedLine = info.currentLyricLine.takeIf { it.isNotBlank() }
+        if (syncedLine != null) {
+            maskSpotifyLyricsText.text = syncedLine
+            maskSpotifyLyricsText.textSize = 18f
+            maskSpotifyLyricsText.alpha = 0.95f
+            maskSpotifyLyricsText.maxLines = 2
+        } else if (info.hasSyncedLyrics) {
+            // Lyrics are loaded and timed, but we're between lines (intro /
+            // outro / instrumental). Show a quiet marker so the row doesn't
+            // collapse and we don't relayout each gap.
+            maskSpotifyLyricsText.text = "♪"
+            maskSpotifyLyricsText.textSize = 14f
+            maskSpotifyLyricsText.alpha = 0.40f
+            maskSpotifyLyricsText.maxLines = 1
+        } else {
+            // No synced lyrics for this track — show the swipe-up hint label.
+            maskSpotifyLyricsText.text = "Lyrics"
+            maskSpotifyLyricsText.textSize = 11f
+            maskSpotifyLyricsText.alpha = if (info.lyricsLoaded) 0.84f else 0.52f
+            maskSpotifyLyricsText.maxLines = 1
+        }
 
         val duration = info.durationMs.coerceAtLeast(0L)
         val progress = info.progressMs.coerceIn(0L, duration.takeIf { it > 0L } ?: info.progressMs)
@@ -10653,7 +10685,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         progressMs = obj.optLong("progressMs", 0L).coerceAtLeast(0L),
                         durationMs = obj.optLong("durationMs", 0L).coerceAtLeast(0L),
                         isPlaying = obj.optBoolean("isPlaying", false),
-                        lyricsLoaded = obj.optBoolean("lyricsLoaded", false)
+                        lyricsLoaded = obj.optBoolean("lyricsLoaded", false),
+                        hasSyncedLyrics = obj.optBoolean("hasSyncedLyrics", false),
+                        currentLyricLine = obj.optString("currentLyricLine", "").trim()
                     )
                 }.getOrNull() ?: return@evaluateJavascript
                 post {

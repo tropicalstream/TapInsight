@@ -1674,6 +1674,46 @@
   };
   window.tapSpotifyNowPlaying = function() {
     const t = currentTrack();
+    const posMs = Math.max(0, Math.round(estimatedPositionMs() || 0));
+    const posSec = posMs / 1000;
+
+    // Karaoke-in-dim-mode: make sure synced lyrics exist for the current
+    // track so the glasses can show the currently-sung line WITHOUT the
+    // user having to open the lyrics panel. Fetch is one-shot per track
+    // (guarded by uri) and harmless if a fetch is already in flight.
+    try {
+      const uri = t.uri || '';
+      const haveLyrics =
+        (lyricsState.linesSynced && lyricsState.linesSynced.length > 0) ||
+        (lyricsState.linesPlain && lyricsState.linesPlain.length > 0);
+      if (!haveLyrics && uri && uri !== lyricsState.autoFetchedUri &&
+          typeof fetchLyricsForCurrent === 'function') {
+        lyricsState.autoFetchedUri = uri;
+        // Fire and forget — the next poll will see lines populated.
+        Promise.resolve().then(function(){ try { fetchLyricsForCurrent(); } catch(e) {} });
+      }
+    } catch(e) {}
+
+    // Compute the currently-active synced lyric line so the dim-mode
+    // overlay can show one line at a time (auto-updating with playback).
+    // Plain (non-timed) lyrics intentionally don't surface here because
+    // we can't pick a line for them — they only render in the full panel.
+    let currentLyricLine = '';
+    try {
+      const lines = (lyricsState && lyricsState.linesSynced) || [];
+      if (lines.length > 0) {
+        let lo = 0, hi = lines.length - 1, idx = -1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (lines[mid].t <= posSec) { idx = mid; lo = mid + 1; }
+          else hi = mid - 1;
+        }
+        if (idx >= 0 && lines[idx] && lines[idx].text) {
+          currentLyricLine = String(lines[idx].text || '').trim();
+        }
+      }
+    } catch(e) {}
+
     return JSON.stringify({
       service: 'Spotify',
       title: t.title || '',
@@ -1681,13 +1721,15 @@
       album: t.album || '',
       uri: t.uri || '',
       albumArtUrl: t.albumArtUrl || '',
-      progressMs: Math.max(0, Math.round(estimatedPositionMs() || 0)),
+      progressMs: posMs,
       durationMs: t.durationMs || 0,
       isPlaying: !!isPlayingNow,
       paused: !!sdkPaused,
       lyricsOpen: !!lyricsState.panelOpen,
       lyricsLoaded: (lyricsState.linesSynced && lyricsState.linesSynced.length > 0) ||
-        (lyricsState.linesPlain && lyricsState.linesPlain.length > 0)
+        (lyricsState.linesPlain && lyricsState.linesPlain.length > 0),
+      hasSyncedLyrics: !!(lyricsState.linesSynced && lyricsState.linesSynced.length > 0),
+      currentLyricLine: currentLyricLine
     });
   };
 
