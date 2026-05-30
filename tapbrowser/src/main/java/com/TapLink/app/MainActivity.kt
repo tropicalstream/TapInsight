@@ -3423,7 +3423,11 @@ class MainActivity :
                             bridge.setYouTubePlaylist(JSON.stringify(ids));
                         }
                     } catch(e) { console.log('[TapLink-YT] Bridge error: ' + e); }
-                    location.href = 'https://www.youtube.com/watch?v=' + ids[0] + '&autoplay=1&cc_load_policy=1';
+                    // cc_load_policy=1 removed: it tells YouTube to auto-enable
+                    // captions server-side, which on the glasses was the source
+                    // of the multi-second caption-vs-audio desync. Captions are
+                    // now opt-in via the player's CC button (always in sync).
+                    location.href = 'https://www.youtube.com/watch?v=' + ids[0] + '&autoplay=1';
                 }
 
                 /* ── SUBSCRIPTIONS: prefer exact rendered feed order, fall back to API ── */
@@ -12565,7 +12569,11 @@ class MainActivity :
                     DebugLog.d("YouTubeAuto", "Playing next [$nextIdx/${pl.size}]: $nextId")
                     activity.dualWebViewGroup.scheduleMaskedTrackChangeRefresh()
 
-                    val nextUrl = "https://www.youtube.com/watch?v=$nextId&autoplay=1&cc_load_policy=1"
+                    // cc_load_policy=1 removed — see the matching change above
+                    // (YouTube's server-side CC auto-enable was 11s out of sync
+                    // with audio on the glasses; CC is now opt-in via the
+                    // player's own CC button, which loads from current time).
+                    val nextUrl = "https://www.youtube.com/watch?v=$nextId&autoplay=1"
                     val jsNavigateNext = """
                         (function(){
                             try {
@@ -12610,7 +12618,10 @@ class MainActivity :
                     DebugLog.d("YouTubeAuto", "Playing prev [$prevIdx/${pl.size}]: $prevId")
                     activity.dualWebViewGroup.scheduleMaskedTrackChangeRefresh()
 
-                    val prevUrl = "https://www.youtube.com/watch?v=$prevId&autoplay=1&cc_load_policy=1"
+                    // cc_load_policy=1 removed (see next-track URL above and the
+                    // bootstrap enableCC no-op): server-side CC auto-enable was
+                    // 11s out of sync with audio on the glasses.
+                    val prevUrl = "https://www.youtube.com/watch?v=$prevId&autoplay=1"
                     val jsNavigatePrev = """
                         (function(){
                             try {
