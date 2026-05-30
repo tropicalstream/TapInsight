@@ -5083,25 +5083,30 @@ class MainActivity :
             // Two-phase teardown:
             //
             // Phase 1 (immediate kill) — pause + scrub every <video>,
-            // <audio>, and <iframe> currently in the DOM.
+            // <audio>, and <iframe> currently in the DOM. Runs in every
+            // kill call. Cheap, transient, no lasting side effects.
             //
-            // Phase 2 (persistent muteguard) — install a guard that
-            // catches any media element added LATER. The motivating
-            // bug: if the user double-taps to return to chat WHILE a
-            // YouTube watch page is still loading, the <video> element
-            // doesn't exist yet, so phase 1 finds nothing to pause.
-            // Then YouTube finishes wiring up the player and calls
-            // .play() on the freshly-created element — audio leaks
-            // into the chat screen. The guard handles this by:
-            //   (a) replacing HTMLMediaElement.prototype.play with a
-            //       rejected promise so any later .play() call no-ops;
-            //   (b) installing a MutationObserver that pauses + mutes
-            //       any media element added to the DOM after install;
-            //   (c) being idempotent — re-running this on subsequent
-            //       kill calls doesn't double-install.
-            // The guard sticks until the WebView is destroyed or the
-            // page is reloaded, which is exactly the lifetime we want.
-            val killJs = """
+            // Phase 2 (persistent muteguard) — replace
+            // HTMLMediaElement.prototype.play with a rejected/muted
+            // stub, plus a MutationObserver that mutes media elements
+            // added later. Motivating bug: if the user double-taps to
+            // return to chat WHILE a YouTube watch page is still
+            // loading, the <video> doesn't exist yet, so phase 1 finds
+            // nothing. YouTube then finishes wiring up the player and
+            // calls .play() — audio leaks into the chat screen.
+            //
+            // CRITICAL: phase 2 only fires when [resumeWebViewsAfterKill]
+            // is false. When true (AR Navigation, exclusive media
+            // launch), the same WebView keeps living — and YouTube
+            // internally calls .play() during MSE buffer switches, ad
+            // insertions, and quality changes. If the muteguard were
+            // still installed, those internal play() calls would mute
+            // the video mid-playback (~1 minute in, recurring) — which
+            // matches a real user-reported regression. So map-load and
+            // exclusive-launch kills do phase 1 only; only return-to-
+            // chat (the lifecycle where the WebView is supposed to stay
+            // silent until next visit) installs the persistent guard.
+            val phase1Js = """
                 (function(){
                     document.querySelectorAll('video,audio,iframe').forEach(function(v){
                         try{
@@ -5113,67 +5118,84 @@ class MainActivity :
                         var ctx=window.AudioContext||window.webkitAudioContext;
                         if(window._audioCtx){window._audioCtx.close();}
                     }catch(e){}
-                    // ── Persistent muteguard ─────────────────────────
-                    if(!window.__taplink_muteGuard){
-                        window.__taplink_muteGuard=true;
-                        try{
-                            var origPlay=HTMLMediaElement.prototype.play;
-                            HTMLMediaElement.prototype.play=function(){
-                                if(window.__taplink_muteGuard){
-                                    try{this.pause();}catch(e){}
-                                    try{this.muted=true;}catch(e){}
-                                    return Promise.reject(
-                                        new DOMException('TapInsight muteguard active','NotAllowedError')
-                                    );
-                                }
-                                return origPlay.apply(this,arguments);
-                            };
-                        }catch(e){}
-                        try{
-                            var silenceAll=function(){
-                                document.querySelectorAll('video,audio').forEach(function(el){
-                                    try{el.pause();el.autoplay=false;el.muted=true;el.removeAttribute('src');el.load();}catch(e){}
-                                });
-                            };
-                            if(window.MutationObserver){
-                                var mo=new MutationObserver(function(muts){
-                                    for(var i=0;i<muts.length;i++){
-                                        var added=muts[i].addedNodes;
-                                        if(!added) continue;
-                                        for(var j=0;j<added.length;j++){
-                                            var n=added[j];
-                                            if(!n||n.nodeType!==1) continue;
-                                            if(n.tagName==='VIDEO'||n.tagName==='AUDIO'){
-                                                try{n.pause();n.autoplay=false;n.muted=true;}catch(e){}
-                                            } else if(n.querySelectorAll){
-                                                var inner=n.querySelectorAll('video,audio');
-                                                for(var k=0;k<inner.length;k++){
-                                                    try{inner[k].pause();inner[k].autoplay=false;inner[k].muted=true;}catch(e){}
-                                                }
+                })();
+            """.trimIndent()
+            val phase2MuteGuardJs = """
+                (function(){
+                    if(window.__taplink_muteGuard) return;
+                    window.__taplink_muteGuard=true;
+                    try{
+                        var origPlay=HTMLMediaElement.prototype.play;
+                        HTMLMediaElement.prototype.play=function(){
+                            if(window.__taplink_muteGuard){
+                                try{this.pause();}catch(e){}
+                                try{this.muted=true;}catch(e){}
+                                return Promise.reject(
+                                    new DOMException('TapInsight muteguard active','NotAllowedError')
+                                );
+                            }
+                            return origPlay.apply(this,arguments);
+                        };
+                    }catch(e){}
+                    try{
+                        if(window.MutationObserver){
+                            var mo=new MutationObserver(function(muts){
+                                for(var i=0;i<muts.length;i++){
+                                    var added=muts[i].addedNodes;
+                                    if(!added) continue;
+                                    for(var j=0;j<added.length;j++){
+                                        var n=added[j];
+                                        if(!n||n.nodeType!==1) continue;
+                                        if(n.tagName==='VIDEO'||n.tagName==='AUDIO'){
+                                            try{n.pause();n.autoplay=false;n.muted=true;}catch(e){}
+                                        } else if(n.querySelectorAll){
+                                            var inner=n.querySelectorAll('video,audio');
+                                            for(var k=0;k<inner.length;k++){
+                                                try{inner[k].pause();inner[k].autoplay=false;inner[k].muted=true;}catch(e){}
                                             }
                                         }
                                     }
-                                });
-                                mo.observe(document.documentElement||document,{childList:true,subtree:true});
-                                window.__taplink_muteGuardObserver=mo;
-                            }
-                        }catch(e){}
-                    }
+                                }
+                            });
+                            mo.observe(document.documentElement||document,{childList:true,subtree:true});
+                            window.__taplink_muteGuardObserver=mo;
+                        }
+                    }catch(e){}
                 })();
             """.trimIndent()
 
             if (::dualWebViewGroup.isInitialized) {
                 dualWebViewGroup.getAllWebViews().forEach { wv ->
                     wv.stopLoading()
-                    wv.evaluateJavascript(killJs, null)
+                    wv.evaluateJavascript(phase1Js, null)
+                    if (!resumeWebViewsAfterKill) {
+                        // Only install the persistent muteguard on the
+                        // return-to-chat path; otherwise YouTube's own
+                        // mid-playback .play() calls would silently
+                        // mute the video.
+                        wv.evaluateJavascript(phase2MuteGuardJs, null)
+                    }
                     // Android-level pause stops all timers, JS execution, plugins/media
                     wv.onPause()
                 }
                 if (resumeWebViewsAfterKill) {
                     // Map loads need the WebViews live again. Return-to-chat does
                     // not: resuming here can let autoplay pages recreate audio.
+                    // Also tear down any *previously*-installed muteguard so
+                    // YouTube's mid-playback .play() calls aren't muted by a
+                    // stale guard from an earlier kill cycle.
+                    val clearMuteGuardJs = "(function(){try{" +
+                        "window.__taplink_muteGuard=false;" +
+                        "if(window.__taplink_muteGuardObserver){" +
+                            "try{window.__taplink_muteGuardObserver.disconnect();}catch(e){}" +
+                            "window.__taplink_muteGuardObserver=null;" +
+                        "}" +
+                        "}catch(e){}})();"
                     dualWebViewGroup.getAllWebViews().firstOrNull()?.postDelayed({
-                        dualWebViewGroup.getAllWebViews().forEach { it.onResume() }
+                        dualWebViewGroup.getAllWebViews().forEach {
+                            it.onResume()
+                            try { it.evaluateJavascript(clearMuteGuardJs, null) } catch (_: Exception) {}
+                        }
                     }, 100)
                 } else {
                     webViewsPausedForReturnToChat = true
