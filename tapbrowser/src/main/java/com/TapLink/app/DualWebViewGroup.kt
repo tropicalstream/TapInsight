@@ -9512,12 +9512,13 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         )
 
         maskSpotifyLyricsText = TextView(context).apply {
-            // Match the HUD's healthy-status green (the G / H circle badges
-            // and gateway "GOOD" dot — see renderUnipanelGatewayBadge). Mars
-            // asked specifically for that green so the dim-mode lyric line
-            // visually rhymes with the unipanel HUD's status colour rather
-            // than competing with Spotify's brand green.
-            setTextColor(0xFF00E676.toInt())
+            // Spotify brand green. The dim-mode lyric line uses Spotify's
+            // own colour identity so the karaoke text reads as "this is
+            // Spotify content" at a glance — across both Spotify and
+            // YouTube dim-mode playback (the same TextView is reused for
+            // both sources). Final choice after a brief tour through
+            // white and the HUD's healthy-green.
+            setTextColor(0xFF1DB954.toInt())
             textSize = 11f
             alpha = 0.72f
             gravity = Gravity.CENTER
