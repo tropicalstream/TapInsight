@@ -12359,15 +12359,11 @@ class MainActivity :
                         "var s=document.createElement('style');" +
                         "s.id='__tl_nav_style';" +
                         "s.textContent=" +
-                        // right:34px (was 12px): in HUD-visible mode after
-                        // exiting CSS fullscreen, the original 12px inset
-                        // bisected each button along the visible-lens edge
-                        // (~50% of each button clipped). The minimum button
-                        // width in this stack is 44px, so shifting half a
-                        // button (22px) inward — final 34px — exposes the
-                        // full button while keeping the stack snug to the
-                        // right edge in both fullscreen and HUD modes.
-                        "'#__tl_nav{position:fixed;top:6px;right:34px;z-index:2000000;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:auto!important}'" +
+                        // right:29px: half-button shift (22px) from the
+                        // original 12px to clear the visible-lens edge,
+                        // then 5px back toward the edge per Mars's eyeball
+                        // — 34px was leaving a little too much margin.
+                        "'#__tl_nav{position:fixed;top:6px;right:29px;z-index:2000000;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:auto!important}'" +
                         "+'\\n#__tl_nav button{background:rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.3);color:#fff;font-size:16px;padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;pointer-events:auto!important}'" +
                         "+'\\n#__tl_nav button:active{background:rgba(255,255,255,0.3)}'" +
                         "+'\\n#__tl_nav .tl-mode{font-size:13px;padding:8px 10px}'" +
@@ -12558,13 +12554,22 @@ class MainActivity :
          * crescent-moon button injected at the top of the YouTube __tl_nav
          * stack — the in-page equivalent of tapping btnMask in the left
          * toggle bar.
+         *
+         * IMPORTANT: routes through [handleMaskToggle], not directly to
+         * `dualWebViewGroup.maskScreen()`. handleMaskToggle is the only
+         * entry point that also (a) snapshots the pre-mask cursor state,
+         * (b) hides the trackpad cursor views, and (c) hides the unipanel
+         * HUD overlay. An earlier draft that called maskScreen() alone
+         * left the cursor visible in dim mode (Mars caught this on the
+         * glasses) — `maskScreen()` itself only flips the icon + starts
+         * refresh runnables.
          */
         @JavascriptInterface
         fun enterDimMode() {
             activity.runOnUiThread {
                 try {
-                    activity.dualWebViewGroup.maskScreen()
-                    DebugLog.d("YouTubeAuto", "enterDimMode → maskScreen()")
+                    activity.handleMaskToggle()
+                    DebugLog.d("YouTubeAuto", "enterDimMode → handleMaskToggle()")
                 } catch (e: Exception) {
                     DebugLog.d("YouTubeAuto", "enterDimMode failed: $e")
                 }
