@@ -12359,14 +12359,15 @@ class MainActivity :
                         "var s=document.createElement('style');" +
                         "s.id='__tl_nav_style';" +
                         "s.textContent=" +
-                        // right:80px (was 12px): in HUD-visible mode the right
-                        // edge of the WebView extends past the visible lens
-                        // porthole — the moon / Full / < / > were rendering
-                        // half-off the visible area after exiting CSS
-                        // fullscreen. Insetting 80px keeps the stack inside
-                        // the safe area in both HUD-visible and fullscreen
-                        // modes without any per-mode toggling.
-                        "'#__tl_nav{position:fixed;top:6px;right:80px;z-index:2000000;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:auto!important}'" +
+                        // right:34px (was 12px): in HUD-visible mode after
+                        // exiting CSS fullscreen, the original 12px inset
+                        // bisected each button along the visible-lens edge
+                        // (~50% of each button clipped). The minimum button
+                        // width in this stack is 44px, so shifting half a
+                        // button (22px) inward — final 34px — exposes the
+                        // full button while keeping the stack snug to the
+                        // right edge in both fullscreen and HUD modes.
+                        "'#__tl_nav{position:fixed;top:6px;right:34px;z-index:2000000;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:auto!important}'" +
                         "+'\\n#__tl_nav button{background:rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.3);color:#fff;font-size:16px;padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;pointer-events:auto!important}'" +
                         "+'\\n#__tl_nav button:active{background:rgba(255,255,255,0.3)}'" +
                         "+'\\n#__tl_nav .tl-mode{font-size:13px;padding:8px 10px}'" +
