@@ -12363,7 +12363,13 @@ class MainActivity :
                         "+'\\n#__tl_nav button{background:rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.3);color:#fff;font-size:16px;padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;pointer-events:auto!important}'" +
                         "+'\\n#__tl_nav button:active{background:rgba(255,255,255,0.3)}'" +
                         "+'\\n#__tl_nav .tl-mode{font-size:13px;padding:8px 10px}'" +
-                        "+'\\n#__tl_nav .tl-skip{font-size:18px;font-weight:700;line-height:1;padding:8px 0;min-width:44px;text-align:center}';" +
+                        "+'\\n#__tl_nav .tl-skip{font-size:18px;font-weight:700;line-height:1;padding:8px 0;min-width:44px;text-align:center}'" +
+                        // Sleep-eye dim toggle: a touch larger than the skip
+                        // glyph so the crescent reads clearly at glasses
+                        // distance, and slightly more transparent so it doesn't
+                        // compete with the prev/next/view triplet.
+                        "+'\\n#__tl_nav .tl-sleep{font-size:22px;line-height:1;padding:6px 0;min-width:44px;text-align:center;opacity:0.78}'" +
+                        "+'\\n#__tl_nav .tl-sleep:active{opacity:1}';" +
                         "document.head.appendChild(s);" +
                         "}" +
                         // Nav container on document.body
@@ -12458,8 +12464,31 @@ class MainActivity :
                         "window.__tl_last_next_click=now;" +
                         "try{window.GroqBridge.playNextInPlaylist();}catch(x){}" +
                         "});" +
-                        // === Append to body + watchdog ===
                         //
+                        // === Sleep-eye dim toggle ===
+                        // Crescent moon at the top of the stack — taps invoke
+                        // GroqBridge.enterDimMode(), which is the same call
+                        // path as tapping btnMask in the left toggle bar. The
+                        // user (Mars) asked for a "sleeping eye" near the
+                        // view-mode controls so they don't have to reach all
+                        // the way to the toggle bar to dim the browser.
+                        //
+                        "var bSleep=document.createElement('button');" +
+                        "bSleep.id='__tl_sleep';" +
+                        "bSleep.className='tl-sleep';" +
+                        "bSleep.textContent='☾';" +    // U+263E waning crescent moon
+                        "bSleep.setAttribute('aria-label','Dim browser');" +
+                        "bSleep.addEventListener('click',function(e){" +
+                        "tlStop(e);" +
+                        "var now=Date.now();" +
+                        "if(window.__tl_last_sleep_click&&now-window.__tl_last_sleep_click<600)return;" +
+                        "window.__tl_last_sleep_click=now;" +
+                        "try{window.GroqBridge.enterDimMode();}catch(x){}" +
+                        "});" +
+                        // === Append to body + watchdog ===
+                        // Order matters: sleep eye first → top of the column.
+                        //
+                        "nav.appendChild(bSleep);" +
                         "nav.appendChild(bView);" +
                         "nav.appendChild(bPrev);" +
                         "nav.appendChild(bNext);" +
@@ -12512,6 +12541,24 @@ class MainActivity :
                     DebugLog.d("YouTubeAuto", "Exited immersive mode")
                 } catch (e: Exception) {
                     DebugLog.d("YouTubeAuto", "exitImmersiveMode failed: $e")
+                }
+            }
+        }
+
+        /**
+         * Activate dim ("mask") mode on the host. Called from the
+         * crescent-moon button injected at the top of the YouTube __tl_nav
+         * stack — the in-page equivalent of tapping btnMask in the left
+         * toggle bar.
+         */
+        @JavascriptInterface
+        fun enterDimMode() {
+            activity.runOnUiThread {
+                try {
+                    activity.dualWebViewGroup.maskScreen()
+                    DebugLog.d("YouTubeAuto", "enterDimMode → maskScreen()")
+                } catch (e: Exception) {
+                    DebugLog.d("YouTubeAuto", "enterDimMode failed: $e")
                 }
             }
         }

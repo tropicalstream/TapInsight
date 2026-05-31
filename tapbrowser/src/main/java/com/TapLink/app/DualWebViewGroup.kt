@@ -9512,7 +9512,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         )
 
         maskSpotifyLyricsText = TextView(context).apply {
-            setTextColor(0xFF1DB954.toInt())
+            // White to match the rest of the dim-mode Spotify info (title /
+            // artist / album are all Color.WHITE with varying alpha). The
+            // earlier Spotify-green here visually divorced the lyric line
+            // from its own metadata block.
+            setTextColor(Color.WHITE)
             textSize = 11f
             alpha = 0.72f
             gravity = Gravity.CENTER
