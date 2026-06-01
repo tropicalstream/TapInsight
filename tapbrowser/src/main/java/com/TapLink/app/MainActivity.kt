@@ -3552,6 +3552,94 @@ class MainActivity :
                     var nextHijacked = false;
                     var boundVideoEl = null;
 
+                    /* ── Preserve fullscreen across next-video navigation ──
+                     *
+                     * When the user enters YouTube's NATIVE fullscreen (taps
+                     * YT's own two-arrows-outward toggle) and then taps the
+                     * next-video skip button inside YT's fullscreen overlay,
+                     * YT navigates via SPA pushState and the new video drops
+                     * back to inline. The user's fullscreen choice evaporates.
+                     *
+                     * Multi-signal detection so it works even if YT's mobile
+                     * fullscreen doesn't fire the W3C fullscreenchange event:
+                     *   (a) Listen for fullscreenchange / webkitfullscreenchange
+                     *       — covers true DOM-level fullscreen.
+                     *   (b) Listen for clicks on YT's fullscreen button
+                     *       selectors (capture phase) — covers the mobile FS
+                     *       that's CSS-driven without W3C activation.
+                     * The sticky flag clears only when the user exits FS
+                     * while still on the same URL (= intentional exit). If
+                     * the URL changes before the exit lands, the flag stays
+                     * set and the URL-change watcher restores our CSS FS.
+                     */
+                    var userWantsFs = false;
+                    var lastWatchHref = location.href;
+
+                    function ytSeemsFullscreen() {
+                        try {
+                            if (document.fullscreenElement) return true;
+                            if (document.webkitFullscreenElement) return true;
+                            // YT mobile sometimes uses a body class instead of
+                            // the W3C API.
+                            if (document.body && /\bytp-fullscreen\b/.test(document.body.className || '')) return true;
+                            var pl = document.querySelector('.ytp-fullscreen,.html5-video-player.ytp-fullscreen');
+                            if (pl) return true;
+                        } catch(e) {}
+                        return false;
+                    }
+                    function onFsChange() {
+                        if (ytSeemsFullscreen()) {
+                            userWantsFs = true;
+                            lastWatchHref = location.href;
+                        } else if (location.href === lastWatchHref) {
+                            // True exit on the same URL — user intentionally
+                            // left FS, so don't auto-re-enter.
+                            userWantsFs = false;
+                        }
+                    }
+                    document.addEventListener('fullscreenchange', onFsChange);
+                    document.addEventListener('webkitfullscreenchange', onFsChange);
+
+                    // Capture-phase click on the FS toggle button covers the
+                    // path where YT's mobile FS doesn't fire a W3C event.
+                    document.addEventListener('click', function(e) {
+                        try {
+                            var t = e.target;
+                            for (var i = 0; t && i < 5; i++, t = t.parentNode) {
+                                if (!t || !t.classList) continue;
+                                if (t.classList.contains('ytp-fullscreen-button') ||
+                                    t.classList.contains('ytm-fullscreen-button') ||
+                                    (t.getAttribute && /ullscreen/i.test(t.getAttribute('aria-label') || ''))) {
+                                    userWantsFs = true;
+                                    lastWatchHref = location.href;
+                                    console.log('[TapLink-YT] FS toggle tapped — sticky');
+                                    break;
+                                }
+                            }
+                        } catch(_) {}
+                    }, true);
+
+                    // Detect SPA navigation (YT does not fire popstate on its
+                    // next-video action inside the FS overlay). When the URL
+                    // changes while userWantsFs is set, re-enter our CSS
+                    // fullscreen — that path is style-only and doesn't need a
+                    // user-gesture token.
+                    setInterval(function() {
+                        try {
+                            if (location.href !== lastWatchHref) {
+                                var prev = lastWatchHref;
+                                lastWatchHref = location.href;
+                                if (userWantsFs && location.href.indexOf('/watch') >= 0) {
+                                    console.log('[TapLink-YT] watch nav while FS sticky — restoring CSS FS');
+                                    fsDone = false;          // let enterCssFullscreen run again
+                                    setTimeout(function() {
+                                        try { window.GroqBridge.enterCssFullscreen(); } catch(e) {}
+                                    }, 350);
+                                }
+                            }
+                        } catch(e) {}
+                    }, 400);
+
                     /* ── Suppress the captions-on hint that flashes on load ──
                      *
                      * When we programmatically toggle the CC button (sometimes
@@ -4055,64 +4143,14 @@ class MainActivity :
                 var ccDone = false;
                 var nextHijacked = false;
                 var boundVideoEl = null;
-                // Sticky "user wanted fullscreen" flag: set true the moment
-                // YT's native fullscreen activates, and cleared only when the
-                // user explicitly exits while still on the same URL. If the
-                // URL changes (next-video navigation) while this is still
-                // true, we re-fire our CSS fullscreen on the new video so
-                // the user's fullscreen choice persists across video skips.
-                // Was: native FS evaporated on next-video tap and the user
-                // had to re-toggle every time.
-                var userWantsFs = false;
-                var lastFsUrl = location.href;
 
-                function onFsChange() {
-                    var el = document.fullscreenElement || document.webkitFullscreenElement || null;
-                    if (el) {
-                        fsDone = true;
-                        userWantsFs = true;
-                        lastFsUrl = location.href;
-                    } else {
-                        // Exit fired. If we're still on the same URL the
-                        // user is intentionally leaving fullscreen — honour
-                        // that and clear the sticky flag. Otherwise (URL
-                        // changed before exit landed) keep wanting FS so
-                        // the URL-change watcher restores it on the new
-                        // video.
-                        if (location.href === lastFsUrl) {
-                            userWantsFs = false;
-                        }
-                    }
-                }
-                document.addEventListener('fullscreenchange', onFsChange);
-                document.addEventListener('webkitfullscreenchange', onFsChange);
-
-                // Detect SPA navigation between watch URLs (YT does not fire
-                // popstate on its "next video" actions inside the native FS
-                // overlay). When the URL changes while userWantsFs is set,
-                // re-enter our CSS fullscreen — that path is style-only and
-                // doesn't require a user-gesture token (which would be lost
-                // by the time we observe the URL change).
-                setInterval(function() {
-                    try {
-                        if (location.href !== lastFsUrl) {
-                            var prev = lastFsUrl;
-                            lastFsUrl = location.href;
-                            if (userWantsFs &&
-                                location.href.indexOf('/watch') >= 0) {
-                                // Give the new video DOM a moment to settle
-                                // before injecting the FS style.
-                                setTimeout(function() {
-                                    try { window.GroqBridge.enterCssFullscreen(); } catch(e) {}
-                                }, 350);
-                                console.log('[TapLink-YT] watch nav (' +
-                                    prev.substr(prev.indexOf('?')) +
-                                    ' → ' + location.href.substr(location.href.indexOf('?')) +
-                                    ') — restoring fullscreen');
-                            }
-                        }
-                    } catch(e) {}
-                }, 500);
+                /* ── FULLSCREEN: wait 8s for YouTube to settle, then try webkitEnterFullscreen or native tap ── */
+                document.addEventListener('fullscreenchange', function() {
+                    if (document.fullscreenElement) { fsDone = true; }
+                });
+                document.addEventListener('webkitfullscreenchange', function() {
+                    if (document.webkitFullscreenElement) { fsDone = true; }
+                });
                 /* CSS FULLSCREEN — same approach as bootstrap */
                 function enterCssFs() {
                     if (fsDone) return;
