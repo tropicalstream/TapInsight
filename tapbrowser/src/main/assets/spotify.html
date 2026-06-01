@@ -576,6 +576,17 @@
         state.queue = q;
         state.index = Math.max(0, Math.min(urlIndex, q.length - 1));
         state.wantPlaying = urlAutoplay;
+        // Mark this queue as Gemini-supplied. While the flag is set,
+        // syncQueueToSpotifyItem will refuse to overwrite state.queue[index]
+        // with whatever track the device is *currently* playing (typically
+        // the phone's previous song). Without this, the brief window
+        // between "transfer session to phone" and "play our URI on phone"
+        // lets the poll fetch the phone's stale current item and stomp
+        // our queued track — which is what produced the "displayed song
+        // is wrong until I tap next" bug. The flag clears the first time
+        // the polled URI matches anything in our queue (= the device is
+        // confirmed playing our content), or when the user taps next/prev.
+        state.geminiQueueIntent = true;
         // Gemini-launched non-autoplay session: default output to the user's
         // last manual pick (typically their phone) so they don't have to
         // re-select it every time. Falls back to SDK when no pick is saved.
@@ -981,10 +992,22 @@
     if (existingIdx >= 0) {
       state.index = existingIdx;
       state.queue[existingIdx] = Object.assign({}, state.queue[existingIdx], track);
+      // Device is now confirmed playing FROM our Gemini-supplied queue —
+      // future polls can freely sync the queue to the device's current
+      // item (e.g. when the user skips on the phone, the glasses follow).
+      if (state.geminiQueueIntent) state.geminiQueueIntent = false;
     } else {
       if (!Array.isArray(state.queue) || state.queue.length === 0) {
         state.queue = [track];
         state.index = 0;
+      } else if (state.geminiQueueIntent) {
+        // Gemini-supplied queue is still in protection window. The polled
+        // URI isn't one of our queued items — almost certainly the phone's
+        // pre-transfer track still showing on the API before our play
+        // command lands. Refuse to stomp the requested track. Once the
+        // device actually starts playing our content, the existingIdx
+        // branch above will fire and clear this flag.
+        return false;
       } else {
         state.queue[state.index] = track;
       }

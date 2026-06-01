@@ -4055,14 +4055,64 @@ class MainActivity :
                 var ccDone = false;
                 var nextHijacked = false;
                 var boundVideoEl = null;
+                // Sticky "user wanted fullscreen" flag: set true the moment
+                // YT's native fullscreen activates, and cleared only when the
+                // user explicitly exits while still on the same URL. If the
+                // URL changes (next-video navigation) while this is still
+                // true, we re-fire our CSS fullscreen on the new video so
+                // the user's fullscreen choice persists across video skips.
+                // Was: native FS evaporated on next-video tap and the user
+                // had to re-toggle every time.
+                var userWantsFs = false;
+                var lastFsUrl = location.href;
 
-                /* ── FULLSCREEN: wait 8s for YouTube to settle, then try webkitEnterFullscreen or native tap ── */
-                document.addEventListener('fullscreenchange', function() {
-                    if (document.fullscreenElement) { fsDone = true; }
-                });
-                document.addEventListener('webkitfullscreenchange', function() {
-                    if (document.webkitFullscreenElement) { fsDone = true; }
-                });
+                function onFsChange() {
+                    var el = document.fullscreenElement || document.webkitFullscreenElement || null;
+                    if (el) {
+                        fsDone = true;
+                        userWantsFs = true;
+                        lastFsUrl = location.href;
+                    } else {
+                        // Exit fired. If we're still on the same URL the
+                        // user is intentionally leaving fullscreen — honour
+                        // that and clear the sticky flag. Otherwise (URL
+                        // changed before exit landed) keep wanting FS so
+                        // the URL-change watcher restores it on the new
+                        // video.
+                        if (location.href === lastFsUrl) {
+                            userWantsFs = false;
+                        }
+                    }
+                }
+                document.addEventListener('fullscreenchange', onFsChange);
+                document.addEventListener('webkitfullscreenchange', onFsChange);
+
+                // Detect SPA navigation between watch URLs (YT does not fire
+                // popstate on its "next video" actions inside the native FS
+                // overlay). When the URL changes while userWantsFs is set,
+                // re-enter our CSS fullscreen — that path is style-only and
+                // doesn't require a user-gesture token (which would be lost
+                // by the time we observe the URL change).
+                setInterval(function() {
+                    try {
+                        if (location.href !== lastFsUrl) {
+                            var prev = lastFsUrl;
+                            lastFsUrl = location.href;
+                            if (userWantsFs &&
+                                location.href.indexOf('/watch') >= 0) {
+                                // Give the new video DOM a moment to settle
+                                // before injecting the FS style.
+                                setTimeout(function() {
+                                    try { window.GroqBridge.enterCssFullscreen(); } catch(e) {}
+                                }, 350);
+                                console.log('[TapLink-YT] watch nav (' +
+                                    prev.substr(prev.indexOf('?')) +
+                                    ' → ' + location.href.substr(location.href.indexOf('?')) +
+                                    ') — restoring fullscreen');
+                            }
+                        }
+                    } catch(e) {}
+                }, 500);
                 /* CSS FULLSCREEN — same approach as bootstrap */
                 function enterCssFs() {
                     if (fsDone) return;
