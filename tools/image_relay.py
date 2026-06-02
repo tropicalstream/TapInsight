@@ -12,15 +12,23 @@ This lightweight HTTP relay bypasses that limitation:
 
 Media serving (audio, video, images):
   - GET /media/<filename>  — serves any file from the workspace directory
-  - OpenClaw agent saves a file to workspace, then tells glasses to open
-    http://<relay>/media/<filename> via open_taplink
-  - TapBrowser auto-detects audio/video extensions and opens the media player
+    OR from any extra root passed with --media-root. Roots are searched
+    in order, workspace first, then each --media-root in CLI order.
+  - OpenClaw / Hermes save a file to one of those roots, then tell the
+    glasses to open  http://<relay>:<port>/media/<filename>  via
+    open_taplink. TapBrowser auto-detects audio/video extensions and
+    opens the in-app media player.
+  - Use --media-root to expose Hermes's local output dir (e.g.
+    ~/hermes-media) alongside the OpenClaw workspace without copying
+    files or running a second relay.
 
 Usage:
-    python3 image_relay.py                   # Linux/macOS, default port 18790
-    python3 image_relay.py --port 18791      # Linux/macOS, custom port
-    python3 image_relay.py --workspace /path # Linux/macOS, custom workspace dir
-    py -3 image_relay.py                     # Windows, default port 18790
+    python3 image_relay.py                       # default port 18790
+    python3 image_relay.py --port 18791          # custom port
+    python3 image_relay.py --workspace /path     # custom OpenClaw workspace
+    python3 image_relay.py --media-root ~/hermes-media
+    python3 image_relay.py --media-root ~/hermes-media --media-root /tmp/extra
+    py -3 image_relay.py                         # Windows, default port
 
 Runs on the same host computer as OpenClaw. Bind to 0.0.0.0 so the glasses can
 reach it over the local network.
@@ -50,6 +58,9 @@ ROTATION_DEGREES = 90  # Rotate clockwise to make landscape frames upright
 
 class RelayHandler(BaseHTTPRequestHandler):
     workspace = DEFAULT_WORKSPACE
+    # List of additional read-only roots searched by /media/<filename>
+    # AFTER the workspace. Populated from --media-root flags in main().
+    extra_media_roots: list[str] = []
 
     def do_POST(self):
         if self.path not in ("/frame", "/upload"):
@@ -167,21 +178,40 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
 
         if clean_path.startswith("/media/"):
-            # Serve any file from the workspace directory.
-            # Security: only serve files directly inside workspace (no ../ traversal).
+            # Serve any file under one of the configured roots: workspace
+            # first, then each --media-root in CLI order. The first root
+            # that contains the file wins. Filename collisions across
+            # roots are won by the earlier-listed root — workspace
+            # always wins. Security: reject .. / absolute / drive-letter
+            # paths so the URL space stays inside each root.
             filename = unquote(clean_path[len("/media/"):])
             if not filename or ".." in filename or filename.startswith("/"):
                 self.send_error(400, "Invalid filename")
                 return
-            file_path = os.path.join(self.workspace, filename)
-            # Ensure the resolved path is still inside the workspace
-            real_workspace = os.path.realpath(self.workspace)
-            real_file = os.path.realpath(file_path)
-            if not real_file.startswith(real_workspace + os.sep) and real_file != real_workspace:
-                self.send_error(403, "Access denied — path outside workspace")
-                return
-            if not os.path.isfile(file_path):
-                self.send_error(404, f"File not found: {filename}")
+            roots = [self.workspace] + list(self.extra_media_roots)
+            file_path = None
+            matched_root = None
+            for root in roots:
+                if not root:
+                    continue
+                candidate = os.path.join(root, filename)
+                real_root = os.path.realpath(root)
+                real_candidate = os.path.realpath(candidate)
+                # Containment check — the resolved path must still be
+                # inside the root (defends against symlinks pointing
+                # outward, e.g. ~/hermes-media/foo → /etc/shadow).
+                if not (real_candidate.startswith(real_root + os.sep) or
+                        real_candidate == real_root):
+                    continue
+                if os.path.isfile(candidate):
+                    file_path = candidate
+                    matched_root = real_root
+                    break
+            if not file_path:
+                self.send_error(
+                    404,
+                    f"File not found in any media root: {filename}",
+                )
                 return
             try:
                 mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -195,7 +225,15 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(data)
-                print(f"[{time.strftime('%H:%M:%S')}] Served {file_size/1024:.0f}KB {mime_type} -> /media/{filename}")
+                root_label = (
+                    "workspace" if matched_root == os.path.realpath(self.workspace)
+                    else matched_root
+                )
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] Served "
+                    f"{file_size/1024:.0f}KB {mime_type} "
+                    f"-> /media/{filename}  (root={root_label})"
+                )
             except Exception as e:
                 self.send_error(500, f"Read failed: {e}")
             return
@@ -219,6 +257,21 @@ def main():
     parser = argparse.ArgumentParser(description="TapClaw Image Relay")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Port (default {DEFAULT_PORT})")
     parser.add_argument("--workspace", default=DEFAULT_WORKSPACE, help=f"OpenClaw workspace (default {DEFAULT_WORKSPACE})")
+    parser.add_argument(
+        "--media-root",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help=(
+            "Additional directory to expose under /media/<filename>. "
+            "Can be passed more than once. Workspace is always searched "
+            "first; --media-root entries are searched in CLI order. "
+            "Typical use: --media-root ~/hermes-media to expose "
+            "Hermes-generated files (Minimax image/t2a/music/video) at "
+            "the same URL pattern the glasses already understand, "
+            "without copying files or running a separate uploader."
+        ),
+    )
     args = parser.parse_args()
 
     # Ensure workspace exists
@@ -226,7 +279,19 @@ def main():
         print(f"[WARN] Workspace '{args.workspace}' not found — creating it")
         os.makedirs(args.workspace, exist_ok=True)
 
+    # Resolve and validate each extra media root. A missing dir is a
+    # warning, not a fatal error — the user may start the relay before
+    # they've generated anything.
+    resolved_roots = []
+    for raw in args.media_root:
+        expanded = os.path.expanduser(raw)
+        if not os.path.isdir(expanded):
+            print(f"[WARN] --media-root '{expanded}' does not exist yet — leaving it empty")
+            os.makedirs(expanded, exist_ok=True)
+        resolved_roots.append(expanded)
+
     RelayHandler.workspace = args.workspace
+    RelayHandler.extra_media_roots = resolved_roots
 
     if not HAS_PIL:
         print("[WARN] Pillow not installed — frames will NOT be rotated.")
@@ -258,7 +323,12 @@ def main():
     print(f"TapClaw Image Relay listening on 0.0.0.0:{args.port}")
     print(f"Workspace: {args.workspace}")
     print(f"Frames will be saved to: {os.path.join(args.workspace, FRAME_FILENAME)}")
+    if resolved_roots:
+        print("Extra media roots (searched after workspace):")
+        for r in resolved_roots:
+            print(f"  - {r}")
     print(f"POST http://<host-ip>:{args.port}/frame with JPEG body")
+    print(f"GET  http://<host-ip>:{args.port}/media/<filename>  to serve any file under the roots above")
     print()
 
     try:
