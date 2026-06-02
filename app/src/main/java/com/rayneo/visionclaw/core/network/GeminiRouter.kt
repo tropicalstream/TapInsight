@@ -76,9 +76,14 @@ class GeminiRouter(
         // concrete preview model names as fallbacks.
         private const val DEFAULT_MODEL = "gemini-flash"
         private const val AUDIO_MODEL = "gemini-flash"
-        // Gemini Live default upgraded to the current official Flash Live preview model.
-        private const val DEFAULT_LIVE_MODEL = "gemini-3.1-flash-live-preview"
-        // Proactive audio is currently supported on Gemini 2.5 Flash Live Preview, not 3.1 Flash Live.
+        // Default Live model is gemini-2.5-flash-native-audio-preview-12-2025.
+        // It's the model Mars validated end-to-end on the X3 glasses (commit
+        // dedb442's VAD fix targeted exactly this endpoint) and Google's
+        // pricing lists it with a free-tier eligible quota. gemini-3.1-flash-
+        // live-preview is kept available in the companion-app dropdown as
+        // an opt-in alternative, alongside a Custom slot.
+        private const val DEFAULT_LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+        // Proactive audio is currently supported on Gemini 2.5 Flash Live Preview.
         private const val DEFAULT_PROACTIVE_LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
         // ── Modular system prompt sections (each editable via companion app) ──
 

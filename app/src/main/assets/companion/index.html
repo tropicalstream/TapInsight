@@ -686,16 +686,14 @@
 
   <label>Live Model <button class="help-btn" onclick="showHelp('model')">?</button></label>
   <select id="liveModelSelect" onchange="onLiveModelSelectChange()">
-    <option value="">Default (app picks current default)</option>
-    <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview — half-cascade · LOWER cost · newest features</option>
-    <option value="gemini-2.5-flash-native-audio-latest">gemini-2.5-flash-native-audio-latest — native audio · HIGHER cost · most natural voice</option>
-    <option value="gemini-2.5-flash-native-audio-preview-12-2025">gemini-2.5-flash-native-audio-preview-12-2025 — native audio · HIGHER cost</option>
-    <option value="gemini-2.5-flash-native-audio-preview-09-2025">gemini-2.5-flash-native-audio-preview-09-2025 — native audio · HIGHER cost · older snapshot</option>
+    <option value="">Default (2.5 Flash Native Audio free-tier friendly)</option>
+    <option value="gemini-2.5-flash-native-audio-preview-12-2025">gemini-2.5-flash-native-audio-preview-12-2025 — native audio · free-tier friendly default · validated on glasses</option>
+    <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview — newer preview · requires supported project/billing</option>
     <option value="__custom__">Custom (type below)</option>
   </select>
   <input type="text" id="liveModelCustomInput" placeholder="Type a model name from List Live Models below" style="margin-top:6px;display:none">
   <div class="hint" style="line-height:1.6">
-    All four options support <strong>audio + video live input</strong>.
+    Both presets support <strong>audio + video live input</strong>.
     The cost difference comes from the output path:
     <table style="border-collapse:collapse;margin:8px 0;font-size:11.5px;color:#cfe7f5">
       <thead style="color:#9ef3ff">
@@ -709,7 +707,7 @@
         <tr>
           <td style="padding:3px 12px 3px 0"><strong>half-cascade</strong><br><code>3.1-flash-live-preview</code></td>
           <td style="padding:3px 12px 3px 0">Text from the model → separate TTS layer</td>
-          <td style="padding:3px 0;color:#9eff9e"><strong>~$0.02–0.05/min</strong> (text + TTS rates)</td>
+          <td style="padding:3px 0;color:#ffb86b"><strong>Project support required</strong></td>
         </tr>
         <tr>
           <td style="padding:3px 12px 3px 0"><strong>native audio</strong><br><code>2.5-flash-native-audio-*</code></td>
@@ -725,11 +723,12 @@
       <a class="link" href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank">ai.google.dev/gemini-api/docs/pricing</a>.
     </span>
     <br><br>
-    <strong style="color:#9ef3ff">Recommendation for cost-sensitive deployments:</strong>
-    pick <code>gemini-3.1-flash-live-preview</code> (half-cascade) — it's
-    roughly 4–5× cheaper per minute than native-audio models with similar
-    response quality. Pick a native-audio variant when voice naturalness
-    matters more than per-minute spend (e.g., consumer demos).
+    <strong style="color:#9ef3ff">Recommendation for free-tier troubleshooting:</strong>
+    leave this blank or pick <code>gemini-2.5-flash-native-audio-preview-12-2025</code>.
+    Google's published Gemini API pricing lists a free tier for the 2.5 Flash
+    Native Audio Live API. With billing disabled, do not pick
+    <code>gemini-3.1-flash-live-preview</code> unless the Live model probe
+    confirms that your exact key/project can open it.
     <br><br>
     <strong style="color:#ffb86b">Model names rotate.</strong>
     If any preset here starts returning errors, click
@@ -1344,11 +1343,11 @@ const HELP = {
   },
   model: {
     title: 'Model Override',
-    body: `<p>TapInsight defaults to <code>gemini-3.1-flash-live-preview</code> for Live sessions (voice + camera). You can override this if you want to use a different Live-capable model.</p>
+    body: `<p>TapInsight defaults to <code>gemini-2.5-flash-native-audio-preview-12-2025</code> for Live sessions (voice + camera) because Google's Gemini API pricing lists a free tier for that Live API model. You can override this if you want to use a different Live-capable model.</p>
 <p><b>Available models:</b></p>
-<ol><li><code>gemini-3.1-flash-live-preview</code> &mdash; Current Live voice + camera default</li>
-<li><code>gemini-3.1-pro-preview</code> &mdash; Default model for regular turns (Gemini 3.1 Pro)</li>
-<li><code>gemini-3-flash-preview</code> &mdash; Faster Flash model, good fallback</li></ol>
+<ol><li><code>gemini-2.5-flash-native-audio-preview-12-2025</code> &mdash; Free-tier friendly Live default</li>
+<li><code>gemini-3.1-flash-live-preview</code> &mdash; Newer Live preview only when your key/project and billing state support it</li>
+<li><code>gemini-2.5-flash</code> / <code>gemini-2.5-flash-lite</code> &mdash; Standard text/image fallbacks for non-Live turns</li></ol>
 <p>Leave blank to use the default. Live sessions use the Live preview model while non-Live turns keep using the standard Gemini defaults.</p>`
   },
   research: {
@@ -2035,10 +2034,16 @@ function syncResearchTtsModelDropdown() {
 // (which FIELDS persists as `gemini_model_override`). Note this is
 // the LIVE conversational model, not the Reader Voice TTS model.
 const LIVE_MODEL_OPTIONS = [
+  // Kept in sync with the <select id="liveModelSelect"> options above.
+  // The two trimmed entries (-latest, -preview-09-2025) were retired in
+  // commit dedb442's follow-up: -latest's setup payload silently rejected
+  // ours on the X3, and -09-2025 was a stale snapshot. The 12-2025 preview
+  // is the only Gemini Live model Mars has validated end-to-end on the
+  // glasses, and the 3.1 Flash Live is kept as an opt-in alternative for
+  // users whose project/billing allows it. Anything else is reachable via
+  // the Custom slot.
   '',
-  'gemini-2.5-flash-native-audio-latest',
   'gemini-2.5-flash-native-audio-preview-12-2025',
-  'gemini-2.5-flash-native-audio-preview-09-2025',
   'gemini-3.1-flash-live-preview'
 ];
 function onLiveModelSelectChange() {
@@ -2369,12 +2374,28 @@ async function previewLiveVoice() {
   }
 }
 
+// Map of retired Live model names → the model they should auto-migrate to.
+// `-latest` silently routed to a Native Audio variant whose setup payload
+// our code didn't match (caused Mars's complete-silence symptom). The
+// 09-2025 snapshot was superseded by 12-2025. Anyone who had either
+// saved gets gently bumped to the validated default on the next page load.
+const RETIRED_LIVE_MODEL_REMAPS = {
+  'gemini-2.5-flash-native-audio-latest': 'gemini-2.5-flash-native-audio-preview-12-2025',
+  'gemini-2.5-flash-native-audio-preview-09-2025': 'gemini-2.5-flash-native-audio-preview-12-2025'
+};
+
 function syncLiveModelDropdown() {
   const sel = document.getElementById('liveModelSelect');
   const customInp = document.getElementById('liveModelCustomInput');
   const hidden = document.getElementById('geminiModel');
   if (!sel || !customInp || !hidden) return;
-  const saved = (hidden.value || '').trim();
+  let saved = (hidden.value || '').trim();
+  if (RETIRED_LIVE_MODEL_REMAPS[saved]) {
+    const next = RETIRED_LIVE_MODEL_REMAPS[saved];
+    console.log('[TapInsight] live model migration: ' + saved + ' → ' + next);
+    saved = next;
+    hidden.value = next;
+  }
   if (LIVE_MODEL_OPTIONS.includes(saved)) {
     sel.value = saved;
     customInp.style.display = 'none';
