@@ -1857,17 +1857,22 @@ class GeminiRouter(
                 // Configure server-side VAD based on barge-in sensitivity.
                 val interruptDisabled = liveDisableInterruptProvider()
                 if (interruptDisabled) {
-                    // Keep VAD active (so Gemini still knows when you stop talking)
-                    // but prevent it from interrupting ongoing speech.
+                    // Keep VAD's "don't barge in on Gemini" semantics
+                    // (activityHandling=NO_INTERRUPTION) but drop the LOW/LOW
+                    // sensitivity + 2000ms silenceDurationMs override this
+                    // branch used to ship with. On the X3 glasses mic,
+                    // ambient room sound kept the audio level above the LOW
+                    // silence threshold for the full 2-second window, so
+                    // Gemini never decided we were done talking and never
+                    // generated a response — Mars's "setupComplete arrives,
+                    // mic streams, Gemini sends zero bytes back" symptom.
+                    // Google's default VAD parameters are tuned for typical
+                    // environments and trigger end-of-turn reliably;
+                    // NO_INTERRUPTION still prevents barge-in.
                     val realtimeInputConfig = JSONObject()
-                        .put("automaticActivityDetection", JSONObject()
-                            .put("startOfSpeechSensitivity", "START_SENSITIVITY_LOW")
-                            .put("endOfSpeechSensitivity", "END_SENSITIVITY_LOW")
-                            .put("prefixPaddingMs", 500)
-                            .put("silenceDurationMs", 2000))
                         .put("activityHandling", "NO_INTERRUPTION")
                     setupContent.put("realtimeInputConfig", realtimeInputConfig)
-                    Log.d(TAG, "Gemini Live VAD: NO_INTERRUPTION mode (Gemini always finishes speaking)")
+                    Log.d(TAG, "Gemini Live VAD: NO_INTERRUPTION (default-sensitivity)")
                 } else {
                     // Higher sensitivity value = less sensitive to interruption.
                     // Map: <=1.0 → HIGH (default), 1.0–1.8 → MEDIUM, >1.8 → LOW
