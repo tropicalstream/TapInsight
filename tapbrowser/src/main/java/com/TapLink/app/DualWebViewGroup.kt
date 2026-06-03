@@ -9517,15 +9517,13 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         )
 
         maskSpotifyLyricsText = TextView(context).apply {
-            // Spotify brand green. The dim-mode lyric line uses Spotify's
-            // own colour identity so the karaoke text reads as "this is
-            // Spotify content" at a glance — across both Spotify and
-            // YouTube dim-mode playback (the same TextView is reused for
-            // both sources). Final choice after a brief tour through
-            // white and the HUD's healthy-green.
-            setTextColor(0xFF1DB954.toInt())
+            // Outdoor AR readability depends on luminance contrast more than
+            // brand colour. Keep active lyrics bright white with a black
+            // shadow so they survive sunlight and busy video backgrounds.
+            setTextColor(Color.WHITE)
+            setShadowLayer(3f, 0f, 1f, Color.BLACK)
             textSize = 11f
-            alpha = 0.72f
+            alpha = 0.90f
             gravity = Gravity.CENTER
             maxLines = 2
             // includeFontPadding stays at default (true): the karaoke render
