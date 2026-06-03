@@ -78,6 +78,22 @@ interface VoiceServiceApi {
     fun isCameraOn(): Boolean
 
     /**
+     * Synthesize [text] through the user's selected readout engine (Fish or
+     * Gemini TTS) and play it through the same AudioTrack the agent readout
+     * uses. Does NOT start a Gemini Live session — the voice service simply
+     * routes the text through the TTS pipeline and plays it back.
+     *
+     * Used by the H / O badge chat-history overlay: tapping a previous chat
+     * card replays the agent's verbatim reply through the readout voice so
+     * the user can hear it again without starting a new Gemini turn.
+     *
+     * Idempotent: if a readout is already in flight, the new request is
+     * queued or replaces the previous one (engine dependent — same behaviour
+     * as the live agent readout path).
+     */
+    fun speakAgentReply(text: String)
+
+    /**
      * Phase 4g — install a [androidx.camera.core.Preview.SurfaceProvider]
      * (typically `PreviewView.surfaceProvider`) so the next camera
      * activation binds a Preview use case alongside ImageAnalysis,

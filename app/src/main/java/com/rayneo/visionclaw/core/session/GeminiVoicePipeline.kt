@@ -1024,6 +1024,25 @@ class GeminiVoicePipeline(context: Context) {
      * is muted and Gemini's own audio suppressed for the duration so the
      * two voices never overlap and the readout isn't echoed back.
      */
+    /**
+     * Public entry point used by the chat-history overlay: replay a stored
+     * agent reply via the readout engine without engaging Gemini Live. The
+     * playback is otherwise identical to [speakAgentReplyViaEngine] — same
+     * TTS routing, same chunking, same AudioTrack.
+     *
+     * No Gemini session is needed for this path; `activeSessionEpoch` may be
+     * stale or zero, and the LISTENING restore at the end of the readout job
+     * is gated on `liveSessionReady` so it's a no-op when nothing's bound.
+     */
+    fun speakAgentReplyFromHistory(text: String) {
+        val cleaned = text.trim()
+        if (cleaned.isBlank()) return
+        Log.i(TAG, "speakAgentReplyFromHistory len=${cleaned.length}")
+        // Cancel any in-flight readout so we don't queue on top of one.
+        runCatching { readoutJob?.cancel() }
+        speakAgentReplyViaEngine(cleaned)
+    }
+
     private fun speakAgentReplyViaEngine(rawText: String) {
         val text = cleanReadoutText(rawText)
         if (text.isBlank()) {

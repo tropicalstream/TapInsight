@@ -66,6 +66,13 @@ class GeminiSessionForegroundService : LifecycleService() {
         ) {
             this@GeminiSessionForegroundService.cameraPreviewSurfaceProvider = provider
         }
+        override fun speakAgentReply(text: String) {
+            // Replay a stored chat-history reply through the readout engine.
+            // Routed directly into the pipeline — no Gemini Live session is
+            // started, so the avatar ring doesn't go red and the mic stays
+            // closed. Pure TTS playback.
+            this@GeminiSessionForegroundService.pipeline.speakAgentReplyFromHistory(text)
+        }
     }
 
     private val binder = LocalBinder()

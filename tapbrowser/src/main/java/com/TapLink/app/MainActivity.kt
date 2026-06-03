@@ -8160,29 +8160,24 @@ class MainActivity :
     }
 
     /**
-     * Card-tap action: inject the picked turn as PREVIOUS CONVERSATION
-     * (the same path the New Chat / chat-history-summary mechanism uses
-     * in MainViewModel) and ask Gemini to acknowledge it on the next
-     * turn. We write a short preface so the user hears something like
-     * "Loaded your conversation about X from 3 hours ago" on the next
-     * voice activation.
+     * Card-tap action: read the agent reply VERBATIM through the user's
+     * selected readout engine (Fish or Gemini TTS) — same voice the live
+     * Hermes / TapClaw readout uses. No Gemini Live session is started,
+     * so the avatar ring stays neutral and the mic stays closed.
+     *
+     * In parallel, the turn is also written to `previous_chat_summary` so
+     * the next time the user voice-activates Gemini it has the conversation
+     * loaded as PREVIOUS CONVERSATION context and can answer follow-ups.
      */
     private fun onChatHistoryCardTap(
         ts: Long, agentLabel: String, query: String, response: String
     ) {
         hideChatHistoryOverlay()
         val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
-        val rel = relativeTimeLabel(ts)
-        // Construct the PREVIOUS CONVERSATION payload. The visionclaw
-        // router already prepends a "PREVIOUS CONVERSATION (reference
-        // only)" banner before this text — we add a one-line primer at
-        // the top instructing Gemini to verbally acknowledge the reload,
-        // followed by the verbatim agent turn.
-        val primer = "[On the next user turn, briefly tell the user " +
-            "you've loaded the $agentLabel conversation from $rel and ask " +
-            "what they'd like to do with it. Then answer their question.]"
+        // Build the previous-conversation payload for the next live turn.
+        // We don't prepend an acknowledge-this primer anymore because the
+        // readout below handles the "play it back" part directly.
         val body = buildString {
-            append(primer).append("\n\n")
             if (query.isNotBlank()) append("User: ").append(query).append("\n\n")
             if (response.isNotBlank()) append("$agentLabel: ").append(response)
         }
@@ -8192,9 +8187,20 @@ class MainActivity :
             .apply()
         DebugLog.d(
             "HudTap",
-            "history card → previous_chat_summary written agent=$agentLabel ts=$ts"
+            "history card tap → speakAgentReply agent=$agentLabel ts=$ts " +
+                "responseLen=${response.length}"
         )
-        runCatching { voiceServiceApi?.activateVoice() }
+        // Speak the agent reply verbatim. Use the response if present —
+        // otherwise (rare) fall back to a short "what the user asked"
+        // summary so the tap isn't completely silent.
+        val toRead = response.trim().ifBlank {
+            if (query.isNotBlank()) "You asked: $query" else ""
+        }
+        if (toRead.isBlank()) return
+        runCatching { voiceServiceApi?.speakAgentReply(toRead) }
+            .onFailure {
+                DebugLog.w("HudTap", "speakAgentReply failed: ${it.message}")
+            }
     }
 
     private fun normalizeHttpDashboardUrl(raw: String): String? {
