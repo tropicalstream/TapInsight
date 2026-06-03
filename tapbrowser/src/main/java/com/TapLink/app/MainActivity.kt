@@ -1368,6 +1368,41 @@ class MainActivity :
                                                 distanceX * distanceX + distanceY * distanceY
                                         )
 
+                                // Reader-mode scroll routing: when the chat
+                                // card is expanded to its tall reader view,
+                                // trackpad swipe deltas need to scroll the
+                                // ScrollView directly. The synthetic-touch
+                                // path below targets the WebView, which sits
+                                // behind the card — without this short-cut
+                                // the user couldn't scroll text that had
+                                // rolled off the expanded reader (Round 2
+                                // user-reported bug). Map the same drag-to-
+                                // vertical transform the page-scroll path
+                                // uses, but apply it to the chat card.
+                                if (isUnipanelCardExpanded &&
+                                        !isKeyboardVisible &&
+                                        !dualWebViewGroup.isScreenMasked()) {
+                                    val chatScroll =
+                                            findViewById<android.widget.ScrollView?>(
+                                                    R.id.unipanelMiniCardScroll
+                                            )
+                                    if (chatScroll != null && chatScroll.visibility == View.VISIBLE) {
+                                        val horizontalAsVertical =
+                                                (-distanceX) * X_INVERT * H2V_GAIN
+                                        val verticalFromDrag = distanceY * Y_INVERT
+                                        val delta =
+                                                (horizontalAsVertical + verticalFromDrag).toInt()
+                                        if (delta != 0) {
+                                            // Cancel any in-flight synthetic touch swipe
+                                            // on the WebView so the gesture doesn't double-
+                                            // dispatch (chat card scrolls AND page scrolls).
+                                            cancelActiveTouchScrollGesture()
+                                            chatScroll.scrollBy(0, delta)
+                                        }
+                                        return true
+                                    }
+                                }
+
                                 if (isAnchored && isCursorVisible) {
                                     // In anchored cursor mode, cursor movement should not become
                                     // a synthetic touch swipe on the page.
@@ -1788,6 +1823,27 @@ class MainActivity :
                                             "DoubleTapDebug",
                                             "Double tap ignored - part of triple tap sequence"
                                     )
+                                    return true
+                                }
+
+                                // Reader-mode stage gate: when the chat card
+                                // is currently expanded, a double-tap should
+                                // collapse the reader FIRST, not cancel the
+                                // Gemini session. User's complaint: "when i
+                                // double tap with the expanded chat window
+                                // open, it closes the gemini session,
+                                // instead it should first actually unexpand
+                                // the expanded the chat window". Mirrors the
+                                // hermes branch exitReaderModeFromOutside().
+                                // The next double-tap (with the card already
+                                // collapsed) falls through to the Gemini
+                                // cancel path below as expected.
+                                if (isUnipanelCardExpanded) {
+                                    DebugLog.d(
+                                        "DoubleTapDebug",
+                                        "Main-pad double-tap — collapsing expanded chat card first"
+                                    )
+                                    collapseUnipanelChatCardFromOutside()
                                     return true
                                 }
 
@@ -7464,6 +7520,26 @@ class MainActivity :
         if (heartbeat.visibility == View.INVISIBLE) {
             heartbeat.visibility = View.VISIBLE
         }
+    }
+
+    /**
+     * Collapse the expanded chat-card reader from an outside caller (the
+     * right-arm double-tap stage gate uses this). Mirrors the hermes branch
+     * `exitReaderModeFromOutside()`: drop `isUnipanelCardExpanded` back to
+     * false, restore the compact layout, and snap the scroll position to the
+     * bottom so the latest line is visible — matching what the regular
+     * tap-to-collapse path does.
+     */
+    private fun collapseUnipanelChatCardFromOutside() {
+        if (!isUnipanelCardExpanded) return
+        isUnipanelCardExpanded = false
+        val scroll = findViewById<android.widget.ScrollView?>(R.id.unipanelMiniCardScroll)
+        scroll?.visibility = View.VISIBLE
+        repositionUnipanelAssistantCard()
+        scroll?.post {
+            scroll.fullScroll(View.FOCUS_DOWN)
+        }
+        DebugLog.d("Unipanel", "Chat card collapsed via outside (double-tap stage gate)")
     }
 
     private fun repositionUnipanelAssistantCard() {
