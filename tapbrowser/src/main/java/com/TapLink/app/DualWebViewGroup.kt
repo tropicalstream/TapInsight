@@ -10542,9 +10542,19 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         maskSpotifyAlbumText.visibility = if (info.album.isBlank()) View.GONE else View.VISIBLE
         // Dim-mode karaoke: when the spotify page has SYNCED lyrics for the
         // current track, show the active line by default (one line at a time,
-        // updates with playback). Fall back to a small "Lyrics" hint when
-        // lyrics aren't loaded yet, or to a tiny "♪" placeholder during an
-        // instrumental gap between lines.
+        // updates with playback). Fall back to a tiny "♪" placeholder during
+        // an instrumental gap, or fully hide the row when no synced lyrics
+        // are available for the track. When a later track DOES have lyrics,
+        // the row needs to come back — Mars reported it stayed hidden.
+        //
+        // Root cause: when the TextView is GONE, the parent LinearLayout
+        // caches the collapsed-to-0 state for that child. Flipping back to
+        // VISIBLE alone doesn't always trigger the parent to re-measure, so
+        // the row stays painted at height 0 even though the View itself is
+        // now visible. Solution: track the previous visibility and force a
+        // requestLayout() on both the TextView and its container whenever
+        // we transition GONE → VISIBLE.
+        val wasHidden = maskSpotifyLyricsText.visibility == View.GONE
         maskSpotifyLyricsText.visibility = View.VISIBLE
         val syncedLine = info.currentLyricLine.takeIf { it.isNotBlank() }
         if (syncedLine != null) {
@@ -10552,11 +10562,6 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             maskSpotifyLyricsText.textSize = 18f
             maskSpotifyLyricsText.alpha = 0.95f
             maskSpotifyLyricsText.maxLines = 2
-            // The reserved minHeight at view creation (64dp) is enough for the
-            // karaoke line; the parent's wrap_content remeasures naturally when
-            // setText changes the measured size. Earlier manual requestLayout
-            // calls here were suspected of disrupting the dim-mode update path
-            // — removed.
         } else if (info.hasSyncedLyrics) {
             // Lyrics are loaded and timed, but we're between lines (intro /
             // outro / instrumental). Show a quiet marker so the row doesn't
@@ -10566,12 +10571,18 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             maskSpotifyLyricsText.alpha = 0.40f
             maskSpotifyLyricsText.maxLines = 1
         } else {
-            // No synced lyrics for this track (LRClib has no timed lyrics for
-            // it or the fetch hasn't completed yet). Hide the lyric row
-            // entirely — no swipe-up gesture exists, so a hint would be
-            // misleading. The row will re-appear automatically once the
-            // background fetch returns timed lyrics.
+            // No synced lyrics for this track. Hide the row entirely — no
+            // swipe-up gesture exists, so a hint would be misleading. The
+            // row reappears automatically once a later track returns timed
+            // lyrics (via the wasHidden re-layout dance below).
             maskSpotifyLyricsText.visibility = View.GONE
+        }
+        if (wasHidden && maskSpotifyLyricsText.visibility == View.VISIBLE) {
+            // GONE → VISIBLE transition: nudge both the view and its parent
+            // to re-measure, otherwise the parent's cached 0-height keeps
+            // the row visually collapsed even after the visibility flip.
+            maskSpotifyLyricsText.requestLayout()
+            maskSpotifyInfoContainer.requestLayout()
         }
 
         val duration = info.durationMs.coerceAtLeast(0L)
