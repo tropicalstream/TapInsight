@@ -8,7 +8,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
@@ -67,15 +69,28 @@ class GeminiSessionForegroundService : LifecycleService() {
             this@GeminiSessionForegroundService.cameraPreviewSurfaceProvider = provider
         }
         override fun speakAgentReply(text: String) {
-            // Replay a stored chat-history reply through the readout engine.
-            // Routed directly into the pipeline — no Gemini Live session is
-            // started, so the avatar ring doesn't go red and the mic stays
-            // closed. Pure TTS playback.
-            this@GeminiSessionForegroundService.pipeline.speakAgentReplyFromHistory(text)
+            // Replay a stored chat-history reply through the readout engine,
+            // then start a Gemini Live session so the user can ask follow-up
+            // questions about the loaded conversation. Without the chained
+            // activate(), the avatar would hang in THINKING (the green
+            // output-mode ring) after playback ended because liveSessionReady
+            // is false during a pure-replay readout.
+            val service = this@GeminiSessionForegroundService
+            service.pipeline.speakAgentReplyFromHistory(text) {
+                // Completion callback fires on the readout coroutine; hop to
+                // main so foreground promotion + AudioRecord open happen on
+                // the Service's thread.
+                service.mainHandler.post { service.activateVoice() }
+            }
         }
     }
 
     private val binder = LocalBinder()
+
+    /** Main-looper handler so cross-thread callers (e.g. the readout
+     *  coroutine's completion hook) can post work back onto the Service's
+     *  thread without bringing in a coroutine dependency. */
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /** True while the Service is in foreground (FGS notification attached). */
     @Volatile

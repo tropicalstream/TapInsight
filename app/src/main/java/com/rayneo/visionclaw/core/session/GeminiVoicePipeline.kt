@@ -1030,18 +1030,46 @@ class GeminiVoicePipeline(context: Context) {
      * playback is otherwise identical to [speakAgentReplyViaEngine] — same
      * TTS routing, same chunking, same AudioTrack.
      *
-     * No Gemini session is needed for this path; `activeSessionEpoch` may be
-     * stale or zero, and the LISTENING restore at the end of the readout job
-     * is gated on `liveSessionReady` so it's a no-op when nothing's bound.
+     * Optional [onComplete] runs after the readout job finishes (success or
+     * failure). The Service binder uses this to chain into activateVoice()
+     * so the user can ask follow-up questions about the loaded conversation
+     * — without it, the avatar would stay frozen in THINKING (the green
+     * output-mode ring) after the spoken playback ended, because no live
+     * session was ever bound.
+     *
+     * No Gemini session is needed for the readout itself; `activeSessionEpoch`
+     * may be stale or zero, and the LISTENING restore at the end of the
+     * readout job is gated on `liveSessionReady` so it's a no-op when
+     * nothing's bound.
      */
-    fun speakAgentReplyFromHistory(text: String) {
+    fun speakAgentReplyFromHistory(
+        text: String,
+        onComplete: (() -> Unit)? = null
+    ) {
         val cleaned = text.trim()
-        if (cleaned.isBlank()) return
+        if (cleaned.isBlank()) {
+            // Nothing to read — still fire the callback so the caller can
+            // hand off to activateVoice() and the avatar doesn't hang.
+            onComplete?.invoke()
+            return
+        }
         Log.i(TAG, "speakAgentReplyFromHistory len=${cleaned.length}")
         // Cancel any in-flight readout so we don't queue on top of one.
         runCatching { readoutJob?.cancel() }
+        readoutCompletionCallback = onComplete
+        // Park the avatar in IDLE for the duration of the readout so it
+        // doesn't sit in the previous THINKING/LISTENING phase — the readout
+        // path will move it to THINKING (model output) once playback starts,
+        // and the completion callback will fire activateVoice() to take it
+        // into LISTENING.
+        HudStateBridge.update { it.copy(phase = HudStateBridge.VoicePhase.IDLE) }
         speakAgentReplyViaEngine(cleaned)
     }
+
+    /** One-shot callback fired after the next readout completes. Set by
+     *  [speakAgentReplyFromHistory] and consumed by the readout job's
+     *  finally block. Null means no chained action. */
+    @Volatile private var readoutCompletionCallback: (() -> Unit)? = null
 
     private fun speakAgentReplyViaEngine(rawText: String) {
         val text = cleanReadoutText(rawText)
@@ -1103,6 +1131,17 @@ class GeminiVoicePipeline(context: Context) {
                             phase = HudStateBridge.VoicePhase.LISTENING,
                             oscilloscopeLevel = 0f
                         )
+                    }
+                }
+                // Hand off to whatever was waiting on this readout (e.g. the
+                // chat-history overlay's "play it back then start listening"
+                // chain). Snapshot + clear under volatile so re-entry from a
+                // brand-new readout doesn't double-fire the same callback.
+                val cb = readoutCompletionCallback
+                readoutCompletionCallback = null
+                if (cb != null) {
+                    runCatching { cb() }.onFailure {
+                        Log.w(TAG, "readout completion callback failed: ${it.message}", it)
                     }
                 }
             }
