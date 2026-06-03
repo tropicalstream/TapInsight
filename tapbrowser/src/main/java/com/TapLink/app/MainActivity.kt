@@ -7821,38 +7821,359 @@ class MainActivity :
     }
 
     private fun openHermesDashboardFromHud() {
-        val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
-        val sessionId = prefs.getString("hermes_session_id", "").orEmpty().trim()
-            .takeUnless { it.isBlank() || it.equals("main", ignoreCase = true) }
-            ?: "glasses"
-
-        // Hermes is configured here as an OpenAI-compatible API server; the
-        // API root is not a guaranteed web dashboard and can hang in WebView.
-        // Render a local status page instead of navigating to localhost.
-        DebugLog.d("HudTap", "Hermes badge -> local status page session=$sessionId")
-        openAgentStatusPage("hermes")
+        DebugLog.d("HudTap", "Hermes badge -> chat history overlay")
+        showChatHistoryOverlay()
     }
 
     private fun openOpenClawDashboardFromHud() {
+        DebugLog.d("HudTap", "OpenClaw badge -> chat history overlay")
+        showChatHistoryOverlay()
+    }
+
+    // ── Chat history overlay (H / O badge tap) ─────────────────────────
+    // Lazy-built FrameLayout that lists every completed Hermes / OpenClaw
+    // turn within the user's configured retention window (1–5 days). The
+    // user picks a card to reload that conversation into Gemini as
+    // PREVIOUS CONVERSATION, or taps "View tail log" to open the Hermes
+    // session log directly. Records live in visionclaw_prefs under
+    // chat_history_hermes / chat_history_openclaw, written by the
+    // visionclaw Service every time a Hermes / TapClaw turn completes.
+    private var chatHistoryOverlayView: View? = null
+
+    private fun showChatHistoryOverlay() {
+        val container = findViewById<ViewGroup?>(R.id.unipanelOverlay) ?: return
+        hideChatHistoryOverlay()
+        val overlay = buildChatHistoryOverlay(container)
+        chatHistoryOverlayView = overlay
+        container.addView(overlay)
+    }
+
+    private fun hideChatHistoryOverlay() {
+        val existing = chatHistoryOverlayView ?: return
+        (existing.parent as? ViewGroup)?.removeView(existing)
+        chatHistoryOverlayView = null
+    }
+
+    private fun buildChatHistoryOverlay(parent: ViewGroup): View {
+        val density = resources.displayMetrics.density
+        fun dp(v: Int) = (v * density).toInt()
         val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
-        val configuredDashboard = prefs.getString("openclaw_dashboard_url", "").orEmpty().trim()
-        val sessionId = prefs.getString("openclaw_session_id", "").orEmpty().trim().ifBlank { "main" }
-        val username = prefs.getString("openclaw_dashboard_username", "").orEmpty().trim()
-        val password = prefs.getString("openclaw_dashboard_password", "").orEmpty()
-        val token = prefs.getString("openclaw_token", "").orEmpty().trim()
-            .ifBlank { prefs.getString("openclaw_pair_device_token", "").orEmpty().trim() }
+        val retentionDays = prefs.getInt("hud_chat_history_days", 3).coerceIn(1, 5)
 
-        // Only use the dashboard URL the user explicitly saved in the
-        // companion app. Guessing localhost/ports produced 404/empty-response
-        // pages on real devices. If no dashboard URL is saved, render the
-        // in-app status page instead of navigating to localhost.
-        val url = normalizeHttpDashboardUrl(configuredDashboard)
-            ?: return openAgentStatusPage("openclaw")
-        val headers = if (token.isNotBlank()) mapOf("Authorization" to "Bearer $token") else emptyMap()
+        // Root absorbs taps so they don't fall through to the HUD or
+        // WebView underneath. A tap on the empty bottom band dismisses.
+        val root = FrameLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(0xCC000000.toInt())
+            isClickable = true
+            isFocusable = true
+            elevation = 20f
+            setOnClickListener { hideChatHistoryOverlay() }
+        }
 
-        DebugLog.d("HudTap", "OpenClaw badge -> $url session=$sessionId")
-        openInTapBrowser(url, headers)
-        scheduleDashboardLoginAutofill(username, password)
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(
+                dp(540),
+                dp(280),
+                Gravity.CENTER
+            )
+            setBackgroundColor(0xEE0A0A0A.toInt())
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            // Stop the dismiss-on-tap from firing when the user clicks INSIDE
+            // the card's content area — only an outside tap should close.
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { /* consume */ }
+        }
+
+        // Header row: title + tail-log button + close.
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val title = TextView(this).apply {
+            text = "Recent conversations · ${retentionDays}d"
+            setTextColor(0xFF8FDFFF.toInt())
+            textSize = 13f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val tailLogBtn = TextView(this).apply {
+            text = "View tail log"
+            setTextColor(0xFF00E676.toInt())
+            textSize = 11f
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            isClickable = true
+            isFocusable = true
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(4).toFloat()
+                setStroke(1, 0xFF00E676.toInt())
+            }
+            setOnClickListener {
+                hideChatHistoryOverlay()
+                openInTapBrowser("https://relay.tapinsight.uk/hermes/log/glasses")
+            }
+        }
+        val closeBtn = TextView(this).apply {
+            text = "✕"
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setPadding(dp(8), dp(4), dp(4), dp(4))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { hideChatHistoryOverlay() }
+        }
+        header.addView(title)
+        header.addView(tailLogBtn)
+        header.addView(closeBtn)
+        card.addView(header)
+
+        // Divider
+        val divider = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1)
+            ).apply { topMargin = dp(8); bottomMargin = dp(6) }
+            setBackgroundColor(0x33FFFFFF)
+        }
+        card.addView(divider)
+
+        // Scrollable card list.
+        val scroll = android.widget.ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+            isFillViewport = true
+        }
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        scroll.addView(list)
+        card.addView(scroll)
+
+        renderChatHistoryCards(list, prefs, retentionDays)
+
+        root.addView(card)
+        return root
+    }
+
+    /**
+     * Read the per-agent history JSON, merge newest-first, and render
+     * each record as a tappable mini-card. Cyan date separators
+     * delineate Today / Yesterday / earlier days. Empty-state message
+     * if there's nothing in the window.
+     */
+    private fun renderChatHistoryCards(
+        list: LinearLayout,
+        prefs: android.content.SharedPreferences,
+        retentionDays: Int
+    ) {
+        val density = resources.displayMetrics.density
+        fun dp(v: Int) = (v * density).toInt()
+        list.removeAllViews()
+
+        data class HistoryRecord(
+            val ts: Long, val agent: String, val query: String,
+            val response: String, val snippet: String
+        )
+
+        val cutoff = System.currentTimeMillis() - retentionDays * 86_400_000L
+        val merged = mutableListOf<HistoryRecord>()
+        for (key in listOf("chat_history_hermes" to "Hermes", "chat_history_openclaw" to "OpenClaw")) {
+            val raw = prefs.getString(key.first, null) ?: continue
+            val arr = runCatching { org.json.JSONArray(raw) }.getOrNull() ?: continue
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val ts = o.optLong("ts", 0L)
+                if (ts < cutoff) continue
+                merged.add(
+                    HistoryRecord(
+                        ts = ts,
+                        agent = key.second,
+                        query = o.optString("query", ""),
+                        response = o.optString("response", ""),
+                        snippet = o.optString("snippet", "")
+                    )
+                )
+            }
+        }
+        merged.sortByDescending { it.ts }
+
+        if (merged.isEmpty()) {
+            list.addView(TextView(this).apply {
+                text = "No recent conversations within the last $retentionDays " +
+                    if (retentionDays == 1) "day." else "days."
+                setTextColor(0xFFAAAAAA.toInt())
+                textSize = 12f
+                setPadding(0, dp(20), 0, dp(20))
+                gravity = Gravity.CENTER
+            })
+            return
+        }
+
+        // Walk newest → oldest, inserting a cyan date-separator each time
+        // the day changes.
+        val now = System.currentTimeMillis()
+        val dayCal = java.util.Calendar.getInstance()
+        val nowCal = java.util.Calendar.getInstance().apply { timeInMillis = now }
+        val todayDay = nowCal.get(java.util.Calendar.DAY_OF_YEAR)
+        val todayYear = nowCal.get(java.util.Calendar.YEAR)
+        var lastDayKey = ""
+        val dateFmt = java.text.SimpleDateFormat("EEEE, MMMM d", java.util.Locale.US)
+        for (rec in merged) {
+            dayCal.timeInMillis = rec.ts
+            val day = dayCal.get(java.util.Calendar.DAY_OF_YEAR)
+            val year = dayCal.get(java.util.Calendar.YEAR)
+            val dayKey = "$year-$day"
+            if (dayKey != lastDayKey) {
+                val label = when {
+                    year == todayYear && day == todayDay -> "Today"
+                    year == todayYear && day == todayDay - 1 -> "Yesterday"
+                    else -> dateFmt.format(java.util.Date(rec.ts))
+                }
+                list.addView(TextView(this).apply {
+                    text = label
+                    setTextColor(0xFF8FDFFF.toInt())
+                    textSize = 11f
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    setPadding(0, dp(6), 0, dp(4))
+                })
+                lastDayKey = dayKey
+            }
+            list.addView(buildHistoryCardView(rec.ts, rec.agent, rec.query, rec.response, rec.snippet))
+        }
+    }
+
+    private fun buildHistoryCardView(
+        ts: Long, agentLabel: String, query: String, response: String, snippet: String
+    ): View {
+        val density = resources.displayMetrics.density
+        fun dp(v: Int) = (v * density).toInt()
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(4); bottomMargin = dp(4) }
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(6).toFloat()
+                setColor(0x33141414)
+                setStroke(1, 0x33FFFFFF)
+            }
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                onChatHistoryCardTap(ts, agentLabel, query, response)
+            }
+        }
+        // Agent letter badge (H / O), color-matched to the HUD badge.
+        val badge = TextView(this).apply {
+            text = if (agentLabel.startsWith("Her", true)) "H" else "O"
+            setTextColor(0xFF00E676.toInt())
+            textSize = 14f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(0, 0, dp(10), 0)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                0f
+            )
+        }
+        val textCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val snippetView = TextView(this).apply {
+            val preview = snippet.ifBlank {
+                response.ifBlank { query }.trim().take(90).let {
+                    if (it.length < (response.ifBlank { query }.length)) "$it…" else it
+                }
+            }
+            text = preview.ifBlank { "(empty)" }
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 12f
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        val metaView = TextView(this).apply {
+            text = "$agentLabel · ${relativeTimeLabel(ts)}"
+            setTextColor(0xFF888888.toInt())
+            textSize = 10f
+            setPadding(0, dp(2), 0, 0)
+        }
+        textCol.addView(snippetView)
+        textCol.addView(metaView)
+        row.addView(badge)
+        row.addView(textCol)
+        return row
+    }
+
+    private fun relativeTimeLabel(ts: Long): String {
+        val diffMs = System.currentTimeMillis() - ts
+        val mins = diffMs / 60_000L
+        return when {
+            mins < 1 -> "just now"
+            mins < 60 -> "$mins min ago"
+            mins < 60 * 24 -> "${mins / 60} h ago"
+            else -> {
+                val days = mins / (60 * 24)
+                if (days == 1L) "1 day ago" else "$days days ago"
+            }
+        }
+    }
+
+    /**
+     * Card-tap action: inject the picked turn as PREVIOUS CONVERSATION
+     * (the same path the New Chat / chat-history-summary mechanism uses
+     * in MainViewModel) and ask Gemini to acknowledge it on the next
+     * turn. We write a short preface so the user hears something like
+     * "Loaded your conversation about X from 3 hours ago" on the next
+     * voice activation.
+     */
+    private fun onChatHistoryCardTap(
+        ts: Long, agentLabel: String, query: String, response: String
+    ) {
+        hideChatHistoryOverlay()
+        val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+        val rel = relativeTimeLabel(ts)
+        // Construct the PREVIOUS CONVERSATION payload. The visionclaw
+        // router already prepends a "PREVIOUS CONVERSATION (reference
+        // only)" banner before this text — we add a one-line primer at
+        // the top instructing Gemini to verbally acknowledge the reload,
+        // followed by the verbatim agent turn.
+        val primer = "[On the next user turn, briefly tell the user " +
+            "you've loaded the $agentLabel conversation from $rel and ask " +
+            "what they'd like to do with it. Then answer their question.]"
+        val body = buildString {
+            append(primer).append("\n\n")
+            if (query.isNotBlank()) append("User: ").append(query).append("\n\n")
+            if (response.isNotBlank()) append("$agentLabel: ").append(response)
+        }
+        prefs.edit()
+            .putString("previous_chat_summary", body.take(12000))
+            .putLong("previous_chat_summary_ms", System.currentTimeMillis())
+            .apply()
+        DebugLog.d(
+            "HudTap",
+            "history card → previous_chat_summary written agent=$agentLabel ts=$ts"
+        )
+        runCatching { voiceServiceApi?.activateVoice() }
     }
 
     private fun normalizeHttpDashboardUrl(raw: String): String? {
