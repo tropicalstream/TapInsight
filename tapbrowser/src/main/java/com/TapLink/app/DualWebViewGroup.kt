@@ -2882,6 +2882,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             if (view != null) {
                                 YouTubeCaptionEnforcer.maybeInject(view, url)
                                 VideoQualityHints.maybeApplyYouTubeQualityShim(view, url)
+                                // Hermes glasses-log tail: keep the WebView
+                                // pinned to the bottom across the page's
+                                // ~30s self-refresh so the user doesn't have
+                                // to scroll down after every reload.
+                                HermesLogAutoScroll.maybeInject(view, url)
                             }
                         } catch (e: Exception) {
                             android.util.Log.e("TapLink", "Error in onPageFinished", e)
