@@ -7842,6 +7842,27 @@ class MainActivity :
 
     private fun showChatHistoryOverlay() {
         val container = findViewById<ViewGroup?>(R.id.unipanelOverlay) ?: return
+        // Diagnostic toast: tell Mars how many records are in each per-agent
+        // history array right now. This makes it obvious whether the issue
+        // is "nothing is being written" (toast shows H=0 O=0 even after a
+        // Hermes turn finished) vs "the overlay is rendering empty" (toast
+        // shows non-zero counts but the card list is blank). Counts the raw
+        // JSON entries — no day-window filter so even older records show up.
+        runCatching {
+            val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+            fun countRaw(key: String): Int {
+                val raw = prefs.getString(key, null) ?: return 0
+                return runCatching { org.json.JSONArray(raw).length() }.getOrDefault(0)
+            }
+            val h = countRaw("chat_history_hermes")
+            val o = countRaw("chat_history_openclaw")
+            android.widget.Toast.makeText(
+                this,
+                "Chat history store: Hermes=$h, OpenClaw=$o",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            DebugLog.d("HudTap", "history overlay opening — store H=$h O=$o")
+        }
         hideChatHistoryOverlay()
         val overlay = buildChatHistoryOverlay(container)
         chatHistoryOverlayView = overlay
