@@ -9,6 +9,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.TapLink.app.unipanel.HudStateBridge
@@ -25,6 +26,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -87,6 +89,7 @@ class GeminiVoicePipeline(context: Context) {
      *  so shutdown() can cancel it — otherwise it keeps playing audio and
      *  re-setting the THINKING phase after the session is closed. */
     private var readoutJob: Job? = null
+    private var conversationalFallbackJob: Job? = null
 
     @Volatile private var liveSession: GeminiRouter.LiveSessionHandle? = null
     @Volatile private var liveSessionReady: Boolean = false
@@ -98,6 +101,8 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var activeSessionEpoch: Long = 0L
     @Volatile private var youtubePlaybackPreemptInFlight: Boolean = false
     @Volatile private var lastYouTubePlaybackPreemptMs: Long = 0L
+    @Volatile private var lastLiveResponseActivityMs: Long = 0L
+    @Volatile private var lastForcedConversationalTranscript: String = ""
 
     /** Audio playback for Gemini's model audio responses. Lazy so we
      *  only allocate the AudioTrack when voice actually activates. */
@@ -447,6 +452,8 @@ class GeminiVoicePipeline(context: Context) {
 
         connectJob?.cancel()
         connectJob = null
+        conversationalFallbackJob?.cancel()
+        conversationalFallbackJob = null
 
         // Cancel the agent-readout coroutine and clear its gates BEFORE we
         // flush audio — otherwise it keeps queueing TTS chunks (speech keeps
@@ -567,11 +574,17 @@ class GeminiVoicePipeline(context: Context) {
                 // page in a clean dark reader view when the user asks for it.
                 maybeTriggerReaderModeLocally(text)
                 maybeOpenGoogleWebAppLocally(text)
+                maybeScheduleConversationalTextFallback(
+                    transcript = text,
+                    epoch = epoch,
+                    suppress = pageTextHandled
+                )
             }
 
             override fun onOutputTranscription(text: String) {
                 if (!isSessionEpochCurrent(epoch)) return
                 if (text.isBlank()) return
+                noteLiveResponseActivity()
                 // While an agent reply (Hermes / TapClaw / OpenClaw) is being
                 // read aloud via the selected readout engine, the chat card
                 // already holds the agent's VERBATIM reply
@@ -589,6 +602,8 @@ class GeminiVoicePipeline(context: Context) {
             }
 
             override fun onModelText(text: String) {
+                if (!isSessionEpochCurrent(epoch)) return
+                if (text.isNotBlank()) noteLiveResponseActivity()
                 // Audio responses come through onOutputTranscription instead.
                 // onModelText fires for text-only responses, which we don't
                 // request here.
@@ -597,6 +612,7 @@ class GeminiVoicePipeline(context: Context) {
             override fun onModelAudio(mimeType: String, data: ByteArray) {
                 if (!isSessionEpochCurrent(epoch) || !liveSessionReady) return
                 if (data.isEmpty()) return
+                noteLiveResponseActivity()
                 // Drop Gemini Live's own audio while an agent reply is being
                 // read aloud via the selected readout engine, so the two
                 // voices never overlap (mirrors hermes suppressGeminiOutputUntilMs).
@@ -626,6 +642,7 @@ class GeminiVoicePipeline(context: Context) {
 
             override fun onToolCall(callId: String, name: String, args: String) {
                 if (!isSessionEpochCurrent(epoch)) return
+                noteLiveResponseActivity()
                 Log.i(TAG, "onToolCall: callId=$callId name=$name args=${args.take(160)}")
                 when (name) {
                     "browser_vision" -> dispatchBrowserVision(callId, name, args)
@@ -635,6 +652,7 @@ class GeminiVoicePipeline(context: Context) {
 
             override fun onTurnComplete(finishReason: String?) {
                 if (!isSessionEpochCurrent(epoch)) return
+                noteLiveResponseActivity()
                 Log.d(TAG, "onTurnComplete: finishReason=$finishReason")
                 runCatching { viewModel.appendUserUtterance(latestInputTranscript) }
                 runCatching { viewModel.commitLiveAssistantStreamIfNeeded() }
@@ -801,6 +819,11 @@ class GeminiVoicePipeline(context: Context) {
                             val days = AppPreferences(appContext).hudChatHistoryDays
                             com.rayneo.visionclaw.core.storage.ChatHistoryStore
                                 .append(appContext, record, days)
+                            Log.i(
+                                TAG,
+                                "chat-history append agent=$historyAgent " +
+                                    "queryLen=${userQuery.length} replyLen=${agentReply.length}"
+                            )
                         }
                     }
                 }
@@ -836,6 +859,88 @@ class GeminiVoicePipeline(context: Context) {
      *  readout engine instead of being narrated by Gemini Live. */
     private val AGENT_READOUT_TOOLS =
         setOf("hermes_agent", "tapclaw_agent", "research_topic")
+
+    private fun noteLiveResponseActivity() {
+        lastLiveResponseActivityMs = SystemClock.uptimeMillis()
+        conversationalFallbackJob?.cancel()
+        conversationalFallbackJob = null
+    }
+
+    /**
+     * Gemini Live Native Audio can still transcribe the user while failing to
+     * close the audio turn, especially on the glasses where the mic stream is
+     * continuous and there is ambient speaker/room noise. Tool commands already
+     * work from partial transcripts; this fallback is only for ordinary
+     * conversation/questions such as "can you hear me?" that would otherwise
+     * leave the user in silence. If the model produces any output/tool event
+     * first, [noteLiveResponseActivity] cancels the fallback.
+     */
+    private fun maybeScheduleConversationalTextFallback(
+        transcript: String,
+        epoch: Long,
+        suppress: Boolean
+    ) {
+        val utterance = transcript.trim()
+        if (suppress || utterance.isBlank()) return
+        if (!liveSessionReady || liveSession == null) return
+        if (!isSessionEpochCurrent(epoch)) return
+        if (!shouldForceConversationalTextTurn(utterance)) return
+
+        val scheduledAtMs = SystemClock.uptimeMillis()
+        conversationalFallbackJob?.cancel()
+        conversationalFallbackJob = scope.launch {
+            delay(CONVERSATIONAL_TEXT_FALLBACK_DELAY_MS)
+            if (!isSessionEpochCurrent(epoch) || !liveSessionReady) return@launch
+            if (agentReadoutActive || pageTextInFlight || visionInFlight || youtubePlaybackPreemptInFlight) {
+                return@launch
+            }
+            if (!latestInputTranscript.trim().equals(utterance, ignoreCase = true)) return@launch
+            if (lastLiveResponseActivityMs >= scheduledAtMs) return@launch
+            if (lastForcedConversationalTranscript.equals(utterance, ignoreCase = true)) return@launch
+
+            lastForcedConversationalTranscript = utterance
+            val ok = runCatching {
+                liveSession?.sendClientText(utterance) == true
+            }.getOrDefault(false)
+            Log.i(TAG, "Forced conversational text turn after silent Live audio turn ok=$ok text='${utterance.take(120)}'")
+        }
+    }
+
+    private fun shouldForceConversationalTextTurn(transcript: String): Boolean {
+        val lower = transcript.lowercase()
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (lower.length < 3) return false
+
+        // Leave deterministic media/navigation/browser commands on their
+        // existing route. Those commands already work from partial transcripts,
+        // and forcing them as text can duplicate playback actions.
+        if (COMMANDLIKE_CONVERSATION_FALLBACK_EXCLUSIONS.any { lower.startsWith(it) }) {
+            return false
+        }
+        if ((lower.contains("spotify") || lower.contains("youtube") || lower.contains("tapradio")) &&
+            MEDIA_COMMAND_PREFIXES.any { lower.startsWith(it) }
+        ) {
+            return false
+        }
+        if (PAGE_TEXT_TRIGGER_PHRASES.any { lower.contains(it) } ||
+            VISION_TRIGGER_PHRASES.any { lower.contains(it) } ||
+            GOOGLE_TASKS_TERMS.any { lower.contains(it) } ||
+            GOOGLE_CALENDAR_TERMS.any { lower.contains(it) } ||
+            GOOGLE_NEWS_TERMS.any { lower.contains(it) }
+        ) {
+            return false
+        }
+
+        if (CONVERSATIONAL_FORCE_PHRASES.any { lower.contains(it) }) return true
+        if (CONVERSATIONAL_QUESTION_PREFIXES.any { prefix ->
+                lower == prefix || lower.startsWith("$prefix ")
+            }
+        ) {
+            return true
+        }
+        return lower.endsWith("?")
+    }
 
     /**
      * When the user tells an agent (Hermes / TapClaw / OpenClaw) to "look at
@@ -1733,6 +1838,8 @@ class GeminiVoicePipeline(context: Context) {
         private const val DEFAULT_VISION_QUESTION =
             "Describe what's currently on the screen in plain English."
 
+        private const val CONVERSATIONAL_TEXT_FALLBACK_DELAY_MS = 1_600L
+
         /** Minimum gap between local-regex browser_vision triggers,
          *  so a single 2-3-second utterance (which emits many partials)
          *  doesn't fire the tool more than once. */
@@ -1786,6 +1893,74 @@ class GeminiVoicePipeline(context: Context) {
             "google news",
             "headlines",
             "top stories"
+        )
+
+        private val CONVERSATIONAL_FORCE_PHRASES = listOf(
+            "can you hear me",
+            "do you hear me",
+            "are you there",
+            "hello gemini",
+            "hey gemini",
+            "hello",
+            "hi gemini"
+        )
+
+        private val CONVERSATIONAL_QUESTION_PREFIXES = listOf(
+            "can",
+            "could",
+            "would",
+            "what",
+            "when",
+            "where",
+            "who",
+            "why",
+            "how",
+            "do",
+            "does",
+            "did",
+            "is",
+            "are",
+            "am",
+            "tell me",
+            "explain",
+            "answer"
+        )
+
+        private val COMMANDLIKE_CONVERSATION_FALLBACK_EXCLUSIONS = listOf(
+            "play ",
+            "pause",
+            "resume",
+            "stop",
+            "skip",
+            "next",
+            "previous",
+            "open ",
+            "show ",
+            "display ",
+            "pull up ",
+            "bring up ",
+            "launch ",
+            "go to ",
+            "read ",
+            "look at ",
+            "describe ",
+            "summarize ",
+            "summarise ",
+            "take a picture",
+            "take photo",
+            "record video",
+            "hermes ",
+            "tapclaw ",
+            "openclaw "
+        )
+
+        private val MEDIA_COMMAND_PREFIXES = listOf(
+            "play ",
+            "search ",
+            "find ",
+            "queue ",
+            "start ",
+            "put on "
         )
 
         /** Phrases that locally trigger browser_vision when Gemini
