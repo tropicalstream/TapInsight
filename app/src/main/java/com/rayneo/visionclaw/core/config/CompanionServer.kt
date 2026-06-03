@@ -532,6 +532,9 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "openclaw_heartbeat_interval_seconds" to 20,
         // HUD agent-status ticker poll interval (seconds, default 30).
         "agent_status_poll_seconds" to 30,
+        // Days of chat history retained for the H / O badge overlay. 1–5,
+        // default 3. Older records are pruned on next per-agent write.
+        "hud_chat_history_days" to 3,
         // Hermes per-request timeout (seconds). 0 = default 30s.
         "hermes_timeout_seconds" to 0,
         // Battery Saver
@@ -657,6 +660,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "openclaw_enabled",
         "openclaw_heartbeat_interval_seconds",
         "agent_status_poll_seconds",
+        "hud_chat_history_days",
         // OpenClaw mode brackets (per-turn slash-command prefix +
         // after-turn restore). See AppPreferences.openClawFastMode etc.
         "openclaw_fast_mode",

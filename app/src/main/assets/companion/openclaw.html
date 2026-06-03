@@ -372,6 +372,16 @@ ingress:
   <label>Agent Status Poll Interval (seconds)</label>
   <input type="number" id="agentStatusPollSeconds" placeholder="30" min="10" max="300">
   <div class="hint">The HUD heartbeat ticker stays permanently visible and refreshes the live Hermes / TapClaw reachability on this cadence (10–300 seconds, default 30) — so a stalled agent query is visible instead of leaving the ticker blank.</div>
+
+  <label>Chat History Retention (days)</label>
+  <select id="hudChatHistoryDays">
+    <option value="1">1 day</option>
+    <option value="2">2 days</option>
+    <option value="3" selected>3 days (default)</option>
+    <option value="4">4 days</option>
+    <option value="5">5 days</option>
+  </select>
+  <div class="hint">Tapping the H or O badge in the HUD opens a history overlay listing every recent Hermes / OpenClaw turn. Records older than this window are pruned automatically (1–5 days, default 3). Tap any card to reload that conversation into Gemini.</div>
 </div>
 
 <!-- Test & Pair -->
@@ -555,6 +565,7 @@ const FIELDS = {
   openClawTimeoutSeconds: { key: 'openclaw_timeout_seconds', type: 'int' },
   openClawHeartbeatIntervalSeconds: { key: 'openclaw_heartbeat_interval_seconds', type: 'int' },
   agentStatusPollSeconds: { key: 'agent_status_poll_seconds', type: 'int' },
+  hudChatHistoryDays:    { key: 'hud_chat_history_days',    type: 'int' },
   // Mode brackets — see OpenClawClient.consumeModePrefixForSession +
   // fireAfterTurnRestoreIfConfigured for how these drive sendMessage.
   openClawFastMode:        { key: 'openclaw_fast_mode',         type: 'string' },

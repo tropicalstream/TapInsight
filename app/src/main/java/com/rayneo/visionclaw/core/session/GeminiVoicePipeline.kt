@@ -773,6 +773,37 @@ class GeminiVoicePipeline(context: Context) {
                 // the ViewModel's message list, which the Service collects and
                 // publishes to ChatCardBridge → the unipanel reply card.
                 runCatching { viewModel.appendDirectAssistantResponse(displayText) }
+                // Persist the completed turn to the per-agent chat history so
+                // the H / O badge overlay can surface it later. Pruned by the
+                // user-configurable retention window (hud_chat_history_days).
+                runCatching {
+                    val historyAgent = when (toolName) {
+                        "hermes_agent" -> com.rayneo.visionclaw.core.storage.ChatHistoryStore.Agent.HERMES
+                        "tapclaw_agent" ->
+                            com.rayneo.visionclaw.core.storage.ChatHistoryStore.Agent.OPENCLAW
+                        else -> null
+                    }
+                    if (historyAgent != null) {
+                        val userQuery = runCatching {
+                            org.json.JSONObject(args).optString("query", "")
+                        }.getOrNull().orEmpty().trim()
+                        val agentReply = displayText.trim()
+                        if (userQuery.isNotEmpty() || agentReply.isNotEmpty()) {
+                            val snippet = com.rayneo.visionclaw.core.storage.ChatHistoryStore
+                                .buildSnippet(userQuery, agentReply)
+                            val record = com.rayneo.visionclaw.core.storage.ChatHistoryStore.Record(
+                                ts = System.currentTimeMillis(),
+                                agent = historyAgent,
+                                query = userQuery,
+                                response = agentReply,
+                                snippet = snippet
+                            )
+                            val days = AppPreferences(appContext).hudChatHistoryDays
+                            com.rayneo.visionclaw.core.storage.ChatHistoryStore
+                                .append(appContext, record, days)
+                        }
+                    }
+                }
                 if (mediaDirective != null) {
                     // The media player is the output: open it and do NOT also run a
                     // TTS readout — launching audio ends the voice session anyway,

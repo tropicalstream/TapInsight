@@ -97,6 +97,17 @@ class AppPreferences(context: Context) {
         get() = prefs.getInt(KEY_AGENT_STATUS_POLL_SECONDS, 30).coerceIn(10, 300)
         set(value) = prefs.edit().putInt(KEY_AGENT_STATUS_POLL_SECONDS, value.coerceIn(10, 300)).apply()
 
+    /**
+     * Days of chat history retained for the H / O badge history overlay.
+     * Each completed Gemini turn appends a record to the per-agent history
+     * arrays (chat_history_hermes / chat_history_openclaw), and records
+     * older than this window are pruned on next write. 1–5 days, default 3.
+     * The companion app surfaces this as a dropdown in the Agents section.
+     */
+    var hudChatHistoryDays: Int
+        get() = prefs.getInt(KEY_HUD_CHAT_HISTORY_DAYS, 3).coerceIn(1, 5)
+        set(value) = prefs.edit().putInt(KEY_HUD_CHAT_HISTORY_DAYS, value.coerceIn(1, 5)).apply()
+
     // ── OpenClaw mode brackets ──────────────────────────────────────────
     // OpenClaw / TapClaw exposes per-turn slash commands like /fast and
     // /think <low|medium|high> that select the inference profile for
@@ -832,6 +843,11 @@ class AppPreferences(context: Context) {
 
         private const val KEY_OPENCLAW_HEARTBEAT_INTERVAL_SECONDS = "openclaw_heartbeat_interval_seconds"
         private const val KEY_AGENT_STATUS_POLL_SECONDS = "agent_status_poll_seconds"
+        private const val KEY_HUD_CHAT_HISTORY_DAYS = "hud_chat_history_days"
+        // Per-agent history arrays appended by GeminiVoicePipeline on turn
+        // completion. JSON arrays of {ts, query, response, snippet} records.
+        const val KEY_CHAT_HISTORY_HERMES = "chat_history_hermes"
+        const val KEY_CHAT_HISTORY_OPENCLAW = "chat_history_openclaw"
         private const val KEY_OPENCLAW_FAST_MODE = "openclaw_fast_mode"
         private const val KEY_OPENCLAW_THINK_LEVEL = "openclaw_think_level"
         private const val KEY_OPENCLAW_AFTER_FAST_MODE = "openclaw_after_fast_mode"
