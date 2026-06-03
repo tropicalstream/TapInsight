@@ -282,6 +282,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
     private var liveAssistantWorkingTurn: String = ""
     private var liveAssistantWorkingCardIndex = -1
+
+    /** Read-only snapshot of the assistant's current in-progress turn used
+     *  by the chat-history persistence hook in GeminiVoicePipeline. Captures
+     *  the text BEFORE resetLiveAssistantStream() clears the buffer at
+     *  onTurnComplete. Empty when no turn is in progress or the turn was
+     *  routed to an agent (Hermes / TapClaw) whose reply is captured
+     *  separately via dispatchNativeTool. */
+    fun snapshotLiveAssistantTurn(): String = liveAssistantWorkingTurn
     @Volatile private var historyHydrated = false
 
     private data class NearbyPlaceSnapshot(

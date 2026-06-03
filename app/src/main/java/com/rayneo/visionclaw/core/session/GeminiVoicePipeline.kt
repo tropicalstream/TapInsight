@@ -654,6 +654,40 @@ class GeminiVoicePipeline(context: Context) {
                 if (!isSessionEpochCurrent(epoch)) return
                 noteLiveResponseActivity()
                 Log.d(TAG, "onTurnComplete: finishReason=$finishReason")
+                // Capture the assistant turn BEFORE the working buffer is
+                // reset below. We append a GEMINI history record only when
+                // this was a direct Gemini Live turn — agent-routed turns
+                // (Hermes / TapClaw) write to their own per-agent history
+                // from dispatchNativeTool, and their working buffer is
+                // suppressed so this snapshot is empty for them. Wrapped
+                // in runCatching so a storage hiccup never breaks turn
+                // completion.
+                runCatching {
+                    val userQuery = latestInputTranscript.trim()
+                    val assistantTurn = runCatching {
+                        viewModel.snapshotLiveAssistantTurn().trim()
+                    }.getOrNull().orEmpty()
+                    if (userQuery.isNotEmpty() && assistantTurn.isNotEmpty()) {
+                        val snippet = com.rayneo.visionclaw.core.storage.ChatHistoryStore
+                            .buildSnippet(userQuery, assistantTurn)
+                        val record = com.rayneo.visionclaw.core.storage.ChatHistoryStore.Record(
+                            ts = System.currentTimeMillis(),
+                            agent = com.rayneo.visionclaw.core.storage.ChatHistoryStore
+                                .Agent.GEMINI,
+                            query = userQuery,
+                            response = assistantTurn,
+                            snippet = snippet
+                        )
+                        val days = AppPreferences(appContext).hudChatHistoryDays
+                        com.rayneo.visionclaw.core.storage.ChatHistoryStore
+                            .append(appContext, record, days)
+                        Log.i(
+                            TAG,
+                            "chat-history append agent=GEMINI " +
+                                "queryLen=${userQuery.length} replyLen=${assistantTurn.length}"
+                        )
+                    }
+                }
                 runCatching { viewModel.appendUserUtterance(latestInputTranscript) }
                 runCatching { viewModel.commitLiveAssistantStreamIfNeeded() }
                 // Do NOT persist the cross-session cache per turn. Saving the

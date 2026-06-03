@@ -7818,16 +7818,32 @@ class MainActivity :
             isFocusable = true
             setOnClickListener { openOpenClawDashboardFromHud() }
         }
+        // The G ("Gemini API health") badge becomes tappable too — opens
+        // the chat-history overlay filtered to Gemini's own turns. The
+        // existing HudStateBridge subscription continues to drive its
+        // tint; we just add a click listener on top.
+        findViewById<View?>(R.id.unipanelHudAiBadge)?.apply {
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { openGeminiDashboardFromHud() }
+        }
     }
 
     private fun openHermesDashboardFromHud() {
-        DebugLog.d("HudTap", "Hermes badge -> chat history overlay")
-        showChatHistoryOverlay()
+        DebugLog.d("HudTap", "Hermes badge -> chat history (Hermes-filtered)")
+        showChatHistoryOverlay(filterAgent = "Hermes")
     }
 
     private fun openOpenClawDashboardFromHud() {
-        DebugLog.d("HudTap", "OpenClaw badge -> chat history overlay")
-        showChatHistoryOverlay()
+        DebugLog.d("HudTap", "OpenClaw badge -> chat history (OpenClaw-filtered)")
+        showChatHistoryOverlay(filterAgent = "OpenClaw")
+    }
+
+    /** G badge tap → Gemini-filtered chat history. Same overlay as H/O,
+     *  just a different default filter. */
+    private fun openGeminiDashboardFromHud() {
+        DebugLog.d("HudTap", "Gemini badge -> chat history (Gemini-filtered)")
+        showChatHistoryOverlay(filterAgent = "Gemini")
     }
 
     // ── Chat history overlay (H / O badge tap) ─────────────────────────
@@ -7840,29 +7856,22 @@ class MainActivity :
     // visionclaw Service every time a Hermes / TapClaw turn completes.
     private var chatHistoryOverlayView: View? = null
 
-    private fun showChatHistoryOverlay() {
+    /** The agent currently filtered in the open overlay. Null means
+     *  "Show all" (every recent turn across all three agents). The
+     *  "Show all" toggle in the header flips this and re-renders. */
+    private var chatHistoryActiveFilter: String? = null
+
+    /**
+     * Open the chat-history overlay. [filterAgent] selects the default
+     * tab: "Gemini" / "Hermes" / "OpenClaw" / null (= show all).
+     * Each H, O, G badge passes its own agent — the overlay's header
+     * "Show all" link toggles the filter to null and re-renders so the
+     * user can see everything in one place when they want.
+     */
+    private fun showChatHistoryOverlay(filterAgent: String? = null) {
         val container = findViewById<ViewGroup?>(R.id.unipanelOverlay) ?: return
-        // Diagnostic toast: tell Mars how many records are in each per-agent
-        // history array right now. This makes it obvious whether the issue
-        // is "nothing is being written" (toast shows H=0 O=0 even after a
-        // Hermes turn finished) vs "the overlay is rendering empty" (toast
-        // shows non-zero counts but the card list is blank). Counts the raw
-        // JSON entries — no day-window filter so even older records show up.
-        runCatching {
-            val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
-            fun countRaw(key: String): Int {
-                val raw = prefs.getString(key, null) ?: return 0
-                return runCatching { org.json.JSONArray(raw).length() }.getOrDefault(0)
-            }
-            val h = countRaw("chat_history_hermes")
-            val o = countRaw("chat_history_openclaw")
-            android.widget.Toast.makeText(
-                this,
-                "Chat history store: Hermes=$h, OpenClaw=$o",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-            DebugLog.d("HudTap", "history overlay opening — store H=$h O=$o")
-        }
+        chatHistoryActiveFilter = filterAgent
+        DebugLog.d("HudTap", "history overlay opening filter=${filterAgent ?: "ALL"}")
         hideChatHistoryOverlay()
         val overlay = buildChatHistoryOverlay(container)
         chatHistoryOverlayView = overlay
@@ -7911,7 +7920,7 @@ class MainActivity :
             setOnClickListener { /* consume */ }
         }
 
-        // Header row: title + tail-log button + close.
+        // Header row: title + filter toggle + tail-log + close.
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
@@ -7920,15 +7929,41 @@ class MainActivity :
             )
             gravity = Gravity.CENTER_VERTICAL
         }
+        val filterLabel = chatHistoryActiveFilter?.let { "$it · ${retentionDays}d" }
+            ?: "All recent · ${retentionDays}d"
         val title = TextView(this).apply {
-            text = "Recent conversations · ${retentionDays}d"
+            text = filterLabel
             setTextColor(0xFF8FDFFF.toInt())
             textSize = 13f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
+        // Filter toggle. When a specific agent is selected, the link
+        // reads "Show all" and clearing the filter falls back to the
+        // merged view. When "Show all" is already active, the link is
+        // hidden (no meaningful toggle from there).
+        val filterToggle = TextView(this).apply {
+            visibility = if (chatHistoryActiveFilter == null) View.GONE else View.VISIBLE
+            text = "Show all"
+            setTextColor(0xFF8FDFFF.toInt())
+            textSize = 11f
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            isClickable = true
+            isFocusable = true
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(4).toFloat()
+                setStroke(1, 0x668FDFFF.toInt())
+            }
+            setOnClickListener {
+                chatHistoryActiveFilter = null
+                // Rebuild rather than just re-rendering — header text +
+                // toggle visibility both change, simplest to re-create.
+                showChatHistoryOverlay(filterAgent = null)
+            }
+        }
         val tailLogBtn = TextView(this).apply {
-            text = "View tail log"
+            text = "Tail log"
             setTextColor(0xFF00E676.toInt())
             textSize = 11f
             setPadding(dp(8), dp(4), dp(8), dp(4))
@@ -7954,6 +7989,13 @@ class MainActivity :
             setOnClickListener { hideChatHistoryOverlay() }
         }
         header.addView(title)
+        header.addView(filterToggle)
+        // Small spacer between toggle and tail log so they don't visually fuse.
+        if (filterToggle.visibility == View.VISIBLE) {
+            header.addView(View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(4), 1)
+            })
+        }
         header.addView(tailLogBtn)
         header.addView(closeBtn)
         card.addView(header)
@@ -8014,8 +8056,15 @@ class MainActivity :
 
         val cutoff = System.currentTimeMillis() - retentionDays * 86_400_000L
         val merged = mutableListOf<HistoryRecord>()
-        for (key in listOf("chat_history_hermes" to "Hermes", "chat_history_openclaw" to "OpenClaw")) {
-            val raw = prefs.getString(key.first, null) ?: continue
+        val keyAgentPairs = listOf(
+            "chat_history_gemini" to "Gemini",
+            "chat_history_hermes" to "Hermes",
+            "chat_history_openclaw" to "OpenClaw"
+        )
+        val filter = chatHistoryActiveFilter // null = show all
+        for ((key, agentLabel) in keyAgentPairs) {
+            if (filter != null && !filter.equals(agentLabel, ignoreCase = true)) continue
+            val raw = prefs.getString(key, null) ?: continue
             val arr = runCatching { org.json.JSONArray(raw) }.getOrNull() ?: continue
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
@@ -8024,7 +8073,7 @@ class MainActivity :
                 merged.add(
                     HistoryRecord(
                         ts = ts,
-                        agent = key.second,
+                        agent = agentLabel,
                         query = o.optString("query", ""),
                         response = o.optString("response", ""),
                         snippet = o.optString("snippet", "")
@@ -8035,9 +8084,10 @@ class MainActivity :
         merged.sortByDescending { it.ts }
 
         if (merged.isEmpty()) {
+            val scopeLabel = filter ?: "any agent"
             list.addView(TextView(this).apply {
-                text = "No recent conversations within the last $retentionDays " +
-                    if (retentionDays == 1) "day." else "days."
+                text = "No recent $scopeLabel conversations within the last " +
+                    "$retentionDays " + if (retentionDays == 1) "day." else "days."
                 setTextColor(0xFFAAAAAA.toInt())
                 textSize = 12f
                 setPadding(0, dp(20), 0, dp(20))
@@ -8103,10 +8153,16 @@ class MainActivity :
                 onChatHistoryCardTap(ts, agentLabel, query, response)
             }
         }
-        // Agent letter badge (H / O), color-matched to the HUD badge.
+        // Agent letter badge — G / H / O, colour-matched to the HUD badges
+        // so the card glances the same way the strip badge does.
+        val (badgeText, badgeTint) = when {
+            agentLabel.startsWith("Gem", true) -> "G" to 0xFF34D399.toInt()  // green (healthy Gemini)
+            agentLabel.startsWith("Her", true) -> "H" to 0xFF00E676.toInt()  // bright green (Hermes)
+            else -> "O" to 0xFF00E676.toInt()                                // bright green (OpenClaw)
+        }
         val badge = TextView(this).apply {
-            text = if (agentLabel.startsWith("Her", true)) "H" else "O"
-            setTextColor(0xFF00E676.toInt())
+            text = badgeText
+            setTextColor(badgeTint)
             textSize = 14f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(0, 0, dp(10), 0)

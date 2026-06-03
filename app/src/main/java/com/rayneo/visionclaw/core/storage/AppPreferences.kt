@@ -845,7 +845,11 @@ class AppPreferences(context: Context) {
         private const val KEY_AGENT_STATUS_POLL_SECONDS = "agent_status_poll_seconds"
         private const val KEY_HUD_CHAT_HISTORY_DAYS = "hud_chat_history_days"
         // Per-agent history arrays appended by GeminiVoicePipeline on turn
-        // completion. JSON arrays of {ts, query, response, snippet} records.
+        // completion. JSON arrays of {ts, agent, query, response, snippet}
+        // records. Gemini covers direct Gemini Live turns (no tool routed
+        // to Hermes/OpenClaw); the agent-specific keys are written from
+        // the agent-readout tool branch.
+        const val KEY_CHAT_HISTORY_GEMINI = "chat_history_gemini"
         const val KEY_CHAT_HISTORY_HERMES = "chat_history_hermes"
         const val KEY_CHAT_HISTORY_OPENCLAW = "chat_history_openclaw"
         private const val KEY_OPENCLAW_FAST_MODE = "openclaw_fast_mode"

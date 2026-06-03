@@ -31,9 +31,10 @@ object ChatHistoryStore {
 
     /** Which agent owned the turn. Drives the per-agent JSON key. */
     enum class Agent {
-        HERMES, OPENCLAW;
+        GEMINI, HERMES, OPENCLAW;
 
         fun prefKey(): String = when (this) {
+            GEMINI -> AppPreferences.KEY_CHAT_HISTORY_GEMINI
             HERMES -> AppPreferences.KEY_CHAT_HISTORY_HERMES
             OPENCLAW -> AppPreferences.KEY_CHAT_HISTORY_OPENCLAW
         }
@@ -64,6 +65,7 @@ object ChatHistoryStore {
                 val ts = obj.optLong("ts", 0L).takeIf { it > 0L } ?: return null
                 val agentName = obj.optString("agent", "").lowercase()
                 val agent = when (agentName) {
+                    "gemini" -> Agent.GEMINI
                     "hermes" -> Agent.HERMES
                     "openclaw", "tapclaw", "claw" -> Agent.OPENCLAW
                     else -> return null
@@ -115,10 +117,11 @@ object ChatHistoryStore {
         return out.sortedByDescending { it.ts }
     }
 
-    /** Read both agents merged, newest-first. Used by the unified history overlay. */
+    /** Read all agents merged, newest-first. Used by the "Show all" view in the overlay. */
     @Synchronized
     fun readAllNewestFirst(context: Context, retentionDays: Int): List<Record> {
-        return (readNewestFirst(context, Agent.HERMES, retentionDays) +
+        return (readNewestFirst(context, Agent.GEMINI, retentionDays) +
+                readNewestFirst(context, Agent.HERMES, retentionDays) +
                 readNewestFirst(context, Agent.OPENCLAW, retentionDays))
             .sortedByDescending { it.ts }
     }
