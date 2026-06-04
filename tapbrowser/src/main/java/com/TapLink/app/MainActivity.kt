@@ -1368,16 +1368,17 @@ class MainActivity :
                                                 distanceX * distanceX + distanceY * distanceY
                                         )
 
-                                // Chat-history overlay scroll routing — must
-                                // come BEFORE the expanded-card branch since
-                                // the overlay sits on top of everything else.
-                                // Same drag-to-vertical transform; targets
-                                // the overlay's inner ScrollView captured in
-                                // chatHistoryScrollView when the overlay was
-                                // built.
+                                // Chat-history overlay scroll routing — only
+                                // fires when the user has explicitly chosen
+                                // scroll mode (no cursor). When the cursor
+                                // is visible (the default state we force on
+                                // overlay open), the trackpad moves the
+                                // cursor naturally and clicks dispatch at
+                                // its position — let that work uninterrupted.
                                 val historyScroll = chatHistoryScrollView
                                 if (historyScroll != null &&
                                         chatHistoryOverlayView != null &&
+                                        !isCursorVisible &&
                                         !isKeyboardVisible) {
                                     val horizontalAsVertical =
                                             (-distanceX) * X_INVERT * H2V_GAIN
@@ -1712,17 +1713,15 @@ class MainActivity :
 
                                 handleUserInteraction()
 
-                                // Chat-history overlay tap routing. In scroll
-                                // mode the X3 cursor is hidden, so a clean
-                                // tap has no position to dispatch at — the
-                                // tap would otherwise fall through to the
-                                // overlay root and dismiss the whole thing.
-                                // Instead: when the overlay is open, select
-                                // the card the user has scrolled to the top
-                                // of the visible viewport. The scroll-to-pick
-                                // / tap-to-select pattern matches the
-                                // existing chat-card focus model.
-                                if (chatHistoryOverlayView != null) {
+                                // Chat-history overlay tap routing — ONLY in
+                                // scroll mode. When the cursor is visible
+                                // (default for the overlay) the existing
+                                // dispatchTouchEventAtCursor() path further
+                                // down handles the tap at the cursor's
+                                // current screen position, so the user can
+                                // aim at the card they want with the
+                                // pointer instead of the scroll-to-top model.
+                                if (chatHistoryOverlayView != null && !isCursorVisible) {
                                     val handled = tryTapTopmostChatHistoryCard()
                                     if (handled) return true
                                 }
@@ -7905,6 +7904,12 @@ class MainActivity :
      *  "Show all" toggle in the header flips this and re-renders. */
     private var chatHistoryActiveFilter: String? = null
 
+    /** Whether the X3 trackpad was in scroll mode when the overlay opened.
+     *  We force cursor mode while the overlay is up (the user needs the
+     *  mouse pointer to point at cards) and restore the previous mode on
+     *  close. Null means "no overlay open / nothing to restore". */
+    private var chatHistoryPrevScrollMode: Boolean? = null
+
     /**
      * Open the chat-history overlay. [filterAgent] selects the default
      * tab: "Gemini" / "Hermes" / "OpenClaw" / null (= show all).
@@ -7917,12 +7922,28 @@ class MainActivity :
         chatHistoryActiveFilter = filterAgent
         DebugLog.d("HudTap", "history overlay opening filter=${filterAgent ?: "ALL"}")
         hideChatHistoryOverlay()
+        // Force cursor mode while the overlay is up. The user needs a
+        // visible mouse pointer to point at cards and the scroll bar; the
+        // X3 hides the cursor in scroll mode. Remember the previous mode
+        // so we can put it back on close, and also kick the cursor to the
+        // overlay's centre so it isn't hiding somewhere off the card.
+        val wasScrollMode = ::dualWebViewGroup.isInitialized &&
+            dualWebViewGroup.isInScrollMode()
+        chatHistoryPrevScrollMode = wasScrollMode
+        if (wasScrollMode) {
+            runCatching { dualWebViewGroup.setScrollMode(false) }
+        }
+        if (!isCursorVisible) {
+            runCatching { toggleCursorVisibility(forceShow = true) }
+        }
+        runCatching { centerCursor(visible = true) }
         val overlay = buildChatHistoryOverlay(container)
         chatHistoryOverlayView = overlay
         container.addView(overlay)
         // Seed the focus highlight on the first card after the ScrollView
         // has laid itself out (scrollY etc. aren't available before the
-        // first measure pass).
+        // first measure pass). Only applied in scroll mode; the cursor
+        // serves as the visual focus indicator when it's showing.
         chatHistoryScrollView?.post { updateChatHistoryFocusHighlight() }
     }
 
@@ -7932,6 +7953,18 @@ class MainActivity :
         chatHistoryOverlayView = null
         chatHistoryScrollView = null
         chatHistoryFocusedRow = null
+        // Restore the trackpad mode the user had before we opened the
+        // overlay. If they were in scroll mode, put them back in scroll
+        // mode; otherwise leave the cursor visible.
+        chatHistoryPrevScrollMode?.let { wasScrollMode ->
+            if (wasScrollMode && ::dualWebViewGroup.isInitialized) {
+                runCatching {
+                    dualWebViewGroup.setScrollMode(true)
+                    toggleCursorVisibility(forceHide = true)
+                }
+            }
+        }
+        chatHistoryPrevScrollMode = null
     }
 
     /** The card row currently highlighted as "next tap selects this". Tracked
@@ -7976,9 +8009,18 @@ class MainActivity :
     /**
      * Repaint the focus highlight on the topmost visible row. Called from the
      * ScrollView's onScrollChangeListener so the highlight tracks the user's
-     * scroll position in real time.
+     * scroll position in real time. Skipped when the cursor is visible — the
+     * cursor itself indicates focus in that mode, and a second highlight
+     * just adds visual noise.
      */
     private fun updateChatHistoryFocusHighlight() {
+        if (isCursorVisible) {
+            // Make sure we don't leave a stale highlight behind from a
+            // previous scroll-mode session.
+            chatHistoryFocusedRow?.let { applyHistoryRowFocus(it, focused = false) }
+            chatHistoryFocusedRow = null
+            return
+        }
         val next = findTopmostVisibleHistoryRow()
         val prev = chatHistoryFocusedRow
         if (prev === next) return
