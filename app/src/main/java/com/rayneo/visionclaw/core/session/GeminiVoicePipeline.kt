@@ -104,6 +104,27 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var lastLiveResponseActivityMs: Long = 0L
     @Volatile private var lastForcedConversationalTranscript: String = ""
 
+    /**
+     * Regression port from the pre-Phase-4 MainActivity (commit 8c2b872,
+     * "drop late Gemini output between turns"). When Gemini occasionally
+     * keeps emitting outputTranscription / modelText chunks AFTER
+     * onTurnComplete has fired but BEFORE the next user turn starts, those
+     * late chunks were being appended as a brand-new assistant card —
+     * producing the "Gemini said the same thing twice" symptom Mars hit.
+     *
+     * One-bit gate:
+     *  • set true in onTurnComplete,
+     *  • cleared in onInputTranscription on the next user turn (and on
+     *    every session-boundary reset below),
+     *  • used by onOutputTranscription / onModelText to early-return so
+     *    the late chunk is dropped with a diagnostic Log.d.
+     *
+     * When input arrives while the flag is still latched, startingFreshTurn
+     * is forced so the per-turn cleanup (transcript reset, etc.) still
+     * runs correctly.
+     */
+    @Volatile private var dropOutputTranscriptionUntilNextInput: Boolean = false
+
     /** Audio playback for Gemini's model audio responses. Lazy so we
      *  only allocate the AudioTrack when voice actually activates. */
     private val audioPlayer: GeminiAudioPlayer by lazy { GeminiAudioPlayer(appContext) }
@@ -454,6 +475,10 @@ class GeminiVoicePipeline(context: Context) {
         connectJob = null
         conversationalFallbackJob?.cancel()
         conversationalFallbackJob = null
+        // Release the late-output gate at every session-boundary reset so
+        // the next fresh session starts clean (gate is per-turn within a
+        // session; a hard reset wipes it regardless).
+        dropOutputTranscriptionUntilNextInput = false
 
         // Cancel the agent-readout coroutine and clear its gates BEFORE we
         // flush audio — otherwise it keeps queueing TTS chunks (speech keeps
@@ -552,6 +577,13 @@ class GeminiVoicePipeline(context: Context) {
             override fun onInputTranscription(text: String) {
                 if (!isSessionEpochCurrent(epoch)) return
                 if (text.isBlank()) return
+                // Next user turn starting — release the late-output gate so
+                // the model can speak again. Late output from the PREVIOUS
+                // turn (which should have been dropped) is now safely past.
+                if (dropOutputTranscriptionUntilNextInput) {
+                    Log.d(TAG, "onInputTranscription: releasing late-output gate")
+                    dropOutputTranscriptionUntilNextInput = false
+                }
                 latestInputTranscript = text
                 Log.d(TAG, "onInputTranscription partial='${text.take(120)}'")
                 // Live partial transcript — surface in HUD so the user
@@ -585,6 +617,20 @@ class GeminiVoicePipeline(context: Context) {
                 if (!isSessionEpochCurrent(epoch)) return
                 if (text.isBlank()) return
                 noteLiveResponseActivity()
+                // Regression port (commit 8c2b872): late chunk arriving AFTER
+                // onTurnComplete but BEFORE the next user turn would
+                // otherwise be appended as a brand-new assistant card,
+                // producing the "Gemini said the same thing twice in a row"
+                // symptom. Drop with a diagnostic until the next user turn
+                // releases the gate.
+                if (dropOutputTranscriptionUntilNextInput) {
+                    Log.d(
+                        TAG,
+                        "Dropping late outputTranscription after turnComplete: " +
+                            "'${text.take(120)}'"
+                    )
+                    return
+                }
                 // While an agent reply (Hermes / TapClaw / OpenClaw) is being
                 // read aloud via the selected readout engine, the chat card
                 // already holds the agent's VERBATIM reply
@@ -654,6 +700,12 @@ class GeminiVoicePipeline(context: Context) {
                 if (!isSessionEpochCurrent(epoch)) return
                 noteLiveResponseActivity()
                 Log.d(TAG, "onTurnComplete: finishReason=$finishReason")
+                // Latch the late-output gate. Any outputTranscription /
+                // modelText arriving from here until the next user turn is
+                // a stray late chunk that would otherwise be appended as a
+                // duplicate assistant card. Cleared in onInputTranscription
+                // and in the session-shutdown path below.
+                dropOutputTranscriptionUntilNextInput = true
                 // Capture the assistant turn BEFORE the working buffer is
                 // reset below. We append a GEMINI history record only when
                 // this was a direct Gemini Live turn — agent-routed turns
