@@ -1368,6 +1368,29 @@ class MainActivity :
                                                 distanceX * distanceX + distanceY * distanceY
                                         )
 
+                                // Chat-history overlay scroll routing — must
+                                // come BEFORE the expanded-card branch since
+                                // the overlay sits on top of everything else.
+                                // Same drag-to-vertical transform; targets
+                                // the overlay's inner ScrollView captured in
+                                // chatHistoryScrollView when the overlay was
+                                // built.
+                                val historyScroll = chatHistoryScrollView
+                                if (historyScroll != null &&
+                                        chatHistoryOverlayView != null &&
+                                        !isKeyboardVisible) {
+                                    val horizontalAsVertical =
+                                            (-distanceX) * X_INVERT * H2V_GAIN
+                                    val verticalFromDrag = distanceY * Y_INVERT
+                                    val delta =
+                                            (horizontalAsVertical + verticalFromDrag).toInt()
+                                    if (delta != 0) {
+                                        cancelActiveTouchScrollGesture()
+                                        historyScroll.scrollBy(0, delta)
+                                    }
+                                    return true
+                                }
+
                                 // Reader-mode scroll routing: when the chat
                                 // card is expanded to its tall reader view,
                                 // trackpad swipe deltas need to scroll the
@@ -7856,6 +7879,12 @@ class MainActivity :
     // visionclaw Service every time a Hermes / TapClaw turn completes.
     private var chatHistoryOverlayView: View? = null
 
+    /** Reference to the inner ScrollView so the trackpad onScroll handler
+     *  can route scroll deltas directly into it — the X3's synthetic-touch
+     *  cursor path doesn't naturally reach the overlay otherwise. Cleared
+     *  in hideChatHistoryOverlay so a torn-down view never gets scrolled. */
+    private var chatHistoryScrollView: android.widget.ScrollView? = null
+
     /** The agent currently filtered in the open overlay. Null means
      *  "Show all" (every recent turn across all three agents). The
      *  "Show all" toggle in the header flips this and re-renders. */
@@ -7882,6 +7911,7 @@ class MainActivity :
         val existing = chatHistoryOverlayView ?: return
         (existing.parent as? ViewGroup)?.removeView(existing)
         chatHistoryOverlayView = null
+        chatHistoryScrollView = null
     }
 
     private fun buildChatHistoryOverlay(parent: ViewGroup): View {
@@ -8009,7 +8039,11 @@ class MainActivity :
         }
         card.addView(divider)
 
-        // Scrollable card list.
+        // Scrollable card list. Persist the scrollbar (don't fade — the
+        // user needs constant feedback that there's more content below)
+        // and inset it inside the card padding via padding/clipping so the
+        // bar appears alongside the cards rather than floating in the
+        // overlay margin.
         val scroll = android.widget.ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -8017,7 +8051,16 @@ class MainActivity :
                 1f
             )
             isFillViewport = true
+            isVerticalScrollBarEnabled = true
+            isScrollbarFadingEnabled = false
+            scrollBarStyle = View.SCROLLBARS_INSIDE_OVERLAY
+            scrollBarSize = dp(4)
+            // Small right inset so the cards leave room for the bar
+            // without it landing on top of the card content.
+            setPadding(0, 0, dp(6), 0)
+            clipToPadding = false
         }
+        chatHistoryScrollView = scroll
         val list = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(

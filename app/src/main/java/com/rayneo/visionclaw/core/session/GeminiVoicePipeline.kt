@@ -661,7 +661,20 @@ class GeminiVoicePipeline(context: Context) {
                 noteLiveResponseActivity()
                 // Drop Gemini Live's own audio while an agent reply is being
                 // read aloud via the selected readout engine, so the two
-                // voices never overlap (mirrors hermes suppressGeminiOutputUntilMs).
+                // voices never overlap. Two layers of defence here:
+                //  1) agentReadoutActive — set true at the start of the
+                //     readout coroutine, cleared in its finally. Catches the
+                //     in-readout case directly without depending on the
+                //     suppressGeminiOutputUntilMs timestamp.
+                //  2) suppressGeminiOutputUntilMs — the timestamp gate that
+                //     also covers the post-readout AudioTrack drain window
+                //     after the coroutine sets agentReadoutActive=false (see
+                //     finally block below — instead of clearing the flag
+                //     immediately, it extends it by AGENT_READOUT_DRAIN_MS).
+                if (agentReadoutActive) {
+                    Log.d(TAG, "Dropping Gemini onModelAudio: agent readout active")
+                    return
+                }
                 if (android.os.SystemClock.uptimeMillis() < suppressGeminiOutputUntilMs) {
                     return
                 }
@@ -1208,9 +1221,15 @@ class GeminiVoicePipeline(context: Context) {
                 // Agent work is done — clear the busy flag so the persistent
                 // status-line poll can resume showing idle reachability.
                 HudStateBridge.update { it.copy(agentBusy = false) }
-                // Let the queued audio drain, then stop dropping Gemini's
-                // audio and return to the listening state for follow-ups.
-                suppressGeminiOutputUntilMs = 0L
+                // Keep Gemini's audio dropped while the AudioTrack drains
+                // the queued Hermes/TapClaw chunks. Previously this cleared
+                // suppressGeminiOutputUntilMs to 0L immediately, opening a
+                // window where Gemini's voice would overlap the still-
+                // audible agent readout. AGENT_READOUT_DRAIN_MS is short
+                // enough that follow-ups feel responsive, long enough to
+                // cover typical AudioTrack buffering on the X3.
+                suppressGeminiOutputUntilMs =
+                    android.os.SystemClock.uptimeMillis() + AGENT_READOUT_DRAIN_MS
                 if (liveSessionReady && isSessionEpochCurrent(epoch)) {
                     HudStateBridge.update {
                         it.copy(
@@ -1974,6 +1993,12 @@ class GeminiVoicePipeline(context: Context) {
     companion object {
         private const val TAG = "GeminiVoicePipe"
         private const val SAMPLE_RATE_HZ = 16_000
+        /** How long after the readout coroutine ends to keep Gemini audio
+         *  suppressed so the AudioTrack drain doesn't get overlapped by a
+         *  late Gemini chunk. 2.5s covers typical X3 AudioTrack buffering
+         *  for the last 1–2 chunks while remaining short enough that the
+         *  user's next follow-up gets an immediate Gemini response. */
+        private const val AGENT_READOUT_DRAIN_MS = 2_500L
         private const val TAPBROWSER_ACTIVITY = "com.TapLinkX3.app.MainActivity"
         private const val EXTRA_BROWSER_INITIAL_URL = "tapclaw_initial_url"
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUERY = "tapclaw_youtube_autoplay_query"
