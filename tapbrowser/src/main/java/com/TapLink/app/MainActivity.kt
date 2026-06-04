@@ -1712,6 +1712,21 @@ class MainActivity :
 
                                 handleUserInteraction()
 
+                                // Chat-history overlay tap routing. In scroll
+                                // mode the X3 cursor is hidden, so a clean
+                                // tap has no position to dispatch at — the
+                                // tap would otherwise fall through to the
+                                // overlay root and dismiss the whole thing.
+                                // Instead: when the overlay is open, select
+                                // the card the user has scrolled to the top
+                                // of the visible viewport. The scroll-to-pick
+                                // / tap-to-select pattern matches the
+                                // existing chat-card focus model.
+                                if (chatHistoryOverlayView != null) {
+                                    val handled = tryTapTopmostChatHistoryCard()
+                                    if (handled) return true
+                                }
+
                                 // If the touch interaction started on the bookmarks view, consume
                                 // the tap here
                                 // to prevent it from propagating to the WebView (even if bookmarks
@@ -7905,6 +7920,10 @@ class MainActivity :
         val overlay = buildChatHistoryOverlay(container)
         chatHistoryOverlayView = overlay
         container.addView(overlay)
+        // Seed the focus highlight on the first card after the ScrollView
+        // has laid itself out (scrollY etc. aren't available before the
+        // first measure pass).
+        chatHistoryScrollView?.post { updateChatHistoryFocusHighlight() }
     }
 
     private fun hideChatHistoryOverlay() {
@@ -7912,6 +7931,76 @@ class MainActivity :
         (existing.parent as? ViewGroup)?.removeView(existing)
         chatHistoryOverlayView = null
         chatHistoryScrollView = null
+        chatHistoryFocusedRow = null
+    }
+
+    /** The card row currently highlighted as "next tap selects this". Tracked
+     *  separately from the visual state so the highlight can be cleared when
+     *  the focus moves to a different row during scrolling. */
+    private var chatHistoryFocusedRow: View? = null
+
+    /**
+     * Walk the visible card list and pick the topmost row whose top edge is
+     * at or below the ScrollView's current scroll position. That's the card
+     * the user has just scrolled into view — when they tap, it gets selected.
+     * Returns true if a focused row was found and clicked, false otherwise.
+     */
+    private fun tryTapTopmostChatHistoryCard(): Boolean {
+        val focused = chatHistoryFocusedRow ?: findTopmostVisibleHistoryRow()
+        ?: return false
+        DebugLog.d("HudTap", "history overlay tap → click focused row")
+        focused.performClick()
+        return true
+    }
+
+    /**
+     * Find the topmost card row currently visible in the chat-history
+     * ScrollView. Skips non-clickable children (the date-separator headers).
+     * Used both for tap routing and for the focus-highlight on scroll.
+     */
+    private fun findTopmostVisibleHistoryRow(): View? {
+        val scroll = chatHistoryScrollView ?: return null
+        val list = (scroll.getChildAt(0) as? ViewGroup) ?: return null
+        val scrollY = scroll.scrollY
+        for (i in 0 until list.childCount) {
+            val child = list.getChildAt(i)
+            // Skip date-separator headers — they aren't clickable.
+            if (!child.isClickable) continue
+            // First child whose bottom edge sits below the current scroll
+            // position is the topmost row visible to the user.
+            if (child.bottom > scrollY + 4) return child
+        }
+        return null
+    }
+
+    /**
+     * Repaint the focus highlight on the topmost visible row. Called from the
+     * ScrollView's onScrollChangeListener so the highlight tracks the user's
+     * scroll position in real time.
+     */
+    private fun updateChatHistoryFocusHighlight() {
+        val next = findTopmostVisibleHistoryRow()
+        val prev = chatHistoryFocusedRow
+        if (prev === next) return
+        prev?.let { applyHistoryRowFocus(it, focused = false) }
+        next?.let { applyHistoryRowFocus(it, focused = true) }
+        chatHistoryFocusedRow = next
+    }
+
+    /**
+     * Toggle the focus visuals on a card row. Focused rows get a brighter
+     * cyan border so the user can see which card the next tap will select.
+     */
+    private fun applyHistoryRowFocus(row: View, focused: Boolean) {
+        val density = resources.displayMetrics.density
+        val cornerRadius = (6 * density)
+        val bg = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            this.cornerRadius = cornerRadius
+            setColor(if (focused) 0x661B6480 else 0x33141414.toInt())
+            setStroke(if (focused) 2 else 1, if (focused) 0xFF8FDFFF.toInt() else 0x33FFFFFF)
+        }
+        row.background = bg
     }
 
     private fun buildChatHistoryOverlay(parent: ViewGroup): View {
@@ -8059,6 +8148,13 @@ class MainActivity :
             // without it landing on top of the card content.
             setPadding(0, 0, dp(6), 0)
             clipToPadding = false
+            // Track the focus highlight as the user scrolls. The X3
+            // trackpad path doesn't move a visible cursor in scroll mode,
+            // so the highlight is the user's only feedback for "this is
+            // the card the next tap will select."
+            setOnScrollChangeListener { _, _, _, _, _ ->
+                updateChatHistoryFocusHighlight()
+            }
         }
         chatHistoryScrollView = scroll
         val list = LinearLayout(this).apply {
