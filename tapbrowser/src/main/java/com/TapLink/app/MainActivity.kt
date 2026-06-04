@@ -7899,6 +7899,12 @@ class MainActivity :
      *  in hideChatHistoryOverlay so a torn-down view never gets scrolled. */
     private var chatHistoryScrollView: android.widget.ScrollView? = null
 
+    /** Custom scroll track + thumb. Android's built-in scrollbar is not
+     *  interactive (purely a visual indicator); we paint our own draggable
+     *  thumb on the right edge so the cursor can click + drag it. */
+    private var chatHistoryScrollTrack: View? = null
+    private var chatHistoryScrollThumb: View? = null
+
     /** The agent currently filtered in the open overlay. Null means
      *  "Show all" (every recent turn across all three agents). The
      *  "Show all" toggle in the header flips this and re-renders. */
@@ -7940,11 +7946,14 @@ class MainActivity :
         val overlay = buildChatHistoryOverlay(container)
         chatHistoryOverlayView = overlay
         container.addView(overlay)
-        // Seed the focus highlight on the first card after the ScrollView
-        // has laid itself out (scrollY etc. aren't available before the
-        // first measure pass). Only applied in scroll mode; the cursor
-        // serves as the visual focus indicator when it's showing.
-        chatHistoryScrollView?.post { updateChatHistoryFocusHighlight() }
+        // Seed the focus highlight + scroll thumb after the ScrollView has
+        // laid itself out (height/scrollY etc. aren't available before the
+        // first measure pass). The thumb is universal; the focus highlight
+        // only paints in scroll mode (cursor mode uses the pointer instead).
+        chatHistoryScrollView?.post {
+            updateScrollThumb()
+            updateChatHistoryFocusHighlight()
+        }
     }
 
     private fun hideChatHistoryOverlay() {
@@ -7952,6 +7961,8 @@ class MainActivity :
         (existing.parent as? ViewGroup)?.removeView(existing)
         chatHistoryOverlayView = null
         chatHistoryScrollView = null
+        chatHistoryScrollTrack = null
+        chatHistoryScrollThumb = null
         chatHistoryFocusedRow = null
         // Restore the trackpad mode the user had before we opened the
         // overlay. If they were in scroll mode, put them back in scroll
@@ -8007,6 +8018,42 @@ class MainActivity :
     }
 
     /**
+     * Resize + reposition the custom scroll thumb to reflect the current
+     * ScrollView state. Thumb height is proportional to viewport/content
+     * ratio; thumb Y position is proportional to scrollY/maxScroll. Called
+     * from the ScrollView's onScrollChangeListener and from a post {} after
+     * the overlay is added (so the initial measure pass has run).
+     */
+    private fun updateScrollThumb() {
+        val scroll = chatHistoryScrollView ?: return
+        val track = chatHistoryScrollTrack ?: return
+        val thumb = chatHistoryScrollThumb ?: return
+        val content = scroll.getChildAt(0) ?: return
+        val contentH = content.height
+        val viewportH = scroll.height
+        val trackH = track.height
+        if (contentH <= viewportH || trackH <= 0) {
+            // Content fits in the viewport — no need for a thumb.
+            thumb.visibility = View.INVISIBLE
+            return
+        }
+        thumb.visibility = View.VISIBLE
+        val density = resources.displayMetrics.density
+        val minThumbH = (24 * density).toInt()
+        val ratioVisible = viewportH.toFloat() / contentH.toFloat()
+        val targetH = (trackH * ratioVisible).toInt().coerceAtLeast(minThumbH)
+        val lp = thumb.layoutParams
+        if (lp.height != targetH) {
+            lp.height = targetH
+            thumb.layoutParams = lp
+        }
+        val maxScroll = (contentH - viewportH).coerceAtLeast(1)
+        val maxThumb = (trackH - targetH).coerceAtLeast(0)
+        val posY = (scroll.scrollY.toFloat() / maxScroll.toFloat()) * maxThumb
+        thumb.translationY = posY
+    }
+
+    /**
      * Repaint the focus highlight on the topmost visible row. Called from the
      * ScrollView's onScrollChangeListener so the highlight tracks the user's
      * scroll position in real time. Skipped when the cursor is visible — the
@@ -8048,6 +8095,7 @@ class MainActivity :
     private fun buildChatHistoryOverlay(parent: ViewGroup): View {
         val density = resources.displayMetrics.density
         fun dp(v: Int) = (v * density).toInt()
+        val MATCH_PARENT = ViewGroup.LayoutParams.MATCH_PARENT
         val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
         val retentionDays = prefs.getInt("hud_chat_history_days", 3).coerceIn(1, 5)
 
@@ -8170,35 +8218,119 @@ class MainActivity :
         }
         card.addView(divider)
 
-        // Scrollable card list. Persist the scrollbar (don't fade — the
-        // user needs constant feedback that there's more content below)
-        // and inset it inside the card padding via padding/clipping so the
-        // bar appears alongside the cards rather than floating in the
-        // overlay margin.
-        val scroll = android.widget.ScrollView(this).apply {
+        // Scrollable card list. We replace Android's built-in scrollbar
+        // (which is purely a visual indicator — not interactive) with a
+        // custom track + draggable thumb to the right of the ScrollView.
+        // The cursor can click-and-drag the thumb to scroll, click on the
+        // empty track to page up/down, and click on a card to select it.
+        // Standard scrollbar UX for a cursor-driven UI.
+        val scrollRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
                 1f
             )
+        }
+        val scroll = android.widget.ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, MATCH_PARENT, 1f)
             isFillViewport = true
-            isVerticalScrollBarEnabled = true
-            isScrollbarFadingEnabled = false
-            scrollBarStyle = View.SCROLLBARS_INSIDE_OVERLAY
-            scrollBarSize = dp(4)
-            // Small right inset so the cards leave room for the bar
-            // without it landing on top of the card content.
-            setPadding(0, 0, dp(6), 0)
-            clipToPadding = false
-            // Track the focus highlight as the user scrolls. The X3
-            // trackpad path doesn't move a visible cursor in scroll mode,
-            // so the highlight is the user's only feedback for "this is
-            // the card the next tap will select."
-            setOnScrollChangeListener { _, _, _, _, _ ->
-                updateChatHistoryFocusHighlight()
-            }
+            isVerticalScrollBarEnabled = false
+            setPadding(0, 0, dp(4), 0)
         }
         chatHistoryScrollView = scroll
+
+        // Track: faint dark strip on the right edge.
+        val scrollTrack = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(14), MATCH_PARENT).apply {
+                leftMargin = dp(4)
+            }
+            setBackgroundColor(0x33000000)
+            isClickable = true
+            isFocusable = true
+        }
+        // Thumb: rounded cyan rectangle inside the track. Initial size is
+        // arbitrary — updateScrollThumb() resizes/positions it after the
+        // ScrollView has measured its content.
+        val scrollThumb = View(this).apply {
+            layoutParams = FrameLayout.LayoutParams(dp(10), dp(40)).apply {
+                leftMargin = dp(2)
+            }
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(3).toFloat()
+                setColor(0xFF8FDFFF.toInt())
+            }
+            isClickable = true
+            isFocusable = true
+        }
+        scrollTrack.addView(scrollThumb)
+        chatHistoryScrollTrack = scrollTrack
+        chatHistoryScrollThumb = scrollThumb
+
+        // Drag handler on the thumb: cursor click + drag translates to
+        // scrollTo(). Captures ACTION_DOWN baseline + ACTION_MOVE deltas;
+        // returns true to claim the gesture so it doesn't fall through to
+        // the track's page-up/down click.
+        var dragStartY = 0f
+        var dragStartScroll = 0
+        scrollThumb.setOnTouchListener { _, ev ->
+            when (ev.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    dragStartY = ev.rawY
+                    dragStartScroll = scroll.scrollY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val deltaPx = ev.rawY - dragStartY
+                    val contentH = scroll.getChildAt(0)?.height ?: 0
+                    val viewportH = scroll.height
+                    val maxScroll = (contentH - viewportH).coerceAtLeast(0)
+                    val maxThumb = (scrollTrack.height - scrollThumb.height)
+                        .coerceAtLeast(1)
+                    // Map thumb pixel delta to scroll delta proportionally.
+                    val scrollDelta =
+                        (deltaPx * maxScroll.toFloat() / maxThumb.toFloat()).toInt()
+                    val target = (dragStartScroll + scrollDelta)
+                        .coerceIn(0, maxScroll)
+                    scroll.scrollTo(0, target)
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
+        // Track click (above/below the thumb) = page up / page down. Uses
+        // raw touch Y in the track's local coordinates compared to the
+        // thumb's current position.
+        scrollTrack.setOnClickListener { /* swallow — handled in onTouchListener */ }
+        scrollTrack.setOnTouchListener { _, ev ->
+            if (ev.action != MotionEvent.ACTION_UP) return@setOnTouchListener false
+            val thumbTop = scrollThumb.y
+            val thumbBottom = thumbTop + scrollThumb.height
+            val pageBy = scroll.height
+            when {
+                ev.y < thumbTop -> {
+                    scroll.smoothScrollBy(0, -pageBy)
+                    true
+                }
+                ev.y > thumbBottom -> {
+                    scroll.smoothScrollBy(0, pageBy)
+                    true
+                }
+                else -> false
+            }
+        }
+
+        // Whenever the ScrollView scrolls (drag, page click, or content
+        // grow) reposition + resize the thumb to reflect the new state.
+        scroll.setOnScrollChangeListener { _, _, _, _, _ ->
+            updateScrollThumb()
+            updateChatHistoryFocusHighlight()
+        }
+
+        scrollRow.addView(scroll)
+        scrollRow.addView(scrollTrack)
         val list = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(
@@ -8207,7 +8339,7 @@ class MainActivity :
             )
         }
         scroll.addView(list)
-        card.addView(scroll)
+        card.addView(scrollRow)
 
         renderChatHistoryCards(list, prefs, retentionDays)
 
