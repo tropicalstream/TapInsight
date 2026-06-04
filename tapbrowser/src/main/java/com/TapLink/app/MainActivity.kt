@@ -8229,7 +8229,14 @@ class MainActivity :
         ts: Long, agentLabel: String, query: String, response: String
     ) {
         hideChatHistoryOverlay()
-        val prefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+        // BUGFIX: the visionclaw router reads previous_chat_summary from the
+        // SharedPreferences file named "chat_context" (see MainViewModel
+        // chatContextPrefs / KEY_PREVIOUS_CHAT). Earlier revisions of this
+        // method wrote to "visionclaw_prefs" — a DIFFERENT file — so Gemini
+        // never saw the loaded conversation and follow-up questions like
+        // "what city was that?" got "I don't know" answers. Use the file
+        // the router actually reads.
+        val prefs = getSharedPreferences("chat_context", MODE_PRIVATE)
         // Build the previous-conversation payload for the next live turn.
         // We don't prepend an acknowledge-this primer anymore because the
         // readout below handles the "play it back" part directly.
@@ -8244,7 +8251,8 @@ class MainActivity :
         DebugLog.d(
             "HudTap",
             "history card tap → speakAgentReply agent=$agentLabel ts=$ts " +
-                "responseLen=${response.length}"
+                "responseLen=${response.length} prefsBodyLen=${body.length} " +
+                "(written to chat_context.previous_chat_summary)"
         )
         // Speak the agent reply verbatim. Use the response if present —
         // otherwise (rare) fall back to a short "what the user asked"
