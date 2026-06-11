@@ -909,8 +909,14 @@ class GeminiVoicePipeline(context: Context) {
                 // next-input release gate shut (see onInputTranscription) and
                 // the timestamp backstop caps a wedged turn at
                 // AGENT_INFLIGHT_SUPPRESS_MS.
+                //
+                // DELIBERATELY NOT SET HERE: suppressGeminiOutputUntilNextInput.
+                // That flag is armed only when the agent RESULT arrives (see
+                // below). If it were set at dispatch and the agent call hung
+                // forever, no release site would ever fire and Gemini would
+                // stay muted for the whole session — the timestamp backstop
+                // above must remain the failsafe for a wedged call.
                 agentCallInFlight = true
-                suppressGeminiOutputUntilNextInput = true
                 suppressGeminiOutputUntilMs =
                     android.os.SystemClock.uptimeMillis() + AGENT_INFLIGHT_SUPPRESS_MS
             }
@@ -958,6 +964,13 @@ class GeminiVoicePipeline(context: Context) {
                         "readout voice and shown verbatim on the chat card. Do NOT read it " +
                         "aloud, summarize, or repeat it now. Keep it ONLY as reference so you " +
                         "can answer follow-up questions about it later.]\n\n" + displayText
+                // Arm the until-next-input gate HERE, at result arrival — not
+                // at dispatch. Gemini Live often narrates a tool response;
+                // this keeps that narration muted until the user actually
+                // speaks again (the readout engine is the only voice for
+                // this turn). Arming at dispatch instead would leave no
+                // failsafe release if the agent call ever hung forever.
+                suppressGeminiOutputUntilNextInput = true
                 runCatching { liveSession?.sendToolResponse(callId, toolName, agentToolResponse) }
                 HudStateBridge.update {
                     it.copy(notification = null, phase = HudStateBridge.VoicePhase.THINKING)
