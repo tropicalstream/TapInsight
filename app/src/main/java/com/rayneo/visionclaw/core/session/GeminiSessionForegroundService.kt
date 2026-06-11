@@ -83,6 +83,21 @@ class GeminiSessionForegroundService : LifecycleService() {
                 service.mainHandler.post { service.activateVoice() }
             }
         }
+        override fun showAssistantCard(text: String) {
+            // Notification-tap path: render the text as an assistant chat
+            // card WITHOUT starting a session or speaking. The shared
+            // MainViewModel feeds ChatCardBridge, which the unipanel
+            // overlay observes — same surface as a live agent reply.
+            val clean = text.trim()
+            if (clean.isBlank()) return
+            val service = this@GeminiSessionForegroundService
+            runCatching {
+                (service.applicationContext as com.rayneo.visionclaw.VisionClawApp)
+                    .viewModel.appendDirectAssistantResponse(clean)
+            }.onFailure {
+                Log.w(TAG, "showAssistantCard failed: ${it.message}")
+            }
+        }
     }
 
     private val binder = LocalBinder()

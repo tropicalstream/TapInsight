@@ -53,4 +53,13 @@ class VisionClawApp : Application() {
     val viewModel: MainViewModel by lazy {
         MainViewModel(this)
     }
+
+    override fun onCreate() {
+        super.onCreate()
+        // HUD bell notifications persist across app restarts: restores
+        // the list + unread badge + dedupe memory at process start. The
+        // rebuild re-created NotificationCenter.init() but this call —
+        // the only thing that makes persistence actually run — was lost.
+        com.rayneo.visionclaw.core.notifications.NotificationCenter.init(this)
+    }
 }

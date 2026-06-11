@@ -94,6 +94,16 @@ interface VoiceServiceApi {
     fun speakAgentReply(text: String)
 
     /**
+     * Publish [text] as a direct assistant chat card (no Gemini turn, no
+     * TTS). Used by the HUD notification panel: tapping a notification row
+     * shows "<title> — <message>" as an expanded card; readout then only
+     * happens if the user taps that expanded card (speakAgentReply path).
+     * Routed through the service so the card lands in the shared
+     * MainViewModel → ChatCardBridge flow like any real agent reply.
+     */
+    fun showAssistantCard(text: String)
+
+    /**
      * Phase 4g — install a [androidx.camera.core.Preview.SurfaceProvider]
      * (typically `PreviewView.surfaceProvider`) so the next camera
      * activation binds a Preview use case alongside ImageAnalysis,

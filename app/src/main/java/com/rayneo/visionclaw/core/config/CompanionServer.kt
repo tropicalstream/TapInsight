@@ -470,6 +470,9 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "hud_show_event_time" to true,
         "hud_show_tasks" to true,
         "hud_show_news" to true,
+        // AQI on the HUD strip — default OFF (Mars R6 declutter); the
+        // value plumbing stays warm so flipping this shows live data.
+        "hud_show_aqi" to false,
         "phone_location_bridge_enabled" to false,
         // Live AI
         "live_session_resumption" to true,
@@ -611,6 +614,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "enabled_calendar_ids",
         "hud_show_tasks",
         "hud_show_news",
+        "hud_show_aqi",
         "tasks_item_count",
         "news_item_count",
         "news_refresh_interval_seconds",

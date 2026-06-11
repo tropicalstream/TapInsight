@@ -125,24 +125,90 @@
                     android:letterSpacing="0.04"
                     tools:ignore="UnusedAttribute" />
 
+                <!-- Notification bell + unread badge (R3/R5/R6). Sits
+                     right of the date. Click toggles the roll-down
+                     notification list; the badge shows unreadCount and
+                     resets when the list opens. Restored from the
+                     22:35 APK layout after the rebuild lost it. -->
+                <FrameLayout
+                    android:id="@+id/unipanelHudBellContainer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:paddingTop="4dp"
+                    android:paddingEnd="5dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:clipChildren="false"
+                    android:clipToPadding="false"
+                    android:contentDescription="Notifications">
+
+                    <ImageView
+                        android:id="@+id/unipanelHudBellIcon"
+                        android:layout_width="15dp"
+                        android:layout_height="15dp"
+                        android:layout_gravity="start|bottom"
+                        android:src="@drawable/ic_unipanel_bell"
+                        android:tint="#CCFFFFFF"
+                        android:contentDescription="@null"
+                        tools:ignore="UseAppTint" />
+
+                    <TextView
+                        android:id="@+id/unipanelHudBellBadge"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="end|top"
+                        android:minWidth="13dp"
+                        android:background="@drawable/bg_unipanel_bell_badge"
+                        android:gravity="center"
+                        android:includeFontPadding="false"
+                        android:paddingHorizontal="2dp"
+                        android:paddingVertical="1dp"
+                        android:text="0"
+                        android:textColor="#FFFFFFFF"
+                        android:textSize="8sp"
+                        android:textStyle="bold"
+                        android:visibility="gone"
+                        tools:ignore="UnusedAttribute" />
+                </FrameLayout>
+
                 <!-- Battery %. Updated on ACTION_BATTERY_CHANGED
                      broadcasts (sticky intent on Android, so we get
                      the current value at registration time too). -->
-                <TextView
-                    android:id="@+id/unipanelHudBattery"
+                <FrameLayout
+                    android:id="@+id/unipanelHudBatteryContainer"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="10dp"
-                    android:gravity="center_vertical"
-                    android:drawableStart="@drawable/ic_unipanel_battery"
-                    android:drawablePadding="4dp"
-                    android:drawableTint="#FF9FE6B0"
-                    android:fontFamily="sans-serif-medium"
-                    android:text="—"
-                    android:textColor="#FF9FE6B0"
-                    android:textSize="11sp"
-                    android:letterSpacing="0.04"
-                    tools:ignore="UnusedAttribute" />
+                    android:layout_marginStart="10dp">
+
+                    <ImageView
+                        android:id="@+id/unipanelHudBatteryIcon"
+                        android:layout_width="34dp"
+                        android:layout_height="17dp"
+                        android:layout_gravity="center_vertical"
+                        android:src="@drawable/ic_unipanel_battery"
+                        android:tint="#FF9FE6B0"
+                        android:contentDescription="Battery"
+                        tools:ignore="UseAppTint" />
+
+                    <!-- Percentage INSIDE the glyph (R6), centered with a
+                         4px optical nudge (R10); end-pad keeps the digits
+                         clear of the battery cap. -->
+                    <TextView
+                        android:id="@+id/unipanelHudBattery"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:gravity="center"
+                        android:translationY="4px"
+                        android:paddingEnd="5dp"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium"
+                        android:text="—"
+                        android:textColor="#FF9FE6B0"
+                        android:textSize="8sp"
+                        android:textStyle="bold"
+                        tools:ignore="UnusedAttribute,RtlSymmetry" />
+                </FrameLayout>
 
                 <!-- Phase 4h — Hermes HUD fields, compressed into the
                      unipanel strip. Ported from the hermes branch's
@@ -179,6 +245,9 @@
                 <!-- AQI text — placeholder until a follow-up wires
                      viewModel.airQualityClient polling. The literal
                      value shown by default is in android:text below. -->
+                <!-- AQI hidden by default (Mars R6); shown only when
+                     the companion toggle hud_show_aqi is on. Plumbing
+                     stays intact either way. -->
                 <TextView
                     android:id="@+id/unipanelHudAqi"
                     android:layout_width="wrap_content"
@@ -189,6 +258,7 @@
                     android:textColor="#CCFFFFFF"
                     android:textSize="11sp"
                     android:letterSpacing="0.04"
+                    android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
                 <!-- Phase 4k — the standalone Hermes status dot was
@@ -431,7 +501,45 @@
                  repositionUnipanelAssistantCard(). Text scrolls inside
                  the height-capped box and the whole card sits on top of
                  the WebView. -->
-            <ScrollView
+                        <!-- Roll-down notification list (R3/R5/R7): opens under
+                 the clock on bell tap / temple long-tap, auto-rolls-up
+                 after 10s, rows are tappable (expanded card + readout).
+                 Restored from the 22:35 APK layout. -->
+            <LinearLayout
+                android:id="@+id/unipanelNotifPanel"
+                android:layout_width="300dp"
+                android:layout_height="wrap_content"
+                android:layout_gravity="start|top"
+                android:layout_marginStart="8dp"
+                android:layout_marginTop="40dp"
+                android:background="#E6000000"
+                android:elevation="14dp"
+                android:orientation="vertical"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="6dp"
+                android:visibility="gone"
+                tools:ignore="UnusedAttribute">
+
+                <TextView
+                    android:id="@+id/unipanelNotifPanelTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.08"
+                    android:text="NOTIFICATIONS"
+                    android:textColor="#FFFFC857"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:id="@+id/unipanelNotifRows"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:orientation="vertical" />
+            </LinearLayout>
+
+<ScrollView
                 android:id="@+id/unipanelMiniCardScroll"
                 android:layout_width="260dp"
                 android:layout_height="76dp"

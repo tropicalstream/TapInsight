@@ -7072,6 +7072,7 @@ class MainActivity :
         }
         uiHandler.post(ticker)
         startUnipanelHudBatteryReceiver()
+        setupUnipanelNotificationBell()
         startUnipanelHudNetworkObserver()
     }
 
@@ -7111,11 +7112,12 @@ class MainActivity :
                     val status = intent.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1)
                     val charging = status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
                         status == android.os.BatteryManager.BATTERY_STATUS_FULL
-                    // The battery silhouette is now a drawableStart icon on this
-                    // TextView, so the text is just the percentage (plus a bolt
-                    // while charging). No more "▮" glyph standing in for a battery.
-                    val chargePrefix = if (charging) "⚡ " else ""
-                    tv.text = if (pct >= 0) "$chargePrefix$pct%" else "—%"
+                    // The number renders INSIDE the battery glyph (R6/R10:
+                    // 8sp bold, centered with a 4px optical nudge), so the
+                    // text is digits only — no "%" suffix, no space after
+                    // the bolt; they don't fit in a 34dp battery.
+                    val chargePrefix = if (charging) "⚡" else ""
+                    tv.text = if (pct >= 0) "$chargePrefix$pct" else "—"
                 }
             } catch (_: Exception) {}
         }
@@ -7649,23 +7651,29 @@ class MainActivity :
         // double-tap → exitGeminiFully). (Was: tap ran a Google search; that's
         // available via openUnipanelChatCardSearch if we re-wire it to a
         // long-press.)
+        // Tap semantics (shipped June-10 behavior): first tap EXPANDS the card
+        // to the tall reader view; tapping the EXPANDED card SPEAKS it through
+        // the readout engine (unipanelCardSpeakText if a notification armed it,
+        // else the visible card text). Collapse/dismiss happens via right-arm
+        // double-tap (exitReaderModeFromOutside / exitGeminiFully), never by
+        // tapping — so a tap can't accidentally yank the reader closed.
         card1.setOnClickListener {
             val text = card1.text?.toString()?.trim().orEmpty()
             if (text.isBlank()) return@setOnClickListener
-            isUnipanelCardExpanded = !isUnipanelCardExpanded
             uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
-            // Collapsing must NOT hide the card — it returns to the compact box
-            // and stays on the HUD. Keep it explicitly visible either way.
-            scroll.visibility = View.VISIBLE
-            repositionUnipanelAssistantCard()
-            (scroll as? android.widget.ScrollView)?.post {
-                if (isUnipanelCardExpanded) scroll.scrollTo(0, 0)
-                else scroll.fullScroll(View.FOCUS_DOWN)
+            if (!isUnipanelCardExpanded) {
+                isUnipanelCardExpanded = true
+                scroll.visibility = View.VISIBLE
+                repositionUnipanelAssistantCard()
+                (scroll as? android.widget.ScrollView)?.post { scroll.scrollTo(0, 0) }
+                DebugLog.d("Unipanel", "Chat card expanded")
+            } else {
+                val speak = unipanelCardSpeakText?.takeIf { it.isNotBlank() } ?: text
+                DebugLog.d("Unipanel", "Chat card tap → speak (${speak.length} chars)")
+                val api = voiceServiceApi
+                if (api != null) runCatching { api.speakAgentReply(speak) }
+                else DebugLog.d("Unipanel", "Voice service not bound — readout skipped")
             }
-            DebugLog.d(
-                "Unipanel",
-                "Chat card ${if (isUnipanelCardExpanded) "expanded" else "collapsed"}"
-            )
         }
 
         unipanelChatCardSubscription?.runCatching { close() }
@@ -7735,6 +7743,17 @@ class MainActivity :
                 latestAssistant.startsWith(lastRenderedUnipanelCardText)
         if (!isContinuation) {
             isUnipanelCardExpanded = false
+            // Notification-tap flow: the bell row armed expandNextAssistantCard
+            // before pushing the card through showAssistantCard, so THIS new
+            // card opens pre-expanded (reader view). Any other new card clears
+            // the stale speak-text so a later card-tap can't read out an old
+            // notification.
+            if (expandNextAssistantCard) {
+                expandNextAssistantCard = false
+                isUnipanelCardExpanded = true
+            } else {
+                unipanelCardSpeakText = null
+            }
             // Chat-turn sync trigger: a fresh agent reply means a hermes/
             // TapClaw turn just completed — if it staged a file on the relay,
             // pull it now instead of waiting for the 5-minute loop. syncAsync
@@ -7749,10 +7768,14 @@ class MainActivity :
         scroll.visibility = View.VISIBLE
         repositionUnipanelAssistantCard()
         // Short replies sit at the top, long ones scroll. Auto-scroll
-        // to the newest text as the reply streams in (Hermes behavior).
+        // to the newest text as the reply streams in (Hermes behavior) —
+        // EXCEPT a pre-expanded notification card, which reads top-down.
         scroll.post {
             repositionUnipanelAssistantCard()
-            (scroll as? android.widget.ScrollView)?.fullScroll(View.FOCUS_DOWN)
+            (scroll as? android.widget.ScrollView)?.let {
+                if (isUnipanelCardExpanded) it.scrollTo(0, 0)
+                else it.fullScroll(View.FOCUS_DOWN)
+            }
         }
         // The chat card persists (Hermes behavior): it stays up until a newer
         // assistant card replaces it or the user dismisses it (right-arm
@@ -9391,11 +9414,17 @@ class MainActivity :
         renderUnipanelTieredHud(state)
 
         findViewById<android.widget.TextView?>(R.id.unipanelHudAqi)?.let { aqi ->
-            // Mars: drop the long descriptive label — show just "AQI <n>",
-            // colour-coded (green healthy / yellow moderate / red unhealthy).
-            val value = state.airQualityValue
-            aqi.text = "AQI ${value ?: "--"}"
-            aqi.setTextColor(colorForUnipanelAqi(value))
+            // AQI hidden by default (Mars R6) — now an opt-in companion
+            // toggle (hud_show_aqi) instead of a hardcoded flag. The
+            // plumbing (state.airQualityValue) stays warm either way.
+            val showAqi = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+                .getBoolean("hud_show_aqi", false)
+            aqi.visibility = if (showAqi) android.view.View.VISIBLE else android.view.View.GONE
+            if (showAqi) {
+                val value = state.airQualityValue
+                aqi.text = "AQI ${value ?: "--"}"
+                aqi.setTextColor(colorForUnipanelAqi(value))
+            }
         }
 
         renderUnipanelGatewayBadge(
@@ -9407,7 +9436,142 @@ class MainActivity :
             status = state.openClawStatus
         )
         renderUnipanelHeartbeat(state)
+        renderUnipanelNotifications(state)
     }
+
+    // ── Unipanel HUD notification bell (R3/R5/R7 — restored from the
+    // 22:35 APK decompile after the rebuild lost this whole surface) ──
+
+    private var unipanelNotifPanelOpen = false
+    private var unipanelNotifEntries:
+        List<com.TapLink.app.unipanel.HudStateBridge.HudNotificationEntry> = emptyList()
+
+    /** Next assistant card should render pre-expanded (notification taps). */
+    @Volatile
+    private var expandNextAssistantCard = false
+
+    /** Text the expanded card speaks when tapped (set by notification taps;
+     *  TTS fires only on that explicit tap — never automatically). */
+    @Volatile
+    private var unipanelCardSpeakText: String? = null
+
+    private val unipanelNotifAutoCloseRunnable = Runnable {
+        if (unipanelNotifPanelOpen) {
+            DebugLog.d("Unipanel", "Notification panel auto roll-up (10s idle)")
+            toggleUnipanelNotificationPanel()
+        }
+    }
+
+    private fun rearmUnipanelNotifAutoClose() {
+        uiHandler.removeCallbacks(unipanelNotifAutoCloseRunnable)
+        uiHandler.postDelayed(unipanelNotifAutoCloseRunnable, 10_000L)
+    }
+
+    private fun setupUnipanelNotificationBell() {
+        findViewById<android.view.View?>(R.id.unipanelHudBellContainer)?.setOnClickListener {
+            DebugLog.d("Unipanel", "Bell tapped → toggle notification panel")
+            toggleUnipanelNotificationPanel()
+        }
+    }
+
+    /** Badge + bell tint from HudStateBridge state; refreshes open panel. */
+    private fun renderUnipanelNotifications(
+        state: com.TapLink.app.unipanel.HudStateBridge.State
+    ) {
+        unipanelNotifEntries = state.notifications
+        val badge = findViewById<android.widget.TextView?>(R.id.unipanelHudBellBadge)
+        val bell = findViewById<android.widget.ImageView?>(R.id.unipanelHudBellIcon)
+        val unread = state.notificationUnread
+        if (unread > 0) {
+            badge?.text = if (unread > 99) "99+" else unread.toString()
+            badge?.visibility = android.view.View.VISIBLE
+            bell?.setColorFilter(0xFFFFC857.toInt()) // amber: attention
+        } else {
+            badge?.visibility = android.view.View.GONE
+            bell?.setColorFilter(0xCCFFFFFF.toInt()) // quiet white
+        }
+        if (unipanelNotifPanelOpen) renderUnipanelNotifRows()
+    }
+
+    /** Roll the panel down/up (200ms scaleY from the top edge). Opening
+     *  marks everything seen (badge resets) and arms the 10s auto-close. */
+    private fun toggleUnipanelNotificationPanel() {
+        val panel = findViewById<android.view.View?>(R.id.unipanelNotifPanel) ?: return
+        if (unipanelNotifPanelOpen) {
+            unipanelNotifPanelOpen = false
+            uiHandler.removeCallbacks(unipanelNotifAutoCloseRunnable)
+            panel.pivotY = 0f
+            panel.animate().scaleY(0f).alpha(0f).setDuration(200L).withEndAction {
+                panel.visibility = android.view.View.GONE
+                panel.scaleY = 1f
+                panel.alpha = 1f
+            }.start()
+            return
+        }
+        unipanelNotifPanelOpen = true
+        renderUnipanelNotifRows()
+        runCatching {
+            com.TapLink.app.unipanel.HudStateBridge.getOnNotificationsSeen()?.invoke()
+        }
+        rearmUnipanelNotifAutoClose()
+        panel.pivotY = 0f
+        panel.scaleY = 0f
+        panel.alpha = 0f
+        panel.visibility = android.view.View.VISIBLE
+        panel.animate().scaleY(1f).alpha(1f).setDuration(200L).start()
+    }
+
+    private fun renderUnipanelNotifRows() {
+        val rows = findViewById<android.widget.LinearLayout?>(R.id.unipanelNotifRows) ?: return
+        rows.removeAllViews()
+        val items = unipanelNotifEntries.take(6)
+        if (items.isEmpty()) {
+            rows.addView(android.widget.TextView(this).apply {
+                text = "No notifications"
+                setTextColor(0x99FFFFFF.toInt())
+                textSize = 11f
+                setPadding(0, 4, 0, 4)
+            })
+            return
+        }
+        val timeFormat = java.text.SimpleDateFormat("h:mm a", java.util.Locale.US)
+        items.forEach { entry ->
+            rows.addView(android.widget.TextView(this).apply {
+                text = timeFormat.format(java.util.Date(entry.timestampMs)) +
+                    "  " + entry.title + " — " + entry.message
+                setTextColor(colorForUnipanelNotifSource(entry.source))
+                textSize = 11f
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(0, 4, 0, 4)
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    DebugLog.d("Unipanel", "Notification tapped → expanded card id=${entry.id}")
+                    val api = voiceServiceApi
+                    if (api != null) {
+                        // Expanded card, NO auto-readout: TTS only fires
+                        // when the user taps the expanded card (Mars flow).
+                        expandNextAssistantCard = true
+                        unipanelCardSpeakText = "${entry.title}. ${entry.message}"
+                        runCatching { api.showAssistantCard("${entry.title} — ${entry.message}") }
+                    } else {
+                        DebugLog.d("Unipanel", "Voice service not bound — card skipped")
+                    }
+                    if (unipanelNotifPanelOpen) toggleUnipanelNotificationPanel()
+                }
+            })
+        }
+    }
+
+    private fun colorForUnipanelNotifSource(source: String): Int =
+        when (source.uppercase(java.util.Locale.US)) {
+            "HERMES" -> 0xFFFFC857.toInt()   // amber
+            "OPENCLAW" -> 0xFFFF8A65.toInt() // orange
+            "CALENDAR" -> 0xFF00E5FF.toInt() // cyan
+            "TASK" -> 0xFF00E676.toInt()     // green
+            else -> android.graphics.Color.WHITE
+        }
 
     /**
      * Phase 4k.3 — render the tiered HUD info panel (Calendar Events /

@@ -1064,16 +1064,15 @@
       toast(data.error || 'Could not build album queue', true);
       return;
     }
-    var playlistUrl = TM.getMediaUrl(data.path);
-    var folderName = (state.currentFolder || 'Library').split('/').pop() || 'Library';
-    var qp = '?playUrl=' + encodeURIComponent(playlistUrl) +
-             '&playName=' + encodeURIComponent(folderName) +
-             '&playGenre=' + encodeURIComponent('Album') +
-             '&playKind=playlist' +
-             '&playStart=0' +
-             '&autoplay=1' +
-             '&_t=' + Date.now();
-    window.location.href = RADIO_URL + qp;
+    // LOCAL files must play through media_player.html — the WebView is
+    // the only process whose interceptor resolves appassets:// media
+    // URLs; TapRadio's NATIVE ExoPlayer cannot fetch that host (it
+    // failed silently when routed there). Same route .m3u rows use.
+    window.location.href = PLAYER_URL +
+      '?type=playlist' +
+      '&playlist=' + encodeURIComponent(data.path) +
+      '&start=0' +
+      '&source=bridge';
   }
 
   // ── Delete confirmation ────────────────────────────────────────────

@@ -1058,6 +1058,11 @@
   <div class="hint">How often to refresh news headlines (60&ndash;3600 seconds). Default: 10 minutes.</div>
 
   <hr style="border-color:#333;margin:12px 0">
+  <label style="color:#FFB14A">Show AQI</label>
+  <select id="hudShowAqi"><option value="false">No</option><option value="true">Yes</option></select>
+  <div class="hint">Display the air-quality index on the HUD status strip. Off by default to keep the strip uncluttered.</div>
+
+  <hr style="border-color:#333;margin:12px 0">
   <label>HUD Refresh Interval (seconds)</label>
   <input type="number" id="hudRefreshInterval" placeholder="60" min="5" max="300">
   <div class="hint">How often to update calendar, tasks, and traffic info (5&ndash;300 seconds). Lower = more battery use.</div>
@@ -1287,6 +1292,7 @@ const FIELDS = {
   hudShowEventTime:    { key: 'hud_show_event_time',    type: 'bool'   },
   hudShowTasks:        { key: 'hud_show_tasks',         type: 'bool'   },
   hudShowNews:         { key: 'hud_show_news',          type: 'bool'   },
+  hudShowAqi:          { key: 'hud_show_aqi',           type: 'bool'   },
   tasksItemCount:      { key: 'tasks_item_count',       type: 'int'    },
   newsItemCount:       { key: 'news_item_count',        type: 'int'    },
   newsRefreshInterval: { key: 'news_refresh_interval_seconds', type: 'int' },
