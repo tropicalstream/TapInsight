@@ -114,6 +114,32 @@ class GeminiVoicePipeline(context: Context) {
      *  or after 5 minutes (wedged call → status poll takes back over). */
     @Volatile private var agentProgressJob: kotlinx.coroutines.Job? = null
 
+    // ── Round-2 capture machinery (June-11 evening log) ────────────────
+    // Gemini Live input transcription arrives as sub-word CHUNKS ('San',
+    // 'Franc','is','co'), and latestInputTranscript only ever holds the
+    // last chunk. This rolling buffer joins chunks into the utterance
+    // (reset after a 2.5s input gap) so the bare-hail upgrade, the hail
+    // follow-up router and the session-drop replay all see a whole
+    // sentence. Space-joined sub-words read rough but both Gemini and
+    // Hermes parse them fine.
+    @Volatile private var utteranceBuffer: String = ""
+    @Volatile private var lastInputChunkAtMs: Long = 0L
+
+    /** Utterance captured when the server dropped the session mid-question
+     *  (June-11: onClosed 1008 right as the El Niño question ended —
+     *  question silently vanished). Replayed as client text after the
+     *  auto-reconnect's onSessionReady. */
+    @Volatile private var pendingResumeUtterance: String? = null
+    @Volatile private var reconnectWindowStartMs: Long = 0L
+    @Volatile private var reconnectCountInWindow: Int = 0
+
+    /** Hail-and-wait support: after a bare "Hermes" hail goes out and the
+     *  agent acks ("Yes, Mario?"), the user's NEXT utterance routes
+     *  straight to that agent instead of relying on Gemini to re-route. */
+    @Volatile private var agentFollowupTool: String? = null
+    @Volatile private var agentFollowupUntilMs: Long = 0L
+    @Volatile private var agentFollowupJob: kotlinx.coroutines.Job? = null
+
     /**
      * Regression port from the pre-Phase-4 MainActivity (commit 8c2b872,
      * "drop late Gemini output between turns"). When Gemini occasionally
@@ -529,6 +555,9 @@ class GeminiVoicePipeline(context: Context) {
         agentCallInFlight = false
         agentProgressJob?.cancel()
         agentProgressJob = null
+        agentFollowupJob?.cancel()
+        agentFollowupJob = null
+        agentFollowupTool = null
         suppressGeminiOutputUntilMs = 0L
         suppressGeminiOutputUntilNextInput = false
 
@@ -615,6 +644,18 @@ class GeminiVoicePipeline(context: Context) {
                     )
                 }
                 startAudioStreaming(epoch)
+                // Auto-reconnect replay: hand the question that was lost to
+                // the previous session's drop straight to the new session as
+                // client text — the user shouldn't have to repeat themself.
+                pendingResumeUtterance?.let { lost ->
+                    pendingResumeUtterance = null
+                    scope.launch {
+                        kotlinx.coroutines.delay(500L)
+                        if (!isSessionEpochCurrent(epoch)) return@launch
+                        Log.i(TAG, "replaying utterance lost to session drop: '${lost.take(140)}'")
+                        runCatching { liveSession?.sendClientText(lost) }
+                    }
+                }
             }
 
             override fun onInputTranscription(text: String) {
@@ -647,6 +688,17 @@ class GeminiVoicePipeline(context: Context) {
                     }
                 }
                 latestInputTranscript = text
+                val nowChunkMs = android.os.SystemClock.uptimeMillis()
+                utteranceBuffer =
+                    if (utteranceBuffer.isBlank() ||
+                        nowChunkMs - lastInputChunkAtMs > UTTERANCE_GAP_RESET_MS
+                    ) {
+                        text.trim()
+                    } else {
+                        utteranceBuffer + " " + text.trim()
+                    }
+                lastInputChunkAtMs = nowChunkMs
+                maybeDispatchAgentFollowup()
                 Log.d(TAG, "onInputTranscription partial='${text.take(120)}'")
                 // Live partial transcript — surface in HUD so the user
                 // sees what Gemini heard. Final commit to viewModel
@@ -792,6 +844,11 @@ class GeminiVoicePipeline(context: Context) {
             override fun onToolCall(callId: String, name: String, args: String) {
                 if (!isSessionEpochCurrent(epoch)) return
                 noteLiveResponseActivity()
+                // The model routed something itself — stand down the hail
+                // follow-up router so we can't double-dispatch the same
+                // utterance to the agent.
+                agentFollowupTool = null
+                agentFollowupJob?.cancel()
                 Log.i(TAG, "onToolCall: callId=$callId name=$name args=${args.take(160)}")
                 when (name) {
                     "browser_vision" -> dispatchBrowserVision(callId, name, args)
@@ -872,10 +929,45 @@ class GeminiVoicePipeline(context: Context) {
             override fun onClosed(code: Int, reason: String) {
                 if (!isSessionEpochCurrent(epoch)) return
                 Log.i(TAG, "onClosed: code=$code reason=$reason")
+                // June-11 round 2: the server closed the session (1008)
+                // mid-question — Mars finished asking into a dead socket
+                // and the question silently vanished, with no reconnect
+                // for 42s (until he noticed and re-tapped). Two repairs:
+                //  1) capture the in-progress utterance for replay,
+                //  2) auto-reconnect (bounded: 3 attempts / 2 minutes so a
+                //     persistently-rejecting server can't loop us).
+                val unexpected = code != 1000
+                if (unexpected) {
+                    val buf = utteranceBuffer.trim()
+                    if (buf.isNotBlank() &&
+                        android.os.SystemClock.uptimeMillis() - lastInputChunkAtMs < 30_000L
+                    ) {
+                        pendingResumeUtterance = buf
+                        Log.i(
+                            TAG,
+                            "captured un-answered utterance for replay: '${buf.take(140)}'"
+                        )
+                    }
+                }
                 // Only invoke shutdown if we initiated; the close path is
                 // idempotent so calling it from a remote-close event is
                 // safe — it just resets HUD state.
                 shutdown(reason = if (code == 1000) null else "Voice session closed.")
+                if (unexpected) {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - reconnectWindowStartMs > 120_000L) {
+                        reconnectWindowStartMs = now
+                        reconnectCountInWindow = 0
+                    }
+                    if (reconnectCountInWindow < 3) {
+                        reconnectCountInWindow++
+                        Log.i(TAG, "auto-reconnect scheduled (attempt $reconnectCountInWindow)")
+                        android.os.Handler(android.os.Looper.getMainLooper())
+                            .postDelayed({ activate() }, 900L)
+                    } else {
+                        Log.w(TAG, "auto-reconnect suppressed — too many drops in window")
+                    }
+                }
             }
 
             override fun onGroundingMetadata(chunks: List<GeminiRouter.GroundingChunk>) {
@@ -912,6 +1004,67 @@ class GeminiVoicePipeline(context: Context) {
                 "hermes_agent" -> "Hermes"
                 "tapclaw_agent" -> "TapClaw"
                 else -> "Research"
+            }
+            // June-11 round 2 — bare-hail guard. Gemini fires the agent tool
+            // off the partial transcript the instant it hears the name:
+            // hermes_agent(query="Hermes") went out alone while Mars was
+            // still mid-sentence, Hermes got hailed with no question and
+            // answered "Yes, Mario?" — and the real question never reached
+            // it. When the query is just a name (≤2 words), HOLD dispatch
+            // and watch the utterance buffer: if the sentence keeps growing,
+            // dispatch the WHOLE sentence; if the user truly just hailed
+            // (hail-and-wait style), send the bare hail and arm the
+            // follow-up router at result time.
+            var effectiveArgs = args
+            var bareHailDispatched = false
+            if (toolName in AGENT_READOUT_TOOLS) {
+                val rawQuery = runCatching {
+                    org.json.JSONObject(args).optString("query", "")
+                }.getOrNull().orEmpty().trim()
+                val queryWordCount = rawQuery
+                    .replace(Regex("[^\\p{L}\\p{N}\\s]"), " ")
+                    .trim()
+                    .split(Regex("\\s+"))
+                    .count { it.isNotBlank() }
+                if (queryWordCount <= 2) {
+                    Log.i(
+                        TAG,
+                        "agent $toolName bare-hail query='$rawQuery' — " +
+                            "holding dispatch for the full sentence"
+                    )
+                    HudStateBridge.update {
+                        it.copy(
+                            agentBusy = true,
+                            heartbeatMessage = "$agentLabel listening…",
+                            heartbeatPersistent = true,
+                            heartbeatShouldScroll = false
+                        )
+                    }
+                    val hailBuffer = utteranceBuffer.trim()
+                    val waitStart = android.os.SystemClock.uptimeMillis()
+                    var upgraded: String? = null
+                    while (android.os.SystemClock.uptimeMillis() - waitStart < BARE_HAIL_WAIT_MS) {
+                        kotlinx.coroutines.delay(400L)
+                        val buf = utteranceBuffer.trim()
+                        val quietMs =
+                            android.os.SystemClock.uptimeMillis() - lastInputChunkAtMs
+                        val words = buf.split(Regex("\\s+")).count { it.isNotBlank() }
+                        if (buf != hailBuffer && words >= 4 && quietMs > 1_200L) {
+                            upgraded = buf
+                            break
+                        }
+                    }
+                    if (upgraded != null) {
+                        Log.i(TAG, "bare-hail upgraded from live transcript: '${upgraded.take(140)}'")
+                        effectiveArgs = runCatching {
+                            org.json.JSONObject(args).put("query", upgraded).toString()
+                        }.getOrElse {
+                            org.json.JSONObject().put("query", upgraded).toString()
+                        }
+                    } else {
+                        bareHailDispatched = true
+                    }
+                }
             }
             // Mark agent queries busy + show "Asking <agent>…" on the ticker for
             // the whole in-flight duration, so the persistent status-line poll
@@ -959,6 +1112,7 @@ class GeminiVoicePipeline(context: Context) {
                         val sec =
                             (android.os.SystemClock.uptimeMillis() - startedMs) / 1000
                         if (sec > 300) break // wedged — let the status poll take over
+                        Log.i(TAG, "heartbeat: $agentLabel working ${sec}s")
                         HudStateBridge.update {
                             if (!it.agentBusy) it
                             else it.copy(
@@ -973,7 +1127,7 @@ class GeminiVoicePipeline(context: Context) {
             // When the user tells an agent to "look at my screen", capture the
             // current browser screen and fold its description into the agent's
             // context before dispatching, so the agent acts on what's shown.
-            val dispatchArgs = augmentAgentArgsWithScreenIfRequested(toolName, args)
+            val dispatchArgs = augmentAgentArgsWithScreenIfRequested(toolName, effectiveArgs)
             val result = toolDispatcher.dispatch(toolName, dispatchArgs)
             val resultText = result.getOrElse { err ->
                 Log.w(TAG, "native tool failed name=$toolName: ${err.message}")
@@ -1042,12 +1196,15 @@ class GeminiVoicePipeline(context: Context) {
                 suppressGeminiOutputUntilNextInput = true
                 // The tool response only makes sense to the session that
                 // issued the call — skip it after a restart (the new session
-                // never asked). Everything below is session-independent.
-                if (epochCurrent) {
+                // never asked), and skip it entirely for locally-triggered
+                // dispatches (synthetic "local-" callIds the server never
+                // issued — answering an unknown callId risks a policy close).
+                if (epochCurrent && !callId.startsWith("local-")) {
                     runCatching {
                         liveSession?.sendToolResponse(callId, toolName, agentToolResponse)
                     }
                 }
+                Log.i(TAG, "heartbeat: $agentLabel replied — reading out")
                 HudStateBridge.update {
                     it.copy(
                         notification = null,
@@ -1055,6 +1212,19 @@ class GeminiVoicePipeline(context: Context) {
                         heartbeatMessage = "$agentLabel replied — reading out",
                         heartbeatPersistent = true,
                         heartbeatShouldScroll = false
+                    )
+                }
+                // Hail-and-wait: the bare hail just got acked ("Yes, Mario?").
+                // The user's next utterance is the actual question — route it
+                // straight to this agent instead of hoping Gemini re-routes.
+                if (bareHailDispatched) {
+                    agentFollowupTool = toolName
+                    agentFollowupUntilMs =
+                        android.os.SystemClock.uptimeMillis() + AGENT_FOLLOWUP_WINDOW_MS
+                    Log.i(
+                        TAG,
+                        "bare-hail answered — next utterance within " +
+                            "${AGENT_FOLLOWUP_WINDOW_MS / 1000}s routes to $toolName"
                     )
                 }
                 // Mirror the hermes branch: the agent's full reply is also shown
@@ -1740,6 +1910,41 @@ class GeminiVoicePipeline(context: Context) {
      * enters the picture. If the user explicitly says "spotify", or TapRadio
      * isn't playing, we fall through and let Gemini route normally.
      */
+    /**
+     * Hail-and-wait router (June-11 round 2). Armed when a bare agent hail
+     * ("Hermes") was dispatched and acked; the user's next finished
+     * utterance inside the window goes straight to that agent as a
+     * locally-triggered dispatch ("local-" callId → no sendToolResponse).
+     * Debounced per input chunk: fires ~1.5s after the user stops talking,
+     * needs ≥4 words, and refuses to run off readout echo (readout/in-flight
+     * guards) — the gap-reset in the buffer separates echo from speech.
+     */
+    private fun maybeDispatchAgentFollowup() {
+        val tool = agentFollowupTool ?: return
+        if (android.os.SystemClock.uptimeMillis() > agentFollowupUntilMs) {
+            agentFollowupTool = null
+            return
+        }
+        if (agentCallInFlight || agentReadoutActive) return
+        agentFollowupJob?.cancel()
+        agentFollowupJob = scope.launch {
+            kotlinx.coroutines.delay(1_500L)
+            if (agentFollowupTool == null) return@launch
+            if (agentCallInFlight || agentReadoutActive) return@launch
+            if (android.os.SystemClock.uptimeMillis() - lastInputChunkAtMs < 1_400L) {
+                return@launch // still talking — the next chunk reschedules us
+            }
+            val q = utteranceBuffer.trim()
+            if (q.split(Regex("\\s+")).count { it.isNotBlank() } < 4) return@launch
+            agentFollowupTool = null
+            Log.i(TAG, "hail follow-up → routing utterance to $tool: '${q.take(140)}'")
+            val argsJson = org.json.JSONObject().put("query", q).toString()
+            dispatchNativeTool(
+                "local-followup-${System.nanoTime()}", tool, argsJson, activeSessionEpoch
+            )
+        }
+    }
+
     private fun maybeIdentifySongLocally(transcript: String, epoch: Long): Boolean {
         if (identifySongInFlight) return true
         if (liveSession == null || !isSessionEpochCurrent(epoch)) return false
@@ -2474,6 +2679,17 @@ class GeminiVoicePipeline(context: Context) {
         // audio-side duplicate gate in onModelAudio is the backstop; the
         // longer delay makes the race rare in the first place.
         private const val CONVERSATIONAL_TEXT_FALLBACK_DELAY_MS = 2_600L
+
+        /** Input gap after which the rolling utterance buffer resets. */
+        private const val UTTERANCE_GAP_RESET_MS = 2_500L
+
+        /** How long a bare agent hail ("Hermes") holds its dispatch waiting
+         *  for the rest of the sentence before going out as a plain hail. */
+        private const val BARE_HAIL_WAIT_MS = 9_000L
+
+        /** After a bare hail is answered, the user's next utterance within
+         *  this window routes directly to the hailed agent. */
+        private const val AGENT_FOLLOWUP_WINDOW_MS = 45_000L
 
         /** Minimum gap between local-regex browser_vision triggers,
          *  so a single 2-3-second utterance (which emits many partials)
