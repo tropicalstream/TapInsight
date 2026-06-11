@@ -108,6 +108,12 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var lastLiveResponseActivityMs: Long = 0L
     @Volatile private var lastForcedConversationalTranscript: String = ""
 
+    /** Elapsed-time heartbeat ticker for an in-flight agent call
+     *  ("Hermes working… 15s"). Started at dispatch, canceled at result
+     *  arrival / shutdown; self-terminates when agentCallInFlight drops
+     *  or after 5 minutes (wedged call → status poll takes back over). */
+    @Volatile private var agentProgressJob: kotlinx.coroutines.Job? = null
+
     /**
      * Regression port from the pre-Phase-4 MainActivity (commit 8c2b872,
      * "drop late Gemini output between turns"). When Gemini occasionally
@@ -521,6 +527,8 @@ class GeminiVoicePipeline(context: Context) {
         readoutJob = null
         agentReadoutActive = false
         agentCallInFlight = false
+        agentProgressJob?.cancel()
+        agentProgressJob = null
         suppressGeminiOutputUntilMs = 0L
         suppressGeminiOutputUntilNextInput = false
 
@@ -735,6 +743,24 @@ class GeminiVoicePipeline(context: Context) {
                     Log.d(TAG, "Dropping Gemini onModelAudio: agent readout active")
                     return
                 }
+                // June-11 capture fix (the "said it twice" bug): when the
+                // conversational text fallback loses its race — model output
+                // arrived ~100ms AFTER the forced text turn was sent — Gemini
+                // answers BOTH turns with the same content. The transcript
+                // half of the duplicate was already gated
+                // (dropOutputTranscriptionUntilNextInput), but the AUDIO half
+                // kept playing for seconds. Gate it too — but ONLY in forced-
+                // fallback cycles (matching transcript), so the normal post-
+                // turn audio drain of ordinary turns is never clipped.
+                if (dropOutputTranscriptionUntilNextInput &&
+                    lastForcedConversationalTranscript.isNotEmpty() &&
+                    lastForcedConversationalTranscript.equals(
+                        latestInputTranscript.trim(), ignoreCase = true
+                    )
+                ) {
+                    Log.d(TAG, "Dropping duplicate onModelAudio after forced text turn")
+                    return
+                }
                 if (android.os.SystemClock.uptimeMillis() < suppressGeminiOutputUntilMs) {
                     return
                 }
@@ -882,16 +908,16 @@ class GeminiVoicePipeline(context: Context) {
         scope.launch {
             if (!isSessionEpochCurrent(epoch)) return@launch
             HudStateBridge.update { it.copy(notification = "Running $toolName…") }
+            val agentLabel = when (toolName) {
+                "hermes_agent" -> "Hermes"
+                "tapclaw_agent" -> "TapClaw"
+                else -> "Research"
+            }
             // Mark agent queries busy + show "Asking <agent>…" on the ticker for
             // the whole in-flight duration, so the persistent status-line poll
             // doesn't overwrite the live progress and make a working query look
             // idle ("Hermes: ready"). Cleared when the readout finishes.
             if (toolName in AGENT_READOUT_TOOLS) {
-                val agentLabel = when (toolName) {
-                    "hermes_agent" -> "Hermes"
-                    "tapclaw_agent" -> "TapClaw"
-                    else -> "Research"
-                }
                 HudStateBridge.update {
                     it.copy(
                         agentBusy = true,
@@ -919,6 +945,30 @@ class GeminiVoicePipeline(context: Context) {
                 agentCallInFlight = true
                 suppressGeminiOutputUntilMs =
                     android.os.SystemClock.uptimeMillis() + AGENT_INFLIGHT_SUPPRESS_MS
+                // June-11 capture fix: Hermes took 63s and the HUD ticker sat
+                // frozen on "Asking Hermes…" the whole time — Mars assumed the
+                // call died and restarted the session, which is what set up
+                // the answered-for-Hermes failure. Heartbeat now ticks the
+                // elapsed time every 5s so a long call LOOKS alive.
+                agentProgressJob?.cancel()
+                agentProgressJob = scope.launch {
+                    val startedMs = android.os.SystemClock.uptimeMillis()
+                    while (isActive && agentCallInFlight) {
+                        kotlinx.coroutines.delay(5_000L)
+                        if (!agentCallInFlight || !isActive) break
+                        val sec =
+                            (android.os.SystemClock.uptimeMillis() - startedMs) / 1000
+                        if (sec > 300) break // wedged — let the status poll take over
+                        HudStateBridge.update {
+                            if (!it.agentBusy) it
+                            else it.copy(
+                                heartbeatMessage = "$agentLabel working… ${sec}s",
+                                heartbeatPersistent = true,
+                                heartbeatShouldScroll = false
+                            )
+                        }
+                    }
+                }
             }
             // When the user tells an agent to "look at my screen", capture the
             // current browser screen and fold its description into the agent's
@@ -931,7 +981,26 @@ class GeminiVoicePipeline(context: Context) {
                     ?: "Tool $toolName is unavailable right now."
             }
             Log.i(TAG, "native tool result name=$toolName text='${resultText.take(180)}'")
-            if (!isSessionEpochCurrent(epoch)) return@launch
+            agentProgressJob?.cancel()
+            agentProgressJob = null
+            // June-11 capture fix (the "Gemini answered for Hermes" bug):
+            // Hermes legitimately ran 63s; 45s in, Mars restarted the voice
+            // session, the epoch advanced, and this bail threw away the
+            // finished result — then the NEW session answered the re-asked
+            // question from its own knowledge. Agent replies don't need the
+            // old session: the readout engine, chat card, history and bell
+            // are all session-independent. So agent results are delivered
+            // ACROSS epochs; only the Live-session tool-response (and the
+            // non-agent path, which is pure session plumbing) stay gated.
+            val epochCurrent = isSessionEpochCurrent(epoch)
+            if (!epochCurrent && toolName !in AGENT_READOUT_TOOLS) return@launch
+            if (!epochCurrent) {
+                Log.i(
+                    TAG,
+                    "agent $toolName result arrived after session restart — " +
+                        "delivering via readout anyway"
+                )
+            }
 
             // Agent replies (Hermes / TapClaw / OpenClaw) are READ ALOUD via
             // the selected readout engine — not narrated by Gemini Live. Mirror
@@ -971,9 +1040,22 @@ class GeminiVoicePipeline(context: Context) {
                 // this turn). Arming at dispatch instead would leave no
                 // failsafe release if the agent call ever hung forever.
                 suppressGeminiOutputUntilNextInput = true
-                runCatching { liveSession?.sendToolResponse(callId, toolName, agentToolResponse) }
+                // The tool response only makes sense to the session that
+                // issued the call — skip it after a restart (the new session
+                // never asked). Everything below is session-independent.
+                if (epochCurrent) {
+                    runCatching {
+                        liveSession?.sendToolResponse(callId, toolName, agentToolResponse)
+                    }
+                }
                 HudStateBridge.update {
-                    it.copy(notification = null, phase = HudStateBridge.VoicePhase.THINKING)
+                    it.copy(
+                        notification = null,
+                        phase = HudStateBridge.VoicePhase.THINKING,
+                        heartbeatMessage = "$agentLabel replied — reading out",
+                        heartbeatPersistent = true,
+                        heartbeatShouldScroll = false
+                    )
                 }
                 // Mirror the hermes branch: the agent's full reply is also shown
                 // as TEXT in the chat card (not just spoken). This appends it to
@@ -2386,7 +2468,12 @@ class GeminiVoicePipeline(context: Context) {
             "this web page", "the web page"
         )
 
-        private const val CONVERSATIONAL_TEXT_FALLBACK_DELAY_MS = 1_600L
+        // 1600 → 2600 (June-11 capture): at 1.6s the fallback repeatedly
+        // lost its race with slow-but-alive turns (tool-call turns routinely
+        // take >1.6s to first event), firing a duplicate text turn. The
+        // audio-side duplicate gate in onModelAudio is the backstop; the
+        // longer delay makes the race rare in the first place.
+        private const val CONVERSATIONAL_TEXT_FALLBACK_DELAY_MS = 2_600L
 
         /** Minimum gap between local-regex browser_vision triggers,
          *  so a single 2-3-second utterance (which emits many partials)
