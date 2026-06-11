@@ -14,6 +14,7 @@ import kotlin.math.hypot
  * Gesture map:
  *   Short tap   (<300 ms)   → standard click (after double-tap window)
  *   Double-tap               → panel toggle callback
+ *   Long tap    (≥600 ms)   → long-tap callback (HUD notification list)
  *   Scroll/Swipe → forwarded to active panel (deltaX/deltaY)
  *   Side awareness → track LEFT vs RIGHT half for context
  */
@@ -34,6 +35,9 @@ class TrackpadGestureEngine {
         /** Window used to distinguish single tap from double tap. */
         const val DOUBLE_TAP_WINDOW_MS = 280L
 
+        /** Lower bound for a "long tap" (press-and-hold without movement). */
+        const val LONG_TAP_MIN_MS = 600L
+
         /** If moved beyond this distance, do not treat gesture as tap. */
         private const val TAP_MOVE_TOLERANCE_RATIO = 0.04f
         private const val TAP_MOVE_TOLERANCE_MIN_PX = 18f
@@ -50,6 +54,9 @@ class TrackpadGestureEngine {
 
     /** Fired when two short taps occur within [DOUBLE_TAP_WINDOW_MS]. */
     var onDoubleTap: (() -> Unit)? = null
+
+    /** Fired for a stationary press held for at least [LONG_TAP_MIN_MS]. */
+    var onLongTap: (() -> Unit)? = null
 
     /** Scroll/swipe callback for forwarding trackpad motion to active panel. */
     var onScroll: ((deltaX: Float, deltaY: Float) -> Unit)? = null
@@ -219,6 +226,10 @@ class TrackpadGestureEngine {
                             handler.postDelayed(singleTapRunnable, DOUBLE_TAP_WINDOW_MS)
                         }
                     }
+                    elapsed >= LONG_TAP_MIN_MS -> {
+                        Log.d(TAG, "Long tap (${elapsed}ms) — firing long-tap callback")
+                        onLongTap?.invoke()
+                    }
                     else -> {
                         Log.d(TAG, "Late release (${elapsed}ms) — ignored")
                     }
@@ -277,6 +288,10 @@ class TrackpadGestureEngine {
                             Log.d(TAG, "Key short tap candidate (${elapsed}ms) — waiting for double tap window")
                             handler.postDelayed(singleTapRunnable, DOUBLE_TAP_WINDOW_MS)
                         }
+                    }
+                    elapsed >= LONG_TAP_MIN_MS -> {
+                        Log.d(TAG, "Key long tap (${elapsed}ms) — firing long-tap callback")
+                        onLongTap?.invoke()
                     }
                     else -> {
                         Log.d(TAG, "Key release (${elapsed}ms) — ignored")

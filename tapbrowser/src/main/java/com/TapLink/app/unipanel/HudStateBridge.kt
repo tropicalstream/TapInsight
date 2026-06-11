@@ -69,6 +69,26 @@ object HudStateBridge {
     enum class GatewayStatus { HIDDEN, GOOD, BAD }
 
     /**
+     * One row of the dim-HUD notification bell list. Mirrors the shape
+     * of visionclaw's NotificationCenter entries — the Service maps
+     * them field-for-field into this module-neutral type so tapbrowser
+     * can render the bell list without depending on the app module.
+     *
+     * • [id] — stable identity for the entry (dedupe / DiffUtil key).
+     * • [source] — origin enum name from NotificationCenter (e.g.
+     *   "GMAIL", "SYSTEM"); consumers treat it as an opaque label.
+     * • [title] / [message] — the two display lines.
+     * • [timestampMs] — wall-clock arrival time, epoch millis.
+     */
+    data class HudNotificationEntry(
+        val id: String,
+        val source: String,
+        val title: String,
+        val message: String,
+        val timestampMs: Long
+    )
+
+    /**
      * Snapshot of everything the overlay needs to render the voice /
      * Live HUD. Immutable; mutate by publishing a new [State].
      *
@@ -114,8 +134,41 @@ object HudStateBridge {
         // The persistent agent-status ticker poll skips publishing its idle
         // status line while this is set, so an in-flight query's progress (and
         // the "Asking <agent>…" line) isn't clobbered to look idle.
-        val agentBusy: Boolean = false
+        val agentBusy: Boolean = false,
+        /**
+         * The bell list: NotificationCenter's entries mirrored across the
+         * module boundary by the Service, newest-first. Empty when there's
+         * nothing to show (or no publisher running yet).
+         */
+        val notifications: List<HudNotificationEntry> = emptyList(),
+        /**
+         * Unread badge count for the bell icon. Cleared by the publisher
+         * after the [onNotificationsSeen] callback fires (i.e. when the
+         * unipanel bell list is opened), not by consumers directly.
+         */
+        val notificationUnread: Int = 0
     )
+
+    /**
+     * Callback the unipanel HUD invokes when the bell list is opened, so
+     * the publisher (the Service, via NotificationCenter.markAllSeen())
+     * can zero the unread badge — the same semantics as the visionclaw
+     * chat panel opening its list. Volatile: registered from the Service
+     * thread, invoked from the UI thread.
+     */
+    @Volatile
+    private var onNotificationsSeen: (() -> Unit)? = null
+
+    /** Currently registered bell-opened callback, or null if none. */
+    fun getOnNotificationsSeen(): (() -> Unit)? = onNotificationsSeen
+
+    /**
+     * Register (or clear, with null) the bell-opened callback. Last
+     * writer wins — there is exactly one publisher at a time.
+     */
+    fun setOnNotificationsSeen(callback: (() -> Unit)?) {
+        onNotificationsSeen = callback
+    }
 
     private val state = AtomicReference(State())
     private val listeners = CopyOnWriteArrayList<(State) -> Unit>()

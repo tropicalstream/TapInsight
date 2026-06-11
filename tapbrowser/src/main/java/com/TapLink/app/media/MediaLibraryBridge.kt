@@ -7,6 +7,7 @@ import android.media.MediaFormat
 import android.net.Uri
 import android.util.Log
 import android.webkit.JavascriptInterface
+import com.TapLinkX3.app.EmbeddedCaptionExtractor
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -943,6 +944,91 @@ class MediaLibraryBridge(
     @JavascriptInterface
     fun getMediaUrl(relativePath: String?): String {
         return toMediaUrl(relativePath ?: "")
+    }
+
+    // ── Relay pull-sync (RelayMediaSync) ───────────────────────────────
+
+    /**
+     * Kick off a relay pull-sync in the background. Returns immediately
+     * with `{ok, status}` — status is "started", or "already-running" when
+     * a sync is in flight (the page then just polls [getRelaySyncStatus]).
+     * Wired to the Sync button in library_local.html.
+     */
+    @JavascriptInterface
+    fun syncFromRelay(): String {
+        if (!isTrusted()) return denied("syncFromRelay")
+        if (RelayMediaSync.syncing) {
+            return JSONObject().put("ok", true).put("status", "already-running").toString()
+        }
+        Thread {
+            runCatching { RelayMediaSync.syncBlocking(context) }
+        }.start()
+        return JSONObject().put("ok", true).put("status", "started").toString()
+    }
+
+    /**
+     * JSON object keyed by library-relative path: files pulled by sync but
+     * not yet opened. library_local.html renders these as glowing dots.
+     */
+    @JavascriptInterface
+    fun getRelayNewFiles(): String {
+        if (!isTrusted()) return denied("getRelayNewFiles")
+        return RelayMediaSync.newFilesJson(context)
+    }
+
+    /** Clear a file's new-from-sync dot once the user opens it. */
+    @JavascriptInterface
+    fun markRelayFileSeen(relativePath: String?): String {
+        if (!isTrusted()) return denied("markRelayFileSeen")
+        RelayMediaSync.markFileSeen(context, relativePath ?: "")
+        return JSONObject().put("ok", true).toString()
+    }
+
+    /**
+     * Poll target for the Sync button's busy state: `{ok, syncing,
+     * lastSyncAtMs, lastSummary}` — lastSummary is the JSON summary string
+     * of the most recent completed run.
+     */
+    @JavascriptInterface
+    fun getRelaySyncStatus(): String {
+        if (!isTrusted()) return denied("getRelaySyncStatus")
+        return JSONObject()
+            .put("ok", true)
+            .put("syncing", RelayMediaSync.syncing)
+            .put("lastSyncAtMs", RelayMediaSync.lastSyncAtMs)
+            .put("lastSummary", RelayMediaSync.lastSummary)
+            .toString()
+    }
+
+    // ── Embedded captions ──────────────────────────────────────────────
+
+    /**
+     * Demux subtitle tracks muxed INSIDE a media container (MP4 `mov_text`,
+     * MKV/WebM-muxed SRT/VTT) and return them as the same
+     * `[{start, end, text}]` cue JSON (seconds, fractional) the page's SRT
+     * engine already renders. media_player.html tries this automatically
+     * when no sidecar `.srt`/`.vtt` exists — priority is `?srt=` param,
+     * then sidecar file, then this embedded extraction.
+     *
+     * [source] is a library-relative path (re-checked for Media-root
+     * containment) or a `content:`/`file:` URI string (DCIM entries).
+     * Returns "[]" when the file has no usable embedded subtitle track.
+     * Blocking is fine here: bridge methods run on the WebView's bridge
+     * thread, never the UI thread.
+     */
+    @JavascriptInterface
+    fun getEmbeddedCaptions(source: String?): String {
+        if (!isTrusted()) return denied("getEmbeddedCaptions")
+        val src = source?.trim().orEmpty()
+        if (src.isEmpty()) return "[]"
+        val resolved = if (src.startsWith("content:", ignoreCase = true) ||
+            src.startsWith("file:", ignoreCase = true)
+        ) {
+            src
+        } else {
+            service.resolveSafe(src)?.absolutePath ?: return "[]"
+        }
+        return EmbeddedCaptionExtractor.extract(context, resolved) ?: "[]"
     }
 
     // ── Root info ──────────────────────────────────────────────────────

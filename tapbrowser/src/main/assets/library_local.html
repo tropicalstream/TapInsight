@@ -1101,9 +1101,24 @@
   updateStorageInfo();
 
   // ── Init ───────────────────────────────────────────────────────────
+  // ?folder=<media-root-relative path> deep-links straight into that
+  // folder on load — the media player's ‹ back button uses this to
+  // return into the EXACT folder the playing file lives in. Probe the
+  // folder first and fall back to the root when the param is missing,
+  // malformed, or the folder no longer exists (openFolder's own error
+  // path only toasts, which would leave the page empty on a bad link).
   document.addEventListener('DOMContentLoaded', function(){
     if (bridgeMissing()) { renderBridgeMissing(); return; }
-    openFolder('');
+    var startFolder = '';
+    try {
+      var fm = window.location.search.match(/[?&]folder=([^&]+)/);
+      if (fm) startFolder = decodeURIComponent(fm[1]);
+    } catch (_) { startFolder = ''; }
+    if (startFolder) {
+      var probe = callBridge('listFolder', [startFolder]);
+      if (!probe || probe.error) startFolder = '';
+    }
+    openFolder(startFolder);
   });
 })();
 </script>

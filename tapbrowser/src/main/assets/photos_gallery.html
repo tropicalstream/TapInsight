@@ -846,6 +846,29 @@ function maybeFocusFromQuery() {
   if (idx < 0) {
     idx = photos.findIndex(p => p.relativePath === focus);
   }
+  // The gallery collection only covers Photos + DCIM, but the library
+  // routes EVERY image tap here — including images that live outside
+  // the collection (e.g. Music/<album>/cover.jpg). Synthesize an entry
+  // for an out-of-collection library-relative path so the lightbox can
+  // still open on it immediately: it joins the front of the grid for
+  // this visit only, resolves through the same entryUrl() machinery
+  // (library-relative → /media/<rel>), and is view-only for rotation
+  // (source 'focus' is refused by rotateBy like the other foreign
+  // sources). dcim: ids never synthesize — a miss there means the
+  // MediaStore row is gone.
+  if (idx < 0 && !focus.startsWith('dcim:') &&
+      /\.(jpe?g|png|gif|webp|bmp|heic|heif|avif)$/i.test(focus)) {
+    photos.unshift({
+      name: focus.split('/').pop(),
+      relativePath: focus,
+      kind: 'IMAGE',
+      source: 'focus',
+      sizeBytes: 0,
+      lastModifiedMs: 0
+    });
+    renderGrid();
+    idx = 0;
+  }
   if (idx >= 0) openLightbox(idx);
 }
 
@@ -895,12 +918,15 @@ async function rotateBy(deg) {
   // MediaStore id yet, both are view-only here. Rotation for own
   // DCIM saves is doable in a future bridge change (open the URI,
   // re-encode, update via resolver), but not today.
-  if (p.source === 'dcim' || p.source === 'dcim_own' || p.source === 'local') {
+  if (p.source === 'dcim' || p.source === 'dcim_own' || p.source === 'local' ||
+      p.source === 'focus') {
     toast(p.source === 'local'
       ? 'Direct-filesystem photos are view-only'
       : p.source === 'dcim_own'
         ? 'Rotating MediaStore-backed photos is not yet supported'
-        : 'Device-camera photos are view-only here');
+        : p.source === 'focus'
+          ? 'Images outside the photo library are view-only here'
+          : 'Device-camera photos are view-only here');
     return;
   }
 

@@ -22,6 +22,7 @@ import com.rayneo.visionclaw.core.network.GeminiRouter
 import com.rayneo.visionclaw.core.network.LearnLmRouter
 import com.rayneo.visionclaw.core.network.ResearchRouter
 import com.rayneo.visionclaw.core.model.DeviceLocationContext
+import com.rayneo.visionclaw.core.notifications.NotificationCenter
 import com.rayneo.visionclaw.core.storage.AppPreferences
 import com.rayneo.visionclaw.core.storage.db.ChatDatabase
 import com.rayneo.visionclaw.core.storage.db.ChatMessageDao
@@ -38,6 +39,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -1583,6 +1585,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val maxItems = prefs.tasksItemCount
             when (val result = client.fetchTasks(maxResults = maxItems)) {
                 is GoogleTasksClient.TasksResult.Success -> {
+                    postDueSoonTaskNotifications(result.tasks)
                     val summary = if (result.tasks.isEmpty()) {
                         "No pending tasks"
                     } else {
@@ -1602,6 +1605,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     Log.e(TAG, "Tasks error: ${result.message}")
                 }
             }
+        }
+    }
+
+    /**
+     * Ring the HUD bell for tasks coming due. Fires for incomplete tasks
+     * whose due time falls inside [start-of-today .. now + 1h] — i.e. due
+     * within the hour, or already due today (Google Tasks date-only tasks
+     * land at midnight, so "due today" is the honest phrasing). The id
+     * `task_<id>_<dueMs>` makes the 5-minute poll re-posts no-ops until
+     * the task's due date changes.
+     */
+    private fun postDueSoonTaskNotifications(tasks: List<GoogleTasksClient.TaskItem>) {
+        val nowMs = System.currentTimeMillis()
+        val oneHourMs = 3_600_000L
+        val startOfTodayMs = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val timeFormat = SimpleDateFormat("h:mm a", Locale.US).apply {
+            timeZone = TimeZone.getDefault()
+        }
+        tasks.forEach { task ->
+            if (task.status == "completed") return@forEach
+            val due = task.due ?: return@forEach
+            val dueMs = due.time
+            if (dueMs < startOfTodayMs) return@forEach
+            if (dueMs > nowMs + oneHourMs) return@forEach
+            val message = if (dueMs > nowMs) {
+                "${task.title} due at ${timeFormat.format(due)}"
+            } else {
+                "${task.title} due today"
+            }
+            NotificationCenter.post(
+                NotificationCenter.HudNotification(
+                    id = "task_${task.id}_$dueMs",
+                    source = NotificationCenter.Source.TASK,
+                    title = "Task due soon",
+                    message = message
+                )
+            )
         }
     }
 

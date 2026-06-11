@@ -18,6 +18,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.text.TextUtils
 import android.util.Patterns
 import android.view.LayoutInflater
 import android.view.Surface
@@ -40,6 +41,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.rayneo.visionclaw.R
 import com.rayneo.visionclaw.core.model.ChatMessage
+import com.rayneo.visionclaw.core.notifications.NotificationCenter
 import com.rayneo.visionclaw.ui.MainViewModel
 import com.rayneo.visionclaw.ui.VoiceOscilloscopeView
 import com.rayneo.visionclaw.ui.panels.TrackpadPanel
@@ -120,6 +122,17 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         private const val DARK_MODE_DOUBLE_SWIPE_WINDOW_MS = 2000L
         private const val DARK_MODE_BATTERY_ALPHA = 0.10f
         private const val READER_STREAM_FOLLOW_THRESHOLD_DP = 56f
+
+        // ── HUD bell notification list ──────────────────────────────────────
+        // Long-press toggles the list card; while open, trackpad swipes move
+        // a one-step-per-swipe focus through the rows (same latch pattern as
+        // reader-mode URL focus) and a tap activates the focused row.
+        private const val NOTIF_LIST_MAX_VISIBLE = 6
+        private const val NOTIF_ROLL_ANIM_MS = 200L
+        private const val NOTIF_FOCUS_STEP_DELTA = 1.4f
+        private const val NOTIF_FOCUS_RELEASE_RESET_MS = 320L
+        private const val BELL_TINT_IDLE = 0xCCFFFFFF.toInt()
+        private const val BELL_TINT_UNREAD = 0xFFFFC857.toInt()
     }
 
     private inner class DiscreteCarouselManager(context: Context) :
@@ -144,6 +157,13 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
      *  Activity can enable/disable backend power optimizations. */
     interface DarkModeListener {
         fun onDarkModeChanged(enabled: Boolean)
+    }
+
+    /** Notified when a HUD bell notification is activated (tap / trackpad
+     *  select in the open bell list). The host drops it into the chat as
+     *  an assistant card and reads it aloud. */
+    interface NotificationActionListener {
+        fun onNotificationActivated(notification: NotificationCenter.HudNotification)
     }
 
     enum class FocusedTapResult {
@@ -189,6 +209,11 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
     private lateinit var hudHeartbeatText: TextView
     private lateinit var hudConnectionDot: View
     private lateinit var hudConnectionText: TextView
+    private lateinit var hudBellContainer: FrameLayout
+    private lateinit var hudBellIcon: ImageView
+    private lateinit var hudBellBadge: TextView
+    private lateinit var hudNotificationsCard: LinearLayout
+    private lateinit var hudNotificationsList: LinearLayout
     private lateinit var chatRecycler: RecyclerView
     private lateinit var chatStreamIndicator: TextView
     private lateinit var readerOverlay: FrameLayout
@@ -308,6 +333,21 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
     private var coreEyeSurfaceListener: CoreEyeSurfaceListener? = null
     private var cardActionListener: CardActionListener? = null
     private var darkModeListener: DarkModeListener? = null
+    private var notificationActionListener: NotificationActionListener? = null
+
+    // ── HUD bell notification list state ────────────────────────────────
+    private var renderedNotifications: List<NotificationCenter.HudNotification> = emptyList()
+    private var notificationListOpen = false
+    private var focusedNotificationIndex = 0
+    private var notifSwipeAccum = 0f
+    // True when a focus step just fired; further swipe accumulation is
+    // dropped until the gesture goes idle for NOTIF_FOCUS_RELEASE_RESET_MS
+    // — one physical swipe moves focus by exactly one row.
+    private var notifFocusStepConsumed = false
+    private val notifFocusReleaseRunnable = Runnable {
+        notifFocusStepConsumed = false
+        notifSwipeAccum = 0f
+    }
     private var externalCalendarSummary: String? = null
     private var externalTasksSummary: String? = null
     private var externalNewsSummary: String? = null
@@ -378,6 +418,12 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         hudHeartbeatText = view.findViewById(R.id.hudHeartbeatText)
         hudConnectionDot = view.findViewById(R.id.hudConnectionDot)
         hudConnectionText = view.findViewById(R.id.hudConnectionText)
+        hudBellContainer = view.findViewById(R.id.hudBellContainer)
+        hudBellIcon = view.findViewById(R.id.hudBellIcon)
+        hudBellBadge = view.findViewById(R.id.hudBellBadge)
+        hudNotificationsCard = view.findViewById(R.id.hudNotificationsCard)
+        hudNotificationsList = view.findViewById(R.id.hudNotificationsList)
+        hudBellContainer.setOnClickListener { toggleNotificationList() }
         chatRecycler = view.findViewById(R.id.chatRecycler)
         chatStreamIndicator = view.findViewById(R.id.chatStreamIndicator)
         readerOverlay = view.findViewById(R.id.readerOverlay)
@@ -556,6 +602,21 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
                     }
                 }
                 launch {
+                    NotificationCenter.unreadCount.collect { count ->
+                        renderBellBadge(count)
+                    }
+                }
+                launch {
+                    NotificationCenter.notifications.collect { list ->
+                        renderedNotifications = list
+                        if (notificationListOpen) {
+                            focusedNotificationIndex = focusedNotificationIndex
+                                .coerceIn(0, (list.size - 1).coerceAtLeast(0))
+                            renderNotificationList()
+                        }
+                    }
+                }
+                launch {
                     val formatter = SimpleDateFormat("EEE MMM dd • HH:mm:ss", Locale.US)
                     while (true) {
                         hudTime.text = formatter.format(Date())
@@ -601,6 +662,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         uiHandler.removeCallbacks(coreEyeStreamTimeoutRunnable)
         uiHandler.removeCallbacks(hudWarmupSyncRunnable)
         uiHandler.removeCallbacks(swipeReleaseResetRunnable)
+        uiHandler.removeCallbacks(notifFocusReleaseRunnable)
         chatStreamIndicator.animate().cancel()
         coreEyePulseAnimator?.cancel()
         coreEyePulseAnimator = null
@@ -615,12 +677,14 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
 
     override fun onTrackpadPan(deltaX: Float, deltaY: Float): Boolean {
         if (batterySavingDarkMode) return handleDarkModeSwipe(deltaY)
+        if (notificationListOpen) return handleNotificationListSwipe(deltaY)
         if (hudModeEnabled) return true
         return onTrackpadScroll(deltaY)
     }
 
     override fun onTrackpadScroll(deltaY: Float): Boolean {
         if (batterySavingDarkMode) return handleDarkModeSwipe(deltaY)
+        if (notificationListOpen) return handleNotificationListSwipe(deltaY)
         if (hudModeEnabled) return true
         if (readerModeActive) {
             // For multi-URL reader cards, vertical swipes advance the
@@ -2034,6 +2098,177 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
         }
         hudRadioText.text = stationName
         hudRadioText.visibility = View.VISIBLE
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // HUD bell notification list
+    // ══════════════════════════════════════════════════════════════════════
+
+    /** Unread badge + bell tint. Driven by NotificationCenter.unreadCount. */
+    private fun renderBellBadge(count: Int) {
+        if (!isAdded || !this::hudBellBadge.isInitialized) return
+        if (count > 0) {
+            hudBellBadge.text = if (count > 99) "99+" else count.toString()
+            hudBellBadge.visibility = View.VISIBLE
+            hudBellIcon.setColorFilter(BELL_TINT_UNREAD)
+        } else {
+            hudBellBadge.visibility = View.GONE
+            hudBellIcon.setColorFilter(BELL_TINT_IDLE)
+        }
+    }
+
+    fun isNotificationListOpen(): Boolean = notificationListOpen
+
+    fun setNotificationActionListener(listener: NotificationActionListener?) {
+        notificationActionListener = listener
+    }
+
+    fun toggleNotificationList() {
+        if (!isAdded || !this::hudNotificationsCard.isInitialized || batterySavingDarkMode) {
+            return
+        }
+        if (notificationListOpen) {
+            closeNotificationList()
+        } else {
+            openNotificationList()
+        }
+    }
+
+    private fun openNotificationList() {
+        if (readerModeActive) {
+            exitReaderMode(animated = false)
+        }
+        notificationListOpen = true
+        focusedNotificationIndex = 0
+        notifSwipeAccum = 0f
+        notifFocusStepConsumed = false
+        renderNotificationList()
+        // Opening the list is "seeing" the notifications — clear the badge
+        // (the list itself stays populated).
+        NotificationCenter.markAllSeen()
+        hudNotificationsCard.pivotY = 0f
+        hudNotificationsCard.scaleY = 0f
+        hudNotificationsCard.alpha = 0f
+        hudNotificationsCard.visibility = View.VISIBLE
+        hudNotificationsCard.animate()
+            .scaleY(1f)
+            .alpha(1f)
+            .setDuration(NOTIF_ROLL_ANIM_MS)
+            .setInterpolator(AccelerateDecelerateInterpolator())
+            .start()
+    }
+
+    private fun closeNotificationList() {
+        notificationListOpen = false
+        uiHandler.removeCallbacks(notifFocusReleaseRunnable)
+        hudNotificationsCard.pivotY = 0f
+        hudNotificationsCard.animate()
+            .scaleY(0f)
+            .alpha(0f)
+            .setDuration(NOTIF_ROLL_ANIM_MS)
+            .setInterpolator(AccelerateDecelerateInterpolator())
+            .withEndAction {
+                hudNotificationsCard.visibility = View.GONE
+                hudNotificationsCard.scaleY = 1f
+                hudNotificationsCard.alpha = 1f
+            }
+            .start()
+    }
+
+    /** Rebuild the list rows. The focused row gets a ▶ marker, full alpha
+     *  and up to three lines; the rest collapse to one ellipsized line. */
+    private fun renderNotificationList() {
+        if (!isAdded || !this::hudNotificationsList.isInitialized) return
+        hudNotificationsList.removeAllViews()
+        val items = renderedNotifications.take(NOTIF_LIST_MAX_VISIBLE)
+        if (items.isEmpty()) {
+            hudNotificationsList.addView(
+                TextView(requireContext()).apply {
+                    text = getString(R.string.hud_notifications_empty)
+                    setTextColor(0x99FFFFFF.toInt())
+                    textSize = 12f
+                    setPadding(0, dpToPx(2f), 0, dpToPx(2f))
+                }
+            )
+            return
+        }
+        if (focusedNotificationIndex > items.lastIndex) {
+            focusedNotificationIndex = items.lastIndex
+        }
+        items.forEachIndexed { index, notification ->
+            val focused = index == focusedNotificationIndex
+            hudNotificationsList.addView(
+                TextView(requireContext()).apply {
+                    text = if (focused) {
+                        "▶ ${notification.displayText()}"
+                    } else {
+                        notification.displayText()
+                    }
+                    setTextColor(colorForNotificationSource(notification.source))
+                    alpha = if (focused) 1f else 0.72f
+                    textSize = 12f
+                    maxLines = if (focused) 3 else 1
+                    ellipsize = TextUtils.TruncateAt.END
+                    setPadding(0, dpToPx(2f), 0, dpToPx(2f))
+                    setOnClickListener { activateNotificationAt(index) }
+                }
+            )
+        }
+    }
+
+    private fun colorForNotificationSource(source: NotificationCenter.Source): Int {
+        return when (source) {
+            NotificationCenter.Source.CALENDAR -> 0xFF00E5FF.toInt()
+            NotificationCenter.Source.TASK -> 0xFF00E676.toInt()
+            NotificationCenter.Source.HERMES -> BELL_TINT_UNREAD
+            NotificationCenter.Source.OPENCLAW -> 0xFFFF8A65.toInt()
+            NotificationCenter.Source.SYSTEM -> 0xFFFFFFFF.toInt()
+        }
+    }
+
+    /** Trackpad swipes while the list is open: one focus step per physical
+     *  swipe (accumulate-latch-release, mirroring reader-mode URL focus). */
+    private fun handleNotificationListSwipe(deltaY: Float): Boolean {
+        if (renderedNotifications.isEmpty()) return true
+        uiHandler.removeCallbacks(notifFocusReleaseRunnable)
+        uiHandler.postDelayed(notifFocusReleaseRunnable, NOTIF_FOCUS_RELEASE_RESET_MS)
+        if (notifFocusStepConsumed) return true
+        notifSwipeAccum += deltaY
+        if (abs(notifSwipeAccum) >= NOTIF_FOCUS_STEP_DELTA) {
+            val direction = if (notifSwipeAccum > 0f) 1 else -1
+            notifSwipeAccum = 0f
+            notifFocusStepConsumed = true
+            val lastIndex =
+                (renderedNotifications.take(NOTIF_LIST_MAX_VISIBLE).size - 1).coerceAtLeast(0)
+            val next = (focusedNotificationIndex + direction).coerceIn(0, lastIndex)
+            if (next != focusedNotificationIndex) {
+                focusedNotificationIndex = next
+                playNavigationTick()
+                renderNotificationList()
+            }
+        }
+        return true
+    }
+
+    /** Trackpad select while the list is open. Returns false when closed
+     *  so the caller falls through to its normal tap handling. */
+    fun activateFocusedNotification(): Boolean {
+        if (!notificationListOpen) return false
+        activateNotificationAt(focusedNotificationIndex)
+        return true
+    }
+
+    private fun activateNotificationAt(index: Int) {
+        val notification = renderedNotifications.take(NOTIF_LIST_MAX_VISIBLE).getOrNull(index)
+            ?: return
+        if (index != focusedNotificationIndex) {
+            focusedNotificationIndex = index
+            renderNotificationList()
+        }
+        notificationActionListener?.onNotificationActivated(notification)
+        if (notificationListOpen) {
+            closeNotificationList()
+        }
     }
 
     fun isHudModeEnabled(): Boolean = hudModeEnabled

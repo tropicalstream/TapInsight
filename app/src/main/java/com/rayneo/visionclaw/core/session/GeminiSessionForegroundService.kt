@@ -190,6 +190,44 @@ class GeminiSessionForegroundService : LifecycleService() {
                 Log.w(TAG, "HUD flows → HudStateBridge bridge failed: ${e.message}", e)
             }
         }
+        // HUD bell → unipanel. Mirror the NotificationCenter list + unread
+        // badge count into HudStateBridge so tapbrowser's unipanel HUD can
+        // render the bell without a visionclaw Activity running. init() is
+        // idempotent — it restores persisted state here in case the Service
+        // is the first process entry point (pure unipanel cold start).
+        com.rayneo.visionclaw.core.notifications.NotificationCenter.init(applicationContext)
+        lifecycleScope.launch {
+            try {
+                kotlinx.coroutines.flow.combine(
+                    com.rayneo.visionclaw.core.notifications.NotificationCenter.notifications,
+                    com.rayneo.visionclaw.core.notifications.NotificationCenter.unreadCount
+                ) { list, unread ->
+                    list to unread
+                }.collect { (list, unread) ->
+                    HudStateBridge.update { state ->
+                        state.copy(
+                            notifications = list.map { n ->
+                                HudStateBridge.HudNotificationEntry(
+                                    id = n.id,
+                                    source = n.source.name,
+                                    title = n.title,
+                                    message = n.message,
+                                    timestampMs = n.timestampMs
+                                )
+                            },
+                            notificationUnread = unread
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "NotificationCenter → HudStateBridge bridge failed: ${e.message}", e)
+            }
+        }
+        // Unipanel bell-list open → clear the unread badge, same as the
+        // visionclaw chat panel does when its list opens.
+        HudStateBridge.setOnNotificationsSeen {
+            com.rayneo.visionclaw.core.notifications.NotificationCenter.markAllSeen()
+        }
         // Phase 4j — Hermes health ping. In unipanel mode the visionclaw
         // Activity (which normally drives the "H" status badge via
         // hermesPingRunnable) isn't running, so nothing publishes
@@ -553,6 +591,18 @@ class GeminiSessionForegroundService : LifecycleService() {
                     runCatching { vm.refreshHudUpcomingCalendar(force = true) }
                     runCatching { vm.refreshHudTasks(force = true) }
                     runCatching { vm.refreshHudNews(force = true) }
+                    // Drain relay-queued HUD bell notifications on the same
+                    // cadence as MainActivity's notificationPollRunnable —
+                    // in unipanel mode that Activity poll isn't running, so
+                    // this is the only pull path for away-from-home bells.
+                    // Own IO coroutine: drainBlocking is a blocking HTTP
+                    // round-trip and must never gate the HUD feed loop.
+                    launch(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching {
+                            com.rayneo.visionclaw.core.notifications.RelayNotifyInbox
+                                .drainBlocking(applicationContext)
+                        }
+                    }
                     runCatching { vm.refreshHudAirQuality(force = true) }
                 }
             }

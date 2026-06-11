@@ -12,9 +12,11 @@ import com.rayneo.visionclaw.core.network.GoogleOAuthManager
 import com.rayneo.visionclaw.core.network.OpenClawPairingClient
 import com.rayneo.visionclaw.core.network.GooglePlacesClient
 import com.rayneo.visionclaw.core.network.GoogleTasksClient
+import com.rayneo.visionclaw.core.network.RelayUrlHelper
 import com.rayneo.visionclaw.core.network.ResearchRouter
 import com.TapLink.app.media.MediaLibraryService
 import com.rayneo.visionclaw.core.model.DeviceLocationContext
+import com.rayneo.visionclaw.core.notifications.NotificationCenter
 import com.rayneo.visionclaw.core.storage.AppPreferences
 import com.rayneo.visionclaw.core.storage.OrbImageStore
 import fi.iki.elonen.NanoHTTPD
@@ -510,7 +512,12 @@ document.addEventListener('DOMContentLoaded', loadAll);
         // glasses to boot straight into the unipanel. When on, the launcher
         // shows an animated swipe-sequence lock at cold launch. Purely a
         // visual deterrent ("dissuade common folk"); no encryption.
-        "security_enabled" to false
+        "security_enabled" to false,
+        // Dim-mode TapRadio song lyrics ("Dim-Mode Captions" card in the
+        // companion radio page). When ON, the dim screen's caption line
+        // shows LRCLIB synced lyrics for the playing radio track. Default
+        // ON — it only ever activates when a song is identified anyway.
+        "dim_captions_radio" to true
     )
 
     /** Known integer config keys and their defaults. */
@@ -649,6 +656,10 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "translate_auto_mode",
         // Battery Saver
         "battery_saver_auto_threshold",
+        // Dim-mode TapRadio lyrics toggle (companion radio page). The
+        // podcast-captions twin was removed with the rest of podcast CC —
+        // radio lyrics is the single surviving dim-caption toggle.
+        "dim_captions_radio",
         // Quick Actions
         "home_address",
         "work_address",
@@ -773,6 +784,10 @@ document.addEventListener('DOMContentLoaded', loadAll);
                 uri == "/api/dashboard" && method == Method.POST -> saveDashboard(session)
                 uri == "/api/phone-location/status" && method == Method.GET -> servePhoneLocationBridgeStatus()
                 uri == "/api/phone-location" && method == Method.POST -> savePhoneLocationBridge(session)
+                // HUD bell push endpoint. The Mac relay (tools/image_relay.py)
+                // forwards POST /notify payloads here when the glasses are
+                // reachable; RelayNotifyInbox pulls the queued leftovers.
+                uri == "/api/notify" && method == Method.POST -> handlePushNotification(session)
                 uri == "/oauth/callback" && method == Method.GET -> handleOAuthCallback(session)
                 uri == "/api/oauth/exchange" && method == Method.POST -> handleOAuthExchange(session)
                 uri == "/api/oauth/status" && method == Method.GET -> serveOAuthStatus()
@@ -806,6 +821,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
                 uri == "/api/library/write" && method == Method.POST -> writeLibraryFile(session)
                 uri == "/api/library/generate" && method == Method.POST -> generateLibraryPlaylist(session)
                 uri == "/api/library/upload" && method == Method.POST -> uploadLibraryMedia(session)
+                uri == "/api/library/mkdir" && method == Method.POST -> mkdirLibraryFolder(session)
                 uri == "/api/library/delete" && method == Method.POST -> deleteLibraryEntry(session)
                 // Custom chat-panel orb image (Personalization).
                 // The companion's orb.html cropper produces a square PNG and
@@ -1185,6 +1201,55 @@ window.__companionToken = '${sessionToken}';
         })
     }
 
+    /**
+     * POST /api/notify — ring the HUD bell from outside the glasses.
+     *
+     * This is the push half of the relay notification bridge: the Mac's
+     * image_relay.py forwards its POST /notify payloads here (JSON
+     * `{title, message, source, id?}`, X-Session-Token auth like every
+     * other /api/ route). Payloads the relay can't deliver queue on its
+     * disk and arrive later via RelayNotifyInbox's pull. The fallback id
+     * is derived from the content exactly like the pull path's, so a
+     * notification that travels BOTH paths is deduped by
+     * NotificationCenter rather than ringing twice.
+     */
+    private fun handlePushNotification(session: IHTTPSession): Response {
+        val body = HashMap<String, String>()
+        session.parseBody(body)
+        val postData = body["postData"] ?: ""
+        if (postData.isBlank()) {
+            return badRequest("Empty body")
+        }
+        val json = try {
+            JSONObject(postData)
+        } catch (e: Exception) {
+            return badRequest("Invalid JSON")
+        }
+        val message = json.optString("message").trim()
+        if (message.isBlank()) {
+            return badRequest("message is required")
+        }
+        val title = json.optString("title").trim().ifBlank { "Assistant update" }
+        val source = when (json.optString("source").trim().uppercase(Locale.US)) {
+            "CALENDAR" -> NotificationCenter.Source.CALENDAR
+            "TASK" -> NotificationCenter.Source.TASK
+            "HERMES" -> NotificationCenter.Source.HERMES
+            "OPENCLAW" -> NotificationCenter.Source.OPENCLAW
+            else -> NotificationCenter.Source.SYSTEM
+        }
+        val id = json.optString("id").trim()
+            .ifBlank { "relay_" + ("$title|$message").hashCode() }
+        val posted = NotificationCenter.post(
+            NotificationCenter.HudNotification(id, source, title, message)
+        )
+        Log.d(TAG, "Push notification '$title' (source=$source, posted=$posted)")
+        return jsonResponse(JSONObject().apply {
+            put("status", "ok")
+            put("posted", posted)
+            put("id", id)
+        })
+    }
+
     private fun savePhoneLocationBridge(session: IHTTPSession): Response {
         val body = HashMap<String, String>()
         session.parseBody(body)
@@ -1551,21 +1616,14 @@ window.__companionToken = '${sessionToken}';
         return proxyRelayRequest("/media/$filename", mime)
     }
 
-    /** Build the relay base URL from the configured OpenClaw gateway endpoint.
-     *  Mirrors the logic in OpenClawClient.buildRelayUrl(). */
+    /** Build the relay base URL from the configured OpenClaw gateway
+     *  endpoint (shared RelayUrlHelper logic; prefers the public tunnel
+     *  for LAN endpoints so proxied URLs work from any network). */
     private fun buildRelayBaseUrl(): String? {
-        val endpoint = appPreferences.openClawEndpoint.trim()
-        if (endpoint.isBlank()) return null
-        val host = Regex("""://([^:/]+)""").find(endpoint)?.groupValues?.get(1) ?: return null
-        val isIp = host.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))
-        val isLocal = host == "localhost" || host == "127.0.0.1" || isIp
-        return if (isLocal) {
-            "http://$host:18790"
-        } else {
-            val parts = host.split(".")
-            val baseDomain = if (parts.size > 2) parts.drop(1).joinToString(".") else host
-            "https://relay.$baseDomain"
-        }
+        return RelayUrlHelper.baseFromEndpoint(
+            appPreferences.openClawEndpoint.trim(),
+            preferTapInsightPublicForLocal = true
+        )
     }
 
     private fun serveHudState(): Response {
@@ -3540,6 +3598,45 @@ window.__companionToken = '${sessionToken}';
             .put("saved", saved)
             .put("errors", errors)
         return newFixedLengthResponse(Response.Status.OK, "application/json", resp.toString())
+    }
+
+    /**
+     * POST /api/library/mkdir  body: { path }  → create a folder (nested
+     * paths allowed) inside the media library. Same path-safety checks as
+     * the sibling library routes: ".." rejected outright, then
+     * resolveSafe() confines the target to the library root.
+     */
+    private fun mkdirLibraryFolder(session: IHTTPSession): Response {
+        val body = HashMap<String, String>()
+        return try {
+            session.parseBody(body)
+            val json = JSONObject(body["postData"] ?: "{}")
+            val rawPath = json.optString("path", "").trim().trim('/')
+            if (rawPath.isBlank()) {
+                return badRequest("Missing folder path")
+            }
+            if (rawPath.contains("..")) {
+                return badRequest("Invalid folder path")
+            }
+            val target = mediaLibrary.resolveSafe(rawPath)
+                ?: return badRequest("Invalid folder path")
+            if (target.isFile) {
+                return badRequest("A file with that name already exists")
+            }
+            if (!target.isDirectory && !target.mkdirs()) {
+                return badRequest("Could not create folder")
+            }
+            newFixedLengthResponse(
+                Response.Status.OK,
+                "application/json",
+                JSONObject()
+                    .put("status", "ok")
+                    .put("relativePath", mediaLibrary.relativize(target))
+                    .toString()
+            )
+        } catch (e: Exception) {
+            badRequest("mkdir failed: ${e.message}")
+        }
     }
 
     /** POST /api/library/delete  body: { path }. */

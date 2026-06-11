@@ -10,7 +10,12 @@
 # Usage:
 #   curl -sL <url>/install-relay.sh | bash
 #   — or —
-#   bash tools/install-relay.sh
+#   bash tools/install-relay.sh [--media-root <dir>]... [--glasses-url <url>]... [--glasses-token <token>]
+#
+# Reinstalls PRESERVE the existing service config: every --media-root entry
+# and the glasses notify-bridge (--glasses-url/--glasses-token) already in
+# the installed plist are carried over automatically, then merged with any
+# flags passed on this command line.
 #
 # To uninstall:
 #   bash tools/install-relay.sh --uninstall
@@ -24,14 +29,65 @@ PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_NAME.plist"
 WORKSPACE="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ── Uninstall ────────────────────────────────────────────────────────────
-if [[ "$1" == "--uninstall" ]]; then
-    echo "Uninstalling TapClaw Image Relay..."
-    launchctl unload "$PLIST_PATH" 2>/dev/null || true
-    rm -f "$PLIST_PATH"
-    rm -rf "$INSTALL_DIR"
-    echo "Done. Relay service removed."
-    exit 0
+# ── Parse CLI flags ──────────────────────────────────────────────────────
+MEDIA_ROOTS=()
+GLASSES_URLS=()
+GLASSES_TOKEN=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --uninstall)
+            echo "Uninstalling TapClaw Image Relay..."
+            launchctl unload "$PLIST_PATH" 2>/dev/null || true
+            rm -f "$PLIST_PATH"
+            rm -rf "$INSTALL_DIR"
+            echo "Done. Relay service removed."
+            exit 0
+            ;;
+        --media-root)    MEDIA_ROOTS+=("$2"); shift 2 ;;
+        --glasses-url)   GLASSES_URLS+=("$2"); shift 2 ;;
+        --glasses-token) GLASSES_TOKEN="$2"; shift 2 ;;
+        *) echo "Unknown flag: $1"; exit 1 ;;
+    esac
+done
+
+# ── Preserve existing service config across reinstalls ──────────────────
+# Every --media-root and the glasses notify-bridge survive a reinstall;
+# values passed on this command line are merged in (deduped, CLI wins for
+# the token).
+if [[ -f "$PLIST_PATH" ]]; then
+    while IFS=$'\t' read -r kind value; do
+        case "$kind" in
+            media-root)
+                keep=1
+                for r in "${MEDIA_ROOTS[@]:-}"; do [[ "$r" == "$value" ]] && keep=0; done
+                [[ $keep -eq 1 ]] && MEDIA_ROOTS+=("$value")
+                ;;
+            glasses-url)
+                keep=1
+                for u in "${GLASSES_URLS[@]:-}"; do [[ "$u" == "$value" ]] && keep=0; done
+                [[ $keep -eq 1 ]] && GLASSES_URLS+=("$value")
+                ;;
+            glasses-token)
+                [[ -z "$GLASSES_TOKEN" ]] && GLASSES_TOKEN="$value"
+                ;;
+        esac
+    done < <(/usr/bin/python3 - "$PLIST_PATH" <<'PYEOF'
+import plistlib, sys
+try:
+    with open(sys.argv[1], "rb") as f:
+        args = plistlib.load(f).get("ProgramArguments", [])
+except Exception:
+    sys.exit(0)
+i = 0
+while i < len(args):
+    flag = args[i]
+    if flag in ("--media-root", "--glasses-url", "--glasses-token") and i + 1 < len(args):
+        print(flag.lstrip("-") + "\t" + args[i + 1])
+        i += 2
+    else:
+        i += 1
+PYEOF
+)
 fi
 
 # ── Install ──────────────────────────────────────────────────────────────
@@ -69,6 +125,15 @@ cat > "$PLIST_PATH" <<EOF
         <string>$RELAY_SCRIPT</string>
         <string>--workspace</string>
         <string>$WORKSPACE</string>
+$(for r in "${MEDIA_ROOTS[@]:-}"; do
+    [[ -n "$r" ]] && printf '        <string>--media-root</string>\n        <string>%s</string>\n' "$r"
+done)
+$(for u in "${GLASSES_URLS[@]:-}"; do
+    [[ -n "$u" ]] && printf '        <string>--glasses-url</string>\n        <string>%s</string>\n' "$u"
+done)
+$(if [[ -n "$GLASSES_TOKEN" ]]; then
+    printf '        <string>--glasses-token</string>\n        <string>%s</string>\n' "$GLASSES_TOKEN"
+fi)
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -96,6 +161,12 @@ if curl -s "http://localhost:18790/status" > /dev/null 2>&1; then
     echo ""
     echo "✓ TapClaw Image Relay is running on port 18790"
     echo "  Frames will be saved to: $WORKSPACE/camera_frame.jpg"
+    for r in "${MEDIA_ROOTS[@]:-}"; do
+        [[ -n "$r" ]] && echo "  Media root: $r"
+    done
+    for u in "${GLASSES_URLS[@]:-}"; do
+        [[ -n "$u" ]] && echo "  Notify bridge: -> $u"
+    done
     echo "  Logs: /tmp/tapclaw-image-relay.log"
     echo ""
     echo "  The relay starts automatically on login."

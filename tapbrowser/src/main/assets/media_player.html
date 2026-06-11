@@ -275,6 +275,27 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0a;color:#e8e8e
   justify-content:center;transition:background .2s,transform .15s}
 .pl-nav-btn:active{transform:scale(.9)}
 .pl-nav-btn:disabled{opacity:.3;cursor:not-allowed}
+
+/* ── ‹ Back button ──
+   Pinned top-left in EVERY mode (text reader, audio, video, playlist).
+   Stops playback cleanly and returns to the library, deep-linked into
+   the exact folder the playing file lives in via
+   library_local.html?folder=… . Styled on the .vid-btn circular idiom
+   so it reads as player chrome in all three themes. z-index sits above
+   the mode panels AND the loading overlay (100) so a hung load is still
+   escapable, but below #errorMsg (200). */
+#backBtn{position:fixed;top:10px;left:10px;z-index:150;width:40px;height:40px;
+  border-radius:50%;border:none;cursor:pointer;
+  background:rgba(255,255,255,.1);color:#fff;font-size:22px;line-height:1;
+  display:flex;align-items:center;justify-content:center;
+  padding:0 2px 2px 0;transition:background .2s}
+#backBtn:hover{background:rgba(255,255,255,.18)}
+#backBtn:active{background:rgba(255,255,255,.25)}
+/* Each mode's own top chrome clears the pinned button instead of the
+   button floating over titles/controls. */
+#textHeader{padding-left:62px}
+#videoTopBar{padding-left:62px}
+#plBar{padding-left:60px}
 </style>
 </head>
 <body>
@@ -288,6 +309,18 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0a;color:#e8e8e
 
 <!-- Error Display -->
 <div id="errorMsg"></div>
+
+<!-- ‹ Back — pinned in every mode; stops playback and returns to the
+     library folder the playing file lives in. Button elements are
+     excluded from the document-level tap gesture handler, so the
+     double-tap-to-exit gesture keeps working unchanged. -->
+<button id="backBtn" title="Back to library" aria-label="Back to library">‹</button>
+
+<!-- Active caption line mirror for the native dim-mode scrape. Hidden
+     on-page; #captionText (inside the video overlay) is the visible
+     render target. This node carries the SAME line in audio mode too,
+     where the video overlay markup is display:none. -->
+<div id="dimCaptionLine" style="display:none" aria-hidden="true"></div>
 
 <!-- ═══ TEXT READER ═══ -->
 <div id="textReader">
@@ -1897,6 +1930,10 @@ function initAudioPlayer(url) {
       seek.value = audioEl.currentTime;
       document.getElementById('audioTimeCur').textContent = fmt(audioEl.currentTime);
     }
+    // Audio files get cue tracking too (sidecar lyrics/captions or
+    // embedded tracks) — rendered into the same #captionText node and
+    // published for the dim-mode caption slot.
+    updateCaptions(audioEl.currentTime);
   });
   audioEl.addEventListener('ended', function() {
     playBtn.textContent = '▶';
@@ -1940,6 +1977,14 @@ function initAudioPlayer(url) {
   document.getElementById('audioFwd').addEventListener('click', function() {
     audioEl.currentTime = Math.min(audioEl.duration, audioEl.currentTime + 15);
   });
+
+  // Caption source for this file (?srt= param > sidecar > embedded) —
+  // detection defers itself, so this never delays the play() below.
+  initCaptionsForTrack(url);
+
+  // Album cover art for this track (folder image via the bridge) —
+  // lookup defers itself too, so it never delays the play() below.
+  updateAudioCoverArt(url);
 
   // Auto-play
   audioEl.play().then(function(){ notifyMediaState(true); }).catch(function(){});
@@ -2073,11 +2118,13 @@ function initVideoPlayer(url) {
     e.stopPropagation();
     captionsEnabled = !captionsEnabled;
     this.style.opacity = captionsEnabled ? 1 : 0.4;
-    if (!captionsEnabled) document.getElementById('captionText').textContent = '';
+    if (!captionsEnabled) setCaptionLine('');  // clears render + dim publish
   });
 
-  // Load captions if URL provided
-  if (captionUrl) loadSrtCaptions(captionUrl);
+  // Select the caption source for this file (?srt= param > sidecar
+  // .srt/.vtt next to the file > embedded subtitle track). Detection is
+  // deferred internally so playback start never waits on caption work.
+  initCaptionsForTrack(url);
 
   // Auto-play fullscreen
   videoEl.play().then(function() {
@@ -2113,35 +2160,281 @@ function hideVideoOverlayDelayed() {
   }, 3500);
 }
 
-// ── SRT Caption Parser ──
-function loadSrtCaptions(url) {
-  fetch(url).then(function(r){ return r.text(); }).then(function(text) {
-    captions = parseSrt(text);
-  }).catch(function(e){ console.warn('Could not load captions:', e); });
+// ── Caption engine (SRT + VTT sidecars, ?srt= param, embedded tracks) ──
+//
+// Cue format everywhere: [{start, end, text}] with fractional seconds —
+// the exact shape the native EmbeddedCaptionExtractor produces, so all
+// three sources feed the single render path in updateCaptions().
+//
+// Source priority: ?srt=/&captions= URL param > sidecar file in the
+// playing file's folder (exact basename match first — Excalibur.srt next
+// to "Excalibur" — else the folder's ONLY .srt/.vtt) > subtitle track
+// embedded in the container via TapMedia.getEmbeddedCaptions().
+var captionSeq = 0;   // bumps on every track change; stale async loads no-op
+
+function loadSrtCaptions(url, seq, onFail) {
+  fetch(url).then(function(r){
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.text();
+  }).then(function(text) {
+    if (seq !== undefined && seq !== captionSeq) return;   // stale track
+    var cues = parseSrt(text);
+    if (cues.length) { captions = cues; return; }
+    if (onFail) onFail();
+  }).catch(function(e){
+    console.warn('Could not load captions:', e);
+    if ((seq === undefined || seq === captionSeq) && onFail) onFail();
+  });
 }
 
+// Parses BOTH SubRip (.srt) and WebVTT (.vtt). Same blank-line-separated
+// block structure; VTT differs by an optional numeric index line,
+// optional hours in timestamps, '.' millisecond separators, cue settings
+// after the arrow, and WEBVTT/NOTE/STYLE/REGION header blocks — which
+// contain no '-->' line and therefore fall through harmlessly.
 function parseSrt(text) {
   var result = [];
-  var blocks = text.replace(/\r\n/g, '\n').split('\n\n');
-  blocks.forEach(function(block) {
+  var src = String(text || '').replace(/^\uFEFF/, '')
+              .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  var timeRe = /(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3})\s*-->\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3})/;
+  function secs(h, m, s, ms) {
+    return parseInt(h || '0', 10)*3600 + parseInt(m, 10)*60 + parseInt(s, 10) +
+           parseInt((String(ms) + '00').slice(0, 3), 10)/1000;
+  }
+  src.split('\n\n').forEach(function(block) {
     var lines = block.trim().split('\n');
-    if (lines.length < 3) return;
-    var timeLine = lines[1];
-    var match = timeLine.match(/(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/);
+    // Timing line is line 1 (SRT index / VTT cue id above it) or line 0
+    // (VTT cues without an id).
+    var ti = -1;
+    for (var i = 0; i < lines.length && i < 2; i++) {
+      if (lines[i].indexOf('-->') !== -1) { ti = i; break; }
+    }
+    if (ti < 0) return;
+    var match = lines[ti].match(timeRe);
     if (!match) return;
-    var start = parseInt(match[1])*3600 + parseInt(match[2])*60 + parseInt(match[3]) + parseInt(match[4])/1000;
-    var end = parseInt(match[5])*3600 + parseInt(match[6])*60 + parseInt(match[7]) + parseInt(match[8])/1000;
-    var content = lines.slice(2).join('\n').replace(/<[^>]+>/g, '');
+    var start = secs(match[1], match[2], match[3], match[4]);
+    var end   = secs(match[5], match[6], match[7], match[8]);
+    var content = lines.slice(ti + 1).join('\n').replace(/<[^>]+>/g, '').trim();
+    if (!content || end <= start) return;
     result.push({ start: start, end: end, text: content });
   });
   return result;
 }
 
-function updateCaptions(time) {
-  if (!captionsEnabled || captions.length === 0) return;
+// Find a sidecar .srt/.vtt for a library-relative media path via the
+// bridge folder listing. Exact basename match wins (works for
+// extensionless media files too); otherwise a folder with exactly ONE
+// subtitle file is unambiguous enough to use. Returns the sidecar's
+// library-relative path, or ''.
+function findSidecarCaptionPath(relPath) {
+  var TM = window.TapMedia;
+  if (!relPath || !TM || typeof TM.listFolder !== 'function') return '';
+  var data;
+  try { data = JSON.parse(TM.listFolder(parentFolderOf(relPath))); }
+  catch (_) { return ''; }
+  if (!data || data.error || !data.entries) return '';
+  var base = relPath.split('/').pop().replace(/\.[^.]+$/, '').toLowerCase();
+  var subs = data.entries.filter(function(en) {
+    return !!en && /\.(srt|vtt)$/i.test(en.name || '');
+  });
+  if (!subs.length) return '';
+  for (var i = 0; i < subs.length; i++) {
+    if (subs[i].name.replace(/\.[^.]+$/, '').toLowerCase() === base) {
+      return subs[i].relativePath || '';
+    }
+  }
+  return subs.length === 1 ? (subs[0].relativePath || '') : '';
+}
+
+// Media URL for a library-relative path: bridge helper first, manual
+// fallback matching MediaFileInterceptor's /media/ route.
+function mediaUrlForRelPath(relPath) {
+  var TM = window.TapMedia;
+  try {
+    if (TM && typeof TM.getMediaUrl === 'function') {
+      var u = TM.getMediaUrl(relPath);
+      if (u) return u;
+    }
+  } catch (_) {}
+  return 'https://appassets.androidplatform.net/media/' +
+         relPath.split('/').map(encodeURIComponent).join('/');
+}
+
+// ── Audio cover art (#audioArt) ──────────────────────────────────────
+// When an audio track plays, look in its folder for a cover image —
+// cover/folder/front/album/art.* preferred, in that order, else ANY
+// image in the folder — via the same bridge folder listing the
+// sidecar-caption detector uses, and paint it into the #audioArt tile.
+// Falls back to the 🎵 placeholder when the folder has no image (or no
+// bridge). The lookup is cached per folder so prev/next inside an
+// album never re-hits the bridge.
+var coverArtSeq = 0;                            // bumps per track; stale lookups no-op
+var coverArtFolderCache = Object.create(null);  // folder relPath → image relPath ('' = none)
+var COVER_ART_BASENAMES = ['cover', 'folder', 'front', 'album', 'art'];
+var COVER_ART_IMG_RE = /\.(jpe?g|png|gif|webp|bmp)$/i;
+
+function findCoverArtPath(folderRel) {
+  if (folderRel in coverArtFolderCache) return coverArtFolderCache[folderRel];
+  var found = '';
+  var TM = window.TapMedia;
+  if (TM && typeof TM.listFolder === 'function') {
+    var data = null;
+    try { data = JSON.parse(TM.listFolder(folderRel)); } catch (_) {}
+    if (data && !data.error && data.entries) {
+      var images = data.entries.filter(function(en) {
+        return !!en && COVER_ART_IMG_RE.test(en.name || '');
+      });
+      // Preferred basenames win in priority order (cover.jpg beats
+      // front.png); failing all of those, any image in the folder is
+      // better than the placeholder.
+      for (var p = 0; p < COVER_ART_BASENAMES.length && !found; p++) {
+        for (var i = 0; i < images.length; i++) {
+          var base = images[i].name.replace(/\.[^.]+$/, '').toLowerCase();
+          if (base === COVER_ART_BASENAMES[p]) {
+            found = images[i].relativePath || '';
+            break;
+          }
+        }
+      }
+      if (!found && images.length) found = images[0].relativePath || '';
+    }
+  }
+  coverArtFolderCache[folderRel] = found;
+  return found;
+}
+
+// Paint (or clear) the art tile. '' restores the 🎵 placeholder and the
+// stylesheet's gradient background.
+function setAudioArtImage(imgUrl) {
+  var art = document.getElementById('audioArt');
+  if (!art) return;
+  var icon = art.querySelector('.icon');
+  if (imgUrl) {
+    art.style.backgroundImage = 'url("' + String(imgUrl).replace(/"/g, '%22') + '")';
+    art.style.backgroundSize = 'cover';
+    art.style.backgroundPosition = 'center';
+    if (icon) icon.style.display = 'none';
+  } else {
+    art.style.backgroundImage = '';
+    if (icon) icon.style.display = '';
+  }
+}
+
+// (Re)resolve cover art for the track now loading. Called from
+// initAudioPlayer and loadAudioTrack's fast swap path, so folder-queue
+// and playlist advances refresh the art per track. listFolder is a
+// synchronous bridge hop, so — like caption detection — the work is
+// deferred off the load path and guarded by a sequence token.
+function updateAudioCoverArt(url) {
+  var seq = ++coverArtSeq;
+  setTimeout(function() {
+    if (seq !== coverArtSeq) return;
+    // Same resolution chain the ‹ back button uses: queue/playlist
+    // entries carry relativePath (via currentLibraryRelPath); plain
+    // single-file mode derives it from the /media/ URL.
+    var relPath = libraryRelPathFromUrl(url) || currentLibraryRelPath();
+    var imgRel = relPath ? findCoverArtPath(parentFolderOf(relPath)) : '';
+    if (!imgRel) { setAudioArtImage(''); return; }
+    // Preload before painting so a missing/corrupt file falls back to
+    // the 🎵 tile instead of a blank square.
+    var imgUrl = mediaUrlForRelPath(imgRel);
+    var probe = new Image();
+    probe.onload  = function() { if (seq === coverArtSeq) setAudioArtImage(imgUrl); };
+    probe.onerror = function() { if (seq === coverArtSeq) setAudioArtImage(''); };
+    probe.src = imgUrl;
+  }, 250);
+}
+
+// (Re)select the caption source for the track now loading. Called from
+// initAudioPlayer/initVideoPlayer and the fast-path track loaders, so
+// folder-queue and playlist advances re-run detection per track.
+function initCaptionsForTrack(url) {
+  var seq = ++captionSeq;
+  captions = [];
+  setCaptionLine('');
+  // 1. Explicit ?srt=/&captions= param — applies to the originally
+  //    requested file only (queue advances get fresh detection). If the
+  //    param URL 404s (DualWebViewGroup guesses <basename>.srt for
+  //    intercepted web videos), fall through to sidecar/embedded.
+  if (captionUrl && url === mediaUrl) {
+    loadSrtCaptions(captionUrl, seq, function() {
+      detectSidecarOrEmbedded(url, seq);
+    });
+    return;
+  }
+  detectSidecarOrEmbedded(url, seq);
+}
+
+// Sidecar + embedded detection. The bridge calls are synchronous JS
+// bridge hops — and getEmbeddedCaptions can demux a whole MKV subtitle
+// track — so BOTH stages are deferred off the load path: the player UI
+// paints and playback starts before any caption work runs.
+function detectSidecarOrEmbedded(url, seq) {
+  setTimeout(function() {
+    if (seq !== captionSeq) return;
+    var relPath = libraryRelPathFromUrl(url);
+    // 2. Sidecar file next to the playing file.
+    var sidecar = findSidecarCaptionPath(relPath);
+    if (sidecar) {
+      loadSrtCaptions(mediaUrlForRelPath(sidecar), seq);
+      return;
+    }
+    // 3. Embedded subtitle track (MP4 mov_text, MKV/WebM-muxed SRT/VTT)
+    //    via the native extractor. Returns cue JSON or "[]".
+    var TM = window.TapMedia;
+    if (!TM || typeof TM.getEmbeddedCaptions !== 'function') return;
+    var source = relPath || url;
+    setTimeout(function() {
+      if (seq !== captionSeq) return;
+      var raw;
+      try { raw = TM.getEmbeddedCaptions(source); } catch (_) { return; }
+      if (seq !== captionSeq) return;
+      var cues;
+      try { cues = JSON.parse(raw || '[]'); } catch (_) { return; }
+      if (!Array.isArray(cues)) return;
+      cues = cues.filter(function(c) {
+        return c && typeof c.start === 'number' &&
+               typeof c.end === 'number' && c.text;
+      });
+      if (cues.length) captions = cues;
+    }, 350);
+  }, 250);
+}
+
+// ── Active-cue render + dim-mode publish ──
+// #captionText is the on-page render target (video overlay). The active
+// line is ALSO published for the native dim-mode mask so the caption can
+// carry into dim mode for audio AND video:
+//   • push channel: MediaInterface.onDimCaption(line) — same channel the
+//     YouTube dim-caption engine uses; native side gates it on masked
+//     state + media-control-WebView ownership, so pushing while undimmed
+//     is a harmless no-op.
+//   • scrape channel: window.__tapMediaActiveCaption (JS global) and the
+//     hidden #dimCaptionLine node, for evaluateJavascript polls.
+var lastPublishedCaptionLine = null;
+function setCaptionLine(line) {
+  line = line || '';
   var el = document.getElementById('captionText');
+  if (el && el.textContent !== line) el.textContent = line;
+  if (line === lastPublishedCaptionLine) return;
+  lastPublishedCaptionLine = line;
+  window.__tapMediaActiveCaption = line;
+  var mirror = document.getElementById('dimCaptionLine');
+  if (mirror) mirror.textContent = line;
+  try {
+    if (window.MediaInterface && typeof MediaInterface.onDimCaption === 'function') {
+      MediaInterface.onDimCaption(line);
+    }
+  } catch (_) {}
+}
+
+function updateCaptions(time) {
+  if (!captionsEnabled || captions.length === 0) {
+    if (lastPublishedCaptionLine) setCaptionLine('');
+    return;
+  }
   var active = captions.find(function(c){ return time >= c.start && time <= c.end; });
-  el.textContent = active ? active.text : '';
+  setCaptionLine(active ? active.text : '');
 }
 
 // ══════════════════════════════════════════════
@@ -2204,6 +2497,7 @@ function exitPlayer() {
   audioEl.pause();
   videoEl.pause();
   notifyMediaState(false);
+  try { setCaptionLine(''); } catch(_){}
   // Notify Android if interface exists
   if (window.AndroidInterface && typeof AndroidInterface.exitMediaPlayer === 'function') {
     AndroidInterface.exitMediaPlayer();
@@ -2213,6 +2507,68 @@ function exitPlayer() {
     document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#888;font-size:16px">Double-tapped to exit. Close this tab.</div>';
   }
 }
+
+// ══════════════════════════════════════════════
+// ══════ ‹ BACK TO LIBRARY ═══════════════════
+// ══════════════════════════════════════════════
+// The pinned top-left back button stops playback cleanly and returns to
+// library_local.html, deep-linked (?folder=…) into the EXACT folder the
+// playing file lives in. Distinct from double-tap exit (exitPlayer):
+// that hands control back to native; this is an in-WebView navigation
+// back into the library at the right spot. Same virtual https origin as
+// the library hand-off in the other direction.
+var LIBRARY_URL = 'https://appassets.androidplatform.net/assets/library_local.html';
+
+// Library-relative path of a /media/ URL served by the asset host
+// (https://appassets.androidplatform.net/media/<rel>); '' for anything
+// else (remote http(s) media, content: URIs, bridge-injected text).
+function libraryRelPathFromUrl(u) {
+  var m = String(u || '').match(/^https?:\/\/appassets\.androidplatform\.net\/media\/([^?#]+)/);
+  if (!m) return '';
+  try { return m[1].split('/').map(decodeURIComponent).join('/'); }
+  catch (_) { return m[1]; }
+}
+
+function parentFolderOf(rel) {
+  rel = String(rel || '').replace(/\/+$/, '');
+  var i = rel.lastIndexOf('/');
+  return i > 0 ? rel.slice(0, i) : '';
+}
+
+// Resolve the library-relative path of whatever is playing right now:
+// queue/playlist entries carry relativePath; single-file mode derives it
+// from the /media/ URL; full playlist mode can fall back to the .m3u's
+// own path so Back lands in the folder containing the playlist.
+function currentLibraryRelPath() {
+  try {
+    var entry = (playOrder && playOrder.length) ? currentEntry() : null;
+    if (entry && entry.relativePath) return entry.relativePath;
+    if (entry && entry.url) {
+      var fromEntry = libraryRelPathFromUrl(entry.url);
+      if (fromEntry) return fromEntry;
+    }
+  } catch (_) {}
+  var fromUrl = libraryRelPathFromUrl(mediaUrl);
+  if (fromUrl) return fromUrl;
+  return playlistPath || '';
+}
+
+function backToLibrary() {
+  // Stop everything the same way double-tap exit does, then navigate.
+  try { stopTts(); } catch (_) {}
+  try { audioEl.pause(); } catch (_) {}
+  try { videoEl.pause(); } catch (_) {}
+  notifyMediaState(false);
+  try { setCaptionLine(''); } catch (_) {}
+  var folder = parentFolderOf(currentLibraryRelPath());
+  window.location.href = LIBRARY_URL +
+    (folder ? '?folder=' + encodeURIComponent(folder) : '');
+}
+
+document.getElementById('backBtn').addEventListener('click', function(e) {
+  e.stopPropagation();
+  backToLibrary();
+});
 
 // ══════════════════════════════════════════════
 // ══════ KEYBOARD SHORTCUTS ══════════════════
@@ -2236,7 +2592,7 @@ document.addEventListener('keydown', function(e) {
   else if (key === 'c' && mediaType === 'video') {
     captionsEnabled = !captionsEnabled;
     document.getElementById('videoCCBtn').style.opacity = captionsEnabled ? 1 : 0.4;
-    if (!captionsEnabled) document.getElementById('captionText').textContent = '';
+    if (!captionsEnabled) setCaptionLine('');  // clears render + dim publish
   }
 });
 
@@ -2738,10 +3094,14 @@ function loadAudioTrack(url, title) {
   prepareExclusivePlayback();
   document.getElementById('audioTitle').textContent = title || 'Audio';
   if (!_audioInit) {
-    initAudioPlayer(url);  // sets up listeners + loads
+    initAudioPlayer(url);  // sets up listeners + loads (+ captions)
     _audioInit = true;
     return;
   }
+  // Fast swap-src path skips initAudioPlayer, so re-run caption
+  // detection AND cover-art resolution for the new track here.
+  initCaptionsForTrack(url);
+  updateAudioCoverArt(url);
   var loadSeq = ++audioLoadSeq;
   audioEl.dataset.loadSeq = String(loadSeq);
   audioEl.src = url;
@@ -2764,10 +3124,13 @@ function loadVideoTrack(url, title) {
   prepareExclusivePlayback();
   document.getElementById('videoTitle').textContent = title || 'Video';
   if (!_videoInit) {
-    initVideoPlayer(url);
+    initVideoPlayer(url);  // sets up listeners + loads (+ captions)
     _videoInit = true;
     return;
   }
+  // Fast swap-src path skips initVideoPlayer, so re-run caption
+  // detection for the new track here.
+  initCaptionsForTrack(url);
   var loadSeq = ++videoLoadSeq;
   videoEl.dataset.loadSeq = String(loadSeq);
   videoEl.src = url;

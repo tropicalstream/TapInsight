@@ -816,23 +816,11 @@ class OpenClawClient(
      * For example: wss://tapclaw.example.com → https://relay.example.com/frame
      */
     private fun buildRelayUrl(wsUrl: String): String {
-        val host = extractHost(wsUrl)
-        val isIp = host.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))
-        val isLocalhost = host == "localhost" || host == "127.0.0.1"
-
-        if (isIp || isLocalhost) {
-            return "http://$host:$IMAGE_RELAY_PORT/frame"
-        }
-
-        // Remote domain: strip first subdomain, prepend "relay."
-        // tapclaw.tapinsight.uk → relay.tapinsight.uk
-        val parts = host.split(".")
-        val baseDomain = if (parts.size > 2) {
-            parts.drop(1).joinToString(".")
-        } else {
-            host // fallback: use as-is if only 2 parts (e.g. example.com)
-        }
-        return "https://relay.$baseDomain/frame"
+        // Shared RelayUrlHelper logic (LAN IP → http://<ip>:18790/frame,
+        // remote domain → https://relay.<basedomain>/frame). The fallback
+        // arm only fires when no host at all could be extracted.
+        return RelayUrlHelper.frameUrlFromEndpoint(wsUrl)
+            ?: "http://${extractHost(wsUrl)}:$IMAGE_RELAY_PORT/frame"
     }
 
     // ── Private helpers ──────────────────────────────────────────────────

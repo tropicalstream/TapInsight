@@ -1775,9 +1775,6 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private var lastMaskedDomTitleUrl: String? = null
     private var lastMaskedDomTitleAt: Long = 0L
     private val maskedDomTitleFreshMs = 15000L
-    private var lastMaskedCaptionText: String? = null
-    private var lastMaskedCaptionAt: Long = 0L
-    private val maskedCaptionFreshMs = 2500L
     private val maskNowPlayingPeriodicRefresh: Runnable = object : Runnable {
         override fun run() {
             if (!isScreenMasked) return
@@ -1786,6 +1783,52 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             postDelayed(this, maskedNowPlayingRefreshDelayMs())
         }
     }
+
+    // ── Dim-mode caption ticker (DimCaptionEngine feed) ────────────
+    /**
+     * Pull-source for the dim caption line, independent of the current
+     * page. MainActivity points this at DimCaptionEngine (TapRadio synced
+     * lyrics) so the SAME mask caption slot YouTube dim-captions use can
+     * show radio lyrics while dimmed. The ticker polls every 500ms while
+     * masked; ownership semantics (`dimCaptionOwnsSlot`) make sure it only
+     * clears the slot when it was the one writing to it, so it never
+     * fights the YouTube push channel or the Spotify karaoke line.
+     */
+    @Volatile var dimCaptionProvider: (() -> String?)? = null
+    private var dimCaptionOwnsSlot = false
+    private var lastDimCaptionLine: String? = null
+    private val dimCaptionTick: Runnable = object : Runnable {
+        override fun run() {
+            if (!isScreenMasked) return
+            val line = runCatching { dimCaptionProvider?.invoke() }
+                .getOrNull()
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            if (line != lastDimCaptionLine) {
+                lastDimCaptionLine = line
+                if (line != null) {
+                    dimCaptionOwnsSlot = true
+                    updateMaskCaption(line)
+                } else if (dimCaptionOwnsSlot) {
+                    dimCaptionOwnsSlot = false
+                    updateMaskCaption(null)
+                }
+            }
+            postDelayed(this, 500L)
+        }
+    }
+
+    // ── Breathing audio visualizer (dim mode) ──────────────────────
+    /** Lazily created on first show; lives on the mask overlay. */
+    private var breathingVisualizer: BreathingVisualizerView? = null
+    /**
+     * Supplies the audio session id the visualizer should attach to
+     * (e.g. the native TapRadio ExoPlayer session). Set by MainActivity
+     * right before [showAudioVisualizer]; 0 / null falls back to the
+     * global output mix (the view also self-heals to session 0 via its
+     * own silent-session watchdog).
+     */
+    @Volatile var audioSessionIdProvider: (() -> Int)? = null
     private var maskOverlayTouchDownX = 0f
     private var maskOverlayTouchDownY = 0f
     private var maskOverlayTouchDownTime = 0L
@@ -2887,6 +2930,18 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                 // ~30s self-refresh so the user doesn't have
                                 // to scroll down after every reload.
                                 HermesLogAutoScroll.maybeInject(view, url)
+                                // This WebView renders manually-clicked
+                                // YouTube links, so it needs the same
+                                // YouTube treatments MainActivity's two
+                                // WebViewClients install — parity gaps here
+                                // were the cause of both the vanishing
+                                // pause timeline and the mute-after-20s
+                                // dim-mode bug. All three are idempotent.
+                                if (isYoutubePlayerUrl(url.orEmpty())) {
+                                    injectYouTubePausedChromeHold(view)
+                                    injectYouTubeUnmuteHelper(view)
+                                    YouTubeDimCaptions.install(view, url)
+                                }
                             }
                         } catch (e: Exception) {
                             android.util.Log.e("TapLink", "Error in onPageFinished", e)
@@ -2918,6 +2973,274 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 }
             }
         }
+    }
+
+    /**
+     * Hold YouTube's native pause overlay (the timeline + the size /
+     * fullscreen "expand" buttons) visible for a usable tap window after
+     * the user pauses, on ANY YouTube watch page. Desktop YouTube exposes
+     * .ytp-chrome-bottom; m.youtube.com uses a separate .player-controls /
+     * ytmCustomControlsContainer layer, so both are handled here.
+     *
+     * This is the SAME idempotent injected block MainActivity installs in
+     * its two WebViewClients — this class's WebViewClient (the one that
+     * renders manually-clicked YouTube links) was the third site that
+     * never got it, which left those videos with YouTube's near-instant
+     * autohide. Idempotent via window.__tl_pause_chrome_bound; suppressed
+     * while a TapLink Full/Theater/Mini style is active (inTapLinkMode).
+     * Touches only player chrome/control containers — NOT the caption
+     * windows or caption text.
+     */
+    private fun injectYouTubePausedChromeHold(view: WebView) {
+        view.evaluateJavascript(
+            """
+            (function extendPausedPlayerChrome() {
+                try {
+                    if (window.__tl_pause_chrome_bound) return;
+                    window.__tl_pause_chrome_bound = true;
+                    var HOLD_MS = 6000;
+                    var holdUntil = 0;
+                    var holdTimer = null;
+
+                    if (!document.getElementById('__tl_pause_chrome_style')) {
+                        var s = document.createElement('style');
+                        s.id = '__tl_pause_chrome_style';
+                        s.textContent =
+                            'html.__tl_hold_yt_chrome .ytp-chrome-bottom,' +
+                            'html.__tl_hold_yt_chrome .ytp-chrome-top,' +
+                            'html.__tl_hold_yt_chrome .ytp-gradient-bottom,' +
+                            'html.__tl_hold_yt_chrome .ytp-gradient-top,' +
+                            'html.__tl_hold_yt_chrome .ytp-chrome-controls,' +
+                            'html.__tl_hold_yt_chrome .ytp-progress-bar-container,' +
+                            'html.__tl_hold_yt_chrome .player-controls,' +
+                            'html.__tl_hold_yt_chrome .player-controls *,' +
+                            'html.__tl_hold_yt_chrome .player-controls-background,' +
+                            'html.__tl_hold_yt_chrome .player-controls-content,' +
+                            'html.__tl_hold_yt_chrome .ytmCustomControlsContainer,' +
+                            'html.__tl_hold_yt_chrome .ytmCustomControlsContainer *,' +
+                            'html.__tl_hold_yt_chrome .ytp-mobile,' +
+                            'html.__tl_hold_yt_chrome .mobile-topbar-header,' +
+                            'html.__tl_hold_yt_chrome ytm-player button,' +
+                            'html.__tl_hold_yt_chrome ytm-watch-player button,' +
+                            'html.__tl_hold_yt_chrome .html5-video-player button,' +
+                            'html.__tl_hold_yt_chrome .html5-video-player [role=\"button\"],' +
+                            'html.__tl_hold_yt_chrome .html5-video-player [role=\"slider\"],' +
+                            'html.__tl_hold_yt_chrome .html5-video-player input[type=\"range\"],' +
+                            'html.__tl_hold_yt_chrome .progress-bar,' +
+                            'html.__tl_hold_yt_chrome .progress-bar-line,' +
+                            'html.__tl_hold_yt_chrome .ytm-progress-bar{' +
+                            'opacity:1!important;visibility:visible!important;pointer-events:auto!important}' +
+                            'html.__tl_hold_yt_chrome .player-controls,' +
+                            'html.__tl_hold_yt_chrome .ytmCustomControlsContainer{' +
+                            'display:block!important}' +
+                            'html.__tl_hold_yt_chrome .html5-video-player{' +
+                            'cursor:auto!important}';
+                        document.head.appendChild(s);
+                    }
+
+                    function inTapLinkMode() {
+                        return !!(
+                            document.getElementById('__taplink_fs_style') ||
+                            document.getElementById('__tl_theater_style') ||
+                            document.getElementById('__tl_mini_style')
+                        );
+                    }
+
+                    function releaseHold() {
+                        try { document.documentElement.classList.remove('__tl_hold_yt_chrome'); } catch(e) {}
+                        if (holdTimer) {
+                            try { clearInterval(holdTimer); } catch(e) {}
+                            holdTimer = null;
+                        }
+                        clearForcedChromeStyles();
+                    }
+
+                    function applyHold() {
+                        if (inTapLinkMode()) {
+                            releaseHold();
+                            return;
+                        }
+                        holdUntil = Date.now() + HOLD_MS;
+                        try { document.documentElement.classList.add('__tl_hold_yt_chrome'); } catch(e) {}
+                        keepChromeVisible();
+                        if (!holdTimer) {
+                            holdTimer = setInterval(function() {
+                                try {
+                                    if (Date.now() >= holdUntil || inTapLinkMode()) {
+                                        releaseHold();
+                                        return;
+                                    }
+                                    keepChromeVisible();
+                                } catch(e) {}
+                            }, 250);
+                        }
+                    }
+
+                    function keepChromeVisible() {
+                        try {
+                            var players = document.querySelectorAll('.html5-video-player,#movie_player');
+                            for (var i = 0; i < players.length; i++) {
+                                players[i].classList.remove('ytp-autohide');
+                                players[i].classList.add('ytp-user-active');
+                                players[i].dispatchEvent(new MouseEvent('mousemove', {
+                                    bubbles: true,
+                                    cancelable: true,
+                                    view: window,
+                                    clientX: Math.max(1, Math.floor(window.innerWidth / 2)),
+                                    clientY: Math.max(1, Math.floor(window.innerHeight / 2))
+                                }));
+                            }
+                            var mobileControls = document.querySelectorAll(
+                                '.player-controls,.player-controls-background,.player-controls-content,' +
+                                '.ytmCustomControlsContainer,.ytp-mobile,.mobile-topbar-header,' +
+                                'ytm-player button,ytm-watch-player button,.html5-video-player button,' +
+                                '.html5-video-player [role=\"button\"],.html5-video-player [role=\"slider\"],' +
+                                '.html5-video-player input[type=\"range\"],.progress-bar,.progress-bar-line,.ytm-progress-bar'
+                            );
+                            for (var j = 0; j < mobileControls.length; j++) {
+                                mobileControls[j].style.setProperty('opacity', '1', 'important');
+                                mobileControls[j].style.setProperty('visibility', 'visible', 'important');
+                                mobileControls[j].style.setProperty('pointer-events', 'auto', 'important');
+                            }
+                        } catch(e) {}
+                    }
+
+                    function clearForcedChromeStyles() {
+                        try {
+                            var players = document.querySelectorAll('.html5-video-player,#movie_player');
+                            for (var i = 0; i < players.length; i++) {
+                                players[i].classList.remove('ytp-user-active');
+                                players[i].classList.add('ytp-autohide');
+                            }
+                            var mobileControls = document.querySelectorAll(
+                                '.player-controls,.player-controls-background,.player-controls-content,' +
+                                '.ytmCustomControlsContainer,.ytp-mobile,.mobile-topbar-header,' +
+                                'ytm-player button,ytm-watch-player button,.html5-video-player button,' +
+                                '.html5-video-player [role=\"button\"],.html5-video-player [role=\"slider\"],' +
+                                '.html5-video-player input[type=\"range\"],.progress-bar,.progress-bar-line,.ytm-progress-bar'
+                            );
+                            for (var j = 0; j < mobileControls.length; j++) {
+                                mobileControls[j].style.removeProperty('opacity');
+                                mobileControls[j].style.removeProperty('visibility');
+                                mobileControls[j].style.removeProperty('pointer-events');
+                            }
+                        } catch(e) {}
+                    }
+
+                    function bindVideo(v) {
+                        if (!v || v.__tl_pause_chrome_listener) return;
+                        v.__tl_pause_chrome_listener = true;
+                        v.addEventListener('pause', applyHold, true);
+                        v.addEventListener('play', releaseHold, true);
+                    }
+
+                    function bindAll() {
+                        try {
+                            var vids = document.querySelectorAll('video');
+                            for (var i = 0; i < vids.length; i++) bindVideo(vids[i]);
+                        } catch(e) {}
+                    }
+
+                    bindAll();
+                    setInterval(bindAll, 1500);
+                } catch(e) {
+                    console.log('[TapLink-YT] standalone pause chrome bind failed: ' + e);
+                }
+            })();
+            """,
+            null
+        )
+    }
+
+    /**
+     * Shared YouTube unmute helper (parity with MainActivity's clients).
+     *
+     * Why element-level `video.muted = false` is not enough: YouTube's
+     * player keeps its OWN mute state, and its periodic state
+     * reconciliation re-mutes the element ~20s in when the two disagree
+     * (the crossed-out speaker icon stays on). This helper reconciles all
+     * three layers — the `<video>` element, the player API
+     * (`movie_player.unMute()` + volume restore, the part that prevents
+     * the re-mute), and the UI mute button as a fallback — retrying for
+     * 30 seconds, plus a mutation observer so swapped-in `<video>`
+     * elements are caught immediately. Idempotent via
+     * window.__tl_unmute_helper_bound.
+     */
+    private fun injectYouTubeUnmuteHelper(view: WebView) {
+        view.evaluateJavascript(
+            """
+            (function tlEnsureUnmuted() {
+                try {
+                    if (window.__tl_unmute_helper_bound) return;
+                    window.__tl_unmute_helper_bound = true;
+                    var DEADLINE = Date.now() + 30000;
+
+                    function playerEl() {
+                        return document.getElementById('movie_player');
+                    }
+
+                    function unmuteOnce() {
+                        // Layer 1: the media element itself.
+                        try {
+                            var vids = document.querySelectorAll('video');
+                            for (var i = 0; i < vids.length; i++) {
+                                var v = vids[i];
+                                if (v.muted) { try { v.muted = false; } catch(e) {} }
+                                if (v.volume === 0) { try { v.volume = 1.0; } catch(e) {} }
+                            }
+                        } catch(e) {}
+                        // Layer 2: the player API — this is what stops
+                        // YouTube's state reconciliation from re-muting.
+                        try {
+                            var p = playerEl();
+                            if (p && typeof p.isMuted === 'function' && p.isMuted()) {
+                                try { p.unMute(); } catch(e) {}
+                                try {
+                                    var vol = 0;
+                                    try { vol = p.getVolume(); } catch(e2) {}
+                                    if (!vol || vol < 1) p.setVolume(100);
+                                } catch(e) {}
+                            }
+                        } catch(e) {}
+                        // Layer 3: UI fallback — only click when the button
+                        // explicitly offers "Unmute" so we can never mute.
+                        try {
+                            var btns = document.querySelectorAll(
+                                '.ytp-mute-button,button.mute-button,[aria-label]');
+                            for (var k = 0; k < btns.length; k++) {
+                                var b = btns[k];
+                                var label = (b.getAttribute('aria-label') || '') + ' ' +
+                                    (b.getAttribute('title') || '') + ' ' +
+                                    (b.getAttribute('data-title-no-tooltip') || '');
+                                if (/\bunmute\b/i.test(label)) {
+                                    try { b.click(); } catch(e) {}
+                                    break;
+                                }
+                            }
+                        } catch(e) {}
+                    }
+
+                    unmuteOnce();
+                    var timer = setInterval(function() {
+                        if (Date.now() > DEADLINE) { clearInterval(timer); return; }
+                        unmuteOnce();
+                    }, 1000);
+                    try {
+                        var mo = new MutationObserver(function() {
+                            if (Date.now() > DEADLINE) {
+                                try { mo.disconnect(); } catch(e) {}
+                                return;
+                            }
+                            unmuteOnce();
+                        });
+                        mo.observe(document.documentElement || document,
+                            { childList: true, subtree: true });
+                    } catch(e) {}
+                } catch(e) {}
+            })();
+            """,
+            null
+        )
     }
 
     init {
@@ -3890,6 +4213,55 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
+    fun isAudioVisualizerShown(): Boolean {
+        val v = breathingVisualizer
+        return v != null && v.visibility == View.VISIBLE
+    }
+
+    /**
+     * Show the night-sky breathing visualizer over the dim mask (swipe UP
+     * on the right temple pad while dimmed; swipe DOWN returns to dim).
+     * Attaches to the audio session from [audioSessionIdProvider], or the
+     * global output mix (session 0) when none is available.
+     */
+    fun showAudioVisualizer() {
+        val view = breathingVisualizer ?: BreathingVisualizerView(context).also {
+            breathingVisualizer = it
+            maskOverlay.addView(
+                it,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+        // The mask overlay's custom layout pass never measures children
+        // added after layout — the same "w=0 h=0 even when VISIBLE" quirk
+        // the dim clock has a safety net for — so explicitly size the view
+        // to the overlay's bounds on every show. The view additionally
+        // self-heals per frame if it still finds itself zero-sized.
+        val w = if (maskOverlay.width > 0) maskOverlay.width else 640
+        val h = if (maskOverlay.height > 0) maskOverlay.height else height
+        if (w > 0 && h > 0) {
+            view.measure(
+                View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY)
+            )
+            view.layout(0, 0, w, h)
+        }
+        view.visibility = View.VISIBLE
+        view.bringToFront()
+        val sessionId = runCatching { audioSessionIdProvider?.invoke() }.getOrNull() ?: 0
+        view.start(sessionId)
+    }
+
+    fun hideAudioVisualizer() {
+        breathingVisualizer?.let {
+            it.stop()
+            it.visibility = View.GONE
+        }
+    }
+
     fun maskScreen() {
         if (isScreenMasked) return  // Idempotent: prevent duplicate handler accumulation
         isScreenMasked = true
@@ -3921,11 +4293,23 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         updateMaskClockAndBattery()
         removeCallbacks(maskClockBatteryRefresh)
         postDelayed(maskClockBatteryRefresh, 30_000L)
+        // Start the dim caption ticker (DimCaptionEngine → mask caption
+        // line). Reset its memory first so a line from the previous dim
+        // session can't suppress the first write of this one.
+        lastDimCaptionLine = null
+        dimCaptionOwnsSlot = false
+        removeCallbacks(dimCaptionTick)
+        post(dimCaptionTick)
         updateRefreshRate()
     }
 
     fun unmaskScreen() {
         isScreenMasked = false
+        // Swiping/leaving dim mode always closes the visualizer too.
+        hideAudioVisualizer()
+        removeCallbacks(dimCaptionTick)
+        lastDimCaptionLine = null
+        dimCaptionOwnsSlot = false
         updatePlaybackWakeLocks()
         removeCallbacks(maskNowPlayingPeriodicRefresh)
         removeCallbacks(maskClockBatteryRefresh)
@@ -3935,8 +4319,6 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         lastMaskedDomTitle = null
         lastMaskedDomTitleUrl = null
         lastMaskedDomTitleAt = 0L
-        lastMaskedCaptionText = null
-        lastMaskedCaptionAt = 0L
         maskOverlay.visibility = View.GONE
         if (::maskNowPlayingText.isInitialized) {
             // INVISIBLE not GONE — see setupMaskOverlayUI for why.
@@ -10485,14 +10867,18 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             if (!isSpotifyPlayerUrl(currentUrl)) {
                 lastMaskedSpotifyInfo = null
             }
-            if (!isYoutubePage) {
-                lastMaskedCaptionText = null
-                lastMaskedCaptionAt = 0L
-            }
             val spotifyInfo =
                 if (isSpotifyPlayerUrl(currentUrl)) lastMaskedSpotifyInfo else null
             updateMaskSpotifyInfo(spotifyInfo)
-            updateMaskCaption(if (isYoutubePage) getFreshMaskedCaption(currentUrl) else null)
+            // The poll never WRITES caption text anymore: on YouTube pages
+            // the in-page YouTubeDimCaptions engine is the only writer
+            // (pushing through MediaInterface.onDimCaption), and on radio
+            // pages the dimCaptionTick owns the slot. The poll only clears
+            // a leftover line when neither writer can be active — e.g.
+            // after navigating away from YouTube mid-caption.
+            if (!isYoutubePage && !dimCaptionOwnsSlot) {
+                updateMaskCaption(null)
+            }
             // ALWAYS commit text + visibility when we have a label. The
             // previous "skip if label unchanged" cache made the path
             // dependent on the TextView's last *intended* state, but
@@ -10570,14 +10956,6 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         delays.forEach { delayMs ->
             postDelayed({ refreshMaskedNowPlaying() }, delayMs)
         }
-    }
-
-    private fun getFreshMaskedCaption(currentUrl: String? = null): String? {
-        val caption = lastMaskedCaptionText?.trim().orEmpty()
-        if (caption.isBlank()) return null
-        if (SystemClock.uptimeMillis() - lastMaskedCaptionAt > maskedCaptionFreshMs) return null
-        if (!currentUrl.isNullOrBlank() && !isYoutubePlayerUrl(currentUrl)) return null
-        return caption
     }
 
     private fun updateMaskCaption(caption: String?) {
@@ -10693,8 +11071,6 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         lastMaskedDomTitle = null
         lastMaskedDomTitleUrl = null
         lastMaskedDomTitleAt = 0L
-        lastMaskedCaptionText = null
-        lastMaskedCaptionAt = 0L
         refreshMaskedNowPlaying()
 
         val delays = longArrayOf(300L, 800L, 1500L, 2500L, 4000L, 6000L, 8500L, 12000L)
@@ -10765,8 +11141,19 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private fun maskedNowPlayingRefreshDelayMs(): Long {
         val currentUrl = try { getMediaControlWebView().url.orEmpty() } catch (_: Exception) { "" }
         return when {
-            isSpotifyPlayerUrl(currentUrl) || lastMaskedSpotifyInfo != null -> 1000L
+            // R33 — URL checks FIRST. The old first branch was
+            // `isSpotifyPlayerUrl(url) || lastMaskedSpotifyInfo != null`,
+            // so a stale Spotify info object left over from an earlier dim
+            // session forced YouTube onto the 1s Spotify cadence instead
+            // of its 750ms caption poll. The URL is the authority on what
+            // page we're actually polling; the legacy Spotify-info check
+            // only matters when the URL recognizes neither player.
+            isSpotifyPlayerUrl(currentUrl) -> 1000L
             isYoutubePlayerUrl(currentUrl) -> 750L
+            // Legacy behavior, moved lower in the chain: a live Spotify
+            // info object with an unrecognized URL (embedded player
+            // variants) still keeps the 1s karaoke cadence.
+            lastMaskedSpotifyInfo != null -> 1000L
             else -> 5000L
         }
     }
@@ -10849,6 +11236,27 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             return
         }
         if (isYoutube) {
+            // R33 — scraping a YouTube page means we are definitively NOT
+            // on Spotify: drop any stale Spotify info from an earlier dim
+            // session right here, synchronously, so the very next
+            // maskedNowPlayingRefreshDelayMs() can't see it. (The clear in
+            // refreshMaskedNowPlaying() runs inside a post{} — one frame
+            // too late for the delay computed by the poll that called us.)
+            lastMaskedSpotifyInfo = null
+            // Guaranteed (re-)install of the YouTube dim-caption engine from
+            // the dim-mode poll itself. Page-start injections can land in the
+            // dying page and be lost; this poll runs the moment the screen is
+            // masked and then every ~750ms, so the engine is alive within
+            // ~0.5s of dimming no matter what happened at page start.
+            // install() is idempotent (in-page guard + debounced retry
+            // ladder), so calling it on every tick is safe and intended.
+            YouTubeDimCaptions.install(webView, url)
+            // NOTE: this poll is a TITLE carrier only. The caption text
+            // itself is pushed by the YouTubeDimCaptions in-page engine
+            // through MediaInterface.onDimCaption — the old DOM caption
+            // scrape that used to live here was one of the two writers
+            // fighting over the caption TextView and was removed with the
+            // YouTubeDimCaptions refactor.
             webView.evaluateJavascript(
                 """
                 (function() {
@@ -10877,37 +11285,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             .replace(/ - YouTube Music${'$'}/, '')
                             .trim();
                         if (/^youtube$/i.test(title) || /^youtube music$/i.test(title)) title = '';
-
-                        var parts = [];
-                        var seen = {};
-                        function addCaptionText(text) {
-                            text = clean(text);
-                            if (!text || seen[text]) return;
-                            seen[text] = true;
-                            parts.push(text);
-                        }
-
-                        Array.prototype.slice.call(document.querySelectorAll(
-                            '.ytp-caption-segment, .caption-visual-line'
-                        )).forEach(function(node) {
-                            addCaptionText(node.textContent || node.innerText || '');
-                        });
-
-                        if (!parts.length) {
-                            Array.prototype.slice.call(document.querySelectorAll(
-                                '.ytp-caption-window-container'
-                            )).forEach(function(node) {
-                                addCaptionText(node.textContent || node.innerText || '');
-                            });
-                        }
-
-                        var caption = clean(parts.join(' '));
-                        if (caption.length > 220) {
-                            caption = caption.substring(0, 220).replace(/\s+\S*${'$'}/, '').trim();
-                        }
-                        return JSON.stringify({ title: title, caption: caption });
+                        return JSON.stringify({ title: title });
                     } catch(e) {
-                        return JSON.stringify({ title: '', caption: '' });
+                        return JSON.stringify({ title: '' });
                     }
                 })();
                 """.trimIndent()
@@ -10919,20 +11299,12 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 if (decoded.isBlank() || decoded == "null") return@evaluateJavascript
                 val obj = runCatching { JSONObject(decoded) }.getOrNull() ?: return@evaluateJavascript
                 val title = obj.optString("title").trim()
-                val caption = obj.optString("caption").trim()
                 post {
                     if (!isScreenMasked) return@post
                     if (title.isNotBlank()) {
                         lastMaskedDomTitle = title
                         lastMaskedDomTitleUrl = url
                         lastMaskedDomTitleAt = SystemClock.uptimeMillis()
-                    }
-                    if (caption.isNotBlank()) {
-                        lastMaskedCaptionText = caption
-                        lastMaskedCaptionAt = SystemClock.uptimeMillis()
-                    } else {
-                        lastMaskedCaptionText = null
-                        lastMaskedCaptionAt = 0L
                     }
                     refreshMaskedNowPlaying()
                 }
@@ -11588,6 +11960,32 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         fun onMediaStateChanged(isPlaying: Boolean) {
             // Run on UI thread to update UI
             parent.post { parent.handleMediaStateChanged(sourceWebView, isPlaying) }
+        }
+
+        /**
+         * Push channel for the YouTube dim-caption engine
+         * (YouTubeDimCaptions): the in-page 200ms ticker pushes each
+         * caption change here, so the dim line renders immediately
+         * instead of waiting for the next native poll. An empty/blank
+         * push clears the line (the engine sends '' when captions
+         * expire or a new video starts).
+         */
+        @android.webkit.JavascriptInterface
+        fun onDimCaption(line: String?) {
+            val text = line?.trim().orEmpty()
+            parent.post {
+                if (!parent.isScreenMasked) return@post
+                // Only the WebView that owns media controls may drive the
+                // mask caption line — a backgrounded YouTube window must
+                // not overwrite the active page's captions.
+                val controlWebView =
+                    runCatching { parent.getMediaControlWebView() }.getOrNull()
+                if (controlWebView !== sourceWebView) return@post
+                // The radio-lyrics ticker owns the slot on radio pages;
+                // when it does, a YouTube push is stale — drop it.
+                if (parent.dimCaptionOwnsSlot) return@post
+                parent.updateMaskCaption(text.ifBlank { null })
+            }
         }
 
         @android.webkit.JavascriptInterface

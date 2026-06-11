@@ -3,6 +3,7 @@ package com.TapLink.app.media
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.io.FileInputStream
 import java.io.IOException
 import java.util.Locale
 
@@ -55,7 +56,11 @@ class MediaLibraryService(private val context: Context) {
          */
         val TEXT_EXTENSIONS = setOf(
             "txt", "md", "markdown", "log", "csv", "json", "xml",
-            "html", "htm", "rtf", "ini", "cfg", "conf", "yaml", "yml", "toml"
+            "html", "htm", "rtf", "ini", "cfg", "conf", "yaml", "yml", "toml",
+            // Subtitle files are plain text: classifying them as TEXT keeps
+            // sidecar .srt/.vtt rows openable in the library instead of
+            // rendering as dead OTHER rows.
+            "srt", "vtt"
         )
 
         private const val README_CONTENT =
@@ -145,8 +150,16 @@ class MediaLibraryService(private val context: Context) {
         }
     }
 
-    /** Classify a file by its extension. */
+    /**
+     * Classify a file. The is-directory check runs FIRST: a directory whose
+     * name carries a trailing media-style extension ("Album.mp3") must
+     * classify as FOLDER, not by its name suffix — the old suffix-first
+     * order misclassified such folders in both frontends. Extensionless
+     * regular files fall through to magic-byte content sniffing instead of
+     * landing as dead OTHER rows.
+     */
     fun classify(file: File): MediaKind {
+        if (file.isDirectory) return MediaKind.FOLDER
         val ext = file.extension.lowercase(Locale.ROOT)
         return when {
             ext in AUDIO_EXTENSIONS -> MediaKind.AUDIO
@@ -154,7 +167,85 @@ class MediaLibraryService(private val context: Context) {
             ext in PLAYLIST_EXTENSIONS -> MediaKind.PLAYLIST
             ext in TEXT_EXTENSIONS -> MediaKind.TEXT
             ext in IMAGE_EXTENSIONS -> MediaKind.IMAGE
-            file.isDirectory -> MediaKind.FOLDER
+            ext.isEmpty() && file.isFile -> sniffKind(file)
+            else -> MediaKind.OTHER
+        }
+    }
+
+    /**
+     * Magic-byte content sniffing for extensionless files. Album rips and
+     * other files dropped into the library without an extension used to
+     * classify as OTHER — the one kind with no click handler, no delete,
+     * and no open action in either frontend. Reading the first bytes and
+     * recognizing the common containers makes those rows playable.
+     *
+     * Signatures (offset 0 unless noted):
+     *   ID3v2:       "ID3"                              → AUDIO (MP3)
+     *   FLAC:        "fLaC"                             → AUDIO
+     *   OGG:         "OggS" (Vorbis and Opus)           → AUDIO
+     *   RIFF/WAVE:   "RIFF" + "WAVE" at offset 8        → AUDIO
+     *   RIFF/AVI:    "RIFF" + "AVI " at offset 8        → VIDEO
+     *   AIFF:        "FORM" + "AIFF"/"AIFC" at offset 8 → AUDIO
+     *   ISO BMFF:    "ftyp" at offset 4 — the brand at offset 8 tells the
+     *                M4A audio family apart from generic MP4 video
+     *   EBML:        1A 45 DF A3 (Matroska / WebM)      → VIDEO
+     *   MPEG sync:   FF Ex / FF Fx (bare MP3, AAC ADTS) → AUDIO
+     */
+    private fun sniffKind(file: File): MediaKind {
+        val head = ByteArray(16)
+        val n = try {
+            FileInputStream(file).use { fis ->
+                var read = 0
+                while (read < head.size) {
+                    val r = fis.read(head, read, head.size - read)
+                    if (r <= 0) break
+                    read += r
+                }
+                read
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "sniffKind: failed to read ${file.name}: ${e.message}")
+            return MediaKind.OTHER
+        }
+        if (n < 4) return MediaKind.OTHER
+
+        fun b(i: Int): Int = head[i].toInt() and 0xFF
+        fun ascii(offset: Int, text: String): Boolean {
+            if (n < offset + text.length) return false
+            for (i in text.indices) {
+                if (head[offset + i] != text[i].code.toByte()) return false
+            }
+            return true
+        }
+
+        return when {
+            // ID3v2 tag → MP3.
+            ascii(0, "ID3") -> MediaKind.AUDIO
+            // FLAC native stream.
+            ascii(0, "fLaC") -> MediaKind.AUDIO
+            // OGG container (Vorbis or Opus).
+            ascii(0, "OggS") -> MediaKind.AUDIO
+            // RIFF — WAVE is audio, AVI is video.
+            ascii(0, "RIFF") && ascii(8, "WAVE") -> MediaKind.AUDIO
+            ascii(0, "RIFF") && ascii(8, "AVI ") -> MediaKind.VIDEO
+            // AIFF / AIFF-C.
+            ascii(0, "FORM") && (ascii(8, "AIFF") || ascii(8, "AIFC")) -> MediaKind.AUDIO
+            // ISO BMFF (MP4 family): the container brand distinguishes
+            // M4A-style audio from generic MP4 video.
+            ascii(4, "ftyp") -> {
+                val brand = if (n >= 12) {
+                    String(head, 8, 4, Charsets.US_ASCII).trim().uppercase(Locale.ROOT)
+                } else ""
+                if (brand.startsWith("M4A") || brand.startsWith("M4B") || brand.startsWith("M4P")) {
+                    MediaKind.AUDIO
+                } else {
+                    MediaKind.VIDEO
+                }
+            }
+            // EBML header → Matroska / WebM.
+            b(0) == 0x1A && b(1) == 0x45 && b(2) == 0xDF && b(3) == 0xA3 -> MediaKind.VIDEO
+            // Bare MPEG audio frame sync (MP3 / AAC ADTS).
+            b(0) == 0xFF && (b(1) and 0xE0) == 0xE0 -> MediaKind.AUDIO
             else -> MediaKind.OTHER
         }
     }

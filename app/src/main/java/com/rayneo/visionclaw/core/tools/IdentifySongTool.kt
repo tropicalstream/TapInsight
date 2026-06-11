@@ -1,6 +1,7 @@
 package com.rayneo.visionclaw.core.tools
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.TapLink.app.unipanel.NowPlayingBridge
 import com.rayneo.visionclaw.core.storage.AppPreferences
@@ -73,6 +74,26 @@ class IdentifySongTool(
             val match = withContext(Dispatchers.IO) { recognizeViaAudD(token, streamUrl) }
             if (match != null) {
                 NowPlayingBridge.updateTrack(match.asIcyTitle())
+                // Feed the confirmed ID straight into the dim-screen lyric
+                // engine, anchored MID-SONG: AudD's timecode says where in the
+                // track the sample matched, and the recognition round-trip
+                // (time elapsed since the sample was captured) is added on
+                // top. If ICY metadata later names the same song, the engine
+                // keeps this more accurate anchor rather than restarting
+                // (handled inside onManualSongId).
+                runCatching {
+                    val roundTripMs =
+                        if (match.sampledAtUptimeMs > 0L) {
+                            SystemClock.uptimeMillis() - match.sampledAtUptimeMs
+                        } else {
+                            0L
+                        }
+                    com.TapLinkX3.app.DimCaptionEngine.onManualSongId(
+                        match.artist,
+                        match.title,
+                        match.offsetIntoSongMs + roundTripMs
+                    )
+                }
                 val where = if (station.isNotBlank()) " on $station" else ""
                 return Result.success("That's ${match.spokenLabel()}$where.")
             }
@@ -115,13 +136,19 @@ class IdentifySongTool(
      */
     private fun recognizeViaAudD(token: String, streamUrl: String): SongMatch? {
         return try {
+            // Anchor for the lyric handoff: the sample's audio is "now" at
+            // capture time, so the recognition round-trip measured from here
+            // is added to AudD's in-track timecode by the caller.
+            val sampledAt = SystemClock.uptimeMillis()
             val sample = sampleStreamAudio(streamUrl)
             if (sample.isNotEmpty()) {
-                recognizeViaAudDFile(token, sample)?.let { return it }
+                recognizeViaAudDFile(token, sample)?.let {
+                    return it.copy(sampledAtUptimeMs = sampledAt)
+                }
             } else {
                 Log.w(TAG, "AudD sample skipped: no bytes captured from stream")
             }
-            recognizeViaAudDUrl(token, streamUrl)
+            recognizeViaAudDUrl(token, streamUrl)?.copy(sampledAtUptimeMs = sampledAt)
         } catch (e: Exception) {
             Log.w(TAG, "AudD recognition failed: ${e.message}")
             null
@@ -233,11 +260,31 @@ class IdentifySongTool(
         }
         val title = result.optString("title").trim()
         val artist = result.optString("artist").trim()
-        Log.d(TAG, "AudD match: title='${title.take(80)}' artist='${artist.take(80)}'")
+        val offsetMs = parseTimecodeMs(result.optString("timecode"))
+        Log.d(TAG, "AudD match: title='${title.take(80)}' artist='${artist.take(80)}' offsetMs=$offsetMs")
         return when {
-            title.isNotBlank() && artist.isNotBlank() -> SongMatch(title, artist)
-            title.isNotBlank() -> SongMatch(title, null)
+            title.isNotBlank() && artist.isNotBlank() -> SongMatch(title, artist, offsetMs)
+            title.isNotBlank() -> SongMatch(title, null, offsetMs)
             else -> null
+        }
+    }
+
+    /**
+     * AudD's `timecode` is a "mm:ss" (occasionally "h:mm:ss") string saying
+     * where IN THE TRACK the sample matched. Parse to millis; 0 when absent
+     * or malformed — the lyric engine treats 0 as "anchor at track start".
+     */
+    private fun parseTimecodeMs(tc: String?): Long {
+        val cleaned = tc?.trim()?.takeUnless { it.isBlank() } ?: return 0L
+        val parts = cleaned.split(':')
+        return try {
+            when (parts.size) {
+                2 -> (parts[0].toLong() * 60 + parts[1].toLong()) * 1000
+                3 -> ((parts[0].toLong() * 60 + parts[1].toLong()) * 60 + parts[2].toLong()) * 1000
+                else -> 0L
+            }
+        } catch (e: Exception) {
+            0L
         }
     }
 
@@ -249,7 +296,12 @@ class IdentifySongTool(
 
     private data class SongMatch(
         val title: String,
-        val artist: String?
+        val artist: String?,
+        /** Where in the TRACK the sample matched (AudD `timecode`), in ms. */
+        val offsetIntoSongMs: Long = 0L,
+        /** uptimeMillis() when the stream sample capture began — lets the
+         *  caller add the recognition round-trip onto the lyric anchor. */
+        val sampledAtUptimeMs: Long = 0L
     ) {
         fun spokenLabel(): String =
             if (!artist.isNullOrBlank()) "\"$title\" by $artist" else "\"$title\""

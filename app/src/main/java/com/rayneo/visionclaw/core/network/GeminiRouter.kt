@@ -3607,7 +3607,16 @@ class GeminiRouter(
                     "'hermes read this sign'), set include_image to true to attach the current AR glasses " +
                     "camera frame. Hermes streams its response back over SSE — TapInsight surfaces progress " +
                     "via the HUD ticker, so do not narrate intermediate state. When Hermes returns, briefly " +
-                    "acknowledge ('Hermes came back with…') and then relay the answer.")
+                    "acknowledge ('Hermes came back with…') and then relay the answer. " +
+                    // R10 — permanent relay delivery convention: Hermes stages files in
+                    // ~/hermes-media on its Mac; the relay serves them publicly at
+                    // /media/<filename>. Keep this line so Gemini can answer "where is
+                    // the file Hermes made?" without a round trip.
+                    "FILE DELIVERY (permanent convention): files Hermes saves on its Mac (briefings, notes, " +
+                    "any .txt) are served by the relay at https://relay.tapinsight.uk/media/<filename> " +
+                    "(index: /media-index.json), and text drops also appear in the glasses Media Library → " +
+                    "Text folder. If the user asks where a Hermes file is, point them to the Media Library " +
+                    "Text folder or that URL.")
                 .put("parameters", JSONObject()
                     .put("type", "OBJECT")
                     .put("properties", JSONObject()

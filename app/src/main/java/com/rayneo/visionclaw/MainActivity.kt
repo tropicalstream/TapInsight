@@ -77,6 +77,9 @@ import com.rayneo.visionclaw.core.location.DeviceLocationResolver
 import com.rayneo.visionclaw.core.model.DeviceLocationContext
 import com.rayneo.visionclaw.core.model.OpenClawStatusService
 import com.rayneo.visionclaw.core.network.ActiveNetworkHttp
+import com.rayneo.visionclaw.core.network.RelayUrlHelper
+import com.rayneo.visionclaw.core.notifications.NotificationCenter
+import com.rayneo.visionclaw.core.notifications.RelayNotifyInbox
 import com.rayneo.visionclaw.core.storage.AppPreferences
 import com.rayneo.visionclaw.core.storage.ReadableArtifactStore
 import com.rayneo.visionclaw.core.tools.ToolDispatcher
@@ -232,6 +235,19 @@ class MainActivity : AppCompatActivity() {
         private const val LEFT_ARM_DEVICE_NAME = "cyttsp6_mt"
         private const val LEFT_ARM_TAP_MAX_MS = 300L
         private const val LEFT_ARM_TAP_MOVE_TOLERANCE_PX = 30f
+
+        // ── HUD bell notifications ───────────────────────────────────────
+        // Cadence of notificationPollRunnable (calendar/tasks due-soon
+        // refresh + relay notify-queue drain).
+        private const val NOTIFICATION_POLL_INTERVAL_MS = 300_000L
+        // Agents can flag a line of their stream as bell-worthy by starting
+        // it with "[important]" / "[notify]" / "[notification]" (or the
+        // colon forms "important:" etc.). maybePostImportantAgentUpdate
+        // scans the rolling stream tail for these markers and posts the
+        // marked body to the NotificationCenter.
+        private val AGENT_IMPORTANT_MARKER_REGEX = Regex(
+            "(?im)^\\s*(?:\\[(?:important|notify|notification)\\]|(?:important|notify|notification):)\\s*(.+)$"
+        )
     }
 
     private enum class GeminiLiveState {
@@ -536,6 +552,22 @@ class MainActivity : AppCompatActivity() {
             uiHandler.postDelayed(this, 2000L)
         }
     }
+    // 5-minute notification poll. Forces the calendar / tasks HUD feeds to
+    // refresh (their fetch paths post due-soon bells through
+    // NotificationCenter) and drains any relay-queued notifications
+    // (RelayNotifyInbox) on a background dispatcher — that's the
+    // away-from-home path where the Mac can't push to the glasses
+    // directly. Armed in onResume, removed in onPause.
+    private val notificationPollRunnable = object : Runnable {
+        override fun run() {
+            viewModel.refreshHudUpcomingCalendar(force = true)
+            viewModel.refreshHudTasks(force = true)
+            lifecycleScope.launch(Dispatchers.IO) {
+                runCatching { RelayNotifyInbox.drainBlocking(applicationContext) }
+            }
+            uiHandler.postDelayed(this, NOTIFICATION_POLL_INTERVAL_MS)
+        }
+    }
 
     // ── Speech & Audio ───────────────────────────────────────────────────
     private var speechController: SpeechInputController? = null
@@ -812,6 +844,14 @@ class MainActivity : AppCompatActivity() {
         configureDnsCaching()
         bindProcessToValidatedWifi()
 
+        // Restore the HUD bell's persisted state (visible list, unread
+        // badge count AND the dedupe memory) before any poller or push
+        // path can post. Without the dedupe restore, the 5-minute pollers
+        // would re-post already-seen events after every restart and
+        // falsely re-light the badge. Idempotent — safe even if the
+        // foreground service initialized it first.
+        NotificationCenter.init(applicationContext)
+
         // ── Immersive full-screen for AR HUD ─────────────────────────
         configureImmersiveDisplay()
         window.setSoftInputMode(
@@ -1017,9 +1057,24 @@ class MainActivity : AppCompatActivity() {
                     chatFragment.setStreamActiveIndicator(true)
                 }
             }
+            maybePostImportantAgentUpdate(deltaText, NotificationCenter.Source.HERMES)
         }
         hermesClient.onProgressComplete = { success ->
             val now = android.os.SystemClock.uptimeMillis()
+            // Ring the HUD bell for every finished Hermes run — the user is
+            // often mid-task elsewhere when a long agent turn lands. Posted
+            // BEFORE the buffer reset so the message can quote the last
+            // heartbeat tail. Timestamped id: every completion is a fresh
+            // event, never deduped away.
+            NotificationCenter.post(
+                NotificationCenter.HudNotification(
+                    id = "hermes_done_$now",
+                    source = NotificationCenter.Source.HERMES,
+                    title = if (success) "Hermes finished" else "Hermes failed",
+                    message = lastTapClawHeartbeat?.takeIf { it.isNotBlank() }?.take(160)
+                        ?: if (success) "Hermes completed a task." else "Hermes run failed."
+                )
+            )
             synchronized(heartbeatStreamBuffer) { heartbeatStreamBuffer.setLength(0) }
             lastOpenClawTaskLabel = if (success) "Hermes done" else "Hermes failed"
             lastOpenClawActivityMs = now
@@ -1060,6 +1115,14 @@ class MainActivity : AppCompatActivity() {
             val heartbeatText = heartbeatStreamBuffer.toString()
                 .takeLast(200)
                 .replace('\n', ' ')
+            // Scan the raw (un-flattened) stream tail for [important]/[notify]
+            // markers — agents flag bell-worthy lines that way. Wider window
+            // than the 200-char ticker so a marker that scrolled off the
+            // ticker still rings the bell exactly once (content-hash id).
+            val rawStreamTail = synchronized(heartbeatStreamBuffer) {
+                heartbeatStreamBuffer.toString().takeLast(1024)
+            }
+            maybePostImportantAgentUpdate(rawStreamTail, NotificationCenter.Source.OPENCLAW)
             val hudLabel = openClawProgressLabel(deltaText)
             val labelChanged = hudLabel != lastOpenClawTaskLabel
 
@@ -1237,6 +1300,21 @@ class MainActivity : AppCompatActivity() {
 
         // ── ViewPager setup ──────────────────────────────────────────
         setupViewPager()
+        // HUD bell: activating a notification (tap / trackpad select in the
+        // bell list) drops it into the chat as an assistant card and reads
+        // it aloud, so the user never has to squint at the one-line list.
+        chatFragment.setNotificationActionListener(
+                object : ChatPanelFragment.NotificationActionListener {
+                    override fun onNotificationActivated(
+                        notification: NotificationCenter.HudNotification
+                    ) {
+                        viewModel.appendDirectAssistantResponse(
+                            "${notification.title} — ${notification.message}"
+                        )
+                        ttsController?.speak(notification.spokenText(), force = true)
+                    }
+                }
+        )
         chatFragment.setCoreEyeSurfaceListener(
                 object : ChatPanelFragment.CoreEyeSurfaceListener {
                     override fun onSurfaceAvailable() {
@@ -1465,6 +1543,8 @@ class MainActivity : AppCompatActivity() {
         refreshTapClawResultReadyIndicator()
         uiHandler.removeCallbacks(hudStatePushRunnable)
         uiHandler.post(hudStatePushRunnable)
+        uiHandler.removeCallbacks(notificationPollRunnable)
+        uiHandler.post(notificationPollRunnable)
         if (locationPermissionGranted) {
             startLocationTracking()
             refreshLocationSnapshot(force = false)
@@ -1485,6 +1565,7 @@ class MainActivity : AppCompatActivity() {
         uiHandler.removeCallbacks(cameraIdleTimeoutRunnable)
         uiHandler.removeCallbacks(chatHudIdleRunnable)
         uiHandler.removeCallbacks(hudStatePushRunnable)
+        uiHandler.removeCallbacks(notificationPollRunnable)
         pendingCameraStart = false
         assistantSessionStartsAudioOnly = false
         releaseGeminiAudioCapture(cancelOnly = true)
@@ -2643,6 +2724,33 @@ class MainActivity : AppCompatActivity() {
     // Trackpad Gesture Engine
     // ══════════════════════════════════════════════════════════════════════
 
+    /**
+     * Scan an agent stream tail for [AGENT_IMPORTANT_MARKER_REGEX] markers
+     * and post each marked line to the HUD bell. The id is derived from the
+     * marker body's hash, so the same marker re-seen on the next delta (the
+     * tail is a rolling window) is deduped by NotificationCenter.
+     */
+    private fun maybePostImportantAgentUpdate(
+        streamText: String,
+        source: NotificationCenter.Source
+    ) {
+        if (streamText.isBlank()) return
+        AGENT_IMPORTANT_MARKER_REGEX.findAll(streamText).forEach { match ->
+            val body = match.groupValues.getOrNull(1)?.trim()?.take(300).orEmpty()
+            if (body.isEmpty()) return@forEach
+            val agentName =
+                if (source == NotificationCenter.Source.HERMES) "Hermes" else "OpenClaw"
+            NotificationCenter.post(
+                NotificationCenter.HudNotification(
+                    id = "${agentName.lowercase(Locale.US)}_update_${body.hashCode()}",
+                    source = source,
+                    title = "$agentName update",
+                    message = body
+                )
+            )
+        }
+    }
+
     private fun setupGestureEngine() {
         gestureEngine.onShortTap = {
             Log.d(TAG, "Short tap")
@@ -2653,6 +2761,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 val currentPanel = viewPager?.currentItem ?: MainViewModel.PANEL_CHAT
                 if (currentPanel == MainViewModel.PANEL_CHAT) {
+                    // Bell list open → tap activates the focused notification.
+                    if (chatFragment.isNotificationListOpen()) {
+                        chatFragment.activateFocusedNotification()
+                        return@runOnUiThread
+                    }
                     if (chatFragment.isHudModeEnabled()) {
                         chatFragment.setHudModeEnabled(false)
                         scheduleChatHudIdleTimer()
@@ -2679,6 +2792,21 @@ class MainActivity : AppCompatActivity() {
             Log.d(TAG, "Double tap → cycle panel/session")
             runOnUiThread {
                 cyclePanelViaDoubleTap()
+            }
+        }
+
+        gestureEngine.onLongTap = {
+            Log.d(TAG, "Long tap → toggle notification list")
+            runOnUiThread {
+                if (customKeyboardView?.visibility == View.VISIBLE) {
+                    return@runOnUiThread
+                }
+                val currentPanel = viewPager?.currentItem ?: MainViewModel.PANEL_CHAT
+                if (currentPanel == MainViewModel.PANEL_CHAT &&
+                    !chatFragment.isBatterySavingDarkMode()
+                ) {
+                    chatFragment.toggleNotificationList()
+                }
             }
         }
     }
@@ -7320,18 +7448,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Build relay base URL from preferences (same logic as OpenClawClient/CompanionServer). */
+    /** Build relay base URL from preferences (shared RelayUrlHelper logic;
+     *  prefers the public tunnel for LAN endpoints so the URL stays
+     *  reachable away from the home network). */
     private fun buildRelayBaseUrlFromPrefs(): String? {
-        val endpoint = viewModel.preferences.openClawEndpoint.trim()
-        if (endpoint.isBlank()) return null
-        val host = Regex("""://([^:/]+)""").find(endpoint)?.groupValues?.get(1) ?: return null
-        val isIp = host.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))
-        val isLocal = host == "localhost" || host == "127.0.0.1" || isIp
-        return if (isLocal) "http://$host:18790" else {
-            val parts = host.split(".")
-            val baseDomain = if (parts.size > 2) parts.drop(1).joinToString(".") else host
-            "https://relay.$baseDomain"
-        }
+        return RelayUrlHelper.baseFromEndpoint(
+            viewModel.preferences.openClawEndpoint.trim(),
+            preferTapInsightPublicForLocal = true
+        )
     }
 
     private fun shouldOwnToolAssistLocally(toolName: String): Boolean {

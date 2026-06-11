@@ -6,6 +6,7 @@ import android.util.Log
 import com.rayneo.visionclaw.core.assistant.AssistantIntentParser
 import com.rayneo.visionclaw.core.model.DeviceLocationContext
 import com.rayneo.visionclaw.core.network.HermesClient
+import com.rayneo.visionclaw.core.network.RelayUrlHelper
 import com.rayneo.visionclaw.core.session.CaptureFeedback
 import com.rayneo.visionclaw.core.storage.NotesStore
 import com.rayneo.visionclaw.core.storage.AppPreferences
@@ -226,37 +227,15 @@ class HermesTool(
      * instead of guessing domains like api.tapclaw.com or local filesystem paths.
      */
     private fun buildRelayBaseUrl(): String? {
-        val endpoints = listOf(
+        // Shared RelayUrlHelper logic. Prefer-public flag set: Hermes'
+        // safety layer may reject plain LAN http://192.168.x.x URLs, while
+        // the Cloudflare relay is exactly what the glasses can fetch from
+        // any network.
+        return RelayUrlHelper.baseFromEndpoints(
             prefs.hermesEndpoint.trim(),
-            prefs.openClawEndpoint.trim()
-        ).filter { it.isNotBlank() }
-        if (endpoints.isEmpty()) return null
-
-        // Prefer a public HTTPS relay when any remote gateway is configured.
-        // Hermes' safety layer may reject plain LAN http://192.168.x.x URLs,
-        // while the Cloudflare relay is exactly what the glasses can fetch.
-        endpoints.firstNotNullOfOrNull { endpoint ->
-            endpointToRelayBase(endpoint)?.takeUnless { it.startsWith("http://") }
-        }?.let { return it }
-
-        return endpoints.firstNotNullOfOrNull { endpoint ->
-            endpointToRelayBase(endpoint)
-        }
-    }
-
-    private fun endpointToRelayBase(endpoint: String): String? {
-        val host = Regex("""://([^:/]+)""").find(endpoint)?.groupValues?.get(1)
-            ?: endpoint.substringBefore('/').substringBefore(':').takeIf { it.isNotBlank() }
-            ?: return null
-        val isIp = host.matches(Regex("""\d+\.\d+\.\d+\.\d+"""))
-        val isLocal = host == "localhost" || host == "127.0.0.1" || isIp
-        return if (isLocal) {
-            "http://$host:18790"
-        } else {
-            val parts = host.split(".")
-            val baseDomain = if (parts.size > 2) parts.drop(1).joinToString(".") else host
-            "https://relay.$baseDomain"
-        }
+            prefs.openClawEndpoint.trim(),
+            preferTapInsightPublicForLocal = true
+        )
     }
 
     /**

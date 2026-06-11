@@ -434,6 +434,94 @@ class MainActivity :
                 }
             }
         }
+
+        /**
+         * Shared YouTube unmute helper, injected by BOTH of this activity's
+         * WebViewClients and by DualWebViewGroup's client (the surface that
+         * renders manually-clicked YouTube links) so all three browsing
+         * surfaces behave identically.
+         *
+         * Why three layers: flipping `video.muted = false` element-level is
+         * NOT enough — YouTube's player keeps its OWN muted flag, and its
+         * periodic state reconciliation re-mutes the element ~20 seconds in
+         * (crossed-out speaker icon). The helper reconciles:
+         *   1. the `<video>` element (muted flag + zeroed volume),
+         *   2. the player API — `movie_player.unMute()` + volume restore —
+         *      the part that actually prevents the re-mute,
+         *   3. the UI mute button as a last-resort fallback.
+         * Retries every second for 30 seconds, plus a MutationObserver for
+         * `<video>` elements swapped in later. Idempotent per page.
+         */
+        internal val SHARED_YOUTUBE_UNMUTE_JS = """
+            (function tapLinkSharedUnmute() {
+                try {
+                    if (window.__tl_unmute_bound) return;
+                    window.__tl_unmute_bound = true;
+                    var startMs = Date.now();
+                    function unmutePass() {
+                        var acted = false;
+                        // Layer 1 — the <video> element itself.
+                        try {
+                            var vids = document.querySelectorAll('video');
+                            for (var i = 0; i < vids.length; i++) {
+                                var v = vids[i];
+                                if (v.muted) { try { v.muted = false; acted = true; } catch(e) {} }
+                                if (v.volume === 0) { try { v.volume = 1.0; } catch(e) {} }
+                            }
+                        } catch(e) {}
+                        // Layer 2 — the YouTube player API. Updates the
+                        // player's source of truth so its reconciliation
+                        // stops enforcing mute.
+                        try {
+                            var p = document.getElementById('movie_player');
+                            if (p && typeof p.isMuted === 'function' && p.isMuted()) {
+                                try { p.unMute(); acted = true; } catch(e) {}
+                                try {
+                                    var vol = (typeof p.getVolume === 'function') ? p.getVolume() : 100;
+                                    if (typeof p.setVolume === 'function' && (!vol || vol < 5)) {
+                                        p.setVolume(100);
+                                    }
+                                } catch(e) {}
+                            }
+                        } catch(e) {}
+                        // Layer 3 — UI mute-button fallback.
+                        try {
+                            var btn = document.querySelector('.ytp-mute-button');
+                            if (btn) {
+                                var t = (btn.getAttribute('data-title-no-tooltip') ||
+                                         btn.getAttribute('title') || '').toLowerCase();
+                                if (t.indexOf('unmute') >= 0) { btn.click(); acted = true; }
+                            }
+                        } catch(e) {}
+                        if (acted) console.log('[TapLink] shared unmute pass acted');
+                        return acted;
+                    }
+                    unmutePass();
+                    var timer = setInterval(function() {
+                        try {
+                            if (Date.now() - startMs > 30000) { clearInterval(timer); return; }
+                            unmutePass();
+                        } catch(e) {}
+                    }, 1000);
+                    // Swapped-in <video> elements (SPA navigations, quality
+                    // switches) can arrive muted after the retry window.
+                    try {
+                        var obs = new MutationObserver(function() {
+                            try {
+                                var vids = document.querySelectorAll('video');
+                                for (var i = 0; i < vids.length; i++) {
+                                    if (vids[i].muted) { unmutePass(); break; }
+                                }
+                            } catch(e) {}
+                        });
+                        if (document.body) {
+                            obs.observe(document.body, { childList: true, subtree: true });
+                        }
+                    } catch(e) {}
+                    console.log('[TapLink] shared unmute helper armed');
+                } catch(e) {}
+            })();
+        """
     }
 
     fun updateCursorSensitivity(progress: Int) {
@@ -549,6 +637,27 @@ class MainActivity :
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 if (::dualWebViewGroup.isInitialized && dualWebViewGroup.isScreenMasked()) {
                     cancelPendingMaskSingleTap()
+                    // Dim-mode Gemini: while a Gemini session / camera / chat
+                    // bubble is active, the double-tap closes THAT and the
+                    // screen STAYS dimmed — it must not also unmask.
+                    if (isGeminiExitSurfaceActive()) {
+                        DebugLog.d(
+                            "MaskGesture",
+                            "double-tap → full Gemini exit (stay dimmed) ${describeDevice(e)}"
+                        )
+                        exitGeminiFully()
+                        return true
+                    }
+                    // Grace window: the SAME physical double-tap that just
+                    // closed Gemini (possibly detected on another input path)
+                    // must not be re-interpreted as an exit-dim-mode tap.
+                    if (SystemClock.uptimeMillis() - lastGeminiExitMs < GEMINI_EXIT_UNMASK_GRACE_MS) {
+                        DebugLog.d(
+                            "MaskGesture",
+                            "double-tap swallowed — Gemini exit just fired ${describeDevice(e)}"
+                        )
+                        return true
+                    }
                     DebugLog.d("MaskGesture", "double-tap → exit dim mode ${describeDevice(e)}")
                     runCatching { dualWebViewGroup.unmaskScreen() }
                     setUnipanelHudVisible(true)
@@ -602,9 +711,42 @@ class MainActivity :
                     }
                     return true
                 }
-                // Swipe-up-for-lyrics gesture intentionally removed (Mars
-                // 2026-05-30): dim mode auto-loads + auto-displays the active
-                // synced lyric line, so no gesture is needed.
+                // Vertical swipe (R1 thresholds): anything clearly more
+                // vertical than horizontal counts with MODEST distance OR
+                // velocity. The temple pad is physically narrow, so the old
+                // horizontal-tuned gate (80px travel + high velocity) meant
+                // vertical swipes never qualified. Swipe UP opens the
+                // breathing audio visualizer over the dim mask; swipe DOWN
+                // closes it and returns to the plain dim screen.
+                if (absDy > absDx && (absDy >= 30f || absVy > 120f)) {
+                    if (dy < 0f) {
+                        DebugLog.d(
+                            "MaskGesture",
+                            "swipe UP (dy=${"%.0f".format(dy)} vy=${"%.0f".format(velocityY)}) " +
+                                "→ audio visualizer $devInfo"
+                        )
+                        dualWebViewGroup.audioSessionIdProvider = {
+                            runCatching { nativeRadioPlayer?.audioSessionId ?: 0 }
+                                .getOrDefault(0)
+                        }
+                        runCatching { dualWebViewGroup.showAudioVisualizer() }
+                        return true
+                    }
+                    // Swipe DOWN closes the visualizer. Consumed even when no
+                    // visualizer is up so a vertical down-fling can never leak
+                    // into other handlers while masked.
+                    if (!dualWebViewGroup.isAudioVisualizerShown()) return true
+                    DebugLog.d("MaskGesture", "swipe DOWN → close visualizer $devInfo")
+                    runCatching { dualWebViewGroup.hideAudioVisualizer() }
+                    return true
+                }
+                // Log unclassified flings so threshold tuning has data —
+                // before this, vertical swipes silently vanished here.
+                DebugLog.d(
+                    "MaskGesture",
+                    "fling unclassified dx=${"%.0f".format(dx)} dy=${"%.0f".format(dy)} " +
+                        "vx=${"%.0f".format(velocityX)} vy=${"%.0f".format(velocityY)} $devInfo"
+                )
                 return false
             }
         })
@@ -646,6 +788,76 @@ class MainActivity :
             android.view.InputDevice.getDevice(id)?.name ?: "<unknown>"
         } catch (_: Exception) { "<unknown>" }
         return "[dev=$id name=\"$name\" src=0x${java.lang.Integer.toHexString(src)}]"
+    }
+
+    // ── Direct dim-mode vertical-swipe tracker ────────────────────────────
+    // GestureDetector.onFling proved unreliable for vertical swipes on the
+    // narrow temple pad (the detector frequently classifies them as scrolls
+    // and never emits the fling at all). This tracker watches the raw
+    // DOWN→MOVE/UP displacement itself while the mask is up: any travel of
+    // ≥22px that is clearly more vertical than horizontal fires immediately
+    // — swipe UP opens the breathing audio visualizer, swipe DOWN closes it.
+    // Once fired, the rest of the gesture (until UP) is consumed so the same
+    // swipe can't ALSO register as a tap or fling in maskedGestureDetector.
+    private var maskArmSwipeTracking = false
+    private var maskArmSwipeConsumedUntilUp = false
+    private var maskArmSwipeStartX = 0f
+    private var maskArmSwipeStartY = 0f
+
+    private fun handleMaskedArmVerticalSwipe(ev: MotionEvent): Boolean {
+        if (!::dualWebViewGroup.isInitialized || !dualWebViewGroup.isScreenMasked()) {
+            maskArmSwipeTracking = false
+            maskArmSwipeConsumedUntilUp = false
+            return false
+        }
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                maskArmSwipeTracking = true
+                maskArmSwipeConsumedUntilUp = false
+                maskArmSwipeStartX = ev.x
+                maskArmSwipeStartY = ev.y
+                return false
+            }
+            MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> {
+                if (!maskArmSwipeTracking) return false
+                val dx = ev.x - maskArmSwipeStartX
+                val dy = ev.y - maskArmSwipeStartY
+                val absDx = kotlin.math.abs(dx)
+                val absDy = kotlin.math.abs(dy)
+                if (!maskArmSwipeConsumedUntilUp && absDy >= 22f && absDy > absDx * 1.15f) {
+                    cancelPendingMaskSingleTap()
+                    if (dy < 0f) {
+                        DebugLog.d(
+                            "MaskGesture",
+                            "direct swipe UP → audio visualizer ${describeDevice(ev)}"
+                        )
+                        dualWebViewGroup.audioSessionIdProvider = {
+                            runCatching { nativeRadioPlayer?.audioSessionId ?: 0 }
+                                .getOrDefault(0)
+                        }
+                        runCatching { dualWebViewGroup.showAudioVisualizer() }
+                    } else {
+                        DebugLog.d(
+                            "MaskGesture",
+                            "direct swipe DOWN → close visualizer ${describeDevice(ev)}"
+                        )
+                        runCatching { dualWebViewGroup.hideAudioVisualizer() }
+                    }
+                    maskArmSwipeConsumedUntilUp = true
+                    return true
+                }
+                if (ev.actionMasked == MotionEvent.ACTION_UP) {
+                    maskArmSwipeTracking = false
+                }
+                return maskArmSwipeConsumedUntilUp
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                maskArmSwipeTracking = false
+                maskArmSwipeConsumedUntilUp = false
+                return false
+            }
+            else -> return false
+        }
     }
 
     private var isSimulatingTouchEvent = false
@@ -1248,6 +1460,22 @@ class MainActivity :
         dualWebViewGroup.windowCallback = this
         dualWebViewGroup.restoreState()
 
+        // Dim-mode radio captions: the mask's caption ticker polls this
+        // provider while the screen is dimmed and shows whatever line it
+        // returns in the shared mask caption slot (the same one YouTube dim
+        // captions use). It returns the current synced lyric line for the
+        // native TapRadio stream — only while actually playing, never for
+        // podcasts (no song lyrics to look up), and gated by the companion
+        // "Radio song lyrics" toggle.
+        dualWebViewGroup.dimCaptionProvider = provider@{
+            val player = nativeRadioPlayer ?: return@provider null
+            val playing = runCatching { player.isPlaying }.getOrDefault(false)
+            if (!playing || nativeRadioKind == "podcast") return@provider null
+            val prefs = getSharedPreferences("visionclaw_prefs", 0)
+            if (!prefs.getBoolean("dim_captions_radio", true)) return@provider null
+            DimCaptionEngine.radioLine()
+        }
+
         // Load saved anchored mode state
         isAnchored =
                 getSharedPreferences(prefsName, MODE_PRIVATE)
@@ -1265,6 +1493,25 @@ class MainActivity :
         cursorSensitivity =
                 getSharedPreferences(prefsName, MODE_PRIVATE).getInt("cursorSensitivity", 50)
         updateCursorSensitivity(cursorSensitivity)
+
+        // ── RelayMediaSync auto-sync loop ─────────────────────────────────
+        // The glasses PULL new media from the relay every 5 minutes (IP-proof:
+        // works over Cloudflare from any network — the Mac never needs the
+        // glasses' address). First run ~20s after launch so it doesn't compete
+        // with WebView startup. Event-driven triggers (chat-turn completion /
+        // notification arrival) ride the same engine via RelayMediaSync
+        // .syncAsync, which debounces against this loop. The ⇣ button in the
+        // Media Library is the manual backstop.
+        uiHandler.postDelayed(object : Runnable {
+            override fun run() {
+                Thread {
+                    runCatching {
+                        com.TapLink.app.media.RelayMediaSync.syncBlocking(applicationContext)
+                    }
+                }.start()
+                uiHandler.postDelayed(this, 300_000L)
+            }
+        }, 20_000L)
 
         // Initialize GestureDetector
         gestureDetector =
@@ -2485,42 +2732,11 @@ class MainActivity :
                             youtubeDnsRetryCount = 0
                             lastYouTubeDnsRetryUrl = null
                             YouTubeCaptionEnforcer.maybeInject(webView, url)
-                            webView.evaluateJavascript(
-                                    """
-                            (function() {
-                                var attempts = 0;
-                                function tryUnmute() {
-                                    var videos = document.querySelectorAll('video');
-                                    var unmuted = false;
-                                    videos.forEach(function(v) {
-                                        if (v.muted) { v.muted = false; unmuted = true; }
-                                    });
-                                    if (!unmuted || videos.length === 0) {
-                                        var muteBtn = document.querySelector('.ytp-mute-button');
-                                        if (muteBtn) {
-                                            var vol = (muteBtn.getAttribute('data-title-no-tooltip') ||
-                                                       muteBtn.getAttribute('title') || '').toLowerCase();
-                                            if (vol.indexOf('unmute') >= 0 || vol.indexOf('muted') >= 0) {
-                                                muteBtn.click(); unmuted = true;
-                                            }
-                                        }
-                                    }
-                                    attempts++;
-                                    if (!unmuted && attempts < 15) setTimeout(tryUnmute, 800);
-                                }
-                                setTimeout(tryUnmute, 1500);
-                                var obs = new MutationObserver(function() {
-                                    document.querySelectorAll('video').forEach(function(v) {
-                                        if (v.muted && !v.dataset.taplinkUnmuted) {
-                                            v.muted = false; v.dataset.taplinkUnmuted = 'true';
-                                        }
-                                    });
-                                });
-                                if (document.body) obs.observe(document.body, { childList: true, subtree: true });
-                            })();
-                            """,
-                                    null
-                            )
+                            // Shared three-layer unmute (element +
+                            // movie_player.unMute()/volume + UI button).
+                            // The old element-only script here was reverted
+                            // by YouTube's own state reconciliation ~20s in.
+                            injectSharedYouTubeUnmute(webView)
                             // Keep YouTube's native pause overlay (timeline +
                             // size/fullscreen buttons) usable on EVERY watch
                             // page — including manually-browsed ones. The
@@ -2895,6 +3111,16 @@ class MainActivity :
                         ?.lowercase(Locale.US)
                         ?.takeIf { it == "video" || it == "music" || it == "subscriptions" || it == "history" }
                         ?: youtubeAutoplayMode
+    }
+
+    /**
+     * Inject the shared three-layer YouTube unmute helper (see
+     * [SHARED_YOUTUBE_UNMUTE_JS]). Called by both of this activity's
+     * WebViewClients on every YouTube page finish; DualWebViewGroup's
+     * client injects the same constant for client parity.
+     */
+    private fun injectSharedYouTubeUnmute(view: WebView) {
+        view.evaluateJavascript(SHARED_YOUTUBE_UNMUTE_JS, null)
     }
 
     /**
@@ -7005,6 +7231,15 @@ class MainActivity :
     // Upper bound between the two taps to count as a double-tap.
     private val RIGHT_ARM_KEY_DOUBLE_TAP_WINDOW_MS = 320L
 
+    // ── Dim-mode Gemini exit grace window ─────────────────────────────────
+    // When a double-tap closes the Gemini session while the screen is dimmed,
+    // the SAME physical double-tap must not ALSO exit dim mode (the gesture
+    // can be observed by more than one detector). exitGeminiFully() stamps
+    // this; the masked onDoubleTap swallows unmask attempts that land within
+    // the grace window.
+    private var lastGeminiExitMs: Long = 0L
+    private val GEMINI_EXIT_UNMASK_GRACE_MS = 1200L
+
     private fun consumedByLeftArmTap(ev: MotionEvent): Boolean {
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -7500,6 +7735,14 @@ class MainActivity :
                 latestAssistant.startsWith(lastRenderedUnipanelCardText)
         if (!isContinuation) {
             isUnipanelCardExpanded = false
+            // Chat-turn sync trigger: a fresh agent reply means a hermes/
+            // TapClaw turn just completed — if it staged a file on the relay,
+            // pull it now instead of waiting for the 5-minute loop. syncAsync
+            // debounces (10s, shared with the notification trigger and the
+            // loop) so streaming re-renders can't spam it.
+            runCatching {
+                com.TapLink.app.media.RelayMediaSync.syncAsync(applicationContext, "chat-turn")
+            }
         }
         lastRenderedUnipanelCardText = latestAssistant
         card.text = latestAssistant
@@ -8953,6 +9196,9 @@ class MainActivity :
      * step is guarded so it's safe even if some part isn't currently up.
      */
     private fun exitGeminiFully() {
+        // Stamp first — the masked double-tap grace window keys off this so
+        // the physical double-tap that triggered the exit can't also unmask.
+        lastGeminiExitMs = SystemClock.uptimeMillis()
         val api = voiceServiceApi
         val lastAssistantTimestamp = com.TapLink.app.unipanel.ChatCardBridge.current()
             .asSequence()
@@ -9354,6 +9600,17 @@ class MainActivity :
         unipanelHeartbeatClearRunnable = null
         lastHeartbeatRenderedText = text
         lastHeartbeatRenderedAtMs = nowMs
+
+        // Notification sync trigger: a notification reaching the HUD ticker
+        // (push OR the 5-minute inbox drain) almost always announces a file
+        // that just landed on the relay — bell = file. Kick an immediate
+        // media pull; RelayMediaSync.syncAsync debounces so a chat turn that
+        // also rings the bell can't fire two back-to-back syncs.
+        if (notification != null) {
+            runCatching {
+                com.TapLink.app.media.RelayMediaSync.syncAsync(applicationContext, "notification")
+            }
+        }
 
         if (text.isNullOrBlank()) {
             hideUnipanelHeartbeatRunnable.run()
@@ -11606,67 +11863,13 @@ class MainActivity :
                                 )
 
                                 // Auto-unmute YouTube (and similar) videos that start muted
-                                // due to browser autoplay policies.  The script watches for
-                                // <video> elements and unmutes them shortly after playback
-                                // begins, simulating what the user would do by tapping the
-                                // speaker icon.
+                                // due to browser autoplay policies. Shared three-layer
+                                // helper: <video> element + movie_player.unMute()/volume
+                                // restore (the part that prevents YouTube's ~20s re-mute)
+                                // + UI mute-button fallback, with 30s retries and a
+                                // MutationObserver for swapped-in elements.
                                 if (url.contains("youtube.com") || url.contains("youtu.be")) {
-                                    view?.evaluateJavascript(
-                                            """
-                                (function() {
-                                    console.log('[TapLink] YouTube auto-unmute script starting...');
-                                    var attempts = 0;
-                                    function tryUnmute() {
-                                        var videos = document.querySelectorAll('video');
-                                        var unmuted = false;
-                                        videos.forEach(function(v) {
-                                            if (v.muted) {
-                                                v.muted = false;
-                                                console.log('[TapLink] Unmuted video element');
-                                                unmuted = true;
-                                            }
-                                        });
-                                        // Also try clicking YouTube's own unmute button as fallback
-                                        if (!unmuted || videos.length === 0) {
-                                            var muteBtn = document.querySelector('.ytp-mute-button');
-                                            if (muteBtn) {
-                                                var vol = muteBtn.getAttribute('data-title-no-tooltip') ||
-                                                          muteBtn.getAttribute('title') || '';
-                                                if (vol.toLowerCase().indexOf('unmute') >= 0 ||
-                                                    vol.toLowerCase().indexOf('muted') >= 0) {
-                                                    muteBtn.click();
-                                                    console.log('[TapLink] Clicked YouTube unmute button');
-                                                    unmuted = true;
-                                                }
-                                            }
-                                        }
-                                        attempts++;
-                                        if (!unmuted && attempts < 15) {
-                                            setTimeout(tryUnmute, 800);
-                                        }
-                                    }
-                                    // YouTube loads the player dynamically; wait a moment
-                                    setTimeout(tryUnmute, 1500);
-
-                                    // Also watch for new video elements via MutationObserver
-                                    var ytObserver = new MutationObserver(function() {
-                                        var videos = document.querySelectorAll('video');
-                                        videos.forEach(function(v) {
-                                            if (v.muted && !v.dataset.taplinkUnmuted) {
-                                                v.muted = false;
-                                                v.dataset.taplinkUnmuted = 'true';
-                                                console.log('[TapLink] MutationObserver unmuted video');
-                                            }
-                                        });
-                                    });
-                                    if (document.body) {
-                                        ytObserver.observe(document.body, { childList: true, subtree: true });
-                                    }
-                                    console.log('[TapLink] YouTube auto-unmute script initialized');
-                                })();
-                                """,
-                                            null
-                                    )
+                                    view?.let { injectSharedYouTubeUnmute(it) }
                                 }
                             }
                         }
@@ -13015,6 +13218,11 @@ class MainActivity :
                             if (!title.isNullOrBlank()) {
                                 com.TapLink.app.unipanel.NowPlayingBridge.updateTrack(title)
                                 onNativeRadioTrackTitle(title)
+                                // Dim-mode lyrics: hand the track change to the
+                                // caption engine, anchored to this moment. It
+                                // looks up synced lyrics (LRCLIB) and feeds the
+                                // dim caption slot via dimCaptionProvider.
+                                runCatching { DimCaptionEngine.onRadioTrack(title) }
                             }
                         }
                     }
@@ -15989,6 +16197,15 @@ class MainActivity :
         // overlay-listener / webview-dispatch path that competed
         // for events in earlier iterations.
         if (::dualWebViewGroup.isInitialized && dualWebViewGroup.isScreenMasked()) {
+            // Direct vertical-swipe tracker FIRST — it opens/closes the audio
+            // visualizer from the raw touch deltas even when GestureDetector
+            // refuses to classify the temple-pad motion as a fling. When it
+            // consumes (and for the rest of that gesture), the detector below
+            // must not also see the events, or the same swipe would double-fire
+            // as a tap/fling.
+            if (handleMaskedArmVerticalSwipe(ev)) {
+                return true
+            }
             try {
                 maskedGestureDetector.onTouchEvent(ev)
             } catch (e: Exception) {

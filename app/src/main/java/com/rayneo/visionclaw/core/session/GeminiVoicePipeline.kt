@@ -18,6 +18,7 @@ import com.rayneo.visionclaw.core.assistant.AssistantIntentParser
 import com.rayneo.visionclaw.core.audio.GeminiAudioPlayer
 import com.rayneo.visionclaw.core.network.GeminiRouter
 import com.rayneo.visionclaw.core.network.HermesClient
+import com.rayneo.visionclaw.core.notifications.NotificationCenter
 import com.rayneo.visionclaw.core.storage.AppPreferences
 import com.rayneo.visionclaw.core.tools.BrowserVisionTool
 import com.rayneo.visionclaw.core.tools.ToolDispatcher
@@ -145,6 +146,23 @@ class GeminiVoicePipeline(context: Context) {
      *  readout playing out the speaker isn't echoed back into the session. */
     @Volatile
     private var agentReadoutActive: Boolean = false
+
+    /** True from the moment an agent tool call (Hermes / TapClaw / research)
+     *  DISPATCHES until its reply readout begins (speakAgentReplyViaEngine
+     *  flips it off as it sets [agentReadoutActive]). Arming at dispatch —
+     *  not at reply time — closes the window where Gemini Live's own voice
+     *  could narrate over a long-running agent turn. Cleared on shutdown. */
+    @Volatile
+    private var agentCallInFlight: Boolean = false
+
+    /** Suppress Gemini Live's output until the next REAL user input. Set
+     *  alongside [agentCallInFlight] when an agent call dispatches; released
+     *  in onInputTranscription — but ONLY once neither the agent turn nor the
+     *  Fish/Gemini readout is live, because the mic hearing the readout
+     *  itself produces input transcriptions that would otherwise trip the
+     *  release and let Gemini double-speak the agent's reply. */
+    @Volatile
+    private var suppressGeminiOutputUntilNextInput: Boolean = false
 
     private val fishReadoutTtsClient by lazy(LazyThreadSafetyMode.NONE) {
         com.TapLink.app.media.FishTtsClient(
@@ -502,7 +520,9 @@ class GeminiVoicePipeline(context: Context) {
         readoutJob?.cancel()
         readoutJob = null
         agentReadoutActive = false
+        agentCallInFlight = false
         suppressGeminiOutputUntilMs = 0L
+        suppressGeminiOutputUntilNextInput = false
 
         // Hermes stopped every playback source on exit. In the service path,
         // releasing the AudioTrack is safer than a pause/flush because stale
@@ -599,6 +619,25 @@ class GeminiVoicePipeline(context: Context) {
                     Log.d(TAG, "onInputTranscription: releasing late-output gate")
                     dropOutputTranscriptionUntilNextInput = false
                 }
+                // Release the agent-output suppression on the next user input —
+                // but REFUSE to fire while the agent turn or the Fish readout is
+                // still live: the mic hears the readout playing out the speaker
+                // and transcribes it as "input", which used to trip this release
+                // and let Gemini speak over / repeat the agent's reply.
+                if (suppressGeminiOutputUntilNextInput) {
+                    if (agentCallInFlight || agentReadoutActive) {
+                        Log.d(
+                            TAG,
+                            "onInputTranscription: agent turn live " +
+                                "(inFlight=$agentCallInFlight readout=$agentReadoutActive) " +
+                                "— keeping agent-output suppression"
+                        )
+                    } else {
+                        Log.d(TAG, "onInputTranscription: releasing agent-output suppression")
+                        suppressGeminiOutputUntilNextInput = false
+                        suppressGeminiOutputUntilMs = 0L
+                    }
+                }
                 latestInputTranscript = text
                 Log.d(TAG, "onInputTranscription partial='${text.take(120)}'")
                 // Live partial transcript — surface in HUD so the user
@@ -658,6 +697,10 @@ class GeminiVoicePipeline(context: Context) {
                 if (android.os.SystemClock.uptimeMillis() < suppressGeminiOutputUntilMs) {
                     return
                 }
+                if (suppressGeminiOutputUntilNextInput) {
+                    Log.d(TAG, "Dropping Gemini outputTranscription during agent handoff")
+                    return
+                }
                 runCatching { viewModel.appendLiveAssistantStreamChunk(text) }
                 HudStateBridge.update {
                     it.copy(phase = HudStateBridge.VoicePhase.THINKING)
@@ -693,6 +736,10 @@ class GeminiVoicePipeline(context: Context) {
                     return
                 }
                 if (android.os.SystemClock.uptimeMillis() < suppressGeminiOutputUntilMs) {
+                    return
+                }
+                if (suppressGeminiOutputUntilNextInput) {
+                    Log.d(TAG, "Dropping Gemini onModelAudio during agent handoff")
                     return
                 }
                 runCatching {
@@ -853,6 +900,19 @@ class GeminiVoicePipeline(context: Context) {
                         heartbeatShouldScroll = false
                     )
                 }
+                // Hermes interruption / double-speak fix: arm the suppression
+                // the moment the agent call DISPATCHES, not when the reply
+                // returns. While the agent works, Gemini Live may try to fill
+                // the silence with its own narration; and once the readout
+                // starts, the mic hears it and emits "input" transcriptions.
+                // Both windows are covered: agentCallInFlight holds the
+                // next-input release gate shut (see onInputTranscription) and
+                // the timestamp backstop caps a wedged turn at
+                // AGENT_INFLIGHT_SUPPRESS_MS.
+                agentCallInFlight = true
+                suppressGeminiOutputUntilNextInput = true
+                suppressGeminiOutputUntilMs =
+                    android.os.SystemClock.uptimeMillis() + AGENT_INFLIGHT_SUPPRESS_MS
             }
             // When the user tells an agent to "look at my screen", capture the
             // current browser screen and fold its description into the agent's
@@ -943,6 +1003,10 @@ class GeminiVoicePipeline(context: Context) {
                         }
                     }
                 }
+                // Ring the HUD bell for the completed agent turn (plus any
+                // [important]/[notify] marker lines inside the reply), so the
+                // result survives in the notification list after the readout.
+                runCatching { postAgentBellNotifications(toolName, displayText) }
                 if (mediaDirective != null) {
                     // The media player is the output: open it and do NOT also run a
                     // TTS readout — launching audio ends the voice session anyway,
@@ -953,6 +1017,11 @@ class GeminiVoicePipeline(context: Context) {
                         "agent $toolName media directive → opening ${mediaDirective.url.take(140)}"
                     )
                     suppressGeminiOutputUntilMs = 0L
+                    // No readout follows on the media path, so nothing else
+                    // will clear the dispatch-time gates — drop them here or
+                    // Gemini stays muted until the session restarts.
+                    agentCallInFlight = false
+                    suppressGeminiOutputUntilNextInput = false
                     HudStateBridge.update { it.copy(agentBusy = false) }
                     launchTapBrowserFromService(mediaDirective.url)
                 } else {
@@ -975,6 +1044,12 @@ class GeminiVoicePipeline(context: Context) {
      *  readout engine instead of being narrated by Gemini Live. */
     private val AGENT_READOUT_TOOLS =
         setOf("hermes_agent", "tapclaw_agent", "research_topic")
+
+    /** Timestamp backstop for the dispatch-time suppression: if an agent
+     *  turn wedges (no reply, no readout), Gemini's voice comes back after
+     *  this long even though the next-input gate never released. Agent
+     *  turns (research especially) can legitimately run minutes. */
+    private val AGENT_INFLIGHT_SUPPRESS_MS = 240_000L
 
     private fun noteLiveResponseActivity() {
         lastLiveResponseActivityMs = SystemClock.uptimeMillis()
@@ -1205,6 +1280,9 @@ class GeminiVoicePipeline(context: Context) {
         }
         val epoch = activeSessionEpoch
         agentReadoutActive = true
+        // The reply is here and its readout is starting — the in-flight
+        // phase is over. agentReadoutActive now holds the release gate.
+        agentCallInFlight = false
         readoutJob = scope.launch {
             var playedAny = false
             try {
@@ -1816,6 +1894,48 @@ class GeminiVoicePipeline(context: Context) {
                 liveSession?.sendClientText(injection) == true
             }.getOrDefault(false)
             Log.i(TAG, "sendClientText (localRegex fallback) returned $ok")
+        }
+    }
+
+    /**
+     * Agent tool completions ring the HUD bell. One "<agent> finished"
+     * notification summarizes the completed turn; additionally, any line the
+     * agent marked as "[important] …" / "notify: …" / "[notification] …" is
+     * posted as its own "<agent> update" entry. Ids are deterministic per
+     * marker body (hashCode) so retries don't duplicate, while the summary id
+     * is timestamped so every completed turn rings once.
+     */
+    private fun postAgentBellNotifications(toolName: String, replyText: String) {
+        val isHermes = toolName == "hermes_agent"
+        val agentLabel = if (isHermes) "Hermes" else "TapClaw"
+        val source =
+            if (isHermes) NotificationCenter.Source.HERMES
+            else NotificationCenter.Source.OPENCLAW
+        val summary = replyText.trim().replace('\n', ' ').take(160)
+        NotificationCenter.post(
+            NotificationCenter.HudNotification(
+                id = "${toolName}_done_${System.currentTimeMillis()}",
+                source = source,
+                title = "$agentLabel finished",
+                message = summary.ifBlank { "$agentLabel completed a task." }
+            )
+        )
+        val markerRegex = Regex(
+            "(?im)^\\s*(?:\\[(?:important|notify|notification)\\]|" +
+                "(?:important|notify|notification):)\\s*(.+)$"
+        )
+        markerRegex.findAll(replyText).forEach { match ->
+            val body = match.groupValues.getOrNull(1)?.trim()?.take(300).orEmpty()
+            if (body.isNotEmpty()) {
+                NotificationCenter.post(
+                    NotificationCenter.HudNotification(
+                        id = "${toolName}_update_${body.hashCode()}",
+                        source = source,
+                        title = "$agentLabel update",
+                        message = body
+                    )
+                )
+            }
         }
     }
 

@@ -121,6 +121,14 @@ class ToolDispatcher(
             context,
             pageTextProvider = browserPageTextProvider ?: { null }
         ))
+        // "Save this image" — files the current browser frame (or the live
+        // camera frame) into the Media Library Photos folder. Reuses the
+        // same frame providers the vision tools above already consume.
+        register(SaveScreenImageTool(
+            context,
+            browserFrameProvider = browserFrameProvider ?: { null },
+            cameraFrameProvider = cameraFrameProvider ?: { null }
+        ))
         register(TapLinkTool(context))
         register(SendVideoListTool(context))
         register(SendLinkListTool(
