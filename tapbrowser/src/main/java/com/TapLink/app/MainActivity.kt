@@ -3111,6 +3111,12 @@ class MainActivity :
                         ?.lowercase(Locale.US)
                         ?.takeIf { it == "video" || it == "music" || it == "subscriptions" || it == "history" }
                         ?: youtubeAutoplayMode
+        // Task #17 (restored), service path: Gemini's open-YouTube tool
+        // lands here as autoplay extras — kill the radio before the
+        // browser even starts loading the video.
+        if (incomingQueue.isNotEmpty() || intent.hasExtra(EXTRA_YOUTUBE_AUTOPLAY_QUERY)) {
+            stopTapRadioForYouTube("autoplay-intent")
+        }
     }
 
     /**
@@ -13454,6 +13460,22 @@ class MainActivity :
         clearTapRadioPlaybackPrefs()
         applyNativeRadioPlaybackUiState()
         return buildNativeRadioPlaybackStateJson()
+    }
+
+    /**
+     * Task #17 (restored): TapRadio must stop the moment a YouTube video
+     * starts loading. Both launch paths funnel here — the service path
+     * (Gemini's open-YouTube tool → autoplay intent extras, see
+     * [parseTapClawLaunchIntent]) and the activity path (any in-browser
+     * navigation to a watch/shorts/autoplay URL, see DualWebViewGroup's
+     * onPageStarted). Safe when the radio is idle: stopNativeRadioStream
+     * just rebuilds the state blob. UI thread only (ExoPlayer rule).
+     */
+    internal fun stopTapRadioForYouTube(reason: String) {
+        runCatching {
+            DebugLog.d("TapRadio", "stop for YouTube launch ($reason)")
+            stopNativeRadioStream()
+        }
     }
 
     private fun getNativeRadioPlaybackState(): String = buildNativeRadioPlaybackStateJson()

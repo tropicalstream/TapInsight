@@ -2831,6 +2831,18 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         super.onPageStarted(view, url, favicon)
                         // Tell the JS-bridge trust gate which page we're on.
                         mediaBridgeUrlRef.set(url ?: "")
+                        // Task #17 (restored): a YouTube VIDEO beginning to
+                        // load silences TapRadio immediately — page START,
+                        // not finish, so the station never plays under the
+                        // video's first seconds. Watch/shorts/autoplay URLs
+                        // only; browsing YouTube home/search keeps the radio.
+                        val lower = url?.lowercase(java.util.Locale.US).orEmpty()
+                        if ((lower.contains("youtube.com") || lower.contains("youtu.be")) &&
+                            (lower.contains("/watch") || lower.contains("/shorts/") ||
+                                lower.contains("taplink_autoplay="))
+                        ) {
+                            (context as? MainActivity)?.stopTapRadioForYouTube("page-start")
+                        }
                         resetScrollBarVisibilityMemory(url)
                         clearExternalScrollMetrics()
                         stabilizeWebViewViewportAfterNavigation(
@@ -4251,6 +4263,17 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
         view.visibility = View.VISIBLE
         view.bringToFront()
+        // Nothing but the night sky on this screen: hide the caption line
+        // and the now-playing title immediately at swipe-up (the gates in
+        // updateMaskCaption / refreshMaskedNowPlaying keep them hidden for
+        // as long as the visualizer is showing).
+        if (::maskCaptionText.isInitialized) {
+            maskCaptionText.visibility = View.INVISIBLE
+        }
+        if (::maskNowPlayingText.isInitialized) {
+            maskNowPlayingText.visibility = View.INVISIBLE
+            lastShownMaskLabel = null
+        }
         val sessionId = runCatching { audioSessionIdProvider?.invoke() }.getOrNull() ?: 0
         view.start(sessionId)
     }
@@ -4259,6 +4282,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         breathingVisualizer?.let {
             it.stop()
             it.visibility = View.GONE
+        }
+        // Swiping back to dim: bring the title back right away; the
+        // caption line returns on the engine's next push/heartbeat.
+        if (isScreenMasked) {
+            refreshMaskedNowPlaying()
         }
     }
 
@@ -10892,6 +10920,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     maskNowPlayingText.visibility = View.INVISIBLE
                     lastShownMaskLabel = null
                 }
+                isAudioVisualizerShown() -> {
+                    // Visualizer screen stays clean — no title overlay.
+                    maskNowPlayingText.visibility = View.INVISIBLE
+                    lastShownMaskLabel = null
+                }
                 spotifyInfo != null && spotifyInfo.title.isNotBlank() -> {
                     maskNowPlayingText.visibility = View.INVISIBLE
                     lastShownMaskLabel = null
@@ -10961,6 +10994,13 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private fun updateMaskCaption(caption: String?) {
         if (!::maskCaptionText.isInitialized) return
         if (!isScreenMasked || caption.isNullOrBlank()) {
+            maskCaptionText.visibility = View.INVISIBLE
+            return
+        }
+        // The visualizer is its own calm surface (Mars's daughter's
+        // breathing screen): captions never draw over it. The heartbeat
+        // (≤1.5s) restores the line as soon as the visualizer closes.
+        if (isAudioVisualizerShown()) {
             maskCaptionText.visibility = View.INVISIBLE
             return
         }
