@@ -125,4 +125,14 @@ class LiveToolCallCoordinator(
     // TODO(4i.8)  fun forceTapRadioPlaybackArgsIfExplicit(transcript: String, args: String): String?
     // TODO(4i.9)  fun resolveRecentYouTubeSuggestionListDisplayRequest(...): Boolean
     // TODO(4i.10) fun resolveRecentYouTubeFollowUpPlaybackRequest(transcript: String): YouTubePlaybackRequest?
+    //
+    // NOTE: code-level enforcement of these guards on the Service path was tried
+    // and reverted. Every version depended on knowing the user's current-turn
+    // words at tool-dispatch time, but Gemini Live does not guarantee the input
+    // transcription (or a verbatim keyword in the tool args) is present when the
+    // call arrives — so the guards intermittently blocked legitimate "hermes …"
+    // / "openclaw …" requests, causing Hermes to go silent and Gemini to answer
+    // over it. These rules therefore stay PROMPT-enforced (RULE ZERO / ZERO-H in
+    // GeminiRouter) until the Live protocol gives us a turn-synchronized
+    // transcript to gate on. Dispatch must never be blocked speculatively.
 }

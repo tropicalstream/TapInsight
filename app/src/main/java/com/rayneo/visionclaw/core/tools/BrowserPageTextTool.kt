@@ -26,6 +26,9 @@ class BrowserPageTextTool(
         val maxChars = args["max_chars"]?.toIntOrNull()
             ?: args["maxChars"]?.toIntOrNull()
             ?: SAVE_MAX_CHARS
+        val forceSave = args["force_save"]?.equals("true", ignoreCase = true) == true ||
+            args["forceSave"]?.equals("true", ignoreCase = true) == true ||
+            args["autoplay"] == "1"
         return withContext(Dispatchers.IO) {
             val page = pageTextProvider(maxChars.coerceIn(1000, HARD_MAX_CHARS))
             if (page == null || page.text.isBlank()) {
@@ -35,13 +38,13 @@ class BrowserPageTextTool(
                     )
                 )
             } else {
-                Result.success(formatResult(page))
+                Result.success(formatResult(page, forceSave))
             }
         }
     }
 
-    private fun formatResult(page: BrowserFrameHolder.PageTextResult): String {
-        if (page.text.length <= SPOKEN_TEXT_LIMIT && !page.truncated) {
+    private fun formatResult(page: BrowserFrameHolder.PageTextResult, forceSave: Boolean): String {
+        if (!forceSave && page.text.length <= SPOKEN_TEXT_LIMIT && !page.truncated) {
             return page.toToolText()
         }
 
@@ -53,8 +56,7 @@ class BrowserPageTextTool(
             appendLine()
             if (saved != null) {
                 appendLine("Saved full extracted page text to Media Library: ${saved.relativePath}")
-                appendLine("Open it from Media Library > Text, or with:")
-                appendLine(saved.playerUrl)
+                appendLine("open_taplink:${saved.playerUrl}&autoplay=1")
             } else {
                 appendLine("The page is long. I could not save it to the Media Library, so here is an excerpt.")
             }
@@ -65,10 +67,7 @@ class BrowserPageTextTool(
             appendLine("Excerpt for spoken response:")
             appendLine(excerpt)
             appendLine()
-            appendLine(
-                "Instruction: Do not try to read the entire long page aloud. Briefly say the text file was saved, " +
-                    "name the file/path, and offer to summarize or open it."
-            )
+            appendLine("Instruction: For read-aloud requests, open the saved text reader link above. It will read the extracted page verbatim.")
         }.trim()
     }
 
@@ -81,9 +80,6 @@ class BrowserPageTextTool(
             target.parentFile?.mkdirs()
             target.writeText(
                 buildString {
-                    appendLine(page.title.ifBlank { "Untitled page" })
-                    appendLine(page.url)
-                    appendLine()
                     append(page.text)
                     if (page.truncated) {
                         appendLine()

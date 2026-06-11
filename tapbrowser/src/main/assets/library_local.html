@@ -99,7 +99,7 @@
     width:28px;height:28px;border-radius:6px;border:1px solid #331515;color:#ff7676;
     font-size:12px;display:none;align-items:center;justify-content:center;flex-shrink:0;
   }
-  .entry.playlist .del,.entry.audio .del,.entry.video .del,.entry.text .del,.entry.image .del{display:flex}
+  .entry.playlist .del,.entry.audio .del,.entry.video .del,.entry.text .del,.entry.image .del,.entry.folder .del{display:flex}
   .entry .del:hover{background:#4a1a1a;color:#fff}
 
   .empty{
@@ -108,6 +108,36 @@
   .empty .big{font-size:36px;opacity:.5;margin-bottom:10px}
   .empty code{color:#00e5ff;font-family:ui-monospace,'SF Mono',Menlo,monospace;
     background:#02090d;padding:1px 6px;border-radius:4px;border:1px solid #0a2a3a;font-size:12px}
+
+  /* ── Now-playing row highlight ── */
+  .entry.nowplaying{border-color:rgba(0,229,255,.5);background:rgba(0,229,255,.06)}
+  .entry.nowplaying .nm{color:#7ef3ff}
+  .entry .npbadge{display:none;color:#00e5ff;font-size:12px;margin-right:4px;
+    animation:nppulse 1.6s ease-in-out infinite}
+  .entry.nowplaying .npbadge{display:inline}
+  @keyframes nppulse{0%,100%{opacity:.45}50%{opacity:1}}
+  /* ── "New from sync" dot ── */
+  .entry .newdot{display:none;width:8px;height:8px;border-radius:50%;
+    background:#00e5ff;box-shadow:0 0 6px #00e5ff;flex-shrink:0}
+  .entry.isnew .newdot{display:block}
+  /* ── Multi-select (long-press) ── */
+  .entry.selmode .del{display:none!important}
+  .entry .selbox{display:none;width:16px;height:16px;border:1.5px solid #3a5f73;
+    border-radius:4px;flex-shrink:0;align-items:center;justify-content:center;
+    font-size:11px;color:#00e5ff}
+  .entry.selmode .selbox{display:flex}
+  .entry.selected{background:rgba(0,229,255,.10);border-color:rgba(0,229,255,.45)}
+  .entry.selected .selbox{border-color:#00e5ff}
+  #selbar{position:fixed;left:8%;right:8%;bottom:12px;z-index:80;display:none;gap:10px;
+    padding:10px 14px;border-radius:12px;background:#06151d;border:1px solid #0e3346;
+    box-shadow:0 4px 18px rgba(0,0,0,.5)}
+  #selbar.show{display:flex}
+  #selbar .grow{flex:1;font-size:13px;color:#bfe8f5;align-self:center}
+  #selbar button{padding:8px 14px;border-radius:8px;border:none;font-weight:600;cursor:pointer}
+  #selbar .danger{background:#5b1717;color:#ffd7d7}
+  #selbar .plain{background:#0c2331;color:#cde}
+  /* ── Storage line ── */
+  #storageInfo{font-size:10.5px;color:#5f8696;margin-left:8px;white-space:nowrap;font-weight:400}
 
   /* ── Play All bar (playlist view) ────────────────────
      Previously `position:sticky;top:0` — designed to stick at the
@@ -174,9 +204,24 @@
         <div class="sub" id="headerSub">On-Device</div>
       </div>
       <div class="tools">
-        <button class="tool-btn" id="btnGenPlaylist" title="Create playlist from current folder">＋</button>
+        <!-- ＋ "create M3U from folder" removed (Mars + UI review):
+             tapping any file already queues the whole folder for
+             ⏮/⏭ navigation, so the generated playlist added nothing.
+             Up-one-level took its slot — far more used. -->
+        <button class="tool-btn" id="btnUp" title="Up one level"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="display:block"><polyline points="14 9 9 4 4 9"/><path d="M20 20h-7a4 4 0 0 1-4-4V4"/></svg></button>
+        <!-- Sort toggle: A-Z → NEW (latest first) → OLD (oldest first).
+             Folders/playlists always stay pinned to the top. -->
+        <button class="tool-btn" id="btnSort" title="Sort: name / newest / oldest"
+                style="font-size:9px;font-weight:700;letter-spacing:.5px">A-Z</button>
+        <!-- Pull-sync from the relay staging folders (Hermes/OpenClaw on
+             the Mac). Glasses-side PULL so it works no matter what IP
+             the glasses have. -->
+        <button class="tool-btn" id="btnSync" title="Sync new files from Hermes/OpenClaw"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="display:block"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M4 20h16"/></svg></button>
         <button class="tool-btn" id="btnRefresh" title="Refresh">↻</button>
-        <a class="tool-btn" href="file:///android_asset/AR_Dashboard_Landscape_Sidebar.html" title="Back to dashboard">⌂</a>
+        <!-- Home = back to the media ROOT directory. It used to link out
+             to the dashboard, which never returned the user to the
+             library root (Mars). Wired to openFolder('') in the script. -->
+        <button class="tool-btn" id="btnHome" title="Media root">⌂</button>
       </div>
     </header>
 
@@ -219,7 +264,7 @@
   var $main      = document.getElementById('main');
   var $crumbs    = document.getElementById('crumbs');
   var $subTitle  = document.getElementById('headerSub');
-  var $btnGen    = document.getElementById('btnGenPlaylist');
+  var $btnUp     = document.getElementById('btnUp');
   var $btnRefresh= document.getElementById('btnRefresh');
 
   var $toast     = document.getElementById('toast');
@@ -256,6 +301,23 @@
     sec = Math.floor(sec);
     var m = Math.floor(sec / 60), s = sec % 60;
     return m + ':' + (s < 10 ? '0' : '') + s;
+  }
+  var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  function shortDate(ms){
+    var d = new Date(ms);
+    if (isNaN(d.getTime())) return '';
+    var mm = d.getMinutes();
+    return MONTHS[d.getMonth()] + ' ' + d.getDate() + ' ' +
+      d.getHours() + ':' + (mm < 10 ? '0' : '') + mm;
+  }
+
+  // ── Sort mode (persisted) ──────────────────────────────────────────
+  // 'name' (kind-grouped A-Z, the original), 'newest' (latest modified
+  // first), 'oldest'. Folders/playlists always pin to the top.
+  var sortMode = 'name';
+  try { sortMode = localStorage.getItem('taplib_sort') || 'name'; } catch (err) {}
+  function sortButtonLabel(){
+    return sortMode === 'newest' ? 'NEW' : sortMode === 'oldest' ? 'OLD' : 'A-Z';
   }
   function fileIcon(kind, name){
     switch (kind) {
@@ -297,7 +359,14 @@
     }
     state.mode = 'folder';
     state.currentFolder = data.relativePath || '';
-    state.folderEntries = data.entries || [];
+    // Normalize kind at the single ingestion point (defensive: the
+    // bridge emits enum names like 'FOLDER', but trim/uppercase here
+    // makes every downstream check — sort, CSS class, icon, click
+    // routing — immune to casing/whitespace drift forever).
+    state.folderEntries = (data.entries || []).map(function(en){
+      en.kind = String(en.kind || 'OTHER').trim().toUpperCase();
+      return en;
+    });
     $subTitle.textContent = state.currentFolder ? state.currentFolder : 'On-Device';
     renderCrumbs(data.breadcrumbs || [{name:'Media',path:''}]);
     renderFolder();
@@ -309,35 +378,109 @@
       renderEmptyFolder();
       return;
     }
-    // Folders first, then playlists, then audio, then video, then images, then text.
+    // Folders first, then playlists, then files. File order follows the
+    // sort toggle: 'name' = the original kind-grouped A-Z; 'newest' /
+    // 'oldest' = modified date so a fresh Hermes drop surfaces on top.
     var order = {FOLDER:0,PLAYLIST:1,AUDIO:2,VIDEO:3,IMAGE:4,TEXT:5,OTHER:6};
     var sorted = state.folderEntries.slice().sort(function(a,b){
+      var aTop = (a.kind === 'FOLDER' || a.kind === 'PLAYLIST') ? order[a.kind] : 2;
+      var bTop = (b.kind === 'FOLDER' || b.kind === 'PLAYLIST') ? order[b.kind] : 2;
+      if (aTop !== bTop) return aTop - bTop;
+      if (aTop < 2) return a.name.localeCompare(b.name);  // folders/playlists A-Z
+      if (sortMode === 'newest') {
+        return (b.lastModifiedMs || 0) - (a.lastModifiedMs || 0);
+      }
+      if (sortMode === 'oldest') {
+        return (a.lastModifiedMs || 0) - (b.lastModifiedMs || 0);
+      }
       var ka = order[a.kind] == null ? 6 : order[a.kind];
       var kb = order[b.kind] == null ? 6 : order[b.kind];
       if (ka !== kb) return ka - kb;
       return a.name.localeCompare(b.name);
     });
+    // Album support: any folder with 2+ audio tracks gets a Play All
+    // bar (same visual as playlist view). It routes through the
+    // (buttonless) native M3U generator + TapRadio's native playlist
+    // player — gapless ExoPlayer, prev/next, dim-mode controls free.
+    var albumTracks = sorted.filter(function(x){ return x.kind === 'AUDIO'; }).length;
+    if (albumTracks >= 2) {
+      var albumBar = document.createElement('div');
+      albumBar.className = 'playall-bar';
+      albumBar.innerHTML =
+        '<button class="playall" id="btnFolderPlayAll">' +
+        '<span class="ico">▶</span><span class="lbl">Play All</span>' +
+        '<span class="ct">' + albumTracks + ' tracks</span></button>';
+      $main.appendChild(albumBar);
+      albumBar.querySelector('#btnFolderPlayAll')
+        .addEventListener('click', playFolderAsAlbum);
+    }
+
     sorted.forEach(function(e){
       var row = document.createElement('div');
       row.className = 'entry ' + e.kind.toLowerCase();
+      if (sel.on) row.classList.add('selmode');
       row.tabIndex = 0;
       row.innerHTML =
+        '<div class="selbox"></div>' +
         '<div class="ic">' + fileIcon(e.kind, e.name) + '</div>' +
+        '<div class="newdot"></div>' +
         '<div class="txt">' +
-          '<div class="name"></div>' +
+          '<div class="name"><span class="npbadge">♪</span><span class="nm"></span></div>' +
           '<div class="meta"></div>' +
         '</div>' +
         '<button class="del" title="Delete">✕</button>' +
         '<div class="arrow">' + (e.kind === 'FOLDER' || e.kind === 'PLAYLIST' ? '›' : '') + '</div>';
-      row.querySelector('.name').textContent = e.name;
+      row.querySelector('.nm').textContent = e.name;
+      if (newFilesSet[e.relativePath]) row.classList.add('isnew');
+      if (e.kind === 'AUDIO' || e.kind === 'VIDEO') {
+        try { row.dataset.murl = TM.getMediaUrl(e.relativePath); } catch(_){}
+      }
       var meta = [];
       if (e.kind === 'FOLDER') meta.push('Folder');
       else if (e.kind === 'PLAYLIST') meta.push('Playlist');
       else meta.push(e.kind.charAt(0) + e.kind.slice(1).toLowerCase());
       if (e.sizeBytes > 0) meta.push(humanSize(e.sizeBytes));
+      // Modified date on file rows — makes a fresh Hermes drop obvious
+      // and gives the date-sort modes something visible to confirm.
+      if (e.kind !== 'FOLDER' && e.lastModifiedMs > 0) {
+        meta.push(shortDate(e.lastModifiedMs));
+      }
       row.querySelector('.meta').textContent = meta.join(' · ');
+      // Long-press → selection mode (batch delete). pointermove cancels
+      // so scroll gestures never trigger it.
+      var lpTimer = null, lpFired = false;
+      row.addEventListener('pointerdown', function(){
+        if (sel.on) return;
+        // Folders can't be batch-selected, so never arm the timer on
+        // them — a deliberate temple-pad press can run past the
+        // threshold, and accidentally entering selection mode made
+        // folder taps look dead (Mars bug). Files keep long-press.
+        if (e.kind === 'FOLDER') return;
+        lpFired = false;
+        lpTimer = setTimeout(function(){
+          lpFired = true; enterSelMode(); toggleSelect(row, e);
+        }, 700);
+      });
+      ['pointerup','pointercancel','pointerleave','pointermove'].forEach(function(evn){
+        row.addEventListener(evn, function(){
+          if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+        });
+      });
       row.addEventListener('click', function(ev){
+        if (lpFired) { lpFired = false; return; }
         if (ev.target.classList.contains('del')) return;
+        if (sel.on) {
+          // Navigation beats selection for folders — selection only
+          // applies to files, so a folder tap exits the mode and opens.
+          if (e.kind === 'FOLDER') { exitSelMode(); handleEntryClick(e); return; }
+          toggleSelect(row, e);
+          return;
+        }
+        if (newFilesSet[e.relativePath]) {
+          try { TapMedia.markRelayFileSeen(e.relativePath); } catch(_){}
+          delete newFilesSet[e.relativePath];
+          row.classList.remove('isnew');
+        }
         handleEntryClick(e);
       });
       row.querySelector('.del').addEventListener('click', function(ev){
@@ -390,6 +533,7 @@
         openPhotoInGallery('');
         return;
       }
+      toast('Opening ' + (e.name || 'folder') + '…');
       openFolder(e.relativePath);
     } else if (e.kind === 'PLAYLIST') {
       openPlaylist(e.relativePath, e.name);
@@ -685,31 +829,264 @@
   }
 
   // ── Toolbar actions ────────────────────────────────────────────────
-  $btnGen.addEventListener('click', function(){
+  function parentOf(p){
+    p = String(p || '').replace(/\/+$/, '');
+    var i = p.lastIndexOf('/');
+    return i > 0 ? p.slice(0, i) : '';
+  }
+  $btnUp.addEventListener('click', function(){
     if (bridgeMissing()) { renderBridgeMissing(); return; }
-    if (state.mode !== 'folder') return;
-    var data = callBridge('generatePlaylist', [state.currentFolder]);
-    if (data.error) { toast(data.error, true); return; }
-    toast('Playlist created: ' + (data.path || ''));
-    openFolder(state.currentFolder);
+    if (state.mode === 'playlist') {
+      // Up from a playlist view = the folder containing the .m3u.
+      openFolder(parentOf(state.playlistPath));
+      return;
+    }
+    if (!state.currentFolder) { toast('Already at media root'); return; }
+    openFolder(parentOf(state.currentFolder));
   });
+  var $btnSync = document.getElementById('btnSync');
+  var syncPollTimer = null;
+  if ($btnSync) {
+    // Busy-state contract (UI review): a network-cost button must show
+    // it is working — disabled + hourglass while the sync runs, glyph
+    // restored on completion either way. Refresh (instant, local) needs
+    // no such state; keeping their behaviors visibly different is what
+    // makes two icon buttons side-by-side legible.
+    var SYNC_ICON_HTML = $btnSync ? $btnSync.innerHTML : '';
+    function setSyncBusy(busy) {
+      $btnSync.disabled = !!busy;
+      $btnSync.style.opacity = busy ? '.5' : '';
+      $btnSync.innerHTML = busy ? '⌛' : SYNC_ICON_HTML;
+    }
+    $btnSync.addEventListener('click', function(){
+      if (!(window.TapMedia && TapMedia.syncFromRelay)) {
+        toast('Sync needs the app update', true);
+        return;
+      }
+      var started;
+      try { started = JSON.parse(TapMedia.syncFromRelay()); }
+      catch (e) { toast('Sync failed to start', true); return; }
+      if (started && started.status === 'already-running') {
+        toast('Sync already running…');
+      } else {
+        toast('Syncing from Hermes/OpenClaw…');
+      }
+      setSyncBusy(true);
+      if (syncPollTimer) clearInterval(syncPollTimer);
+      var polls = 0;
+      syncPollTimer = setInterval(function(){
+        var st = null;
+        try { st = JSON.parse(TapMedia.getRelaySyncStatus()); } catch (e) {}
+        if (st && st.syncing && ++polls < 120) return;
+        clearInterval(syncPollTimer); syncPollTimer = null;
+        setSyncBusy(false);
+        var sum = null;
+        try { sum = JSON.parse((st && st.lastSummary) || '{}'); } catch (e) {}
+        if (!sum || sum.ok === false) {
+          toast('Sync failed: ' + ((sum && sum.error) || 'relay unreachable'), true);
+          return;
+        }
+        var got = sum.fetched || 0;
+        toast(got > 0
+          ? ('Synced ' + got + ' new file' + (got === 1 ? '' : 's'))
+          : 'Library already up to date');
+        refreshNewFiles();
+        updateStorageInfo();
+        if (got > 0 && state.mode === 'folder') openFolder(state.currentFolder);
+      }, 1000);
+    });
+  }
+
   $btnRefresh.addEventListener('click', function(){
-    if (state.mode === 'folder') openFolder(state.currentFolder);
-    else if (state.mode === 'playlist') openPlaylist(state.playlistPath, state.playlistName);
+    // Visible feedback (Mars: the button looked dead because a refresh
+    // that changes nothing re-renders an identical list silently).
+    toast('Refreshing…');
+    if (state.mode === 'folder') {
+      openFolder(state.currentFolder);
+      toast('Refreshed — ' + state.folderEntries.length + ' item' +
+        (state.folderEntries.length === 1 ? '' : 's'));
+    } else if (state.mode === 'playlist') {
+      openPlaylist(state.playlistPath, state.playlistName);
+      toast('Playlist refreshed');
+    }
   });
 
-  // Only offer "generate playlist" in folder mode.
+  // Sort toggle: A-Z → NEW (latest first) → OLD (oldest first) → A-Z.
+  var $btnSort = document.getElementById('btnSort');
+  if ($btnSort) {
+    $btnSort.textContent = sortButtonLabel();
+    $btnSort.addEventListener('click', function(){
+      sortMode = sortMode === 'name' ? 'newest'
+        : sortMode === 'newest' ? 'oldest' : 'name';
+      try { localStorage.setItem('taplib_sort', sortMode); } catch (err) {}
+      $btnSort.textContent = sortButtonLabel();
+      toast(sortMode === 'newest' ? 'Sorted: latest first'
+        : sortMode === 'oldest' ? 'Sorted: oldest first' : 'Sorted: A-Z');
+      if (state.mode === 'folder') renderFolder();
+    });
+  }
+  // ⌂ Home → media ROOT directory. Works from any depth and from
+  // playlist mode (openFolder resets mode to 'folder').
+  var $btnHome = document.getElementById('btnHome');
+  if ($btnHome) {
+    $btnHome.addEventListener('click', function(){
+      if (bridgeMissing()) { renderBridgeMissing(); return; }
+      openFolder('');
+    });
+  }
+
+  // Up is meaningful everywhere except the media root in folder mode.
   function syncToolbar(){
-    $btnGen.disabled = state.mode !== 'folder';
+    var atRoot = state.mode === 'folder' && !state.currentFolder;
+    $btnUp.disabled = atRoot;
+    $btnUp.style.opacity = atRoot ? '.35' : '';
+  }
+
+  // ── New-from-sync dots ─────────────────────────────────────────────
+  var newFilesSet = {};
+  function refreshNewFiles(){
+    try {
+      if (window.TapMedia && TapMedia.getRelayNewFiles) {
+        newFilesSet = JSON.parse(TapMedia.getRelayNewFiles()) || {};
+      }
+    } catch (e) { newFilesSet = {}; }
+  }
+
+  // ── Storage line (header) ──────────────────────────────────────────
+  (function(){
+    var t = document.querySelector('header .title');
+    if (t && !document.getElementById('storageInfo')) {
+      var s = document.createElement('span');
+      s.id = 'storageInfo';
+      t.appendChild(s);
+    }
+  })();
+  function updateStorageInfo(){
+    try {
+      var el = document.getElementById('storageInfo');
+      if (!el) return;
+      var info = callBridge('getRootInfo', []);
+      if (info && info.freeBytes > 0) {
+        el.textContent = '· ' + humanSize(info.freeBytes) + ' free';
+      }
+    } catch (e) {}
+  }
+
+  // ── Multi-select / batch delete (long-press to enter) ─────────────
+  var sel = { on: false, set: {} };
+  var $selbar = (function(){
+    var d = document.createElement('div');
+    d.id = 'selbar';
+    d.innerHTML =
+      '<div class="grow" id="selCount"></div>' +
+      '<button class="plain" id="selCancel">Cancel</button>' +
+      '<button class="danger" id="selDelete">Delete</button>';
+    document.body.appendChild(d);
+    d.querySelector('#selCancel').addEventListener('click', exitSelMode);
+    d.querySelector('#selDelete').addEventListener('click', batchDelete);
+    return d;
+  })();
+  function enterSelMode(){
+    if (sel.on) return;
+    sel.on = true; sel.set = {};
+    document.querySelectorAll('.entry').forEach(function(r){ r.classList.add('selmode'); });
+    $selbar.classList.add('show');
+    updateSelBar();
+  }
+  function exitSelMode(){
+    sel.on = false; sel.set = {};
+    document.querySelectorAll('.entry').forEach(function(r){
+      r.classList.remove('selmode'); r.classList.remove('selected');
+      var b = r.querySelector('.selbox'); if (b) b.textContent = '';
+    });
+    $selbar.classList.remove('show');
+  }
+  function toggleSelect(row, e){
+    if (e.kind === 'FOLDER') { toast('Folders can\'t be batch-deleted'); return; }
+    var k = e.relativePath;
+    var box = row.querySelector('.selbox');
+    if (sel.set[k]) {
+      delete sel.set[k];
+      row.classList.remove('selected');
+      if (box) box.textContent = '';
+    } else {
+      sel.set[k] = e.name;
+      row.classList.add('selected');
+      if (box) box.textContent = '✓';
+    }
+    updateSelBar();
+  }
+  function updateSelBar(){
+    var n = Object.keys(sel.set).length;
+    document.getElementById('selCount').textContent =
+      n + ' selected — tap rows to add';
+    document.getElementById('selDelete').disabled = n === 0;
+  }
+  function batchDelete(){
+    var keys = Object.keys(sel.set);
+    if (!keys.length) return;
+    if (!confirm('Delete ' + keys.length + ' file' + (keys.length === 1 ? '' : 's') +
+      '?\n\nThis cannot be undone.')) return;
+    var ok = 0, bad = 0;
+    keys.forEach(function(k){
+      var data = callBridge('deleteEntry', [k]);
+      if (data && data.status === 'deleted') ok++; else bad++;
+    });
+    toast('Deleted ' + ok + (bad ? (' · ' + bad + ' failed') : ''), bad > 0);
+    exitSelMode();
+    openFolder(state.currentFolder);
+    updateStorageInfo();
+  }
+
+  // ── Now-playing row highlight (native player poll, 2 s) ───────────
+  setInterval(function(){
+    if (document.hidden) return;
+    var url = '', playing = false;
+    try {
+      if (typeof AndroidInterface !== 'undefined' &&
+          AndroidInterface.getNativeRadioPlaybackState) {
+        var st = JSON.parse(AndroidInterface.getNativeRadioPlaybackState());
+        playing = !!(st.playing || st.preparing || st.buffering);
+        url = st.url || '';
+      }
+    } catch (e) {}
+    document.querySelectorAll('.entry').forEach(function(r){
+      var m = r.dataset ? r.dataset.murl : null;
+      r.classList.toggle('nowplaying', !!(playing && m && url && m === url));
+    });
+  }, 2000);
+
+  // ── Folder-as-album playback ───────────────────────────────────────
+  function playFolderAsAlbum(){
+    if (bridgeMissing()) { renderBridgeMissing(); return; }
+    var data = callBridge('generatePlaylist', [state.currentFolder]);
+    if (data.error || !data.path) {
+      toast(data.error || 'Could not build album queue', true);
+      return;
+    }
+    var playlistUrl = TM.getMediaUrl(data.path);
+    var folderName = (state.currentFolder || 'Library').split('/').pop() || 'Library';
+    var qp = '?playUrl=' + encodeURIComponent(playlistUrl) +
+             '&playName=' + encodeURIComponent(folderName) +
+             '&playGenre=' + encodeURIComponent('Album') +
+             '&playKind=playlist' +
+             '&playStart=0' +
+             '&autoplay=1' +
+             '&_t=' + Date.now();
+    window.location.href = RADIO_URL + qp;
   }
 
   // ── Delete confirmation ────────────────────────────────────────────
   function confirmDelete(entry){
-    if (!confirm('Delete "' + entry.name + '"?\n\nThis cannot be undone.')) return;
+    var msg = entry.kind === 'FOLDER'
+      ? 'Delete the folder "' + entry.name + '" and EVERYTHING inside it?\n\nThis cannot be undone.'
+      : 'Delete "' + entry.name + '"?\n\nThis cannot be undone.';
+    if (!confirm(msg)) return;
     var data = callBridge('deleteEntry', [entry.relativePath]);
     if (data.status === 'deleted') {
       toast('Deleted: ' + entry.name);
       openFolder(state.currentFolder);
+      updateStorageInfo();
     } else {
       toast('Could not delete: ' + (data.error || 'unknown error'), true);
     }
@@ -720,6 +1097,8 @@
   var originalOpenPlaylist = openPlaylist;
   openFolder   = function(p){ originalOpenFolder(p);   syncToolbar(); };
   openPlaylist = function(p,n){ originalOpenPlaylist(p,n); syncToolbar(); };
+  refreshNewFiles();
+  updateStorageInfo();
 
   // ── Init ───────────────────────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', function(){

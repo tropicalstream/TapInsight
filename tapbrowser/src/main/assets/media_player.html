@@ -651,6 +651,11 @@ function initTextReader(text) {
   try { setupCustomScrollbar(); } catch(_){}
   hideLoading();
   showGestureHint();
+  if (ttsAutoplayRequested) {
+    setTimeout(function() {
+      if (!ttsPlaying && ttsWords.length > 0) startTtsFrom(0);
+    }, 350);
+  }
 }
 
 function updateTextProgress() {
@@ -1245,6 +1250,10 @@ function hardStopTtsAudioElement(el) {
 var ttsPending = Object.create(null); // requestId → { resolve, reject }
 var ttsReqCounter = 0;
 var nextChunkPrefetch = null;          // Promise<synthResult> | null
+var ttsAutoplayRequested = (function() {
+  var raw = (params.get('autoplay') || params.get('read') || '').toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+})();
 
 window.__ttsComplete = function(requestId, jsonPayload) {
   var entry = ttsPending[requestId];
@@ -1260,6 +1269,21 @@ window.__ttsComplete = function(requestId, jsonPayload) {
   entry.resolve(data);
 };
 
+function synthChunkSyncFallback(TM, chunkText, resolve, reject) {
+  Promise.resolve().then(function() {
+    var raw;
+    try { raw = TM.speakText(chunkText, preferredVoiceName || '', ttsRate || 1.0); }
+    catch (e) { reject(e); return; }
+    var data;
+    try { data = JSON.parse(raw); } catch (e) { reject(new Error('bad-json')); return; }
+    if (!data || data.error || !data.audioUrl) {
+      reject(new Error(data && data.error || 'no-audio'));
+      return;
+    }
+    resolve(data);
+  });
+}
+
 /**
  * Fire-and-forget synth. Resolves with `{audioUrl, model, sampleRate}` when
  * the native bridge posts back `__ttsComplete`. Rejects if the bridge is
@@ -1274,15 +1298,55 @@ function synthChunkAsync(chunkText) {
     if (!hasAsync && !hasSync) { reject(new Error('no-bridge')); return; }
     if (hasAsync) {
       var id = 'tts_' + (++ttsReqCounter) + '_' + Date.now();
-      ttsPending[id] = { resolve: resolve, reject: reject };
+      var settled = false;
+      var timeoutMs = 25000;
+      var timeout = setTimeout(function() {
+        if (settled) return;
+        settled = true;
+        delete ttsPending[id];
+        console.warn('TTS async callback timed out for ' + id + '; falling back=' + hasSync);
+        if (hasSync) synthChunkSyncFallback(TM, chunkText, resolve, reject);
+        else reject(new Error('tts-timeout'));
+      }, timeoutMs);
+      ttsPending[id] = {
+        resolve: function(data) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resolve(data);
+        },
+        reject: function(err) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          reject(err);
+        }
+      };
       var raw;
       try { raw = TM.startSpeakText(chunkText, preferredVoiceName || '', ttsRate || 1.0, id); }
-      catch (e) { delete ttsPending[id]; reject(e); return; }
-      var data;
-      try { data = JSON.parse(raw); } catch (e) { delete ttsPending[id]; reject(new Error('bad-json')); return; }
-      if (!data || data.error || data.status !== 'pending') {
+      catch (e) {
+        settled = true;
+        clearTimeout(timeout);
         delete ttsPending[id];
-        reject(new Error(data && data.error || 'start-failed'));
+        if (hasSync) synthChunkSyncFallback(TM, chunkText, resolve, reject);
+        else reject(e);
+        return;
+      }
+      var data;
+      try { data = JSON.parse(raw); } catch (e) {
+        settled = true;
+        clearTimeout(timeout);
+        delete ttsPending[id];
+        if (hasSync) synthChunkSyncFallback(TM, chunkText, resolve, reject);
+        else reject(new Error('bad-json'));
+        return;
+      }
+      if (!data || data.error || data.status !== 'pending') {
+        settled = true;
+        clearTimeout(timeout);
+        delete ttsPending[id];
+        if (hasSync) synthChunkSyncFallback(TM, chunkText, resolve, reject);
+        else reject(new Error(data && data.error || 'start-failed'));
       }
       // else: resolution happens via __ttsComplete
       return;
@@ -1290,18 +1354,7 @@ function synthChunkAsync(chunkText) {
     // Fall back to synchronous bridge (older builds). Runs inline on the JS
     // thread; we wrap in a microtask so at least the caller's .then() chain
     // keeps its Promise semantics.
-    Promise.resolve().then(function() {
-      var raw;
-      try { raw = TM.speakText(chunkText, preferredVoiceName || '', ttsRate || 1.0); }
-      catch (e) { reject(e); return; }
-      var data;
-      try { data = JSON.parse(raw); } catch (e) { reject(new Error('bad-json')); return; }
-      if (!data || data.error || !data.audioUrl) {
-        reject(new Error(data && data.error || 'no-audio'));
-        return;
-      }
-      resolve(data);
-    });
+    synthChunkSyncFallback(TM, chunkText, resolve, reject);
   });
 }
 

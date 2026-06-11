@@ -44,6 +44,28 @@ object AssistantIntentParser {
     // Speech recognition often splits "learnlm" into separate words.
     private val LOOSE_LEARN_LM_PREFIX = Regex("(?i)^\\s*learn\\s+l\\.?m\\.?\\b[:\\-\\s]*(.*?)\\s*$")
 
+    // ── Voice notes ──────────────────────────────────────────────────────
+    // "note that …", "jot down …", "remember that …" → capture content.
+    // Validated against a 19-case match/no-match suite before landing.
+    private val NOTE_REQUEST_PATTERNS = listOf(
+        Regex("""(?i)^(?:hey |ok(?:ay)? |please )*note (?:that|this|down)[:,\- ]+(.+)$"""),
+        Regex("""(?i)^(?:hey |ok(?:ay)? |please )*(?:make|take|add|leave|write|jot) (?:me )?(?:a |an )?(?:quick )?notes?(?: (?:that|to|saying|about|down))?[:,\- ]+(.+)$"""),
+        Regex("""(?i)^(?:hey |ok(?:ay)? |please )*jot (?:that|this)? ?down[:,\- ]+(.+)$"""),
+        Regex("""(?i)^(?:hey |ok(?:ay)? |please )*write (?:that|this)? ?down[:,\- ]+(.+)$"""),
+        Regex("""(?i)^(?:hey |ok(?:ay)? |please )*remember (?:that|this)[:,\- ]+(.+)$"""),
+        Regex("""(?i)^(?:hey |ok(?:ay)? |please )*add (?:that )?to my notes?[:,\- ]+(.+)$""")
+    )
+
+    private val NOTES_RECALL = Regex(
+        """(?i)\b(?:my|the)\s+notes?\b|\bwhat\s+(?:did|have)\s+i\s+note\b|\bnotes?\s+(?:about|on|for)\b|\bcheck\s+my\s+notes?\b|\bread\s+(?:me\s+)?my\s+notes?\b"""
+    )
+
+    // "what song is this / what's playing / who's the artist" — validated
+    // against a 14-match / 8-reject suite (apostrophe optional for STT).
+    private val IDENTIFY_SONG = Regex(
+        """(?i)\b(?:what(?:'?s| is)\s+(?:this\s+|the\s+)?(?:song|track|tune|artist|band)|what\s+song\s+is\s+(?:this|playing|that)|name\s+(?:this|the|that)\s+(?:song|track|tune)|identify\s+(?:this|the|that)\s+(?:song|track|tune|music)|who(?:'?s| is|\s+sings|\s+sang)\s+(?:this|the\s+artist|singing)|what(?:'?s| is)\s+playing|song\s+name|what\s+am\s+i\s+listening\s+to)\b"""
+    )
+
     private val STATUS_BRIEF_PATTERNS = listOf(
         Regex("(?i)^\\s*status\\s*$"),
         Regex("(?i)^\\s*status\\s+update\\s*$"),
@@ -145,6 +167,28 @@ object AssistantIntentParser {
         if (trimmed.isBlank()) return false
         return STATUS_BRIEF_PATTERNS.any { it.matches(trimmed) }
     }
+
+    /** If [transcript] is a "note that / jot down / remember that …" request,
+     *  returns the note content with the trigger stripped; else null. */
+    fun parseNoteRequest(transcript: String): String? {
+        val t = transcript.trim()
+        if (t.isBlank()) return null
+        for (p in NOTE_REQUEST_PATTERNS) {
+            val m = p.find(t) ?: continue
+            val content = m.groupValues.getOrNull(1)?.trim().orEmpty()
+            if (content.isNotBlank()) return content
+        }
+        return null
+    }
+
+    /** True when a request is asking about the user's saved notes, so the
+     *  glasses should inject the on-device notes file as agent context. */
+    fun isNotesRecallRequest(transcript: String): Boolean =
+        NOTES_RECALL.containsMatchIn(transcript.trim())
+
+    /** True when the user is asking to identify the currently-playing song. */
+    fun isIdentifySongRequest(transcript: String): Boolean =
+        IDENTIFY_SONG.containsMatchIn(transcript.trim())
 
     fun hasExplicitYouTubePlaybackVerb(text: String): Boolean {
         val trimmed = text.trim().trimEnd('.', '?', '!')

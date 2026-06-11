@@ -76,12 +76,14 @@ class BrowserVisionTool(
          *  the browser's current viewport, and that the user wants a
          *  short, spoken-friendly answer. */
         private const val SYSTEM_INSTRUCTION =
-            "You are TapInsight's browser-vision assistant on AR glasses. The image " +
-                "attached is a screenshot of whatever web page the user is currently " +
-                "looking at in their browser. Answer the user's question about that page " +
-                "in plain, spoken-friendly English. Keep responses concise (2-3 " +
-                "sentences) unless the user explicitly asks for detail. If you can't " +
-                "see what they're asking about, say so plainly — don't make things up."
+            "You are TapInsight's vision assistant on AR glasses. The attached image is " +
+                "what the user is currently looking at: when their glasses camera is on it " +
+                "is the LIVE camera view of the real world in front of them (e.g. a book " +
+                "page, sign, label, or object); otherwise it is a screenshot of the web " +
+                "page in their browser. Answer the user's question about that image in " +
+                "plain, spoken-friendly English. Keep responses concise (2-3 sentences) " +
+                "unless the user explicitly asks for detail. If you can't see what they're " +
+                "asking about, say so plainly — don't make things up."
 
         private val http = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)

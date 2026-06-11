@@ -237,6 +237,7 @@ h1{color:#00e5ff;font-size:22px;margin-bottom:2px}
   <button class="btn" onclick="loadFolder('Photos')" title="Jump to Media/Photos">📷 Photos</button>
   <button class="btn" onclick="refresh()">↻ Refresh</button>
   <button class="btn primary" onclick="openUploadModal()">⬆ Upload</button>
+  <button class="btn" onclick="newFolder()">📁 New Folder</button>
   <button class="btn accent" onclick="autoGenerate()">♪ Auto-generate playlist</button>
   <button class="btn" onclick="addToGlassesDashboard()" title="Add a Media Library icon to the on-glasses TapLink Dashboard">📺 Add to Glasses Dashboard</button>
   <button class="btn" onclick="showDocs()">📖 How it works</button>
@@ -305,6 +306,17 @@ coffee.mp3
       <div>📁 Click to choose files or drag-drop here</div>
       <div style="font-size:11px;color:#666;margin-top:4px">Photos, videos, audio, text, or .m3u playlists</div>
       <input type="file" id="uploadInput" multiple accept="image/*,video/*,audio/*,.m3u,.m3u8,.txt,.md,.markdown,.log,.csv,.json,.xml,.html,.htm,.rtf,.ini,.cfg,.conf,.yaml,.yml,.toml,text/*">
+    </div>
+
+    <!-- Folder upload: albums, photo sets, any directory tree. The
+         folder's own name and subfolder structure are recreated inside
+         the current library folder, so an album lands as Music/<Album>/
+         with its tracks (and cover art) together. -->
+    <div class="upload-zone" id="uploadFolderZone" style="margin-top:10px"
+         onclick="document.getElementById('uploadFolderInput').click()">
+      <div>💿 Upload a whole folder (album, photo set…)</div>
+      <div style="font-size:11px;color:#666;margin-top:4px">Folder name and structure are kept</div>
+      <input type="file" id="uploadFolderInput" webkitdirectory>
     </div>
 
     <!-- USB import path: explains how to grab the glasses' DCIM photos
@@ -699,15 +711,82 @@ function openUploadModal() {
   document.getElementById('uploadModal').classList.remove('hidden');
   document.getElementById('uploadProgress').classList.remove('visible');
   document.getElementById('uploadInput').value = '';
+  document.getElementById('uploadFolderInput').value = '';
 }
 function closeUploadModal() {
   document.getElementById('uploadModal').classList.add('hidden');
   refresh();
 }
 
+async function newFolder() {
+  const name = prompt('New folder name (created in /' + (currentPath || '') + '):');
+  if (!name) return;
+  const clean = name.trim().replace(/[\\/:*?"<>|]/g, '-');
+  if (!clean) return;
+  try {
+    const r = await fetch('/api/library/mkdir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ path: (currentPath ? currentPath + '/' : '') + clean })
+    });
+    const data = await r.json();
+    if (data.status === 'ok') { toast('Folder created: ' + clean); refresh(); }
+    else showStatus('Create folder failed: ' + (data.error || r.status), 'err');
+  } catch (e) {
+    showStatus('Create folder failed: ' + e.message, 'err');
+  }
+}
+
+// Folder upload: one request per subdirectory, preserving the picked
+// folder's name + structure under the CURRENT library folder. Explicit
+// folder targets intentionally bypass the photo/video auto-routing —
+// an album's cover.jpg belongs WITH the album, not in Photos/.
+async function doUploadFolder(files) {
+  if (!files || files.length === 0) return;
+  const progressEl = document.getElementById('uploadProgress');
+  const barEl = document.getElementById('uploadBar');
+  const pctEl = document.getElementById('uploadPct');
+  const nameEl = document.getElementById('uploadFileName');
+  progressEl.classList.add('visible');
+  const groups = {};
+  for (const f of files) {
+    const rel = f.webkitRelativePath || f.name;
+    const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '';
+    (groups[dir] = groups[dir] || []).push(f);
+  }
+  const total = files.length;
+  let done = 0, saved = 0, failed = 0;
+  for (const dir of Object.keys(groups)) {
+    const targetFolder = (currentPath ? currentPath + '/' : '') + dir;
+    const fd = new FormData();
+    fd.append('folder', targetFolder);
+    groups[dir].forEach((f, i) => fd.append('file_' + i, f, f.name));
+    nameEl.textContent = (dir || 'folder') + ' (' + groups[dir].length + ' files)';
+    try {
+      const r = await fetch('/api/library/upload', {
+        method: 'POST', body: fd, credentials: 'include'
+      });
+      const res = await r.json();
+      saved += (res.saved || []).length;
+      failed += (res.errors || []).length;
+    } catch (e) {
+      failed += groups[dir].length;
+    }
+    done += groups[dir].length;
+    const pct = Math.round((done / total) * 100);
+    barEl.style.width = pct + '%';
+    pctEl.textContent = pct + '%';
+  }
+  toast('Folder upload: ' + saved + ' file(s)' + (failed ? ', ' + failed + ' failed' : ''));
+  setTimeout(closeUploadModal, 800);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   const zone = document.getElementById('uploadZone');
   const input = document.getElementById('uploadInput');
+  const folderInput = document.getElementById('uploadFolderInput');
+  folderInput.addEventListener('change', () => doUploadFolder(folderInput.files));
   input.addEventListener('change', () => doUpload(input.files));
   zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
   zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));

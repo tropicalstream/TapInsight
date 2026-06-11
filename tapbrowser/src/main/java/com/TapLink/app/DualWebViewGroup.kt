@@ -80,6 +80,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private val PREFS_NAME = "TapLinkPrefs"
     private val KEY_WINDOWS_STATE = "saved_windows_state"
     private val KEY_BROWSER_SHOW_SYSTEM_INFO = "browser_show_system_info"
+    private val KEY_OUTDOOR_BRIGHTNESS_ACTIVE = "outdoorBrightnessActive"
+    private val KEY_PRE_OUTDOOR_BRIGHTNESS_PROGRESS = "preOutdoorBrightnessProgress"
     private val sharedConfigPrefs =
             context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
     private val sharedConfigListener =
@@ -522,29 +524,27 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     fun suspendMediaForBoot() {
         bootMediaSuspended = true
         val sweep = "try { document.querySelectorAll('video, audio').forEach(function(e) { " +
-            "try { e.pause(); e.muted = true; } catch (err) {} " +
+            "try { e.pause(); e.autoplay = false; e.removeAttribute('autoplay'); } catch (err) {} " +
             "}); } catch (err) {}"
-        windows.forEach { win ->
-            try {
-                win.webView.post {
-                    try { win.webView.evaluateJavascript(sweep, null) } catch (_: Exception) {}
-                }
-                mediaStateByWindowId[win.id] = false
-            } catch (_: Exception) {}
-        }
-        // Re-sweep after the page has had a chance to load any restored Spotify
-        // / YouTube DOM. Only fires if the boot lock is still up — if the user
-        // already unlocked, the resume path takes over.
-        postDelayed({
-            if (!bootMediaSuspended) return@postDelayed
+        fun runSweep() {
+            if (!bootMediaSuspended) return
             windows.forEach { win ->
                 try {
                     win.webView.post {
                         try { win.webView.evaluateJavascript(sweep, null) } catch (_: Exception) {}
                     }
+                    mediaStateByWindowId[win.id] = false
                 } catch (_: Exception) {}
             }
-        }, 1500)
+        }
+        runSweep()
+        // Re-sweep while the lock/intro is up. Restored YouTube/Spotify pages
+        // can create their media element after the first pass, and a single
+        // delayed sweep was not enough to stop audio leaking through the login
+        // screen on cold restart.
+        repeat(20) { attempt ->
+            postDelayed({ runSweep() }, 500L * (attempt + 1))
+        }
         nativeTapRadioPlaying = false
         updateMediaState(false)
     }
@@ -6676,6 +6676,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                 R.id.btnResetWebpageZoom,
                                 R.id.colorWheelView,
                                 R.id.btnResetTextColor,
+                                R.id.btnOutdoorBrightness,
                                 R.id.horizontalPosSeekBar,
                                 R.id.verticalPosSeekBar,
                                 R.id.btnResetPosition,
@@ -7001,6 +7002,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                 R.id.btnResetWebpageZoom,
                                 R.id.colorWheelView,
                                 R.id.btnResetTextColor,
+                                R.id.btnOutdoorBrightness,
                                 R.id.horizontalPosSeekBar,
                                 R.id.verticalPosSeekBar,
                                 R.id.btnResetPosition,
@@ -7826,6 +7828,13 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 showHelpDialog()
             }
 
+            settingsMenu?.findViewById<Button>(R.id.btnOutdoorBrightness)?.setOnClickListener {
+                toggleOutdoorBrightness(
+                        settingsMenu?.findViewById(R.id.brightnessSeekBar),
+                        settingsMenu?.findViewById(R.id.btnOutdoorBrightness)
+                )
+            }
+
             val layoutParams =
                     FrameLayout.LayoutParams(
                                     FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -7855,6 +7864,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 val currentBrightness =
                         (context as? Activity)?.window?.attributes?.screenBrightness ?: 0.5f
                 brightnessSeekBar?.progress = (currentBrightness * 100).toInt()
+                updateOutdoorBrightnessButtonLabel(menu.findViewById(R.id.btnOutdoorBrightness))
                 val forceDarkButton = menu.findViewById<Button>(R.id.btnToggleForceDark)
                 val forceDarkEnabled =
                         context.getSharedPreferences("TapLinkPrefs", Context.MODE_PRIVATE)
@@ -7970,6 +7980,53 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         return Pair(settingsMenu?.width ?: 0, settingsMenu?.height ?: 0)
     }
 
+    private fun applySettingsBrightness(progress: Int, brightnessSeekBar: SeekBar? = null) {
+        val clamped = progress.coerceIn(0, 100)
+        brightnessSeekBar?.progress = clamped
+        (context as? Activity)?.window?.attributes =
+                (context as Activity).window.attributes.apply {
+                    screenBrightness = clamped / 100f
+                }
+    }
+
+    private fun updateOutdoorBrightnessButtonLabel(button: Button?) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        button?.text =
+                if (prefs.getBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, false)) {
+                    "Restore Brightness"
+                } else {
+                    "Outdoor Brightness"
+                }
+    }
+
+    private fun toggleOutdoorBrightness(
+            brightnessSeekBar: SeekBar?,
+            outdoorBrightnessButton: Button?
+    ) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val active = prefs.getBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, false)
+        if (active) {
+            val restoreProgress =
+                    prefs.getInt(KEY_PRE_OUTDOOR_BRIGHTNESS_PROGRESS, 50).coerceIn(0, 100)
+            applySettingsBrightness(restoreProgress, brightnessSeekBar)
+            prefs.edit()
+                    .putBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, false)
+                    .apply()
+        } else {
+            val currentProgress =
+                    (brightnessSeekBar?.progress
+                            ?: (((context as? Activity)?.window?.attributes?.screenBrightness ?: 0.5f) * 100)
+                                    .toInt())
+                            .coerceIn(0, 100)
+            prefs.edit()
+                    .putInt(KEY_PRE_OUTDOOR_BRIGHTNESS_PROGRESS, currentProgress)
+                    .putBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, true)
+                    .apply()
+            applySettingsBrightness(100, brightnessSeekBar)
+        }
+        updateOutdoorBrightnessButtonLabel(outdoorBrightnessButton)
+    }
+
     fun dispatchSettingsTouchEvent(x: Float, y: Float) {
         settingsMenu?.let { menu ->
             // Get locations of all interactive elements
@@ -7987,6 +8044,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             val fontSizeSeekBar = menu.findViewById<SeekBar>(R.id.fontSizeSeekBar)
             val colorWheelView = menu.findViewById<ColorWheelView>(R.id.colorWheelView)
             val resetTextColorButton = menu.findViewById<Button>(R.id.btnResetTextColor)
+            val outdoorBrightnessButton = menu.findViewById<Button>(R.id.btnOutdoorBrightness)
             val groqKeyButton = menu.findViewById<Button>(R.id.btnGroqApiKey)
 
             fun getRect(view: View?): Rect? {
@@ -8050,12 +8108,12 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                     brightnessSeekBar.width
                     val newProgress = (percentage * brightnessSeekBar.max).toInt()
 
-                    // Update brightness
-                    brightnessSeekBar.progress = newProgress
-                    (context as? Activity)?.window?.attributes =
-                            (context as Activity).window.attributes.apply {
-                                screenBrightness = newProgress / 100f
-                            }
+                    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                            .edit()
+                            .putBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, false)
+                            .apply()
+                    updateOutdoorBrightnessButtonLabel(outdoorBrightnessButton)
+                    applySettingsBrightness(newProgress, brightnessSeekBar)
 
                     // Visual feedback
                     brightnessSeekBar.isPressed = true
@@ -8537,6 +8595,15 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     resetTextColorButton.isPressed = true
                     Handler(Looper.getMainLooper())
                             .postDelayed({ resetTextColorButton.isPressed = false }, 100)
+                    return
+                }
+
+                val outdoorBrightnessRect = getRect(outdoorBrightnessButton)
+                if (outdoorBrightnessButton != null && contains(outdoorBrightnessRect, buttonSlop)) {
+                    toggleOutdoorBrightness(brightnessSeekBar, outdoorBrightnessButton)
+                    outdoorBrightnessButton.isPressed = true
+                    Handler(Looper.getMainLooper())
+                            .postDelayed({ outdoorBrightnessButton.isPressed = false }, 100)
                     return
                 }
 
@@ -10563,7 +10630,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         if (syncedLine != null) {
             maskSpotifyLyricsText.text = syncedLine
             maskSpotifyLyricsText.textSize = 18f
-            maskSpotifyLyricsText.alpha = 0.95f
+            maskSpotifyLyricsText.alpha = 1.0f
             maskSpotifyLyricsText.maxLines = 2
         } else if (info.hasSyncedLyrics) {
             // Lyrics are loaded and timed, but we're between lines (intro /
@@ -10976,7 +11043,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 (radioPlaying || hasNativeTapRadioSession())
         if (shouldPreferTapRadioLabel) {
             clearFallback()
-            return formatMaskLabel("TapRadio", stationName)
+            val track = (com.TapLink.app.unipanel.NowPlayingBridge.trackTitle
+                ?: prefs.getString("tapradio_now_playing_track", ""))?.trim().orEmpty()
+            return formatMaskLabel("TapRadio", if (track.isNotBlank()) "$stationName - $track" else stationName)
         }
         if (!recentlyPlaying || mediaWebView == null) {
             return fallbackLabel()
@@ -11005,7 +11074,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
         if (shouldPreferTapRadioLabel) {
             clearFallback()
-            return formatMaskLabel("TapRadio", stationName)
+            val track = (com.TapLink.app.unipanel.NowPlayingBridge.trackTitle
+                ?: prefs.getString("tapradio_now_playing_track", ""))?.trim().orEmpty()
+            return formatMaskLabel("TapRadio", if (track.isNotBlank()) "$stationName - $track" else stationName)
         }
         val fallback = getFreshMaskedDomTitle(currentUrl)
         if (fallback == null) {

@@ -21,6 +21,9 @@ body{display:flex;flex-direction:column;max-width:960px;max-height:480px;margin:
 .topbar h1{font-size:14px;letter-spacing:.5px;color:var(--accent);flex-shrink:0}
 .topbar .now{flex:1;text-align:center;font-size:11px;color:var(--muted);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topbar .now .station-part{color:var(--text);font-weight:600}
+.topbar .now .track-part{color:#d7edf2}
+.topbar .now .sep{color:var(--muted);padding:0 4px}
 .topbar .controls{display:flex;gap:6px;flex-shrink:0}
 .ctrl{width:32px;height:32px;border:none;border-radius:50%;
   background:rgba(255,255,255,.08);color:var(--text);font-size:16px;
@@ -28,8 +31,10 @@ body{display:flex;flex-direction:column;max-width:960px;max-height:480px;margin:
   touch-action:manipulation;-webkit-tap-highlight-color:transparent;transition:all .15s}
 .ctrl:active{background:var(--accent);color:#000}
 .ctrl.playing{background:var(--accent);color:#000;box-shadow:0 0 12px var(--glow)}
-.ctrl.add-current{border-radius:10px;font-size:18px;font-weight:700}
-.ctrl.add-current.added{background:rgba(0,229,255,.18);color:var(--accent);border:1px solid rgba(0,229,255,.45)}
+/* Save (+) button: semi-transparent + = current item NOT saved yet;
+   bold, accent-tinted + = already saved (replaces the old ✓ state). */
+.ctrl.add-current{border-radius:10px;font-size:18px;font-weight:400;opacity:.45}
+.ctrl.add-current.added{background:rgba(0,229,255,.18);color:var(--accent);border:1px solid rgba(0,229,255,.45);font-weight:700;opacity:1}
 .ctrl.add-current.saving{opacity:.7;pointer-events:none}
 
 .genres{display:grid;grid-auto-flow:column;grid-template-rows:repeat(2, auto);gap:0 4px;
@@ -100,6 +105,13 @@ body.keyboard-open .overlay{padding-bottom:calc(var(--kb-offset, 0px) + 14px)}
 .mbtn.primary{background:var(--accent);color:#000;border-color:var(--accent)}
 .mbtn.danger{border-color:#e53935;color:#ef5350}
 .empty{text-align:center;padding:24px;color:var(--muted);font-size:12px}
+/* Podcast favorite-heart on list rows: dim outline = not favorited,
+   warm red filled = favorited (shows under the Favorites tab). */
+.pod-heart{background:none;border:none;font-size:15px;color:#666;cursor:pointer;flex-shrink:0;padding:4px 6px}
+.pod-heart.on{color:#ff4d6d}
+/* Podcaster-name link inside a saved "Podcaster: Title" row — tapping
+   it opens that podcaster's episode list in the podcasts browser. */
+.pod-show-link{color:var(--accent);text-decoration:underline;cursor:pointer}
 body.keyboard-open .overlay{align-items:flex-start;padding-top:12px;padding-bottom:calc(var(--kb-offset) + 12px)}
 body.keyboard-open .modal{margin-top:6px}
 </style>
@@ -116,6 +128,7 @@ body.keyboard-open .modal{margin-top:6px}
     <button class="ctrl add-current" id="btnAddCurrent" title="Add current station or save current file" onclick="handleAddCurrent()">＋</button>
   </div>
 </div>
+
 
 <div class="genres" id="genreTabs"></div>
 <div class="stations" id="stationList"></div>
@@ -134,7 +147,7 @@ body.keyboard-open .modal{margin-top:6px}
     <div class="field"><label>Stream URL (mp3/aac/ogg)</label>
       <input id="editUrl" placeholder="https://stream.example.com/radio.mp3"></div>
     <div class="field"><label>Genre</label>
-      <input id="editGenre" placeholder="Chill / Rock / Jazz / Latin / News"></div>
+      <input id="editGenre" placeholder="Rock / Jazz / Ambient / News"></div>
     <div class="field"><label>Description (optional)</label>
       <input id="editDesc" placeholder="Lo-fi beats from Seattle"></div>
     <div class="modal-btns">
@@ -157,6 +170,10 @@ body.keyboard-open .modal{margin-top:6px}
 
 const STORAGE_KEY = 'tapradio_stations';
 const SPOTIFY_QUEUE_KEY = 'tapradio_spotify_queue';
+// Saved podcast links (the ♥ in the toolbar while a podcast plays).
+// Shared localStorage origin with podcasts.html / media_player.html, so
+// anything hearted during playback shows up under the PodCasts tab here.
+const SAVED_PODCASTS_KEY = 'tapinsight_saved_podcasts';
 const audio = document.getElementById('audioEl');
 let stations = [];
 let currentIdx = -1;
@@ -185,6 +202,10 @@ let nativePlaybackState = {
   preparing: false,
   buffering: false,
   stationName: '',
+  track: '',
+  trackArtist: '',
+  trackTitle: '',
+  trackUpdatedAt: 0,
   genre: '',
   url: '',
   kind: 'radio',
@@ -207,6 +228,10 @@ function applyNativeRadioState(rawState) {
       preparing: false,
       buffering: false,
       stationName: '',
+      track: '',
+      trackArtist: '',
+      trackTitle: '',
+      trackUpdatedAt: 0,
       genre: '',
       url: '',
       kind: 'radio',
@@ -238,6 +263,7 @@ function applyNativeRadioState(rawState) {
         genre: normalizeGenre(nativePlaybackState.genre || ''),
         subtitle: adHocStream && adHocStream.subtitle ? adHocStream.subtitle : '',
         artist: adHocStream && adHocStream.artist ? adHocStream.artist : '',
+        showId: adHocStream && adHocStream.showId ? adHocStream.showId : '',
         url: nativePlaybackState.url,
         kind: nativePlaybackState.kind || 'podcast'
       };
@@ -251,6 +277,40 @@ function applyNativeRadioState(rawState) {
     } catch (e) {}
   } catch (e) {
     console.warn('applyNativeRadioState failed:', e);
+  }
+}
+
+function escapeHtml(value) {
+  return String(value || '').replace(/[&<>"']/g, function(ch) {
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+  });
+}
+
+function currentTrackLabel() {
+  const state = nativePlaybackState || {};
+  const artist = String(state.trackArtist || '').trim();
+  const title = String(state.trackTitle || '').trim();
+  const raw = String(state.track || '').trim();
+  if (artist && title) return artist + ' - ' + title;
+  if (title) return title;
+  return raw;
+}
+
+function setNowPlayingLine(prefix, stationName, trackText) {
+  const now = document.getElementById('nowPlaying');
+  if (!now) return;
+  const cleanStation = String(stationName || '').trim();
+  const cleanTrack = String(trackText || '').trim();
+  if (cleanStation && cleanTrack) {
+    now.innerHTML = escapeHtml(prefix) +
+      '<span class="station-part">' + escapeHtml(cleanStation) + '</span>' +
+      '<span class="sep">·</span>' +
+      '<span class="track-part">' + escapeHtml(cleanTrack) + '</span>';
+  } else if (cleanStation) {
+    now.innerHTML = escapeHtml(prefix) +
+      '<span class="station-part">' + escapeHtml(cleanStation) + '</span>';
+  } else {
+    now.textContent = prefix + 'Select a station';
   }
 }
 
@@ -665,6 +725,7 @@ async function init() {
       const playName = params.get('playName') || 'Stream';
       const playGenre = params.get('playGenre') || 'Mix';
       const playSubtitle = params.get('playSubtitle') || '';
+      const playShowId = params.get('playShowId') || '';
       const playArtist = params.get('playArtist') || '';
       const playStart = parseInt(params.get('playStart') || '0', 10);
       let playKind = params.get('playKind') || (isPlaylistUrl(playUrl) ? 'playlist' : 'radio');
@@ -743,7 +804,10 @@ async function init() {
           subtitle: playSubtitle,
           artist: playArtist,
           url: playUrl,
-          kind: playKind
+          kind: playKind,
+          // iTunes collectionId of the SHOW — lets a saved episode link
+          // back to the podcaster's episode list (openPodcast deep link).
+          showId: playShowId
         };
         if (hasNativeRadioBridge()) {
           // Use the extended play method to pass the kind ('podcast'/'radio')
@@ -851,7 +915,9 @@ function save() {
 
 const GENRE_BUCKETS = [
   { name: 'Ambient', match: /(ambient|drone|space|meditation)/i },
-  { name: 'Chill', match: /(chill|mellow|downtempo|lush)/i },
+  // 'Chill' bucket removed per Mars — its tab is replaced by the always-
+  // present PodCasts tab (saved podcast links). Former Chill stations
+  // fall through to 'Mix' via the normalizeGenre default.
   { name: 'Electronic', match: /(electronic|house|future soul|hip-hop|beats|fluid|blend)/i },
   { name: 'Rock', match: /(rock|indie|pop|punk|wave|alt)/i },
   { name: 'Jazz', match: /(jazz|lounge|bossa|spy-fi)/i },
@@ -872,7 +938,9 @@ function getGenres() {
   const present = new Set();
   stations.forEach(s => { present.add(normalizeGenre(s.genre)); });
   const ordered = GENRE_BUCKETS.map(g => g.name).filter(name => present.has(name));
-  return ['Favorites', 'All', ...ordered];
+  // PodCasts is always present (it lists hearted podcast links, not
+  // stations) — it took over the slot the Chill genre used to occupy.
+  return ['Favorites', 'All', ...ordered, 'PodCasts'];
 }
 
 function renderGenres() {
@@ -880,7 +948,7 @@ function renderGenres() {
   el.innerHTML = getGenres().map(g => {
     const isFav = g === 'Favorites';
     const cls = (g === activeGenre ? ' active' : '') + (isFav ? ' fav' : '');
-    return `<div class="genre${cls}" onclick="filterGenre('${g}')">${isFav ? '\u2605 ' : ''}${g}</div>`;
+    return `<div class="genre${cls}" onclick="filterGenre('${g}')">${isFav ? '\u2665 ' : ''}${g}</div>`;
   }).join('');
 }
 
@@ -906,16 +974,228 @@ function filteredStations() {
   return stations.filter(s => normalizeGenre(s.genre) === activeGenre);
 }
 
+// ── Saved podcasts (♥) ────────────────────────────────────────────
+function loadSavedPodcasts() {
+  try {
+    const raw = localStorage.getItem(SAVED_PODCASTS_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { return []; }
+}
+
+function persistSavedPodcasts(list) {
+  try { localStorage.setItem(SAVED_PODCASTS_KEY, JSON.stringify(list)); } catch (e) {}
+}
+
+function isPodcastItem(item) {
+  return !!(item && item.url && String(item.kind || '').toLowerCase() === 'podcast');
+}
+
+function podcastSavedIndex(url) {
+  return loadSavedPodcasts().findIndex(p => p.url === url);
+}
+
+/**
+ * Toolbar ＋ while a podcast plays — SAVES (or unsaves) the podcast
+ * link into the PodCasts tab. Saving is the +'s job; the heart on
+ * each row is for FAVORITING (Favorites tab), mirroring stations.
+ */
+function togglePodcastLinkSaved(item) {
+  let list = loadSavedPodcasts();
+  const existing = list.findIndex(p => p.url === item.url);
+  if (existing >= 0) {
+    list.splice(existing, 1);
+    flashStatus('Removed from PodCasts');
+  } else {
+    const meta = (adHocStream && adHocStream.url === item.url) ? adHocStream : {};
+    list.unshift({
+      name: meta.name || item.name || 'Podcast',
+      subtitle: meta.subtitle || '',
+      artist: meta.artist || '',
+      showId: meta.showId || '',
+      url: item.url,
+      fav: false,
+      ts: Date.now()
+    });
+    list = list.slice(0, 50);  // sane cap
+    flashStatus('＋ Saved to PodCasts');
+  }
+  persistSavedPodcasts(list);
+  if (activeGenre === 'PodCasts' || activeGenre === 'Favorites') renderStations();
+  updateAddButtonState();
+}
+
+/** Row heart on a saved podcast — toggles its Favorites membership. */
+function togglePodcastFav(i) {
+  const list = loadSavedPodcasts();
+  if (i < 0 || i >= list.length) return;
+  list[i].fav = !list[i].fav;
+  persistSavedPodcasts(list);
+  renderGenres();
+  renderStations();
+}
+
+/** One saved-podcast list row. [i] indexes the FULL saved list so the
+ *  same builder serves both the PodCasts and Favorites tabs. */
+function savedPodcastRowHtml(p, i) {
+  const isShow = p.type === 'show';
+  const isCurrent = !isShow && !!(adHocStream && adHocStream.url === p.url);
+  const playing = isCurrent && hasNativeRadioBridge() &&
+    (nativePlaybackState.playing || nativePlaybackState.preparing || nativePlaybackState.buffering);
+  const favCls = p.fav ? ' on' : '';
+  // SHOW rows are saved PODCASTERS (whole episode lists) — tapping one
+  // deep-links into podcasts.html's episode view for that show.
+  const desc = isShow
+    ? (p.artist ? esc(p.artist) + ' — episode list' : 'Episode list — tap to browse')
+    : esc(p.subtitle || p.artist || 'Saved podcast');
+  // Saved EPISODES display as "Podcaster: Title". The PODCASTER part is
+  // a link (accent + underline): tapping it opens that podcaster's
+  // episode list via the podcasts browser's existing machinery
+  // (openPodcast / loadPodcastsByArtist); tapping elsewhere still plays.
+  let nameHtml;
+  if (!isShow) {
+    const sepIdx = String(p.name || '').indexOf(': ');
+    if (sepIdx > 0) {
+      const podcaster = String(p.name).slice(0, sepIdx);
+      const rest = String(p.name).slice(sepIdx + 1);
+      nameHtml = `<span class="pod-show-link" ` +
+        `onclick="event.stopPropagation();openPodcasterEpisodes(${i})" ` +
+        `title="Open this podcaster's episode list">${esc(podcaster)}</span>:${esc(rest)}`;
+    } else {
+      nameHtml = esc(p.name);
+    }
+  } else {
+    nameHtml = '🎙 ' + esc(p.name);
+  }
+  return `<div class="station${isCurrent ? ' active' : ''}" onclick="playSavedPodcast(${i})">
+    <div class="dot${playing ? ' pulse' : ''}"></div>
+    <div class="info">
+      <div class="name">${nameHtml}</div>
+      <div class="desc">${desc}</div>
+    </div>
+    <div class="genre-tag">${isShow ? 'SHOW' : 'PodCast'}</div>
+    <button class="pod-heart${favCls}" onclick="event.stopPropagation();togglePodcastFav(${i})" title="Favorite">${p.fav ? '♥' : '♡'}</button>
+  </div>`;
+}
+
+function renderSavedPodcasts(listEl) {
+  const saved = loadSavedPodcasts();
+  if (!saved.length) {
+    listEl.innerHTML =
+      '<div class="empty">No saved podcasts yet — tap the ＋ while a podcast is playing</div>';
+    return;
+  }
+  listEl.innerHTML = saved.map((p, i) => savedPodcastRowHtml(p, i)).join('');
+}
+
+/**
+ * Podcaster-link tap on a saved EPISODE row → open the podcaster's
+ * episode list using the podcasts browser's EXISTING machinery:
+ *   • showId saved with the episode → openPodcast deep link (exact show);
+ *   • otherwise → loadPodcastsByArtist deep link (creator search by the
+ *     saved artist, falling back to the podcaster name prefix).
+ */
+function openPodcasterEpisodes(i) {
+  const list = loadSavedPodcasts();
+  const p = list[i];
+  if (!p) return;
+  const sepIdx = String(p.name || '').indexOf(': ');
+  const podcaster = sepIdx > 0 ? String(p.name).slice(0, sepIdx).trim() : String(p.name || '').trim();
+  if (p.showId) {
+    window.location.href = 'file:///android_asset/podcasts.html' +
+      '?showId=' + encodeURIComponent(p.showId) +
+      '&showTitle=' + encodeURIComponent(podcaster) +
+      '&showArtist=' + encodeURIComponent(p.artist || '');
+    return;
+  }
+  const term = (p.artist || podcaster).trim();
+  if (!term) return;
+  window.location.href = 'file:///android_asset/podcasts.html' +
+    '?artistShows=' + encodeURIComponent(term);
+}
+
+/** Play a hearted podcast — same ad-hoc/native path the
+ *  podcasts.html → radio.html?playUrl handoff uses. */
+function playSavedPodcast(i) {
+  const list = loadSavedPodcasts();
+  const p = list[i];
+  if (!p) return;
+  // Saved SHOW — open the podcaster's episode list in the podcasts
+  // browser (deep link) instead of playing audio.
+  if (p.type === 'show' && p.showId) {
+    window.location.href = 'file:///android_asset/podcasts.html' +
+      '?showId=' + encodeURIComponent(p.showId) +
+      '&showTitle=' + encodeURIComponent(p.name || '') +
+      '&showArtist=' + encodeURIComponent(p.artist || '') +
+      '&showArt=' + encodeURIComponent(p.art || '');
+    return;
+  }
+  if (!p.url) return;
+  playSavedPodcastResolved(p);
+}
+
+function playSavedPodcastResolved(p) {
+  currentIdx = -1;
+  clearSpotifyQueue();
+  clearStreamQueue();
+  adHocStream = {
+    name: p.name || 'Podcast',
+    genre: 'Podcast',
+    subtitle: p.subtitle || '',
+    artist: p.artist || '',
+    url: p.url,
+    kind: 'podcast'
+  };
+  const displayName = p.subtitle ? (p.name + ': ' + p.subtitle) : (p.name || 'Podcast');
+  if (hasNativeRadioBridge()) {
+    try {
+      let stateResult;
+      if (typeof AndroidInterface.playNativeRadioStreamEx === 'function') {
+        stateResult = AndroidInterface.playNativeRadioStreamEx(
+          p.url, displayName, 'Podcast', 'podcast');
+      } else {
+        stateResult = AndroidInterface.playNativeRadioStream(
+          p.url, displayName, 'Podcast');
+      }
+      applyNativeRadioState(stateResult);
+    } catch (e) { console.warn('Saved podcast native play failed:', e); }
+  } else {
+    audio.src = p.url;
+    audio.load();
+    audio.play().catch(e => console.warn('Play failed:', e));
+  }
+  updateUI();
+}
+
+
+
 function renderStations() {
   const list = document.getElementById('stationList');
+  if (activeGenre === 'PodCasts') {
+    renderSavedPodcasts(list);
+    return;
+  }
   const filtered = filteredStations();
-  if (!filtered.length) {
+
+  // Favorites also lists hearted PODCASTS, right under the stations —
+  // the row heart (♡/♥) is the single "shows in Favorites"
+  // control for both kinds. Indices map into the FULL saved list.
+  let favPodcastHtml = '';
+  if (activeGenre === 'Favorites') {
+    favPodcastHtml = loadSavedPodcasts()
+      .map((p, i) => ({ p: p, i: i }))
+      .filter(x => x.p.fav)
+      .map(x => savedPodcastRowHtml(x.p, x.i))
+      .join('');
+  }
+
+  if (!filtered.length && !favPodcastHtml) {
     list.innerHTML = activeGenre === 'Favorites'
-      ? '<div class="empty">No favorites yet — tap the \u2605 star on any station</div>'
+      ? '<div class="empty">No favorites yet — tap the ♡ heart on any station or saved podcast</div>'
       : '<div class="empty">No stations in this category</div>';
     return;
   }
-  list.innerHTML = filtered.map(s => {
+  const stationHtml = filtered.map(s => {
     const realIdx = stations.indexOf(s);
     const isActive = realIdx === currentIdx;
     const playing = isActive && isStationPlaying(s);
@@ -927,9 +1207,10 @@ function renderStations() {
         <div class="desc">${esc(s.desc || s.genre || '')}</div>
       </div>
       <div class="genre-tag">${esc(normalizeGenre(s.genre))}</div>
-      <button class="fav-btn${favCls}" onclick="event.stopPropagation();toggleFav(${realIdx})" title="Favorite">\u2605</button>
+      <button class="fav-btn${favCls}" onclick="event.stopPropagation();toggleFav(${realIdx})" title="Favorite">${s.fav ? '\u2665' : '\u2661'}</button>
     </div>`;
   }).join('');
+  list.innerHTML = stationHtml + favPodcastHtml;
 }
 
 function toggleFav(idx) {
@@ -1263,16 +1544,27 @@ function updateAddButtonState() {
   var btn = document.getElementById('btnAddCurrent');
   if (!btn) return;
   var item = currentPlaybackItem();
+  // Saved state is always shown as a BOLD ＋ (class 'added'), never a ✓ —
+  // the dim/semi-transparent ＋ means the current item isn't saved yet.
   btn.classList.remove('added', 'saving');
   btn.textContent = '＋';
   btn.title = 'Add current station or save current file';
   if (!item || !item.url) return;
 
+  if (isPodcastItem(item)) {
+    if (podcastSavedIndex(item.url) >= 0) {
+      btn.classList.add('added');
+      btn.title = 'Saved in PodCasts — tap to remove';
+    } else {
+      btn.title = 'Save this podcast to PodCasts';
+    }
+    return;
+  }
+
   if (isMediaSaveTarget(item)) {
     var mediaState = getMediaSavedState(item);
     if (mediaState && mediaState.saved) {
       btn.classList.add('added');
-      btn.textContent = '✓';
       btn.title = 'Already saved to Media Library';
     } else {
       btn.title = 'Save this audio/playlist to Media Library';
@@ -1282,7 +1574,6 @@ function updateAddButtonState() {
 
   if (findSavedStationByUrl(item.url) >= 0 || item.stationIndex >= 0) {
     btn.classList.add('added');
-    btn.textContent = '✓';
     btn.title = 'Already saved in TapRadio';
   } else {
     btn.title = 'Add current IP radio station to TapRadio';
@@ -1293,6 +1584,14 @@ function handleAddCurrent() {
   var item = currentPlaybackItem();
   if (!item || !item.url) {
     showAddModal();
+    return;
+  }
+
+  // Podcasts: ＋ saves the LINK into the PodCasts tab (toggle). It no
+  // longer falls through to "add as a TapRadio station" — that was the
+  // +/heart confusion. Favoriting (Favorites tab) is the row heart's job.
+  if (isPodcastItem(item)) {
+    togglePodcastLinkSaved(item);
     return;
   }
 
@@ -1341,6 +1640,7 @@ function handleAddCurrent() {
   addCurrentItemAsStation(item, '✓ Added to TapRadio');
 }
 
+
 function updateUI() {
   const station = currentIdx >= 0 ? stations[currentIdx] : null;
   let playing = currentIdx >= 0 && isStationPlaying(station);
@@ -1364,11 +1664,11 @@ function updateUI() {
   btn.classList.toggle('playing', playing);
   const now = document.getElementById('nowPlaying');
   if (playing) {
-    now.textContent = '\u25B6 ' + displayName;
+    setNowPlayingLine('\u25B6 ', displayName, currentTrackLabel());
   } else if (currentIdx >= 0) {
-    now.textContent = '\u23F8 ' + displayName;
+    setNowPlayingLine('\u23F8 ', displayName, currentTrackLabel());
   } else if (adHocStream) {
-    now.textContent = '\u23F8 ' + adHocStream.name;
+    setNowPlayingLine('\u23F8 ', adHocStream.name, currentTrackLabel());
   } else {
     now.textContent = 'Select a station';
   }

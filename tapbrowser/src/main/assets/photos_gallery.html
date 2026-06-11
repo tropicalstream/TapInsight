@@ -282,6 +282,37 @@ button { font: inherit; color: inherit; background: transparent; border: 0; curs
 .lightbox .nav.next { right: 12px; }
 .lightbox .nav.disabled { opacity: 0.25; pointer-events: none; }
 
+/* Zoom control cluster — standard lightbox pattern: a vertical
+   [+ / % / −] stack pinned to the stage's bottom-right corner (same
+   visual language as the prev/next pucks). The % chip doubles as the
+   reset-to-fit button. */
+.lightbox .zoomctl {
+  position: absolute;
+  right: 12px; bottom: 12px;
+  display: flex; flex-direction: column;
+  gap: 6px;
+  z-index: 3;
+}
+.lightbox .zoomctl button {
+  width: 44px; height: 40px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.55);
+  border: 1px solid rgba(255,255,255,0.18);
+  color: var(--text);
+  font-size: 20px;
+  transition: background 0.15s;
+}
+.lightbox .zoomctl button:hover, .lightbox .zoomctl button:active {
+  background: rgba(0,0,0,0.8);
+}
+.lightbox .zoomctl button.pct { font-size: 11px; letter-spacing: 0.02em; }
+.lightbox .zoomctl button.disabled { opacity: 0.3; pointer-events: none; }
+/* While zoomed, the image is draggable to pan; suppress the snap
+   transition during an active drag so panning tracks 1:1. */
+.lightbox .stage img.dragging { transition: none; cursor: grabbing; }
+.lightbox .stage img.zoomed { cursor: grab; }
+
 .lightbox .toolbar {
   display: flex; justify-content: center; align-items: center;
   gap: 12px;
@@ -373,6 +404,11 @@ button { font: inherit; color: inherit; background: transparent; border: 0; curs
     <button class="nav prev" id="prevBtn" aria-label="Previous">‹</button>
     <img id="lbImage" alt="">
     <button class="nav next" id="nextBtn" aria-label="Next">›</button>
+    <div class="zoomctl" id="zoomCtl">
+      <button id="zoomInBtn" aria-label="Zoom in" title="Zoom in">＋</button>
+      <button class="pct" id="zoomPctBtn" aria-label="Reset zoom" title="Reset to fit">100%</button>
+      <button id="zoomOutBtn" aria-label="Zoom out" title="Zoom out">−</button>
+    </div>
   </div>
   <div class="toolbar">
     <button id="rotLeftBtn" title="Rotate 90° counter-clockwise">
@@ -427,6 +463,9 @@ const els = {
   nextBtn: document.getElementById('nextBtn'),
   rotLeftBtn: document.getElementById('rotLeftBtn'),
   rotRightBtn: document.getElementById('rotRightBtn'),
+  zoomInBtn: document.getElementById('zoomInBtn'),
+  zoomOutBtn: document.getElementById('zoomOutBtn'),
+  zoomPctBtn: document.getElementById('zoomPctBtn'),
   infoBtn: document.getElementById('infoBtn'),
   shareBtn: document.getElementById('shareBtn'),
   deleteBtn: document.getElementById('deleteBtn'),
@@ -443,6 +482,50 @@ const els = {
 let photos = [];
 let lightboxIndex = -1;
 let rotation = 0;  // accumulated degrees in lightbox (view-only this commit)
+
+// ─── Lightbox zoom & pan state ─────────────────────────────────────
+// Standard stepped zoom: ×1.25 per click, clamped to fit…8×. At 1× the
+// image is object-fit:contain ("fit"); panning is only active while
+// zoomed. All three (zoom, panX, panY) reset on photo change / close.
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 8;
+const ZOOM_STEP = 1.25;
+let zoom = 1;
+let panX = 0;
+let panY = 0;
+
+function applyImageTransform() {
+  els.lbImage.style.transform =
+    `translate(${panX}px, ${panY}px) rotate(${rotation}deg) scale(${zoom})`;
+  els.lbImage.classList.toggle('zoomed', zoom > 1);
+}
+
+function updateZoomCtl() {
+  els.zoomPctBtn.textContent = Math.round(zoom * 100) + '%';
+  els.zoomInBtn.classList.toggle('disabled', zoom >= ZOOM_MAX - 0.001);
+  els.zoomOutBtn.classList.toggle('disabled', zoom <= ZOOM_MIN + 0.001);
+}
+
+/** Keep the pan offset inside the visible overflow so the image can
+ *  never be dragged fully off-stage. */
+function clampPan() {
+  const maxX = Math.max(0, (els.lbImage.clientWidth * zoom - els.lbImage.clientWidth) / 2);
+  const maxY = Math.max(0, (els.lbImage.clientHeight * zoom - els.lbImage.clientHeight) / 2);
+  panX = Math.min(maxX, Math.max(-maxX, panX));
+  panY = Math.min(maxY, Math.max(-maxY, panY));
+}
+
+function setZoom(z) {
+  zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  if (zoom <= ZOOM_MIN + 0.001) { zoom = 1; panX = 0; panY = 0; }
+  clampPan();
+  applyImageTransform();
+  updateZoomCtl();
+}
+
+function zoomIn() { setZoom(zoom * ZOOM_STEP); }
+function zoomOut() { setZoom(zoom / ZOOM_STEP); }
+function resetZoom() { setZoom(ZOOM_MIN); }
 
 function toast(msg) {
   els.toast.textContent = msg;
@@ -770,6 +853,7 @@ function openLightbox(idx) {
   if (idx < 0 || idx >= photos.length) return;
   lightboxIndex = idx;
   rotation = 0;
+  zoom = 1; panX = 0; panY = 0;
   renderLightbox();
   els.lightbox.classList.add('open');
 }
@@ -778,13 +862,15 @@ function closeLightbox() {
   els.lightbox.classList.remove('open');
   lightboxIndex = -1;
   rotation = 0;
+  zoom = 1; panX = 0; panY = 0;
 }
 
 function renderLightbox() {
   const p = photos[lightboxIndex];
   if (!p) return closeLightbox();
   els.lbImage.src = entryUrl(p);
-  els.lbImage.style.transform = `rotate(${rotation}deg)`;
+  applyImageTransform();
+  updateZoomCtl();
   els.lbFilename.textContent = p.name;
   els.lbIndex.textContent = (lightboxIndex + 1) + ' / ' + photos.length;
   els.prevBtn.classList.toggle('disabled', lightboxIndex === 0);
@@ -796,6 +882,7 @@ function nav(delta) {
   if (newIdx < 0 || newIdx >= photos.length) return;
   lightboxIndex = newIdx;
   rotation = 0;
+  zoom = 1; panX = 0; panY = 0;
   renderLightbox();
 }
 
@@ -819,7 +906,7 @@ async function rotateBy(deg) {
 
   // Optimistic view-rotate while the disk write runs.
   rotation = (rotation + deg + 360) % 360;
-  els.lbImage.style.transform = `rotate(${rotation}deg)`;
+  applyImageTransform();
 
   if (!window.TapMedia || typeof window.TapMedia.rotateImage !== 'function') {
     toast('Rotation not persisted (bridge missing)');
@@ -839,7 +926,7 @@ async function rotateBy(deg) {
   // After a successful disk write, reset the on-screen transform and
   // bust the image cache so the rotated bytes load fresh.
   rotation = 0;
-  els.lbImage.style.transform = 'rotate(0deg)';
+  applyImageTransform();
   const fresh = entryUrl(p) + '?t=' + Date.now();
   els.lbImage.src = fresh;
   // Also invalidate the corresponding tile thumb in the grid.
@@ -943,6 +1030,46 @@ els.prevBtn.addEventListener('click', () => nav(-1));
 els.nextBtn.addEventListener('click', () => nav(1));
 els.rotLeftBtn.addEventListener('click', () => rotateBy(-90));
 els.rotRightBtn.addEventListener('click', () => rotateBy(90));
+
+// ── Zoom controls ────────────────────────────────────────────────
+els.zoomInBtn.addEventListener('click', zoomIn);
+els.zoomOutBtn.addEventListener('click', zoomOut);
+els.zoomPctBtn.addEventListener('click', resetZoom);
+// Double-click/tap on the photo toggles fit ↔ 2× (the standard
+// quick-zoom gesture in lightbox viewers).
+els.lbImage.addEventListener('dblclick', () => {
+  if (zoom > 1) resetZoom(); else setZoom(2);
+});
+// Drag-to-pan while zoomed (pointer events cover mouse + touch).
+// The 'dragging' class kills the transform transition so the photo
+// tracks the pointer 1:1 instead of lagging behind it.
+(function wirePanDrag(){
+  let dragging = false, startX = 0, startY = 0, basePanX = 0, basePanY = 0;
+  els.lbImage.addEventListener('pointerdown', (e) => {
+    if (zoom <= 1) return;
+    dragging = true;
+    startX = e.clientX; startY = e.clientY;
+    basePanX = panX; basePanY = panY;
+    els.lbImage.classList.add('dragging');
+    try { els.lbImage.setPointerCapture(e.pointerId); } catch (_) {}
+    e.preventDefault();
+  });
+  els.lbImage.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    panX = basePanX + (e.clientX - startX);
+    panY = basePanY + (e.clientY - startY);
+    clampPan();
+    applyImageTransform();
+  });
+  function endDrag(e) {
+    if (!dragging) return;
+    dragging = false;
+    els.lbImage.classList.remove('dragging');
+    try { els.lbImage.releasePointerCapture(e.pointerId); } catch (_) {}
+  }
+  els.lbImage.addEventListener('pointerup', endDrag);
+  els.lbImage.addEventListener('pointercancel', endDrag);
+})();
 els.shareBtn.addEventListener('click', copyShareUrl);
 els.infoBtn.addEventListener('click', showInfo);
 els.deleteBtn.addEventListener('click', deletePhoto);

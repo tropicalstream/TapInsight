@@ -1,7 +1,10 @@
 package com.rayneo.visionclaw.core.camera
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
+import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.YuvImage
 import android.os.SystemClock
@@ -95,8 +98,34 @@ class FrameCaptureManager(
             val out = ByteArrayOutputStream()
             val yuv = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
             yuv.compressToJpeg(Rect(0, 0, image.width, image.height), JPEG_QUALITY, out)
-            out.toByteArray()
+            val jpeg = out.toByteArray()
+            // The sensor delivers frames in its native orientation; CameraX
+            // reports how far they must be rotated to appear upright via
+            // imageInfo.rotationDegrees. YuvImage ignores that, so without this
+            // the frames Gemini/Hermes receive are rotated (90° on the X3 Pro),
+            // which is why the model reported "the image is rotated." Apply the
+            // rotation to the encoded JPEG so downstream consumers always get an
+            // upright image.
+            val rotation = image.imageInfo.rotationDegrees
+            if (rotation == 0) jpeg else rotateJpeg(jpeg, rotation)
         }.getOrNull()
+    }
+
+    /** Rotate an encoded JPEG by [degrees] (clockwise) and re-encode. */
+    private fun rotateJpeg(jpeg: ByteArray, degrees: Int): ByteArray {
+        val src = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return jpeg
+        return try {
+            val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
+            val rotated = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
+            val out = ByteArrayOutputStream()
+            rotated.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+            if (rotated !== src) rotated.recycle()
+            out.toByteArray()
+        } catch (e: Throwable) {
+            jpeg
+        } finally {
+            src.recycle()
+        }
     }
 
     private fun yuv420ToNv21(image: ImageProxy): ByteArray {

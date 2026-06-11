@@ -221,6 +221,11 @@ body {
     <button class="back-btn" id="backBtn" onclick="goBack()">&larr; Back</button>
     <h1 id="title">Top Podcasts</h1>
     <div class="sub" id="subtitle">via Apple iTunes</div>
+    <!-- ＋ Save this show's EPISODE LIST into TapRadio's PodCasts tab.
+         Visible only on the per-show episodes view. Dim ＋ = not saved;
+         accent ＋ = saved (tap again to remove). -->
+    <button class="back-btn" id="saveShowBtn" style="display:none;flex-shrink:0;font-weight:700"
+            title="Save this show to TapRadio PodCasts">＋</button>
   </div>
   <div class="list" id="list">
     <div class="empty">Loading…</div>
@@ -313,6 +318,70 @@ body {
 
   // Expose goBack globally so the inline onclick on the back button works.
   window.goBack = goBack;
+
+  // -------- Save show → TapRadio PodCasts tab --------
+  // Shares the same localStorage store radio.html's PodCasts tab reads
+  // (same file:///android_asset origin). A saved SHOW entry carries
+  // type:'show' + showId; tapping it in TapRadio deep-links back here
+  // via ?showId=… and reopens this episode list.
+  var SAVED_PODCASTS_KEY = 'tapinsight_saved_podcasts';
+
+  function loadSavedPodcastEntries() {
+    try {
+      var raw = localStorage.getItem(SAVED_PODCASTS_KEY);
+      var arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  }
+  function persistSavedPodcastEntries(list) {
+    try { localStorage.setItem(SAVED_PODCASTS_KEY, JSON.stringify(list.slice(0, 50))); }
+    catch (e) {}
+  }
+  function isShowSaved(id) {
+    return loadSavedPodcastEntries().some(function(p) {
+      return p && p.type === 'show' && String(p.showId) === String(id);
+    });
+  }
+  function updateSaveShowBtn() {
+    var btn = document.getElementById('saveShowBtn');
+    if (!btn) return;
+    var pod = state.currentPodcast;
+    var visible = state.view === 'episodes' && pod && pod.id;
+    btn.style.display = visible ? '' : 'none';
+    if (!visible) return;
+    var saved = isShowSaved(pod.id);
+    btn.style.opacity = saved ? '1' : '0.55';
+    btn.style.color = saved ? '#00e5ff' : '';
+    btn.title = saved
+      ? 'Saved in TapRadio PodCasts — tap to remove'
+      : 'Save this show to TapRadio PodCasts';
+  }
+  document.getElementById('saveShowBtn').addEventListener('click', function() {
+    var pod = state.currentPodcast;
+    if (!pod || !pod.id) return;
+    var list = loadSavedPodcastEntries();
+    var idx = list.findIndex(function(p) {
+      return p && p.type === 'show' && String(p.showId) === String(pod.id);
+    });
+    if (idx >= 0) {
+      list.splice(idx, 1);
+    } else {
+      list.unshift({
+        type: 'show',
+        showId: String(pod.id),
+        name: pod.title || 'Podcast',
+        artist: pod.artist || '',
+        art: pod.art || '',
+        fav: false,
+        ts: Date.now()
+      });
+    }
+    persistSavedPodcastEntries(list);
+    updateSaveShowBtn();
+  });
+  // Light poll keeps the button in sync with whichever view is active
+  // without threading a call through every render function.
+  setInterval(updateSaveShowBtn, 600);
 
   function parsePayload() {
     try {
@@ -755,6 +824,7 @@ body {
       '&playSubtitle=' + encodeParam(ep.episodeTitle || '') +
       '&playArtist=' + encodeParam(ep.artist || '') +
       '&playArt=' + encodeParam(ep.art || ep.artworkUrl || '') +
+      '&playShowId=' + encodeParam(ep.collectionId || '') +
       '&playKind=podcast';
     window.location.href = url;
   }
@@ -1021,10 +1091,9 @@ body {
         var children = item.childNodes;
         for (var c = 0; c < children.length; c++) {
           var child = children[c];
-          if (child.nodeType === 1 && child.nodeName &&
-              child.nodeName.toLowerCase() === 'itunes:duration') {
+          if (child.nodeType !== 1 || !child.nodeName) continue;
+          if (child.nodeName.toLowerCase() === 'itunes:duration') {
             duration = (child.textContent || '').trim();
-            break;
           }
         }
 
@@ -1074,6 +1143,7 @@ body {
       '&playSubtitle=' + encodeParam(ep.title || '') +
       '&playArtist=' + encodeParam(pod.artist || '') +
       '&playArt=' + encodeParam(pod.art || '') +
+      '&playShowId=' + encodeParam(pod.id || '') +
       '&playKind=podcast';
     window.location.href = url;
   }
@@ -1095,6 +1165,45 @@ body {
 
 
   // -------- Init --------
+  // Deep link from TapRadio's PodCasts tab: ?showId=… reopens a saved
+  // show's episode list directly (renderEpisodesLoading → iTunes lookup).
+  try {
+    var deepParams = new URLSearchParams(window.location.search || '');
+    var deepShowId = deepParams.get('showId');
+    if (deepShowId) {
+      var deepPod = {
+        id: String(deepShowId),
+        title: deepParams.get('showTitle') || 'Podcast',
+        artist: deepParams.get('showArtist') || '',
+        art: deepParams.get('showArt') || ''
+      };
+      try {
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState({}, '', window.location.pathname);
+        }
+      } catch (e2) {}
+      // Reuse the standard drill-in path (cached episodes or iTunes
+      // lookup -> renderEpisodes) — same function the show pills use.
+      openPodcast(deepPod);
+      updateSaveShowBtn();
+      return;
+    }
+    // Saved EPISODE rows without a stored showId fall back to the
+    // creator search — also a baked-in flow (artist pill).
+    var deepArtist = deepParams.get('artistShows');
+    if (deepArtist) {
+      try {
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState({}, '', window.location.pathname);
+        }
+      } catch (e3) {}
+      loadPodcastsByArtist(deepArtist);
+      return;
+    }
+  } catch (e) {
+    console.warn('podcasts.html: deep-link failed', e);
+  }
+
   var payload = parsePayload();
   if (restorePageState()) {
     renderCurrentState();

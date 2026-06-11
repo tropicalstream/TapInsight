@@ -113,6 +113,19 @@ h1{color:#00e5ff;font-size:22px;margin-bottom:2px}
   <button class="btn danger" onclick="resetDefaults()">Reset Defaults</button>
 </div>
 
+<!-- Dim-mode captions -->
+<div class="search-panel" style="display:block;margin-bottom:14px">
+  <h3><span>&#128172;</span> Dim-Mode Captions</h3>
+  <p style="font-size:12px;color:#888;margin:4px 0 10px">
+    Shown on the dimmed screen while radio plays: synced lyrics looked
+    up from the track title (station metadata or manual song ID).
+  </p>
+  <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:6px 0;cursor:pointer">
+    <input type="checkbox" id="ccRadioToggle" checked onchange="saveDimCaptionPrefs()">
+    Radio song lyrics (LRCLIB)
+  </label>
+</div>
+
 <!-- Search Panel (inline, toggled) -->
 <div id="searchPanel" class="search-panel" style="display:none">
   <h3><span>&#128269;</span> Find Stations Online</h3>
@@ -653,6 +666,30 @@ function showStatus(msg, type) {
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
 init();
+
+// ── Dim-mode caption toggles ──────────────────────────────────────
+async function loadDimCaptionPrefs() {
+  try {
+    const r = await fetch('/api/config');
+    if (!r.ok) return;
+    const cfg = await r.json();
+    const s = document.getElementById('ccRadioToggle');
+    if (s && typeof cfg.dim_captions_radio === 'boolean') s.checked = cfg.dim_captions_radio;
+  } catch (e) { console.warn('loadDimCaptionPrefs failed', e); }
+}
+async function saveDimCaptionPrefs() {
+  try {
+    const body = {
+      dim_captions_radio: !!document.getElementById('ccRadioToggle').checked
+    };
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+  } catch (e) { console.warn('saveDimCaptionPrefs failed', e); }
+}
+loadDimCaptionPrefs();
 </script>
 </body>
 </html>
