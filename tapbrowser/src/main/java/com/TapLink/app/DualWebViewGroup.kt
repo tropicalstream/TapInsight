@@ -10972,10 +10972,42 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
         maskCaptionText.visibility = View.VISIBLE
         maskCaptionText.bringToFront()
-        if (maskCaptionText.width == 0 || maskCaptionText.height == 0) {
-            maskCaptionText.requestLayout()
-            (maskCaptionText.parent as? View)?.requestLayout()
-        }
+        // THE one-line bug, root-caused at last: the mask overlay's custom
+        // layout pass never RE-measures children after content changes (the
+        // same quirk the dim clock and the visualizer carry explicit
+        // measure+layout safety nets for). The first caption of a dim
+        // session is almost always a single line — the engine's history
+        // line is empty at start — so this TextView got measured at
+        // one-line height and STAYED there: every later "top\nbot" push
+        // rendered two lines of text into a one-line-tall view. All five
+        // engine-side fixes changed the string, never the stuck height.
+        // Fix = the established pattern: explicitly measure at the
+        // overlay's width and re-position bottom-centered on EVERY commit
+        // (≤200ms cadence + 1.5s heartbeat keep this self-healing, exactly
+        // like the visualizer's per-frame net).
+        val ow = if (maskOverlay.width > 0) maskOverlay.width else 640
+        val oh = if (maskOverlay.height > 0) maskOverlay.height else height
+        val lp = maskCaptionText.layoutParams as? FrameLayout.LayoutParams
+        val lm = lp?.leftMargin ?: 54
+        val rm = lp?.rightMargin ?: 54
+        val bm = lp?.bottomMargin ?: 172
+        val availW = (ow - lm - rm).coerceAtLeast(1)
+        maskCaptionText.measure(
+            MeasureSpec.makeMeasureSpec(availW, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(oh, MeasureSpec.AT_MOST)
+        )
+        val mh = maskCaptionText.measuredHeight
+        val ct = (oh - bm - mh).coerceAtLeast(0)
+        maskCaptionText.layout(lm, ct, lm + availW, ct + mh)
+        // Verification line for the next build: pushedLines is what the
+        // engine sent, lineCount is what the TextView will actually render
+        // (includes soft wraps). If these ever disagree with the glasses,
+        // `adb logcat -s DimMaskHud` settles where the line is lost.
+        android.util.Log.d(
+            "DimMaskHud",
+            "caption commit: pushedLines=${caption.count { it == '\n' } + 1} " +
+                "renderLines=${maskCaptionText.lineCount} h=$mh y=$ct"
+        )
     }
 
     private fun updateMaskSpotifyInfo(info: MaskSpotifyInfo?) {
