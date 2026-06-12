@@ -29,6 +29,17 @@ android {
             "\"${(project.findProperty("TAPINSIGHT_RELAY_BASE") as? String).orEmpty()}\""
         )
 
+        // GEMINI_API_KEY generated HERE (not by the secrets plugin — its
+        // empty-value handling emits invalid Java; see ignoreList below).
+        // Optional ~/.gradle/gradle.properties: GEMINI_API_KEY=AIza...
+        // Blank is fine: every consumer null-checks and falls back to the
+        // key configured in the companion app at runtime.
+        buildConfigField(
+            "String",
+            "GEMINI_API_KEY",
+            "\"${(project.findProperty("GEMINI_API_KEY") as? String).orEmpty()}\""
+        )
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -63,6 +74,9 @@ secrets {
     propertiesFileName = "local.properties"
     defaultPropertiesFileName = "local.defaults.properties"
     ignoreList.add("sdk.dir")
+    // Generated explicitly in defaultConfig instead — the plugin emits
+    // `= ;` (invalid Java) for blank values.
+    ignoreList.add("GEMINI_API_KEY")
 }
 
 dependencies {
