@@ -1411,10 +1411,10 @@ class MainActivity :
         // HUD strip. Click → toggle voice via the binder; subscribed
         // to HudStateBridge for visual feedback (color by VoicePhase).
         // Pipeline still Phase 4; today's tap just bounces Service
-        // state through the bridge so Mars can verify the bind path.
+        // state through the bridge so the user can verify the bind path.
         startUnipanelVoicePill()
         startBrowserCommandObserver()
-        // Phase 4d (Mars revision) — passive red-dot indicator.
+        // Phase 4d (user revision) — passive red-dot indicator.
         // Lights up when CameraX or browser_vision is active. The
         // manual CAM toggle button is gone; vision is voice-triggered.
         startUnipanelVisionDotObserver()
@@ -2314,7 +2314,7 @@ class MainActivity :
                                         showBrowserPanel()
                                     }
                                     else -> {
-                                        // Mars: double-tap rolls the HUD/chat up and
+                                        // the user: double-tap rolls the HUD/chat up and
                                         // down to give a full-screen browser (was: toggle
                                         // the browser's own nav bars).
                                         DebugLog.d(
@@ -4405,7 +4405,7 @@ class MainActivity :
                         // here (`setOption('captions','track', pick)` via
                         // primeCaptions) was resetting the caption renderer's
                         // clock to t=0 every tick, leaving captions multiple
-                        // seconds behind the audio. The user (Mars) preferred
+                        // seconds behind the audio. The user (user) preferred
                         // to enable captions manually via YouTube's own CC
                         // button — that path keeps the captions properly synced
                         // because YouTube starts the track at the CURRENT
@@ -7278,7 +7278,7 @@ class MainActivity :
                 pendingRightArmSingleTapAction?.let { uiHandler.removeCallbacks(it) }
                 val action = Runnable {
                     pendingRightArmSingleTapAction = null
-                    // Mars rebind: the left-arm short tap ACTIVATES Gemini when no
+                    // the user rebind: the left-arm short tap ACTIVATES Gemini when no
                     // session is running; only WHILE a session is active does it
                     // toggle the camera on/off.
                     val voiceActive =
@@ -7443,7 +7443,7 @@ class MainActivity :
         }
     }
 
-    /** Phase 4d (Mars revision) — double-tap now toggles tapbrowser's
+    /** Phase 4d (user revision) — double-tap now toggles tapbrowser's
      *  OWN side + bottom navigation bars via the existing
      *  [DualWebViewGroup.setNavBarsHidden] path (same toggle the
      *  bottom-right corner "box" button performs). The unipanel HUD
@@ -7461,7 +7461,7 @@ class MainActivity :
     }
 
     /**
-     * Phase 4k (Mars revision) — "focus mode" for the browser portion.
+     * Phase 4k (user revision) — "focus mode" for the browser portion.
      *
      * Tapping empty space in the browser collapses the whole browser
      * (WebView content + the side/bottom nav bars) so only the unipanel
@@ -7514,7 +7514,7 @@ class MainActivity :
     // Phase 4 will move the actual AudioRecord + WebSocket + AudioTrack
     // ownership into the Service.
     // Phase 6 will wire the user-facing gesture (tap on the chat-card
-    // stack, or whatever Mars's swipe/tap UX lands on) to call
+    // stack, or whatever the user's swipe/tap UX lands on) to call
     // voiceServiceApi?.activateVoice() / shutdownVoice().
     // ──────────────────────────────────────────────────────────────────
     @Volatile
@@ -7943,8 +7943,8 @@ class MainActivity :
     }
 
     /**
-     * Phase 4f (Mars revision) — the legacy top-right CAM chip is
-     * gone (Mars: "two red dots, only the single red dot should
+     * Phase 4f (user revision) — the legacy top-right CAM chip is
+     * gone (user: "two red dots, only the single red dot should
      * appear"). The Phase 4e [startUnipanelVisionDotObserver] subscriber
      * on the HUD-strip dot is the sole vision-active indicator now.
      *
@@ -7974,7 +7974,7 @@ class MainActivity :
      *
      * Phase 4 will make activateVoice actually start the audio pipeline.
      * Phase 3 stubs in the Service just bounce a HudStateBridge state
-     * change so Mars can verify the bind path: tap pill → red, tap
+     * change so the user can verify the bind path: tap pill → red, tap
      * again → blue-grey. If color flips on tap, the binder is alive
      * end-to-end.
      */
@@ -8014,7 +8014,7 @@ class MainActivity :
                 api.shutdownVoice()
             }
         }
-        // ONLY the avatar orb activates / cancels Gemini (Mars: "only if I
+        // ONLY the avatar orb activates / cancels Gemini (user: "only if I
         // tap the avatar should it activate gemini"). Previously the whole
         // top HUD row + feed strip + clock strip shared this handler, so a
         // tap on empty HUD space activated voice by accident.
@@ -8507,7 +8507,12 @@ class MainActivity :
             }
             setOnClickListener {
                 hideChatHistoryOverlay()
-                openInTapBrowser("https://relay.tapinsight.uk/hermes/log/glasses")
+                val relayBase = BuildConfig.DEFAULT_RELAY_BASE.trim().trimEnd('/')
+                if (relayBase.isNotBlank()) {
+                    openInTapBrowser("$relayBase/hermes/log/glasses")
+                } else {
+                    DebugLog.d("ChatHistory", "Hermes log: no relay base configured")
+                }
             }
         }
         val closeBtn = TextView(this).apply {
@@ -9336,7 +9341,7 @@ class MainActivity :
         }
     }
 
-    /** Phase 4d (Mars revision) — replaces the manual CAM pill with
+    /** Phase 4d (user revision) — replaces the manual CAM pill with
      *  a passive red-dot indicator. Lights up while CameraX is
      *  streaming frames into the Live session OR while browser_vision
      *  is in flight. No tap handler — vision is voice-triggered now. */
@@ -9420,7 +9425,7 @@ class MainActivity :
         renderUnipanelTieredHud(state)
 
         findViewById<android.widget.TextView?>(R.id.unipanelHudAqi)?.let { aqi ->
-            // AQI hidden by default (Mars R6) — now an opt-in companion
+            // AQI hidden by default (user R6) — now an opt-in companion
             // toggle (hud_show_aqi) instead of a hardcoded flag. The
             // plumbing (state.airQualityValue) stays warm either way.
             val showAqi = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
@@ -9557,7 +9562,7 @@ class MainActivity :
                     val api = voiceServiceApi
                     if (api != null) {
                         // Expanded card, NO auto-readout: TTS only fires
-                        // when the user taps the expanded card (Mars flow).
+                        // when the user taps the expanded card (user flow).
                         expandNextAssistantCard = true
                         unipanelCardSpeakText = "${entry.title}. ${entry.message}"
                         runCatching { api.showAssistantCard("${entry.title} — ${entry.message}") }
@@ -9882,7 +9887,7 @@ class MainActivity :
         val preview = findViewById<View?>(R.id.unipanelCameraPreviewFrame) ?: return
         if (preview.visibility != View.VISIBLE) return
         val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText)
-        // Phase 4k.4 (Mars) — restore the two-stage placement that worked
+        // Phase 4k.4 (user) — restore the two-stage placement that worked
         // best: while the heartbeat ticker is showing ("Camera streaming
         // to Gemini"), the preview sits just BELOW it; once the ticker
         // auto-clears, the preview rises to 50dp under the clock. The only
@@ -9927,7 +9932,7 @@ class MainActivity :
                     // Service via setCameraPreviewSurfaceProvider
                     // (wired in startUnipanelCameraPreviewBinding).
                     previewFrame?.visibility = if (on) View.VISIBLE else View.GONE
-                    // Mars: the camera ticker was removed, so on enable the
+                    // the user: the camera ticker was removed, so on enable the
                     // preview goes straight to its FINAL position (50dp under
                     // the clock) — no below-ticker stage / bounce.
                     if (on) repositionUnipanelCameraPreview()
@@ -9975,7 +9980,7 @@ class MainActivity :
     ) {
         val glow = findViewById<View?>(R.id.unipanelVoiceOrbGlow) ?: return
         // Phase 4k.10 — the avatar ring must make voice state UNMISTAKABLE
-        // (Mars' repeated request). Three visually-distinct states, no
+        // (the user' repeated request). Three visually-distinct states, no
         // longer a washed-out soft radial that idle and thinking shared:
         //
         //   IDLE       → thin DIM steel ring (clearly "off / standby")
@@ -13838,7 +13843,7 @@ class MainActivity :
                         "s.textContent=" +
                         // right:29px: half-button shift (22px) from the
                         // original 12px to clear the visible-lens edge,
-                        // then 5px back toward the edge per Mars's eyeball
+                        // then 5px back toward the edge per the user's eyeball
                         // — 34px was leaving a little too much margin.
                         "'#__tl_nav{position:fixed;top:6px;right:29px;z-index:2000000;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:auto!important}'" +
                         "+'\\n#__tl_nav button{background:rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.3);color:#fff;font-size:16px;padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;pointer-events:auto!important}'" +
@@ -13950,7 +13955,7 @@ class MainActivity :
                         // Crescent moon at the top of the stack — taps invoke
                         // GroqBridge.enterDimMode(), which is the same call
                         // path as tapping btnMask in the left toggle bar. The
-                        // user (Mars) asked for a "sleeping eye" near the
+                        // user (user) asked for a "sleeping eye" near the
                         // view-mode controls so they don't have to reach all
                         // the way to the toggle bar to dim the browser.
                         //
@@ -14037,7 +14042,7 @@ class MainActivity :
          * entry point that also (a) snapshots the pre-mask cursor state,
          * (b) hides the trackpad cursor views, and (c) hides the unipanel
          * HUD overlay. An earlier draft that called maskScreen() alone
-         * left the cursor visible in dim mode (Mars caught this on the
+         * left the cursor visible in dim mode (user caught this on the
          * glasses) — `maskScreen()` itself only flips the icon + starts
          * refresh runnables.
          */
@@ -16967,7 +16972,7 @@ class MainActivity :
             unipanelVoicePillSubscription?.close()
         } catch (_: Exception) {}
         unipanelVoicePillSubscription = null
-        // Phase 4d (Mars revision) — drop the vision dot subscription.
+        // Phase 4d (user revision) — drop the vision dot subscription.
         try {
             unipanelVisionDotSubscription?.close()
         } catch (_: Exception) {}

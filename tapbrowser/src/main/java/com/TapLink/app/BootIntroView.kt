@@ -65,7 +65,7 @@ class BootIntroView(context: Context) : View(context) {
             "Sound travels four times faster underwater.",
             "A teaspoon of neutron star outweighs a mountain.",
             "Half the oxygen you breathe comes from the ocean.",
-            // ── library expansion (Mars, June 2026) ────────────────────
+            // ── library expansion (user, June 2026) ────────────────────
             "Jupiter's Great Red Spot has raged for centuries.",
             "Sunlight takes eight minutes to reach your eyes.",
             "Earth has more trees than the Milky Way has stars.",

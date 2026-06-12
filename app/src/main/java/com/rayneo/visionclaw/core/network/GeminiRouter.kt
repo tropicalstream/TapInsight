@@ -77,7 +77,7 @@ class GeminiRouter(
         private const val DEFAULT_MODEL = "gemini-flash"
         private const val AUDIO_MODEL = "gemini-flash"
         // Default Live model is gemini-2.5-flash-native-audio-preview-12-2025.
-        // It's the model Mars validated end-to-end on the X3 glasses (commit
+        // It's the model the user validated end-to-end on the X3 glasses (commit
         // dedb442's VAD fix targeted exactly this endpoint) and Google's
         // pricing lists it with a free-tier eligible quota. gemini-3.1-flash-
         // live-preview is kept available in the companion-app dropdown as
@@ -1892,7 +1892,7 @@ class GeminiRouter(
                     // ambient room sound kept the audio level above the LOW
                     // silence threshold for the full 2-second window, so
                     // Gemini never decided we were done talking and never
-                    // generated a response — Mars's "setupComplete arrives,
+                    // generated a response — the user's "setupComplete arrives,
                     // mic streams, Gemini sends zero bytes back" symptom.
                     // Google's default VAD parameters are tuned for typical
                     // environments and trigger end-of-turn reliably;
@@ -3613,7 +3613,8 @@ class GeminiRouter(
                     // /media/<filename>. Keep this line so Gemini can answer "where is
                     // the file Hermes made?" without a round trip.
                     "FILE DELIVERY (permanent convention): files Hermes saves on its Mac (briefings, notes, " +
-                    "any .txt) are served by the relay at https://relay.tapinsight.uk/media/<filename> " +
+                    "any .txt) are served by the relay at " +
+                    "${RelayUrlHelper.TAPINSIGHT_RELAY_BASE.ifBlank { "https://relay.<your-domain>" }}/media/<filename> " +
                     "(index: /media-index.json), and text drops also appear in the glasses Media Library → " +
                     "Text folder. If the user asks where a Hermes file is, point them to the Media Library " +
                     "Text folder or that URL.")

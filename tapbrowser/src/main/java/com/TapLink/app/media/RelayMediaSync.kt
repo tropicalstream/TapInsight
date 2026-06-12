@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit
  * Why PULL instead of push: the glasses roam between networks (and sit
  * behind Cloudflare when remote), so the Mac can never reliably reach them
  * by IP. The glasses, however, can always reach
- * https://relay.tapinsight.uk — so they ask the relay what is staged
+ * the operator's Cloudflare-tunnelled domain — so they ask the relay what is staged
  * (GET /media-index.json) and download anything new themselves
  * (GET /media/<filename>). The Mac never needs to know the glasses' IP.
  *
@@ -63,7 +63,11 @@ object RelayMediaSync {
     private const val TAG = "RelayMediaSync"
     private const val PREFS_NAME = "visionclaw_prefs"
     private const val PREF_RELAY_MEDIA_BASE = "relay_media_base"
-    private const val DEFAULT_RELAY_BASE = "https://relay.tapinsight.uk"
+    /** Build-time operator relay base (TAPINSIGHT_RELAY_BASE gradle
+     *  property); blank when unconfigured — sync then only runs if the
+     *  user set relay_media_base in prefs. */
+    private val DEFAULT_RELAY_BASE: String =
+        BuildConfig.DEFAULT_RELAY_BASE.trim().trimEnd('/')
 
     /** Hard cap on downloads per run — a fresh install never bulk-slurps. */
     private const val MAX_PER_RUN = 25

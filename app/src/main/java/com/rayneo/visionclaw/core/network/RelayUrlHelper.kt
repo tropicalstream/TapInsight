@@ -6,21 +6,38 @@ import java.util.Locale
  * Derives the image-relay base URL from a configured agent endpoint.
  *
  * The Mac-side relay (tools/image_relay.py) listens on port 18790 locally
- * and is published at https://relay.tapinsight.uk through a Cloudflare
- * tunnel. Agent endpoints (Hermes / OpenClaw) are configured as full URLs;
- * this helper maps whatever host they point at to the matching relay base:
+ * and is typically published through a Cloudflare tunnel at a domain the
+ * operator owns (set TAPINSIGHT_RELAY_BASE in ~/.gradle/gradle.properties,
+ * e.g. "https://relay.example.com"). Agent endpoints (Hermes / OpenClaw)
+ * are configured as full URLs; this helper maps whatever host they point
+ * at to the matching relay base:
  *
  *  • localhost / 127.0.0.1 / any raw IP  → http://<ip>:18790
  *    (or the public tunnel when [TAPINSIGHT_RELAY_BASE] is preferred —
  *    used by code paths that must work away from the home LAN)
- *  • relay.tapinsight.uk / *.tapinsight.uk → https://relay.tapinsight.uk
- *  • relay.<anything>                      → https://relay.<anything>
- *  • any other domain                      → https://relay.<base-domain>
+ *  • the operator's relay host / domain  → [TAPINSIGHT_RELAY_BASE]
+ *  • relay.<anything>                    → https://relay.<anything>
+ *  • any other domain                    → https://relay.<base-domain>
  */
 object RelayUrlHelper {
 
-    /** Public Cloudflare-tunnelled relay base (no trailing slash). */
-    const val TAPINSIGHT_RELAY_BASE = "https://relay.tapinsight.uk"
+    /** Operator's public relay base (no trailing slash). Blank when the
+     *  build wasn't configured with one — every special case below then
+     *  falls through to the generic host-derivation rules. */
+    val TAPINSIGHT_RELAY_BASE: String =
+        com.rayneo.visionclaw.BuildConfig.DEFAULT_RELAY_BASE.trim().trimEnd('/')
+
+    /** Hostname of [TAPINSIGHT_RELAY_BASE] ("relay.example.com"), or null. */
+    private val publicRelayHost: String? by lazy {
+        extractHost(TAPINSIGHT_RELAY_BASE)?.lowercase(Locale.US)
+    }
+
+    /** Apex of the operator's relay host ("example.com"), or null. */
+    private val publicBaseDomain: String? by lazy {
+        publicRelayHost?.split(".")?.filter { it.isNotBlank() }?.let { parts ->
+            if (parts.size > 2) parts.drop(1).joinToString(".") else parts.joinToString(".")
+        }
+    }
 
     /** Port image_relay.py listens on when reached directly over the LAN. */
     private const val RELAY_PORT = 18790
@@ -38,7 +55,10 @@ object RelayUrlHelper {
     ): String? {
         val candidates = endpoints.mapNotNull { baseFromEndpoint(it, false) }
         candidates.firstOrNull { it.startsWith("https://", ignoreCase = true) }?.let { return it }
-        if (preferTapInsightPublicForLocal && candidates.any { it.startsWith("http://") }) {
+        if (preferTapInsightPublicForLocal &&
+            TAPINSIGHT_RELAY_BASE.isNotBlank() &&
+            candidates.any { it.startsWith("http://") }
+        ) {
             return TAPINSIGHT_RELAY_BASE
         }
         return candidates.firstOrNull()
@@ -51,18 +71,19 @@ object RelayUrlHelper {
         val isIp = Regex("\\d+\\.\\d+\\.\\d+\\.\\d+").matches(lowerHost)
         val isLocal = lowerHost == "localhost" || lowerHost == "127.0.0.1" || isIp
         if (isLocal) {
-            if (preferTapInsightPublicForLocal) {
+            if (preferTapInsightPublicForLocal && TAPINSIGHT_RELAY_BASE.isNotBlank()) {
                 return TAPINSIGHT_RELAY_BASE
             }
             return "http://$lowerHost:$RELAY_PORT"
         }
-        if (lowerHost == "relay.tapinsight.uk") {
+        if (publicRelayHost != null && lowerHost == publicRelayHost) {
             return TAPINSIGHT_RELAY_BASE
         }
         if (lowerHost.startsWith("relay.")) {
             return "https://$lowerHost"
         }
-        if (lowerHost == "tapinsight.uk" || lowerHost.endsWith(".tapinsight.uk")) {
+        val apex = publicBaseDomain
+        if (apex != null && (lowerHost == apex || lowerHost.endsWith(".$apex"))) {
             return TAPINSIGHT_RELAY_BASE
         }
         val parts = lowerHost.split(".").filter { it.isNotBlank() }

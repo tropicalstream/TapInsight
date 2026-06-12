@@ -204,7 +204,7 @@
         <div class="sub" id="headerSub">On-Device</div>
       </div>
       <div class="tools">
-        <!-- ＋ "create M3U from folder" removed (Mars + UI review):
+        <!-- ＋ "create M3U from folder" removed (user + UI review):
              tapping any file already queues the whole folder for
              ⏮/⏭ navigation, so the generated playlist added nothing.
              Up-one-level took its slot — far more used. -->
@@ -220,7 +220,7 @@
         <button class="tool-btn" id="btnRefresh" title="Refresh">↻</button>
         <!-- Home = back to the media ROOT directory. It used to link out
              to the dashboard, which never returned the user to the
-             library root (Mars). Wired to openFolder('') in the script. -->
+             library root (user). Wired to openFolder('') in the script. -->
         <button class="tool-btn" id="btnHome" title="Media root">⌂</button>
       </div>
     </header>
@@ -454,7 +454,7 @@
         // Folders can't be batch-selected, so never arm the timer on
         // them — a deliberate temple-pad press can run past the
         // threshold, and accidentally entering selection mode made
-        // folder taps look dead (Mars bug). Files keep long-press.
+        // folder taps look dead (user bug). Files keep long-press.
         if (e.kind === 'FOLDER') return;
         lpFired = false;
         lpTimer = setTimeout(function(){
@@ -898,7 +898,7 @@
   }
 
   $btnRefresh.addEventListener('click', function(){
-    // Visible feedback (Mars: the button looked dead because a refresh
+    // Visible feedback (user: the button looked dead because a refresh
     // that changes nothing re-renders an identical list silently).
     toast('Refreshing…');
     if (state.mode === 'folder') {

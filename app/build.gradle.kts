@@ -10,11 +10,24 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.rayneo.visionclaw"
+        // Public release identity (0.2b): distinct applicationId so the
+        // public build installs alongside a private build on the glasses.
+        applicationId = "uk.tapinsight.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.1.2"
+        versionCode = 1
+        versionName = "0.2b"
+
+        // Operator relay base (Cloudflare-tunnelled image_relay.py), e.g.
+        // "https://relay.example.com". NOT committed: set
+        // TAPINSIGHT_RELAY_BASE in ~/.gradle/gradle.properties. Blank means
+        // "derive the relay from the configured agent endpoint at runtime"
+        // (RelayUrlHelper) — the app works without it.
+        buildConfigField(
+            "String",
+            "DEFAULT_RELAY_BASE",
+            "\"${(project.findProperty("TAPINSIGHT_RELAY_BASE") as? String).orEmpty()}\""
+        )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

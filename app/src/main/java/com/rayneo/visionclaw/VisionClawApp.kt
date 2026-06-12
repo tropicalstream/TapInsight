@@ -14,7 +14,7 @@ import com.rayneo.visionclaw.ui.MainViewModel
  * `viewModel.messages` — and the ChatCardBridge publisher in
  * MainActivity drives off the same `messages` StateFlow. The Service
  * and the Activity therefore MUST share one MainViewModel instance,
- * otherwise the chat-cards Mars sees in the unipanel overlay won't
+ * otherwise the chat-cards the user sees in the unipanel overlay won't
  * reflect what the Service heard from Gemini.
  *
  * Approach (option (a) from the planning doc):

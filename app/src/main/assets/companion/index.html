@@ -2057,7 +2057,7 @@ const LIVE_MODEL_OPTIONS = [
   // The two trimmed entries (-latest, -preview-09-2025) were retired in
   // commit dedb442's follow-up: -latest's setup payload silently rejected
   // ours on the X3, and -09-2025 was a stale snapshot. The 12-2025 preview
-  // is the only Gemini Live model Mars has validated end-to-end on the
+  // is the only Gemini Live model the user has validated end-to-end on the
   // glasses, and the 3.1 Flash Live is kept as an opt-in alternative for
   // users whose project/billing allows it. Anything else is reachable via
   // the Custom slot.
@@ -2395,7 +2395,7 @@ async function previewLiveVoice() {
 
 // Map of retired Live model names → the model they should auto-migrate to.
 // `-latest` silently routed to a Native Audio variant whose setup payload
-// our code didn't match (caused Mars's complete-silence symptom). The
+// our code didn't match (caused the user's complete-silence symptom). The
 // 09-2025 snapshot was superseded by 12-2025. Anyone who had either
 // saved gets gently bumped to the validated default on the next page load.
 const RETIRED_LIVE_MODEL_REMAPS = {

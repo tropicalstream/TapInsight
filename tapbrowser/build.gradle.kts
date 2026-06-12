@@ -10,6 +10,13 @@ android {
     defaultConfig {
         minSdk = 29
 
+        // Same operator relay base as the app module (see app/build.gradle.kts).
+        buildConfigField(
+            "String",
+            "DEFAULT_RELAY_BASE",
+            "\"${(project.findProperty("TAPINSIGHT_RELAY_BASE") as? String).orEmpty()}\""
+        )
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
     }

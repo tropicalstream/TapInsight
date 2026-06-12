@@ -163,7 +163,7 @@ class ToolAssistEngine(
      * Rewrite any hallucinated media domain URLs in the given text.
      * AI models (GPT-5.4, Gemini) persistently hallucinate wrong domains
      * (api.tapclaw.com, media.tapclaw.io, etc.) — the only correct media
-     * relay is relay.tapinsight.uk. This function catches and rewrites them
+     * relay is the operator's configured host. This function rewrites them
      * deterministically before the text is injected into Gemini Live.
      */
     private fun rewriteAllUrlsInText(text: String): String {
@@ -424,7 +424,7 @@ class ToolAssistEngine(
         }
         // Rewrite any hallucinated media URLs before they're injected into
         // Gemini Live via contextPrompt — prevents Gemini from parroting
-        // wrong domains (e.g. api.tapclaw.com → relay.tapinsight.uk).
+        // wrong domains (e.g. api.tapclaw.com → the configured relay).
         val resultText = rewriteAllUrlsInText(resultTextRaw)
 
         return AssistResult(

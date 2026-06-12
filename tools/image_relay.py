@@ -40,6 +40,11 @@ import io
 import json
 import mimetypes
 import os
+
+# Public base URL of this relay as seen from the glasses (your
+# Cloudflare-tunnelled domain), e.g. "https://relay.example.com".
+# Set via environment: RELAY_PUBLIC_BASE. Blank → relative /media/ links.
+PUBLIC_BASE = os.environ.get("RELAY_PUBLIC_BASE", "").rstrip("/")
 import ssl
 import sys
 import threading
@@ -766,7 +771,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 files.append({
                     "filename": name,
                     "url": f"/media/{name}",
-                    "absolute_url": f"https://relay.tapinsight.uk/media/{name}",
+                    "absolute_url": f"{PUBLIC_BASE}/media/{name}",
                     "mime": mime_type,
                     "size_bytes": stat.st_size,
                     "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
@@ -780,7 +785,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         if not html_page:
             payload = {
                 "ok": True,
-                "relay": "https://relay.tapinsight.uk",
+                "relay": PUBLIC_BASE,
                 "roots": self._media_roots(),
                 "configured_roots": self._media_roots_report(),
                 "count": len(files),
@@ -825,7 +830,7 @@ class RelayHandler(BaseHTTPRequestHandler):
 </head>
 <body>
   <h1>TapInsight Media Relay</h1>
-  <div class="meta">Use <code>https://relay.tapinsight.uk/media/&lt;filename&gt;</code> for glasses playback. JSON: <code>/media-index.json</code>.</div>
+  <div class="meta">Use <code>{PUBLIC_BASE}/media/&lt;filename&gt;</code> for glasses playback. JSON: <code>/media-index.json</code>.</div>
   <table>
     <thead><tr><th>File</th><th>Type</th><th>Size</th><th>Modified</th><th>Root</th></tr></thead>
     <tbody>{rows}</tbody>

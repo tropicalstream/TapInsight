@@ -4645,7 +4645,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
-    // Dim-mode "show lyrics" gesture intentionally removed (Mars
+    // Dim-mode "show lyrics" gesture intentionally removed (user
     // 2026-05-30). Synced lyrics auto-load on track change and the active
     // line is rendered in dim mode by [refreshMaskedNowPlaying]; no
     // explicit gesture is required.
@@ -9237,7 +9237,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     .withEndAction { leftNavigationBar.visibility = View.GONE }
                     .start()
 
-            // Eye/force-show button intentionally suppressed (Mars 2026-05-30):
+            // Eye/force-show button intentionally suppressed (user 2026-05-30):
             // user found the bottom-right eyeball overlay distracting in
             // fullscreen / scroll-mode. Navbars can still be restored via the
             // double-tap right-arm gesture and the empty-HUD toggle.
@@ -9309,7 +9309,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     .withEndAction { leftNavigationBar.visibility = View.GONE }
                     .start()
 
-            // Eye/force-show button intentionally suppressed (Mars 2026-05-30):
+            // Eye/force-show button intentionally suppressed (user 2026-05-30):
             // gestures (double-tap right arm + empty-HUD tap) restore the
             // navbars, so the bottom-right eyeball overlay is unnecessary.
             btnShowNavBars.visibility = View.GONE
@@ -10997,7 +10997,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             maskCaptionText.visibility = View.INVISIBLE
             return
         }
-        // The visualizer is its own calm surface (Mars's daughter's
+        // The visualizer is its own calm surface (the user's daughter's
         // breathing screen): captions never draw over it. The heartbeat
         // (≤1.5s) restores the line as soon as the visualizer closes.
         if (isAudioVisualizerShown()) {
@@ -11065,7 +11065,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // updates with playback). Fall back to a tiny "♪" placeholder during
         // an instrumental gap, or fully hide the row when no synced lyrics
         // are available for the track. When a later track DOES have lyrics,
-        // the row needs to come back — Mars reported it stayed hidden.
+        // the row needs to come back — the user reported it stayed hidden.
         //
         // Root cause: when the TextView is GONE, the parent LinearLayout
         // caches the collapsed-to-0 state for that child. Flipping back to

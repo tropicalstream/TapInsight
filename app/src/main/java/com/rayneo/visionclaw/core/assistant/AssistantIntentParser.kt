@@ -446,13 +446,22 @@ object AssistantIntentParser {
     //
     // AI models (GPT-5.4 in OpenClaw, Gemini on glasses) persistently
     // hallucinate plausible-sounding domains for the media relay when
-    // constructing URLs. The ONLY valid media relay is relay.tapinsight.uk.
+    // constructing URLs. The ONLY valid media relay is the operator's
+    // configured relay host (build-time TAPINSIGHT_RELAY_BASE property).
     // This function catches any URL that looks like a TapClaw/OpenClaw
     // media request on a wrong domain and rewrites it deterministically.
     // This is a code-level safety net — it does not depend on the model
     // following instructions.
 
-    private const val CORRECT_MEDIA_RELAY = "relay.tapinsight.uk"
+    /** Hostname of the operator's configured relay; blank when the build
+     *  wasn't configured with one — the rewriter then passes URLs through
+     *  untouched (there is no known-correct host to rewrite TO). */
+    private val CORRECT_MEDIA_RELAY: String =
+        com.rayneo.visionclaw.core.network.RelayUrlHelper.TAPINSIGHT_RELAY_BASE
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .trim('/')
+            .lowercase(java.util.Locale.US)
 
     /** Domains the AI has hallucinated in the past, and any future
      *  pattern that contains "tapclaw" or "openclaw" in the hostname. */
@@ -486,6 +495,7 @@ object AssistantIntentParser {
      * Non-media URLs and URLs already on the correct domain pass through.
      */
     fun rewriteHallucinatedMediaDomain(url: String): String {
+        if (CORRECT_MEDIA_RELAY.isBlank()) return url
         val schemeEnd = url.indexOf("://")
         if (schemeEnd < 0) return url
         val authorityStart = schemeEnd + 3
