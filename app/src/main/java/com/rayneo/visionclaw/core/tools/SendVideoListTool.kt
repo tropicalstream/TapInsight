@@ -87,33 +87,33 @@ class SendVideoListTool(private val context: Context) : AiTapTool {
         cacheRecentSuggestions(payload)
 
         if (display in setOf("cache", "voice", "none", "no_open", "hidden")) {
+            // June-12 ctrl46 fix, proper form: this text is NOT narrated by
+            // Gemini Live anymore. The voice pipeline routes send_video_list
+            // through the deterministic readout engine (ENGINE_READOUT_TOOLS
+            // in GeminiVoicePipeline), which speaks this string VERBATIM via
+            // Fish/Gemini TTS while Gemini Live's audio is suppressed. Asking
+            // the native-audio model to recite long verbatim titles sent it
+            // into a repetition loop ending in a raw <ctrl46> control token —
+            // the TTS engine has no such failure mode. So: build clean,
+            // listenable text, full titles included, no model instructions.
             val listText = buildString {
-                append("Cached ${normalized.length()} YouTube suggestions for '$topicArg'. ")
-                append("Read these exact titles aloud, then offer to send the picker or play one/all of them:\n")
+                append("I found ${normalized.length()} YouTube ")
+                append(if (normalized.length() == 1) "video" else "videos")
+                if (topicArg.isNotBlank()) append(" about $topicArg")
+                append(".\n")
                 for (i in 0 until normalized.length()) {
                     val item = normalized.optJSONObject(i) ?: continue
                     append(i + 1)
                     append(". ")
-                    append(item.optString("title"))
+                    append(item.optString("title").trim())
                     val creator = item.optString("creator").trim()
                     if (creator.isNotBlank()) {
-                        append(" by ")
+                        append(", by ")
                         append(creator)
                     }
-                    val reason = item.optString("reason").trim()
-                    if (reason.isNotBlank()) {
-                        append(" — ")
-                        append(reason)
-                    }
-                    append('\n')
+                    append(".\n")
                 }
-                append("\nRULE 19 reminder (media search augmentation): Before speaking, run your built-in ")
-                append("googleSearch tool internally for current context on '$topicArg' and fold the best matches ")
-                append("into a unified spoken response (skip Google augmentation only if the query is an exact ")
-                append("YouTube channel name or unambiguous title). DO NOT call open_taplink to a Google search ")
-                append("URL — that is a separate user-visible action under RULE ZERO-E. Always close with ONE ")
-                append("escalation offer: 'I can also have TapClaw dig deeper if you want a wider net.' Wait for ")
-                append("explicit confirmation before calling tapclaw_agent or open_taplink. ")
+                append("Want the list on your screen, or should I play one?")
             }
             Log.d("SendVideoListTool", "Cached voice list topic='$topicArg' count=${normalized.length()}")
             return Result.success(listText.trim())

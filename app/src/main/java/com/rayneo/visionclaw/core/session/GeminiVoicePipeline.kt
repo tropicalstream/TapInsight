@@ -754,8 +754,18 @@ class GeminiVoicePipeline(context: Context) {
                 )
             }
 
-            override fun onOutputTranscription(text: String) {
+            override fun onOutputTranscription(rawText: String) {
                 if (!isSessionEpochCurrent(epoch)) return
+                // Strip Gemini native-audio control tokens (e.g. "<ctrl46>")
+                // that leak into the transcript when a turn degenerates —
+                // they must never reach the chat card or a readout. If the
+                // chunk was ONLY a control token, drop it entirely.
+                val text = rawText.replace(Regex("<ctrl\\d+>"), "").let {
+                    if (rawText.isNotBlank() && it.isBlank()) {
+                        Log.w(TAG, "Dropped control-token-only output chunk: '${rawText.take(40)}'")
+                        ""
+                    } else it
+                }
                 if (text.isBlank()) return
                 noteLiveResponseActivity()
                 // Regression port (commit 8c2b872): late chunk arriving AFTER
@@ -1382,6 +1392,52 @@ class GeminiVoicePipeline(context: Context) {
                 return@launch
             }
 
+            // Engine-readout tools (June-12 ctrl46 fix): tools whose result is
+            // long VERBATIM text — the send_video_list voice list — are read
+            // aloud by the deterministic readout engine, never narrated by
+            // Gemini Live. Asking the native-audio model to recite a wall of
+            // verbatim YouTube titles reliably degenerates it: it repeats the
+            // sentence within the turn (TURN-AUDIT: INTERNAL-REPEAT), rambles
+            // ~50s of audio for a 500-char reply, and finally emits a raw
+            // control token (<ctrl46>). The TTS engine has no such failure
+            // mode. Mirrors the agent-readout flow above, minus the
+            // agent-only machinery: no bare-hail, no "Asking…" ticker, no
+            // chat-history append, no bell. The visual path ("taplink://"
+            // results, display="glasses") is unaffected and falls through.
+            if (toolName in ENGINE_READOUT_TOOLS && result.isSuccess &&
+                !resultText.startsWith("taplink://")
+            ) {
+                Log.i(TAG, "engine-readout tool $toolName → reading result via readout engine")
+                // Mute Gemini Live for the turn: drop any queued model audio
+                // and hold its output until the user speaks again. The
+                // readout job extends/clears these gates itself (same
+                // lifecycle as agent readouts; agentReadoutActive keeps the
+                // next-input release gate shut while the mic hears the TTS).
+                suppressGeminiOutputUntilMs =
+                    android.os.SystemClock.uptimeMillis() + 30_000L
+                runCatching { audioPlayer.release() }
+                suppressGeminiOutputUntilNextInput = true
+                // Ack the tool call with the list as REFERENCE ONLY, so
+                // follow-ups ("play the second one") still work without the
+                // model re-reading anything.
+                val toolResponse =
+                    "[The list below was ALREADY read to the user via the readout " +
+                        "voice and shown on the chat card. Do NOT read it aloud, " +
+                        "summarize, or repeat it now. Keep it ONLY as reference so " +
+                        "you can act on follow-ups, e.g. the user asking to play, " +
+                        "open, or hear more about one of the items.]\n\n" + resultText
+                if (!callId.startsWith("local-")) {
+                    runCatching {
+                        liveSession?.sendToolResponse(callId, toolName, toolResponse)
+                    }
+                }
+                // Full verbatim text on the chat card, same as agent replies.
+                runCatching { viewModel.appendDirectAssistantResponse(resultText) }
+                HudStateBridge.update { it.copy(notification = null) }
+                speakAgentReplyViaEngine(resultText)
+                return@launch
+            }
+
             maybeOpenTapLinkResult(toolName, resultText)
             val ok = runCatching {
                 if (!isSessionEpochCurrent(epoch)) return@runCatching false
@@ -1396,6 +1452,12 @@ class GeminiVoicePipeline(context: Context) {
      *  readout engine instead of being narrated by Gemini Live. */
     private val AGENT_READOUT_TOOLS =
         setOf("hermes_agent", "tapclaw_agent", "research_topic")
+
+    /** Non-agent tools whose result is long verbatim text and therefore
+     *  also read via the readout engine (June-12 ctrl46 fix) — without the
+     *  agent machinery (history, bell, ticker). Only applies when the
+     *  result isn't a "taplink://" visual hand-off. */
+    private val ENGINE_READOUT_TOOLS = setOf("send_video_list")
 
     /** Timestamp backstop for the dispatch-time suppression: if an agent
      *  turn wedges (no reply, no readout), Gemini's voice comes back after
