@@ -82,6 +82,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private val KEY_BROWSER_SHOW_SYSTEM_INFO = "browser_show_system_info"
     private val KEY_OUTDOOR_BRIGHTNESS_ACTIVE = "outdoorBrightnessActive"
     private val KEY_PRE_OUTDOOR_BRIGHTNESS_PROGRESS = "preOutdoorBrightnessProgress"
+    private val KEY_PRE_OUTDOOR_VOLUME_INDEX = "preOutdoorVolumeIndex"
     private val sharedConfigPrefs =
             context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
     private val sharedConfigListener =
@@ -4329,10 +4330,15 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         removeCallbacks(dimCaptionTick)
         post(dimCaptionTick)
         updateRefreshRate()
+        // June-12 reboot fix: while masked, stop the binocular layout from
+        // double-drawing every invisible video frame (audio starvation →
+        // static → device-level reboot). See BinocularSbsLayout.
+        BinocularSbsLayout.throttleDescendantInvalidates = true
     }
 
     fun unmaskScreen() {
         isScreenMasked = false
+        BinocularSbsLayout.throttleDescendantInvalidates = false
         // Swiping/leaving dim mode always closes the visualizer too.
         hideAudioVisualizer()
         removeCallbacks(dimCaptionTick)
@@ -8415,10 +8421,25 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     ) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val active = prefs.getBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, false)
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
         if (active) {
             val restoreProgress =
                     prefs.getInt(KEY_PRE_OUTDOOR_BRIGHTNESS_PROGRESS, 50).coerceIn(0, 100)
             applySettingsBrightness(restoreProgress, brightnessSeekBar)
+            // Outdoor → off: restore the media volume the user had before
+            // (mirrors the brightness save/restore; -1 = nothing saved).
+            val restoreVolume = prefs.getInt(KEY_PRE_OUTDOOR_VOLUME_INDEX, -1)
+            if (restoreVolume >= 0) {
+                runCatching {
+                    audio.setStreamVolume(
+                        android.media.AudioManager.STREAM_MUSIC,
+                        restoreVolume.coerceAtMost(
+                            audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+                        ),
+                        0
+                    )
+                }
+            }
             prefs.edit()
                     .putBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, false)
                     .apply()
@@ -8430,9 +8451,22 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             .coerceIn(0, 100)
             prefs.edit()
                     .putInt(KEY_PRE_OUTDOOR_BRIGHTNESS_PROGRESS, currentProgress)
+                    .putInt(
+                        KEY_PRE_OUTDOOR_VOLUME_INDEX,
+                        audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+                    )
                     .putBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, true)
                     .apply()
             applySettingsBrightness(100, brightnessSeekBar)
+            // Outdoor → on: full brightness AND full media volume — wind and
+            // street noise eat the temple speakers (June-12, Mars request).
+            runCatching {
+                audio.setStreamVolume(
+                    android.media.AudioManager.STREAM_MUSIC,
+                    audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC),
+                    0
+                )
+            }
         }
         updateOutdoorBrightnessButtonLabel(outdoorBrightnessButton)
     }

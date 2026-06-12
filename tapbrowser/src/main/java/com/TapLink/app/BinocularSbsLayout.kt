@@ -202,11 +202,39 @@ class BinocularSbsLayout @JvmOverloads constructor(
         // Mirror rendering needs both halves redrawn whenever logical content changes.
         val mirror = sdkMirrorView
         if (mirror == null) {
+            // Dim-mode throttle (June-12): while the screen is masked, a
+            // WebView playing video underneath still invalidates at full
+            // frame rate, and every invalidation here triggers a DOUBLE
+            // draw of the whole tree — under a black mask nobody can see.
+            // On this 4-core device that sustained load starves the audio
+            // pipeline (burst of static, then silence) and can escalate to
+            // a thermal/watchdog reboot of the entire glasses. Masked
+            // content changes at ≤2 Hz (clock, captions), so rate-limit
+            // invalidations to MASKED_INVALIDATE_MIN_MS with a trailing
+            // redraw so the last caption/clock update always lands.
+            if (throttleDescendantInvalidates) {
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - lastThrottledInvalidateMs < MASKED_INVALIDATE_MIN_MS) {
+                    if (!trailingInvalidatePosted) {
+                        trailingInvalidatePosted = true
+                        postDelayed({
+                            trailingInvalidatePosted = false
+                            lastThrottledInvalidateMs = android.os.SystemClock.uptimeMillis()
+                            invalidate()
+                        }, MASKED_INVALIDATE_MIN_MS)
+                    }
+                    return
+                }
+                lastThrottledInvalidateMs = now
+            }
             invalidate()
         } else if (child !== mirror) {
             mirror.invalidate()
         }
     }
+
+    private var lastThrottledInvalidateMs: Long = 0L
+    private var trailingInvalidatePosted: Boolean = false
 
     private fun logicalViewportWidth(totalWidth: Int): Int {
         return (totalWidth / 2).coerceAtLeast(0)
@@ -215,5 +243,15 @@ class BinocularSbsLayout @JvmOverloads constructor(
     companion object {
         private const val TAG = "BinocularSbsLayout"
         private const val PREF_SDK_MIRRORING = "sdk_mirroring"
+
+        /** Set true while the dim mask is up (DualWebViewGroup.maskScreen /
+         *  unmaskScreen). Gates the masked invalidation rate limit above. */
+        @JvmStatic
+        @Volatile
+        var throttleDescendantInvalidates: Boolean = false
+
+        /** Masked redraw budget: 500 ms ≈ 2 fps — plenty for the dim
+         *  clock + caption line, nothing for an invisible video. */
+        private const val MASKED_INVALIDATE_MIN_MS = 500L
     }
 }

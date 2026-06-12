@@ -7367,7 +7367,16 @@ class MainActivity :
                 if (!wasTracking || movedTooFar) return false
                 val elapsed = SystemClock.uptimeMillis() - leftArmTapDownTimeMs
                 if (elapsed >= LEFT_ARM_TAP_MAX_MS) return false
-                val api = voiceServiceApi ?: return false
+                val api = voiceServiceApi ?: run {
+                    // FIX (June-12): this used to be a silent no-op, which is
+                    // what "can't invoke Gemini in dim mode" looks like from
+                    // inside the glasses. If the binding is gone, kick a
+                    // rebind so the NEXT tap works; if it's mid-reconnect
+                    // (bound but binder not yet delivered), just wait.
+                    DebugLog.w("LeftArmTap", "voice service unavailable (bound=$voiceServiceBound) — kicking rebind")
+                    if (!voiceServiceBound) runCatching { startVoiceServiceBinding() }
+                    return false
+                }
                 pendingRightArmSingleTapAction?.let { uiHandler.removeCallbacks(it) }
                 val action = Runnable {
                     pendingRightArmSingleTapAction = null
@@ -7658,18 +7667,40 @@ class MainActivity :
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            // Service process died but the binding is intact — with
+            // BIND_AUTO_CREATE the system recreates the service and
+            // onServiceConnected fires again on its own. Just drop the
+            // stale binder; do NOT rebind manually (that would leak a
+            // second binding).
             DebugLog.w("VoiceBind", "onServiceDisconnected from ${name?.shortClassName}")
             voiceServiceApi = null
         }
 
         override fun onBindingDied(name: ComponentName?) {
-            DebugLog.w("VoiceBind", "onBindingDied for ${name?.shortClassName}")
+            // FIX (June-12): the binding itself is DEAD — the system will
+            // NOT auto-reconnect this one. The old code only nulled the
+            // api but left voiceServiceBound=true, so the idempotence
+            // guard in startVoiceServiceBinding() blocked every future
+            // rebind: one binding death permanently killed the bell
+            // pipeline, left-arm Gemini activation (incl. dim mode), and
+            // card readouts until the Activity was recreated. Release the
+            // dead binding and rebind after a short breather.
+            DebugLog.w("VoiceBind", "onBindingDied for ${name?.shortClassName} — rebinding")
             voiceServiceApi = null
+            runCatching { unbindService(this) }
+            voiceServiceBound = false
+            uiHandler.postDelayed({ runCatching { startVoiceServiceBinding() } }, 1_500L)
         }
 
         override fun onNullBinding(name: ComponentName?) {
-            DebugLog.w("VoiceBind", "onNullBinding for ${name?.shortClassName}")
+            // Same treatment: a null binder means this binding will never
+            // produce an API. Release and retry (the service may have been
+            // mid-death when we bound).
+            DebugLog.w("VoiceBind", "onNullBinding for ${name?.shortClassName} — rebinding")
             voiceServiceApi = null
+            runCatching { unbindService(this) }
+            voiceServiceBound = false
+            uiHandler.postDelayed({ runCatching { startVoiceServiceBinding() } }, 1_500L)
         }
     }
 
@@ -9716,7 +9747,8 @@ class MainActivity :
                         unipanelCardSpeakText = "${entry.title}. ${entry.message}"
                         runCatching { api.showAssistantCard("${entry.title} — ${entry.message}") }
                     } else {
-                        DebugLog.d("Unipanel", "Voice service not bound — card skipped")
+                        DebugLog.d("Unipanel", "Voice service not bound — card skipped, kicking rebind")
+                        if (!voiceServiceBound) runCatching { startVoiceServiceBinding() }
                     }
                     if (unipanelNotifPanelOpen) toggleUnipanelNotificationPanel()
                 }
