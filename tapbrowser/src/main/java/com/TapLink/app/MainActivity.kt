@@ -7184,17 +7184,81 @@ class MainActivity :
     // Collapsed = the compact 76dp scroll box; expanded = a tall, wide reader
     // that fills most of the overlay so long agent replies are readable.
     private var isUnipanelCardExpanded: Boolean = false
+    // Auto-hide (restored to shipped June-10 behavior): a collapsed reply card
+    // disappears UNIPANEL_CARD_HIDE_MS after the assistant stops talking. If a
+    // reply is still streaming/being read (phase THINKING or agentBusy) when
+    // the timer would start, we DEFER — set this flag and start the hide only
+    // once the phase clears (see scheduleUnipanelAssistantCardHide /
+    // maybeStartDeferredCardHide). An expanded (tapped-open) card never
+    // auto-hides. The rebuild had dropped this whole mechanism.
+    @Volatile private var unipanelCardHideAwaitingPhaseExit: Boolean = false
     // The card text we last rendered. Used to detect when a genuinely NEW reply
     // arrives (vs. the same reply streaming in more text) so we can reset the
     // card to its collapsed state — a card should only ever be expanded by an
     // explicit tap, never auto-expand because a previous reply was expanded.
     private var lastRenderedUnipanelCardText: String = ""
+    /** Shipped value: coerceAtMost(RetryPolicy.DEFAULT_RETRY_TIMEOUT_IN_MILLIS=6000,
+     *  10_000) = 6s. The collapsed card lingers this long after the assistant
+     *  finishes, then disappears. */
+    private val UNIPANEL_CARD_HIDE_MS: Long = 6_000L
+
     private val hideUnipanelAssistantCardRunnable = Runnable {
         // Phase 4k.5 — the card box is the ScrollView now; hide it and
-        // clear the inner text.
+        // clear the inner text. Also clear the armed speak-text so a stale
+        // notification readout can't fire on the next card (shipped behavior).
         isUnipanelCardExpanded = false
+        unipanelCardHideAwaitingPhaseExit = false
+        unipanelCardSpeakText = null
         findViewById<View?>(R.id.unipanelMiniCardScroll)?.visibility = View.GONE
         findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)?.text = ""
+    }
+
+    /**
+     * Auto-hide scheduler (restored from the June-10 APK). Called at the end
+     * of [renderUnipanelAssistantCard] for a freshly-rendered card:
+     *  - an EXPANDED (tapped-open) card never auto-hides;
+     *  - if the assistant is still producing output (phase THINKING or
+     *    agentBusy), DEFER — the hide starts later via [maybeStartDeferredCardHide]
+     *    once the phase clears, so a card never vanishes mid-reply/mid-readout;
+     *  - otherwise start the [UNIPANEL_CARD_HIDE_MS] countdown now.
+     */
+    private fun scheduleUnipanelAssistantCardHide() {
+        uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
+        if (isUnipanelCardExpanded) {
+            unipanelCardHideAwaitingPhaseExit = false
+            return
+        }
+        val state = com.TapLink.app.unipanel.HudStateBridge.current()
+        val outputInFlight =
+            state.phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.THINKING ||
+                state.agentBusy
+        if (outputInFlight) {
+            unipanelCardHideAwaitingPhaseExit = true
+        } else {
+            unipanelCardHideAwaitingPhaseExit = false
+            uiHandler.postDelayed(hideUnipanelAssistantCardRunnable, UNIPANEL_CARD_HIDE_MS)
+        }
+    }
+
+    /**
+     * Companion to [scheduleUnipanelAssistantCardHide]: driven by every
+     * HudStateBridge update. When a hide was deferred because the assistant
+     * was talking, this starts the countdown the moment the phase leaves
+     * THINKING / agentBusy (Task #16 — "hide timer waits for THINKING→IDLE").
+     */
+    private fun maybeStartDeferredCardHide(state: com.TapLink.app.unipanel.HudStateBridge.State) {
+        if (!unipanelCardHideAwaitingPhaseExit) return
+        if (isUnipanelCardExpanded) {
+            unipanelCardHideAwaitingPhaseExit = false
+            return
+        }
+        val outputInFlight =
+            state.phase == com.TapLink.app.unipanel.HudStateBridge.VoicePhase.THINKING ||
+                state.agentBusy
+        if (outputInFlight) return
+        unipanelCardHideAwaitingPhaseExit = false
+        uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
+        uiHandler.postDelayed(hideUnipanelAssistantCardRunnable, UNIPANEL_CARD_HIDE_MS)
     }
 
     /**
@@ -7783,10 +7847,11 @@ class MainActivity :
                 else it.fullScroll(View.FOCUS_DOWN)
             }
         }
-        // The chat card persists (Hermes behavior): it stays up until a newer
-        // assistant card replaces it or the user dismisses it (right-arm
-        // double-tap → exitGeminiFully). No auto-hide timeout — a reply must
-        // not vanish out from under the user a few seconds after it appears.
+        // Auto-hide (restored): a collapsed card disappears
+        // UNIPANEL_CARD_HIDE_MS after the assistant stops talking. Deferred
+        // while output is in flight so a reply never vanishes mid-readout; an
+        // expanded (tapped-open) card is exempt and persists until dismissed.
+        scheduleUnipanelAssistantCardHide()
     }
 
     /**
@@ -8048,6 +8113,9 @@ class MainActivity :
                 uiHandler.post {
                     renderUnipanelVoiceOrb(state)
                     updateMinimalIndicators()
+                    // Start a deferred card-hide once the assistant stops
+                    // talking (Task #16 — wait for THINKING/agentBusy to clear).
+                    maybeStartDeferredCardHide(state)
                 }
             }
     }
