@@ -2488,6 +2488,16 @@ class MainActivity :
                     x = 320f
                     y = 240f
                     visibility = View.GONE
+                    // D1 (June-12): the cursor must render above EVERY overlay
+                    // surface. Child order isn't enough — elevated XML views
+                    // (unipanelNotifPanel ~14dp, expanded chat card) beat a
+                    // 0-elevation sibling regardless of addView order, which
+                    // is why the pointer "froze" (it was drawn underneath)
+                    // whenever the bell panel or a tapped-open card was up.
+                    // No background/outline → no shadow is cast at any
+                    // elevation, so a large value is visually free (same
+                    // pattern as the SDK MirroringView at 1000f).
+                    elevation = 1000f
                 }
         cursorRightView =
                 ImageView(this).apply {
@@ -2499,6 +2509,7 @@ class MainActivity :
                     x = 960f
                     y = 240f
                     visibility = View.GONE
+                    elevation = 1000f // D1 — see cursorLeftView
                 }
 
         // Add cursor views to the main container
@@ -7739,7 +7750,27 @@ class MainActivity :
                 DebugLog.d("Unipanel", "Chat card expanded")
             } else {
                 val speak = unipanelCardSpeakText?.takeIf { it.isNotBlank() } ?: text
-                DebugLog.d("Unipanel", "Chat card tap → speak (${speak.length} chars)")
+                // D2 (June-12): cache the card into Gemini's previous-
+                // conversation context on EVERY read-aloud tap, any length,
+                // any origin. There was never an explicit length gate — but
+                // long agent replies also live in chat history, whose card
+                // tap (onChatHistoryCardTap) both caches AND speaks, while
+                // short notifications only surface HERE, where the tap spoke
+                // but never cached. From the outside that looked exactly
+                // like "only long text gets cached + read". Same prefs file
+                // + keys the visionclaw router actually reads.
+                runCatching {
+                    getSharedPreferences("chat_context", MODE_PRIVATE)
+                        .edit()
+                        .putString("previous_chat_summary", speak.take(12000))
+                        .putLong("previous_chat_summary_ms", System.currentTimeMillis())
+                        .apply()
+                }
+                DebugLog.d(
+                    "Unipanel",
+                    "Chat card tap → speak (${speak.length} chars) " +
+                        "(cached to chat_context.previous_chat_summary)"
+                )
                 val api = voiceServiceApi
                 if (api != null) runCatching { api.speakAgentReply(speak) }
                 else DebugLog.d("Unipanel", "Voice service not bound — readout skipped")
