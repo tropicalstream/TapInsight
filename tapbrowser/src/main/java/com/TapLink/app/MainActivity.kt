@@ -1665,7 +1665,18 @@ class MainActivity :
                                 // user-reported bug). Map the same drag-to-
                                 // vertical transform the page-scroll path
                                 // uses, but apply it to the chat card.
+                                // FIX (June-12): like the history-overlay block
+                                // above, this routing must only engage when the
+                                // user is in scroll mode (no cursor). It used to
+                                // fire UNCONDITIONALLY while a card was expanded,
+                                // eating every trackpad drag — the pointer froze
+                                // the moment a notification opened the reader,
+                                // so the tap-to-read flow was unreachable. With
+                                // the cursor visible, drags move the pointer and
+                                // taps dispatch at its position; triple-tap still
+                                // switches to scroll mode to scroll a long card.
                                 if (isUnipanelCardExpanded &&
+                                        !isCursorVisible &&
                                         !isKeyboardVisible &&
                                         !dualWebViewGroup.isScreenMasked()) {
                                     val chatScroll =
@@ -2151,12 +2162,7 @@ class MainActivity :
                                     return true
                                 }
 
-                                if (isUnipanelCardExpanded) {
-                                    DebugLog.d(
-                                        "DoubleTapDebug",
-                                        "Main-pad double-tap — collapsing expanded chat card first"
-                                    )
-                                    collapseUnipanelChatCardFromOutside()
+                                if (consumedByExpandedCardCollapse("Main-pad")) {
                                     return true
                                 }
 
@@ -2297,6 +2303,9 @@ class MainActivity :
                                 // HUD/chat up or down for a full-screen browser. (Dim
                                 // mode is handled by the short-circuit above; single-tap
                                 // on empty space still toggles the browser view.)
+                                if (consumedByExpandedCardCollapse("Empty-space")) {
+                                    return
+                                }
                                 val voiceActive = isGeminiExitSurfaceActive()
                                 when {
                                     voiceActive -> {
@@ -2423,6 +2432,9 @@ class MainActivity :
                                 // mouse mode instead of stopping Gemini. Cancel an active
                                 // session first; only fall through to the mode toggle when
                                 // no voice session is running.
+                                if (consumedByExpandedCardCollapse("Temple")) {
+                                    return true
+                                }
                                 val voiceActive = isGeminiExitSurfaceActive()
                                 if (voiceActive) {
                                     DebugLog.d(
@@ -7220,6 +7232,12 @@ class MainActivity :
         isUnipanelCardExpanded = false
         unipanelCardHideAwaitingPhaseExit = false
         unipanelCardSpeakText = null
+        // FIX (June-12): forget the rendered text too. It used to survive the
+        // hide, so re-opening the SAME notification matched the continuation
+        // check (`startsWith`) — the card came back UNEXPANDED with the
+        // expand-next flag unconsumed, breaking the tap-to-read flow until
+        // some different card happened to render.
+        lastRenderedUnipanelCardText = ""
         findViewById<View?>(R.id.unipanelMiniCardScroll)?.visibility = View.GONE
         findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)?.text = ""
     }
@@ -7400,6 +7418,7 @@ class MainActivity :
         if (!withinDoubleTap) return false
 
         rightArmLastTapUpMs = 0L
+        if (consumedByExpandedCardCollapse("Right-arm touch")) return true
         if (!isGeminiExitSurfaceActive()) return false
 
         pendingRightArmSingleTapAction?.let { uiHandler.removeCallbacks(it) }
@@ -7461,6 +7480,7 @@ class MainActivity :
                     gap in RIGHT_ARM_KEY_DOUBLE_TAP_MIN_GAP_MS..RIGHT_ARM_KEY_DOUBLE_TAP_WINDOW_MS
                 if (isDoubleTap) {
                     rightArmKeyLastTapUpMs = 0L
+                    if (consumedByExpandedCardCollapse("Right-arm KEY")) return true
                     if (!isGeminiExitSurfaceActive()) return false
                     pendingRightArmSingleTapAction?.let { uiHandler.removeCallbacks(it) }
                     pendingRightArmSingleTapAction = null
@@ -7974,6 +7994,34 @@ class MainActivity :
             scroll.fullScroll(View.FOCUS_DOWN)
         }
         DebugLog.d("Unipanel", "Chat card collapsed via outside (double-tap stage gate)")
+    }
+
+    /**
+     * Double-tap stage gate, shared by EVERY double-tap detector (main pad,
+     * empty-space pad, temple, right-arm touch, right-arm key). While the
+     * chat-card reader is expanded, a double-tap ONLY collapses it — the
+     * Gemini session must survive. Previously only the main-pad detector had
+     * this guard, so the right-arm/temple double-tap (the user's natural
+     * "close" gesture) fell straight through to exitGeminiFully and killed
+     * the whole session along with the card.
+     *
+     * The freshly-collapsed card immediately re-arms its normal auto-hide
+     * (it used to linger forever — collapseUnipanelChatCardFromOutside never
+     * restarted the timer). Returns true when the gesture was consumed.
+     */
+    private fun consumedByExpandedCardCollapse(origin: String): Boolean {
+        if (!isUnipanelCardExpanded) return false
+        DebugLog.d(
+            "DoubleTapDebug",
+            "$origin double-tap — collapsing expanded chat card (session preserved)"
+        )
+        // A pending right-arm single-tap action would fire a stray click
+        // after we consume the double-tap — drop it.
+        pendingRightArmSingleTapAction?.let { uiHandler.removeCallbacks(it) }
+        pendingRightArmSingleTapAction = null
+        collapseUnipanelChatCardFromOutside()
+        scheduleUnipanelAssistantCardHide()
+        return true
     }
 
     private fun repositionUnipanelAssistantCard() {
