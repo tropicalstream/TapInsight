@@ -7739,6 +7739,13 @@ class MainActivity :
             )
             return
         }
+        // FIX (June-12): the TextView is the card's ONLY clickable view, and
+        // it only wraps its text — in the tall expanded reader a short reply
+        // left the lower portion of the card as dead space where taps fell
+        // through (ScrollView never fires onClick; see comment below). With
+        // fillViewport the TextView is stretched to at least the box height,
+        // so the WHOLE card surface is tappable in both states.
+        (scroll as? android.widget.ScrollView)?.isFillViewport = true
         // Phase 4k.6 — the onClick goes on the TextView, not the
         // ScrollView: ScrollView.onTouchEvent doesn't call performClick,
         // so a clickable ScrollView never fires onClick (that's why the
