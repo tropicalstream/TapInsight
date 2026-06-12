@@ -1551,7 +1551,20 @@ class GeminiVoicePipeline(context: Context) {
         readoutJob = scope.launch {
             var playedAny = false
             try {
-                val chunks = chunkForReadout(text, 1600)
+                // Fast first audio (June-12): the readout used to synthesize a
+                // full ≤1600-char first chunk before ANY sound played — on a
+                // long card that's a multi-second TTS round-trip of silence
+                // after the tap. The per-call cap only bounds the MAX chunk
+                // size; nothing requires the FIRST call to be big. So: peel a
+                // short lead chunk (first sentence-ish, ≤240 chars) and start
+                // the voice on that almost immediately, while the remaining
+                // text rides the normal big chunks behind it.
+                val chunks = run {
+                    val small = chunkForReadout(text, 240)
+                    if (small.size <= 1) small
+                    else listOf(small.first()) +
+                        chunkForReadout(small.drop(1).joinToString(" "), 1600)
+                }
                 for (chunk in chunks) {
                     if (!isActive || !isSessionEpochCurrent(epoch)) break
                     if (chunk.isBlank()) continue
