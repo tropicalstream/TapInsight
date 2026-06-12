@@ -340,6 +340,12 @@ class GeminiVoicePipeline(context: Context) {
      *  in 3.1), we sniff the input transcript for vision-intent
      *  phrases and call BrowserVisionTool directly. */
     @Volatile private var lastLocalVisionTriggerMs: Long = 0L
+
+    /** Uptime of the last browser_vision answer actually delivered (either
+     *  path). Used to suppress a SECOND vision capture+narration when the
+     *  local sniff and Gemini's own tool call both fire for one utterance
+     *  — the June-12 "double response" on screen questions. */
+    @Volatile private var lastVisionDeliveredAtMs: Long = 0L
     @Volatile private var visionInFlight: Boolean = false
     @Volatile private var pageTextInFlight: Boolean = false
     @Volatile private var noteCaptureInFlight: Boolean = false
@@ -1742,14 +1748,49 @@ class GeminiVoicePipeline(context: Context) {
      * ["sendToolResponse returned true/false"].
      */
     private fun dispatchBrowserVision(callId: String, name: String, args: String) {
-        Log.i(TAG, "browser_vision trigger source=toolCall callId=$callId")
-        scope.launch {
-            val question = parseQuestionArg(args)
-            runBrowserVisionAndDeliver(
-                question = question,
-                callId = callId,
-                toolName = name
+        // June-12 double-response fix: the local-sniff path
+        // (maybeTriggerBrowserVisionLocally) and THIS tool-call path both
+        // analyze the screen for the same "what's on screen?" utterance.
+        // The local path runs first (off the partial transcript), delivers
+        // the answer, and tells Gemini to speak it — then Gemini's own
+        // browser_vision tool call lands here and used to capture + narrate
+        // AGAIN. If a vision answer was just delivered (or one is in
+        // flight), don't re-capture: ack the call with a reference-only
+        // note so the Live session isn't left waiting, and let the already-
+        // spoken answer stand.
+        val sinceDelivered =
+            System.currentTimeMillis() - lastVisionDeliveredAtMs
+        if (visionInFlight || sinceDelivered < VISION_DEDUPE_WINDOW_MS) {
+            Log.i(
+                TAG,
+                "browser_vision toolCall suppressed (dedupe; inFlight=$visionInFlight " +
+                    "sinceDelivered=${sinceDelivered}ms) callId=$callId"
             )
+            scope.launch {
+                runCatching {
+                    liveSession?.sendToolResponse(
+                        callId,
+                        name,
+                        "[The screen was just analyzed and the answer was already " +
+                            "given to the user. Do NOT analyze again or repeat it.]"
+                    )
+                }
+            }
+            return
+        }
+        Log.i(TAG, "browser_vision trigger source=toolCall callId=$callId")
+        visionInFlight = true
+        scope.launch {
+            try {
+                val question = parseQuestionArg(args)
+                runBrowserVisionAndDeliver(
+                    question = question,
+                    callId = callId,
+                    toolName = name
+                )
+            } finally {
+                visionInFlight = false
+            }
         }
     }
 
@@ -2179,6 +2220,10 @@ class GeminiVoicePipeline(context: Context) {
         if (result.getOrNull()?.isSuccess == true) {
             CaptureFeedback.delivered("Gemini")
         }
+        // Mark delivery for the cross-path dedupe window (see
+        // dispatchBrowserVision) — set on BOTH the local and tool-call
+        // paths so whichever fires second is suppressed.
+        lastVisionDeliveredAtMs = System.currentTimeMillis()
         HudStateBridge.update { it.copy(notification = null) }
 
         if (callId != null && toolName != null) {
@@ -2699,6 +2744,11 @@ class GeminiVoicePipeline(context: Context) {
          *  so a single 2-3-second utterance (which emits many partials)
          *  doesn't fire the tool more than once. */
         private const val MIN_LOCAL_VISION_INTERVAL_MS = 3_000L
+
+        /** A browser_vision answer delivered within this window suppresses a
+         *  second capture from the other trigger path (local sniff vs
+         *  Gemini tool call) for the same screen question. */
+        private const val VISION_DEDUPE_WINDOW_MS = 12_000L
         private const val MIN_GOOGLE_WEB_APP_LAUNCH_INTERVAL_MS = 5_000L
 
         private data class GoogleWebAppTarget(val url: String, val label: String)
