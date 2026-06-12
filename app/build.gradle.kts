@@ -16,6 +16,19 @@ android {
         versionCode = 5
         versionName = "1.1.2"
 
+        // GEMINI_API_KEY generated HERE (not by the secrets plugin — its
+        // empty-value handling emits invalid Java; see ignoreList below).
+        // Optionally bakeable via ~/.gradle/gradle.properties
+        // (GEMINI_API_KEY=AIza...), but blank is the normal state for this
+        // build: every consumer null-checks and falls back to the key
+        // configured in the companion app at runtime, which is where keys
+        // are actually managed.
+        buildConfigField(
+            "String",
+            "GEMINI_API_KEY",
+            "\"${(project.findProperty("GEMINI_API_KEY") as? String).orEmpty()}\""
+        )
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -50,6 +63,9 @@ secrets {
     propertiesFileName = "local.properties"
     defaultPropertiesFileName = "local.defaults.properties"
     ignoreList.add("sdk.dir")
+    // Generated explicitly in defaultConfig instead — the plugin emits
+    // `= ;` (invalid Java) for blank values.
+    ignoreList.add("GEMINI_API_KEY")
 }
 
 dependencies {
