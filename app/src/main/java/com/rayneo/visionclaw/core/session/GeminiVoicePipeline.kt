@@ -346,6 +346,16 @@ class GeminiVoicePipeline(context: Context) {
      *  local sniff and Gemini's own tool call both fire for one utterance
      *  — the June-12 "double response" on screen questions. */
     @Volatile private var lastVisionDeliveredAtMs: Long = 0L
+
+    // ── Double-response diagnostics (June-12) ──────────────────────────
+    // Per-turn audio accounting so a repeat is unmistakable in logcat: if
+    // the SAME spoken text appears in two turnComplete logs, or one turn
+    // plays two audio bursts, the "TURN-AUDIT" lines show it directly.
+    @Volatile private var turnAudioBytes: Long = 0L
+    @Volatile private var turnAudioChunks: Int = 0
+    @Volatile private var turnAudioBursts: Int = 0
+    @Volatile private var lastAudioChunkAtMs: Long = 0L
+    @Volatile private var lastTurnSpokenText: String = ""
     @Volatile private var visionInFlight: Boolean = false
     @Volatile private var pageTextInFlight: Boolean = false
     @Volatile private var noteCaptureInFlight: Boolean = false
@@ -826,6 +836,23 @@ class GeminiVoicePipeline(context: Context) {
                     Log.d(TAG, "Dropping Gemini onModelAudio during agent handoff")
                     return
                 }
+                // TURN-AUDIT: count audio per turn. A >700ms gap since the
+                // last chunk starts a new "burst" — a single turn that plays
+                // two bursts is the audio-level double we're hunting.
+                val nowAudio = android.os.SystemClock.uptimeMillis()
+                if (turnAudioChunks == 0 || nowAudio - lastAudioChunkAtMs > 700L) {
+                    turnAudioBursts++
+                    if (turnAudioBursts >= 2) {
+                        Log.w(
+                            TAG,
+                            "TURN-AUDIT: second audio burst within one turn " +
+                                "(gap=${nowAudio - lastAudioChunkAtMs}ms) — possible repeat"
+                        )
+                    }
+                }
+                turnAudioChunks++
+                turnAudioBytes += data.size
+                lastAudioChunkAtMs = nowAudio
                 runCatching {
                     audioPlayer.playChunk(mimeType, data, muted = false, volume = 1f)
                 }
@@ -866,6 +893,29 @@ class GeminiVoicePipeline(context: Context) {
                 if (!isSessionEpochCurrent(epoch)) return
                 noteLiveResponseActivity()
                 Log.d(TAG, "onTurnComplete: finishReason=$finishReason")
+                // TURN-AUDIT: log what was spoken this turn + the audio
+                // accounting, and flag when this turn's text equals the
+                // PREVIOUS turn's text (the model repeating itself) — the
+                // single grep that settles the "double response" report.
+                runCatching {
+                    val spoken = viewModel.snapshotLiveAssistantTurn().trim()
+                    if (spoken.isNotEmpty()) {
+                        val repeat = spoken == lastTurnSpokenText
+                        Log.i(
+                            TAG,
+                            "TURN-AUDIT: bursts=$turnAudioBursts chunks=$turnAudioChunks " +
+                                "bytes=$turnAudioBytes repeatOfPrevTurn=$repeat " +
+                                "spoken='${spoken.take(120)}'"
+                        )
+                        if (repeat) {
+                            Log.w(TAG, "TURN-AUDIT: this turn REPEATS the previous turn's text")
+                        }
+                        lastTurnSpokenText = spoken
+                    }
+                }
+                turnAudioBytes = 0L
+                turnAudioChunks = 0
+                turnAudioBursts = 0
                 // Latch the late-output gate. Any outputTranscription /
                 // modelText arriving from here until the next user turn is
                 // a stray late chunk that would otherwise be appended as a
