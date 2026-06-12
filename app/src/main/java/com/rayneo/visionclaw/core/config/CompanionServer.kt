@@ -463,7 +463,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "tts_muted" to false,
         "web_desktop_mode" to false,
         "web_force_dark_mode" to true,
-        "browser_show_system_info" to true,
+        "browser_show_system_info" to false,
         "hud_show_calendar" to true,
         "hud_show_traffic" to true,
         "hud_show_notifications" to true,

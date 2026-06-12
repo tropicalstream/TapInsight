@@ -180,6 +180,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk</code></pre>
   <div class="glass">The night-sky breathing visualizer appears — captions and title stay out of this calm screen. Swipe down to return.</div>
 </div>
 
+<h3>Where notifications arrive</h3>
+<p>Everything notification-shaped lands in one place: the <b>bell at the top of the HUD</b>, right of the date. New items turn the bell amber with a red unread badge; the list survives reboots. Tap the bell to roll the panel down (it auto-closes after ~10s); tap any item to open it as a reader card; tap the card again to hear it read aloud. Agent replies, calendar/task reminders, and remote pushes through your relay's <code>/notify</code> endpoint all use this same bell — see Step 8 for receiving notifications away from home.</p>
+
 <h2 class="step" id="relay"><span class="num">8</span>Media relay + Cloudflare tunnel <span class="muted" style="font-size:15px">(optional)</span></h2>
 <p class="est">⏱ 20–30 minutes · needs a computer that stays on + a domain you own</p>
 <p>The relay is a single Python file that runs on your computer. It gives TapInsight two superpowers:</p>

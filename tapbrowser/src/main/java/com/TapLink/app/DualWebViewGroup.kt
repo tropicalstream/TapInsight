@@ -3543,7 +3543,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                     )
                                     .apply { gravity = Gravity.TOP or Gravity.END }
                     elevation = 900f
-                    visibility = View.VISIBLE // Explicitly set visibility
+                    // Respect the companion toggle from first layout — the
+                    // old unconditional VISIBLE flashed the bar before the
+                    // first updateSystemInfoBarVisibility() pass.
+                    visibility =
+                            if (isBrowserSystemInfoEnabled()) View.VISIBLE else View.GONE
                 }
 
         viewTreeObserver.addOnGlobalLayoutListener(
@@ -6017,7 +6021,10 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private fun Int.dp(): Int = (this * resources.displayMetrics.density).roundToInt()
 
     private fun isBrowserSystemInfoEnabled(): Boolean =
-            sharedConfigPrefs.getBoolean(KEY_BROWSER_SHOW_SYSTEM_INFO, true)
+            // Default OFF (0.2b): the battery/Wi-Fi/date strip duplicates
+            // the unipanel HUD and clutters the browser. Opt-in via the
+            // companion app (browser_show_system_info).
+            sharedConfigPrefs.getBoolean(KEY_BROWSER_SHOW_SYSTEM_INFO, false)
 
     private fun updateSystemInfoBarVisibility() {
         leftSystemInfoView.visibility =

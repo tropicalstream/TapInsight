@@ -1174,6 +1174,26 @@ footer {
 </div>
 </section>
 
+<section id="notifications">
+<h2><span class="part-tag">§ 4.1A</span>Notifications — Where They Arrive</h2>
+
+<p>All TapInsight notifications arrive in <strong>one place: the bell at the top of the HUD</strong>, just right of the date. When something new lands, the bell turns amber and a small red badge shows the unread count. Notifications persist across reboots until you clear them.</p>
+
+<h3>What rings the bell</h3>
+<ul>
+  <li><strong>Agent replies</strong> — when Hermes / TapClaw finishes a task, the reply is read aloud AND saved to the bell so you can revisit it later.</li>
+  <li><strong>Calendar &amp; tasks</strong> — upcoming events and reminders (when enabled in the companion app).</li>
+  <li><strong>Remote pushes</strong> — anything sent to your relay's <code>/notify</code> endpoint reaches the bell from any network, via your Cloudflare tunnel. Away from home, the glasses also poll the relay's queue every few minutes so nothing is lost.</li>
+</ul>
+
+<h3>Using the bell</h3>
+<ul>
+  <li><strong>Tap the bell</strong> — the notification panel rolls down under the clock with the most recent items (newest first). It rolls back up by itself after ~10 seconds.</li>
+  <li><strong>Tap a notification</strong> — it opens as an expanded reader card on the HUD. Tap that card again to have it <em>read aloud</em> in your selected voice.</li>
+  <li><strong>Opening the panel marks everything as seen</strong> — the badge clears; items stay in the list.</li>
+</ul>
+</section>
+
 <section id="tapbrowser">
 <h2><span class="part-tag">§ 4.2</span>TapBrowser — The AR Web Browser</h2>
 
