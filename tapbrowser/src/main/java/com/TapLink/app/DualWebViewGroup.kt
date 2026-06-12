@@ -473,6 +473,42 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
+    /**
+     * Option A of the dim-mode power work (June-12): while the mask is up,
+     * an invisible YouTube video doesn't deserve pixels — drop the player
+     * to its minimum quality ('tiny') so decode + renderer + compositor
+     * cost collapses while the AUDIO stream continues untouched. Restored
+     * to 'default' (YouTube's auto quality) by [unmaskScreen], which every
+     * dim-exit path funnels through — including the double-tap exit. The
+     * `__tl_maskQualityDropped` page flag scopes the restore to players we
+     * actually touched, and the quality RANGE persists across in-player
+     * video changes, so videos started while masked stay cheap too.
+     */
+    private fun setMaskedYouTubeQuality(reduce: Boolean) {
+        val js = if (reduce) {
+            "try { var p = document.getElementById('movie_player');" +
+                " if (p && p.setPlaybackQualityRange) {" +
+                " window.__tl_maskQualityDropped = true;" +
+                " p.setPlaybackQualityRange('tiny','tiny'); } } catch (err) {}"
+        } else {
+            "try { var p = document.getElementById('movie_player');" +
+                " if (window.__tl_maskQualityDropped && p && p.setPlaybackQualityRange) {" +
+                " window.__tl_maskQualityDropped = false;" +
+                " p.setPlaybackQualityRange('default','default'); } } catch (err) {}"
+        }
+        windows.forEach { win ->
+            try {
+                val url = win.webView.url.orEmpty()
+                if (!url.contains("youtube.com", true) && !url.contains("youtu.be", true)) {
+                    return@forEach
+                }
+                win.webView.post {
+                    try { win.webView.evaluateJavascript(js, null) } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
     fun pauseBackgroundMedia(sourceWebView: WebView) {
         windows.forEach { win ->
             if (win.webView != sourceWebView) {
@@ -4336,11 +4372,16 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // full qualifier: that class deliberately lives in com.TapLink.app,
         // not this file's com.TapLinkX3.app (package ≠ directory here).
         com.TapLink.app.BinocularSbsLayout.throttleDescendantInvalidates = true
+        // Option A: invisible video → minimum quality (audio unaffected).
+        setMaskedYouTubeQuality(reduce = true)
     }
 
     fun unmaskScreen() {
         isScreenMasked = false
         com.TapLink.app.BinocularSbsLayout.throttleDescendantInvalidates = false
+        // Back to YouTube auto quality the moment the world is visible again
+        // (double-tap exit lands here like every other unmask path).
+        setMaskedYouTubeQuality(reduce = false)
         // Swiping/leaving dim mode always closes the visualizer too.
         hideAudioVisualizer()
         removeCallbacks(dimCaptionTick)

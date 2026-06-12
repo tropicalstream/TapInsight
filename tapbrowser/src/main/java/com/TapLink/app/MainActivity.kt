@@ -610,11 +610,39 @@ class MainActivity :
                 // path for behavioural consistency: cyttsp6_mt = left/volume,
                 // cyttsp5_mt = right/temple.
                 if (isIgnoredMaskInputDevice(e)) {
-                    DebugLog.d(
-                        "MaskGesture",
-                        "single-tap IGNORED — left-arm device ${describeDevice(e)}"
-                    )
-                    return false
+                    // June-12 fix: while DIMMED, the left arm IS the Gemini
+                    // control (R0 spec: tap activates Gemini — red dot over
+                    // the mask; tap again while a session is live toggles
+                    // the camera — red camera dot). This filter exists to
+                    // keep volume-pad taps out of PLAY/PAUSE, but it was
+                    // swallowing the activation outright (logcat showed
+                    // every dim left-tap as "single-tap IGNORED").
+                    val api = voiceServiceApi
+                    if (api == null) {
+                        DebugLog.w(
+                            "MaskGesture",
+                            "left-arm tap (dim) — voice service unbound, kicking rebind"
+                        )
+                        if (!voiceServiceBound) runCatching { startVoiceServiceBinding() }
+                        return false
+                    }
+                    val voiceActive =
+                        com.TapLink.app.unipanel.HudStateBridge.current().phase !=
+                            com.TapLink.app.unipanel.HudStateBridge.VoicePhase.IDLE
+                    if (!voiceActive) {
+                        DebugLog.d(
+                            "MaskGesture",
+                            "left-arm tap (dim) → activateVoice ${describeDevice(e)}"
+                        )
+                        runCatching { api.activateVoice() }
+                    } else {
+                        DebugLog.d(
+                            "MaskGesture",
+                            "left-arm tap (dim) → toggleCamera ${describeDevice(e)}"
+                        )
+                        runCatching { api.toggleCamera() }
+                    }
+                    return true
                 }
                 scheduleMaskSingleTap(describeDevice(e))
                 return true
