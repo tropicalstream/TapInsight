@@ -485,11 +485,16 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
      * video changes, so videos started while masked stay cheap too.
      */
     private fun setMaskedYouTubeQuality(reduce: Boolean) {
+        // 'small' (240p), NOT 'tiny' (144p): measured on-device June-12,
+        // 144p pushed YouTube onto a stream the AR1's hardware decoder
+        // rejected — decode fell back to media.swcodec on the CPU (22.8%)
+        // and the audio stack tripled, costing MORE total power than HD.
+        // 240p stays on the hardware H.264 path: cheap decode, tiny frames.
         val js = if (reduce) {
             "try { var p = document.getElementById('movie_player');" +
                 " if (p && p.setPlaybackQualityRange) {" +
                 " window.__tl_maskQualityDropped = true;" +
-                " p.setPlaybackQualityRange('tiny','tiny'); } } catch (err) {}"
+                " p.setPlaybackQualityRange('small','small'); } } catch (err) {}"
         } else {
             "try { var p = document.getElementById('movie_player');" +
                 " if (window.__tl_maskQualityDropped && p && p.setPlaybackQualityRange) {" +
