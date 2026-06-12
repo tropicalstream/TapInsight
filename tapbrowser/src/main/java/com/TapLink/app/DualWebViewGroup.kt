@@ -4332,13 +4332,15 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         updateRefreshRate()
         // June-12 reboot fix: while masked, stop the binocular layout from
         // double-drawing every invisible video frame (audio starvation →
-        // static → device-level reboot). See BinocularSbsLayout.
-        BinocularSbsLayout.throttleDescendantInvalidates = true
+        // static → device-level reboot). See BinocularSbsLayout. NOTE the
+        // full qualifier: that class deliberately lives in com.TapLink.app,
+        // not this file's com.TapLinkX3.app (package ≠ directory here).
+        com.TapLink.app.BinocularSbsLayout.throttleDescendantInvalidates = true
     }
 
     fun unmaskScreen() {
         isScreenMasked = false
-        BinocularSbsLayout.throttleDescendantInvalidates = false
+        com.TapLink.app.BinocularSbsLayout.throttleDescendantInvalidates = false
         // Swiping/leaving dim mode always closes the visualizer too.
         hideAudioVisualizer()
         removeCallbacks(dimCaptionTick)
