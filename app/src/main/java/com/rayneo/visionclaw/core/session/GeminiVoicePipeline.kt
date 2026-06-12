@@ -356,6 +356,10 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var turnAudioBursts: Int = 0
     @Volatile private var lastAudioChunkAtMs: Long = 0L
     @Volatile private var lastTurnSpokenText: String = ""
+    /** Assembled spoken text of the in-progress turn, for internal-repeat
+     *  detection (the model saying the same phrase twice in one turn). */
+    private val turnSpokenAccum = StringBuilder()
+    @Volatile private var internalRepeatFlaggedThisTurn = false
     @Volatile private var visionInFlight: Boolean = false
     @Volatile private var pageTextInFlight: Boolean = false
     @Volatile private var noteCaptureInFlight: Boolean = false
@@ -683,6 +687,11 @@ class GeminiVoicePipeline(context: Context) {
                 if (dropOutputTranscriptionUntilNextInput) {
                     Log.d(TAG, "onInputTranscription: releasing late-output gate")
                     dropOutputTranscriptionUntilNextInput = false
+                    // New user turn — clear the spoken-text accumulator so the
+                    // internal-repeat detector doesn't compare across turns
+                    // (used when onTurnComplete was missed/late).
+                    turnSpokenAccum.setLength(0)
+                    internalRepeatFlaggedThisTurn = false
                 }
                 // Release the agent-output suppression on the next user input —
                 // but REFUSE to fire while the agent turn or the Fish readout is
@@ -778,6 +787,29 @@ class GeminiVoicePipeline(context: Context) {
                     return
                 }
                 runCatching { viewModel.appendLiveAssistantStreamChunk(text) }
+                // TURN-AUDIT: accumulate the spoken text and detect an
+                // INTERNAL repeat (the model saying a substantial phrase
+                // twice within one turn). This is the reliable signal — it
+                // doesn't depend on audio-burst timing (tool pauses and
+                // sentence breaks created false positives there).
+                runCatching {
+                    turnSpokenAccum.append(text)
+                    if (!internalRepeatFlaggedThisTurn && turnSpokenAccum.length >= 80) {
+                        val whole = turnSpokenAccum.toString()
+                        // Take a ~50-char window from the END and see if that
+                        // exact run already appeared earlier (non-overlapping).
+                        val tail = whole.takeLast(50)
+                        val earlier = whole.dropLast(50).indexOf(tail)
+                        if (tail.isNotBlank() && earlier >= 0) {
+                            internalRepeatFlaggedThisTurn = true
+                            Log.w(
+                                TAG,
+                                "TURN-AUDIT: INTERNAL-REPEAT — phrase recurs in one turn: " +
+                                    "'${tail.trim()}'"
+                            )
+                        }
+                    }
+                }
                 HudStateBridge.update {
                     it.copy(phase = HudStateBridge.VoicePhase.THINKING)
                 }
@@ -840,15 +872,12 @@ class GeminiVoicePipeline(context: Context) {
                 // last chunk starts a new "burst" — a single turn that plays
                 // two bursts is the audio-level double we're hunting.
                 val nowAudio = android.os.SystemClock.uptimeMillis()
-                if (turnAudioChunks == 0 || nowAudio - lastAudioChunkAtMs > 700L) {
+                // 2.5s threshold: below this is a natural sentence pause or a
+                // tool round-trip, NOT a repeat. The internal-repeat text
+                // detector (onOutputTranscription) is the real signal; this
+                // burst counter is just supplementary context now.
+                if (turnAudioChunks == 0 || nowAudio - lastAudioChunkAtMs > 2_500L) {
                     turnAudioBursts++
-                    if (turnAudioBursts >= 2) {
-                        Log.w(
-                            TAG,
-                            "TURN-AUDIT: second audio burst within one turn " +
-                                "(gap=${nowAudio - lastAudioChunkAtMs}ms) — possible repeat"
-                        )
-                    }
                 }
                 turnAudioChunks++
                 turnAudioBytes += data.size
@@ -916,6 +945,8 @@ class GeminiVoicePipeline(context: Context) {
                 turnAudioBytes = 0L
                 turnAudioChunks = 0
                 turnAudioBursts = 0
+                turnSpokenAccum.setLength(0)
+                internalRepeatFlaggedThisTurn = false
                 // Latch the late-output gate. Any outputTranscription /
                 // modelText arriving from here until the next user turn is
                 // a stray late chunk that would otherwise be appended as a
