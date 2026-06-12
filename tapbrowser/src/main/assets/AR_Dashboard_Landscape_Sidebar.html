@@ -927,7 +927,6 @@
       // address. See ensureOpenClawDashboardMigration() for the upgrade
       // path that adds these tiles for existing installs.
       openclawdashboard: { name: 'OpenClaw Dashboard', url: 'http://openclaw.local:18790/' },
-      tapinsightcompanion: { name: 'TapInsight Companion', url: 'http://tapinsight-companion.local/' },
 
       // AI Music Generation
       suno: { name: 'Suno (AI Music)', url: 'https://suno.com' },
@@ -951,7 +950,7 @@
       { title: 'Music / Streaming', cls: 'sec-music', keys: ['ytmusic', 'spotify', 'applemusic', 'tidal', 'deezer', 'audiomack', 'soundcloud', 'jamendo'] },
       { title: 'Creativity / Multimedia', cls: 'sec-creative', keys: ['photopea', 'clipchamp', 'bandlab', 'wireframe', 'kleki'] },
       { title: 'Productivity / Documents', cls: 'sec-prod', keys: ['todoist', 'stackedit', 'sejda'] },
-      { title: 'Utilities / Reference', cls: 'sec-util', keys: ['wikipedia', 'translate', 'wolfram', 'openclawdashboard', 'tapinsightcompanion'] },
+      { title: 'Utilities / Reference', cls: 'sec-util', keys: ['wikipedia', 'translate', 'wolfram', 'openclawdashboard'] },
       { title: 'AI Music', cls: 'sec-aimusic', keys: ['suno', 'udio', 'stableaudio'] },
       { title: 'AI Video', cls: 'sec-aivideo', keys: ['runway', 'pika', 'luma'] },
       { title: 'AI Voice', cls: 'sec-voice', keys: ['elevenlabs', 'playht'] },
@@ -1061,10 +1060,6 @@
         dashboardState.apps.openclawdashboard = { ...defaultApps.openclawdashboard };
         changed = true;
       }
-      if (!dashboardState.apps.tapinsightcompanion) {
-        dashboardState.apps.tapinsightcompanion = { ...defaultApps.tapinsightcompanion };
-        changed = true;
-      }
 
       let util = dashboardState.groups.find(
         group => normalizeTitle(group.title).toLowerCase() === 'utilities / reference'
@@ -1073,7 +1068,7 @@
         util = {
           title: 'Utilities / Reference',
           cls: 'sec-util',
-          keys: ['openclawdashboard', 'tapinsightcompanion']
+          keys: ['openclawdashboard']
         };
         dashboardState.groups.push(util);
         changed = true;
@@ -1084,10 +1079,6 @@
       }
       if (!util.keys.includes('openclawdashboard')) {
         util.keys.push('openclawdashboard');
-        changed = true;
-      }
-      if (!util.keys.includes('tapinsightcompanion')) {
-        util.keys.push('tapinsightcompanion');
         changed = true;
       }
       return changed;
@@ -1213,8 +1204,7 @@
       console.log('[Dashboard] migratedOpenClaw=' + migratedOpenClaw +
         ' migratedMediaLib=' + migratedMediaLib);
       console.log('[Dashboard] apps.openclawdashboard=' +
-        JSON.stringify(state.apps.openclawdashboard) +
-        ' apps.tapinsightcompanion=' + JSON.stringify(state.apps.tapinsightcompanion));
+        JSON.stringify(state.apps.openclawdashboard));
       console.log('[Dashboard] utilGroup.keys=' +
         (utilGroup ? JSON.stringify(utilGroup.keys) : 'NO_UTIL_GROUP'));
     } catch (e) { console.log('[Dashboard] diag error: ' + e); }

@@ -2303,7 +2303,11 @@ class GeminiVoicePipeline(context: Context) {
         val rawInitialUrl = openUrl.removePrefix("taplink://").trim().ifBlank { return }
         val initialUrl = canonicalizeYouTubeLaunchUrl(rawInitialUrl, forcedYouTubeSpec)
         val intent = Intent().apply {
-            component = ComponentName("com.rayneo.visionclaw", TAPBROWSER_ACTIVITY)
+            // OWN package, not a literal: with the private and public apps
+            // installed side-by-side, the old hardcoded
+            // "com.rayneo.visionclaw" made the PUBLIC app launch the
+            // PRIVATE app's browser for every open-URL / YouTube request.
+            component = ComponentName(appContext.packageName, TAPBROWSER_ACTIVITY)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             putExtra(EXTRA_BROWSER_INITIAL_URL, initialUrl)
         }

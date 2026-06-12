@@ -3193,11 +3193,14 @@ class MainActivity :
                     }
 
                     function inTapLinkMode() {
-                        return !!(
-                            document.getElementById('__taplink_fs_style') ||
-                            document.getElementById('__tl_theater_style') ||
-                            document.getElementById('__tl_mini_style')
-                        );
+                        // Defer ONLY in true fullscreen, where the
+                        // automation manages chrome itself. Theater/mini
+                        // ("non-fullscreen") used to match here too, so
+                        // manually-opened videos in those views had NO
+                        // hold at all and the pause timeline flashed for
+                        // a fraction of a second (June-12 report — same
+                        // visible symptom as the original bug).
+                        return !!document.getElementById('__taplink_fs_style');
                     }
 
                     function releaseHold() {
