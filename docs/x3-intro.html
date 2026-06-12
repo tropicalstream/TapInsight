@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>You Can Program a Pair of Glasses · RayNeo X3 Pro</title>
+<style>
+  :root {
+    --bg: #07090f;
+    --bg2: #0c1020;
+    --ink: #e8ecf4;
+    --soft: #9aa4b8;
+    --glow1: #5ad7ff;
+    --glow2: #9d8cff;
+    --glow3: #7fffc1;
+    --gold: #ffc857;
+    --card: rgba(255,255,255,0.045);
+    --line: rgba(255,255,255,0.10);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background:
+      radial-gradient(1200px 700px at 80% -10%, rgba(157,140,255,0.14), transparent 60%),
+      radial-gradient(900px 600px at 10% 30%, rgba(90,215,255,0.10), transparent 60%),
+      radial-gradient(1000px 800px at 70% 100%, rgba(127,255,193,0.07), transparent 60%),
+      var(--bg);
+    color: var(--ink);
+    font-family: "Avenir Next", Avenir, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.65;
+    overflow-x: hidden;
+  }
+  /* twinkling stars */
+  .stars { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
+  .stars span {
+    position: absolute; width: 2px; height: 2px; border-radius: 50%;
+    background: #fff; opacity: .55; animation: tw 3.4s ease-in-out infinite;
+  }
+  @keyframes tw { 0%,100% {opacity:.12; transform:scale(.8)} 50% {opacity:.7; transform:scale(1.25)} }
+  main { position: relative; z-index: 1; max-width: 880px; margin: 0 auto; padding: 0 22px 96px; }
+
+  .eyebrow {
+    letter-spacing: .22em; text-transform: uppercase; font-size: 12px;
+    color: var(--glow1); font-weight: 600;
+  }
+  h1 {
+    font-size: clamp(34px, 6vw, 58px); line-height: 1.12; font-weight: 800;
+    margin: 14px 0 18px;
+    background: linear-gradient(92deg, #fff 10%, var(--glow1) 45%, var(--glow2) 75%, var(--glow3) 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  h2 {
+    font-size: clamp(24px, 3.6vw, 34px); font-weight: 750; margin: 0 0 14px;
+  }
+  h2 .nbr {
+    display:inline-block; font-size: 14px; vertical-align: middle; margin-right: 12px;
+    color: var(--bg); background: linear-gradient(135deg, var(--glow1), var(--glow2));
+    border-radius: 999px; padding: 3px 12px; font-weight: 800; letter-spacing:.05em;
+  }
+  h3 { font-size: 19px; margin-bottom: 8px; }
+  p  { color: var(--soft); margin-bottom: 14px; font-size: 17px; }
+  p strong, li strong { color: var(--ink); }
+  em { color: var(--ink); font-style: italic; }
+  section { padding: 54px 0 10px; }
+  .hero { padding: 72px 0 30px; text-align: center; }
+  .hero p.lead { font-size: 20px; max-width: 640px; margin: 0 auto 12px; }
+  .hero-img {
+    margin: 36px auto 6px; max-width: 560px; width: 100%;
+    filter: drop-shadow(0 24px 60px rgba(90,215,255,0.18));
+    animation: float 7s ease-in-out infinite;
+  }
+  @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-12px)} }
+  img { max-width: 100%; border-radius: 14px; display:block; }
+  .caption { font-size: 13.5px; color: var(--soft); text-align: center; margin: 10px auto 0; max-width: 560px; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 18px;
+    padding: 26px 26px 18px; margin: 22px 0;
+    backdrop-filter: blur(6px);
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 720px){ .grid2, .grid3 { grid-template-columns: 1fr; } }
+
+  /* the black-is-invisible demo */
+  .lens-demo { display:flex; gap:18px; align-items:stretch; flex-wrap:wrap; margin: 18px 0 8px; }
+  .lens {
+    flex:1 1 240px; border-radius:16px; border:1px solid var(--line);
+    min-height:170px; position:relative; overflow:hidden;
+    display:flex; align-items:center; justify-content:center; text-align:center; padding:18px;
+  }
+  .lens .world {
+    position:absolute; inset:0;
+    background:
+      linear-gradient(180deg, rgba(116,192,252,.35), rgba(46,84,120,.35) 55%, rgba(64,112,72,.45) 56%, rgba(38,70,44,.5));
+  }
+  .lens .hud { position:relative; z-index:2; font-weight:700; font-size:15px; }
+  .lens.black .world { filter: brightness(1); }
+  .lens.black .hud span.box { background:#000; color:#000; padding:6px 14px; border-radius:8px; }
+  .lens .hud .float-ui {
+    display:inline-block; padding:6px 14px; border-radius:8px;
+    color:#bfffe2; border:1px solid rgba(127,255,193,.6);
+    text-shadow:0 0 12px rgba(127,255,193,.8); background:rgba(0,0,0,.25);
+  }
+
+  /* SBS demo */
+  .sbs { display:flex; gap:10px; justify-content:center; margin: 16px 0 6px; }
+  .eye {
+    width: 192px; height: 144px; border-radius: 10px; border: 1px solid var(--line);
+    background:#000; position:relative; overflow:hidden; flex: 0 0 auto;
+  }
+  .eye::after {
+    content:"Hello, world ✨"; position:absolute; top:42%; left:0; right:0; text-align:center;
+    color:var(--glow1); font-weight:700; font-size:15px; text-shadow:0 0 14px rgba(90,215,255,.9);
+  }
+  .eye small { position:absolute; bottom:6px; left:0; right:0; text-align:center; color:#445; font-size:11px; }
+
+  /* gestures */
+  .gest { text-align:center; padding: 20px 14px 16px; }
+  .gest .ico { font-size: 34px; display:block; margin-bottom: 8px; }
+  .gest h3 { font-size: 16.5px; }
+  .gest p { font-size: 14.5px; margin-bottom: 4px; }
+
+  /* story */
+  .story {
+    background:
+      radial-gradient(420px 200px at 15% 0%, rgba(157,140,255,.22), transparent 70%),
+      radial-gradient(420px 240px at 90% 100%, rgba(90,215,255,.16), transparent 70%),
+      var(--card);
+    border: 1px solid rgba(157,140,255,.35);
+  }
+  .story p { color: #c9cfdd; }
+
+  /* loop */
+  .loop { display:flex; gap:8px; align-items:center; justify-content:center; flex-wrap:wrap; margin: 18px 0 10px; }
+  .loop .step {
+    background: rgba(0,0,0,.35); border:1px solid var(--line); border-radius: 12px;
+    padding: 12px 18px; font-weight: 700; font-size: 15px;
+  }
+  .loop .step small { display:block; font-weight:400; color:var(--soft); font-size:12.5px; }
+  .loop .arrow { color: var(--glow2); font-size: 20px; }
+
+  /* apps */
+  .app h3 { display:flex; align-items:center; gap:8px; }
+  .app .tag { font-size:11px; letter-spacing:.08em; color:var(--bg); background:var(--gold); border-radius:6px; padding:2px 8px; font-weight:800; }
+  .app p { font-size: 15px; }
+  .app a { color: var(--glow1); text-decoration: none; }
+  .app a:hover { text-decoration: underline; }
+
+  /* glossary */
+  dl { display:grid; grid-template-columns: 130px 1fr; gap: 10px 16px; }
+  dt { color: var(--glow3); font-weight: 700; }
+  dd { color: var(--soft); }
+  @media (max-width:600px){ dl { grid-template-columns: 1fr; } dd { margin-bottom: 8px; } }
+
+  ol.first { counter-reset: n; list-style:none; }
+  ol.first li {
+    counter-increment: n; position:relative; padding: 0 0 18px 56px; color: var(--soft); font-size: 16.5px;
+  }
+  ol.first li::before {
+    content: counter(n); position:absolute; left:0; top:-2px;
+    width:38px; height:38px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-weight:800; color:var(--bg);
+    background: linear-gradient(135deg, var(--glow3), var(--glow1));
+  }
+  .cta {
+    display:inline-block; margin-top:10px; padding: 13px 26px; border-radius: 12px; font-weight: 800;
+    color: var(--bg); text-decoration:none; font-size: 16px;
+    background: linear-gradient(92deg, var(--glow1), var(--glow2));
+    box-shadow: 0 10px 34px rgba(125,150,255,.35);
+  }
+  footer { text-align:center; color:#5a6478; font-size:13.5px; margin-top: 70px; }
+  footer a { color: var(--glow1); text-decoration:none; }
+  .rainbow-rule {
+    height:2px; border:0; margin: 44px auto 0; max-width: 460px;
+    background: linear-gradient(90deg, transparent, #ff6b6b, var(--gold), var(--glow3), var(--glow1), var(--glow2), transparent);
+    opacity:.7;
+  }
+</style>
+</head>
+<body>
+<div class="stars" id="stars"></div>
+<main>
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="eyebrow">A friendly field guide</div>
+    <h1>You can program<br>a pair of glasses.</h1>
+    <p class="lead">This is the RayNeo X3 Pro — a complete computer folded into eyeglasses,
+    with two tiny projectors that paint light onto the world. And here's the secret:
+    <strong>you don't have to be a programmer to teach it new tricks.</strong></p>
+    <img class="hero-img" src="intro-assets/image6.png" alt="The RayNeo X3 Pro smart glasses — black frames with thick temple arms that hide a computer">
+    <p class="caption">Seventy grams. Four processor cores. Two projectors, three microphones, two cameras, and one very patient computer waiting for your ideas.</p>
+  </section>
+
+  <hr class="rainbow-rule">
+
+  <!-- 1. THE LIGHT TRICK -->
+  <section>
+    <h2><span class="nbr">01</span>The light trick</h2>
+    <p>Inside each temple arm hides a projector smaller than a pencil eraser. It shoots light into a
+    <strong>waveguide</strong> — a sliver of patterned glass in each lens that bends the beam around corners
+    and delivers it straight into your eye. The picture seems to float in the air, about as big as a
+    43-inch TV hanging two meters in front of you.</p>
+    <img src="intro-assets/image8.png" alt="The MicroLED optical engine — a cube the size of a fingertip firing a rainbow beam of light">
+    <p class="caption">The real optical engine, exploded view: a full-color MicroLED cube firing red, green and blue down the waveguide. This is the entire "screen."</p>
+
+    <div class="card">
+      <h3>The most magical rule in this whole guide</h3>
+      <p>A phone makes black by showing dark pixels. A waveguide makes black by <em>projecting nothing at all</em> —
+      so anywhere an app paints black, you simply see the world. <strong>Black is invisible.</strong>
+      Every beautiful X3 app is bright shapes floating on a canvas of nothing:</p>
+      <div class="lens-demo">
+        <div class="lens black">
+          <div class="world"></div>
+          <div class="hud"><span class="box">black pixels here</span></div>
+        </div>
+        <div class="lens">
+          <div class="world"></div>
+          <div class="hud"><span class="float-ui">♪ Now playing: your favorite song</span></div>
+        </div>
+      </div>
+      <p class="caption">Left: an app painting black = you just see the world. Right: the same view with one glowing line of UI. That's the whole aesthetic.</p>
+    </div>
+  </section>
+
+  <!-- 2. TWO EYES ONE PICTURE -->
+  <section>
+    <h2><span class="nbr">02</span>Two eyes, one picture</h2>
+    <p>Apps draw their interface <strong>once</strong>, onto a little canvas of 640 × 480 pixels.
+    Then a fifty-line piece of code copies that canvas twice — left eye, right eye — and your brain
+    fuses the twins into a single steady picture. That's it. That's the secret of "binocular AR."</p>
+    <div class="sbs">
+      <div class="eye"><small>left eye · 640×480</small></div>
+      <div class="eye"><small>right eye · 640×480</small></div>
+    </div>
+    <p class="caption">Identical twins, fused by your brain into one floating screen. (Show each eye a <em>slightly different</em> image instead, and things start looking 3D — the hardware can do that too.)</p>
+  </section>
+
+  <!-- 3. ANATOMY -->
+  <section>
+    <h2><span class="nbr">03</span>Meet the body</h2>
+    <p>The official anatomy diagrams below come from RayNeo's developer deck (labels in Chinese — translations underneath each).</p>
+
+    <div class="grid2">
+      <div class="card">
+        <img src="intro-assets/image10.png" alt="Front view of the glasses with numbered callouts for sensors, cameras, indicator, speakers and microphones">
+        <p class="caption"><strong>The face.</strong> ③ wearing-detection sensor (it knows when you put them on) ·
+        ④ the two front cameras — one sharp 12-megapixel eye, one super-wide helper · ⑤ camera indicator light ·
+        ⑥ speakers · ⑦ microphones (three of them, working as a team).</p>
+      </div>
+      <div class="card">
+        <img src="intro-assets/image9.png" alt="Rear three-quarter view with numbered callouts for the touchpads, power LED, USB-C port and nose pads">
+        <p class="caption"><strong>The controls.</strong> ⑧ touch pads on <em>both</em> temple arms — slide to move, tap to choose ·
+        ⑨ power light · ⑩ USB-C for charging (and for loading your creations!) · ⑪ adjustable nose pads.</p>
+      </div>
+    </div>
+    <div class="card">
+      <img src="intro-assets/image7.png" alt="Side view showing the power button and the shortcut button on the temple arm">
+      <p class="caption"><strong>The buttons.</strong> ① power (hold 4 seconds to wake) · ② shortcut button — this one belongs to the system, not to apps. Everything else is yours to play with.</p>
+    </div>
+  </section>
+
+  <!-- 4. THE SECRET LANGUAGE -->
+  <section>
+    <h2><span class="nbr">04</span>The secret language of taps</h2>
+    <p>No keyboard. No touchscreen. You talk to the glasses by tapping and sliding on the temple arms —
+    a tiny gesture language that every X3 app shares:</p>
+    <div class="grid3">
+      <div class="card gest"><span class="ico">👆</span><h3>Slide</h3><p>moves a glowing cursor across the floating screen — like a trackpad on your face.</p></div>
+      <div class="card gest"><span class="ico">✌️</span><h3>Tap</h3><p>click! Choose the thing under the cursor.</p></div>
+      <div class="card gest"><span class="ico">⏱️</span><h3>Double-tap</h3><p>the universal "never mind" — close, cancel, go back.</p></div>
+      <div class="card gest"><span class="ico">🥁</span><h3>Triple-tap</h3><p>switch modes: cursor ↔ scroll, or re-center the screen in front of you.</p></div>
+      <div class="card gest"><span class="ico">📳</span><h3>Press &amp; hold</h3><p>the "show me more" gesture — context menus and extras.</p></div>
+      <div class="card gest"><span class="ico">🌊</span><h3>Swipe up, dimmed</h3><p>in one app, this opens a night sky that breathes with your music. More on that below.</p></div>
+    </div>
+    <p>And one more trick: the glasses feel which way your head turns. An app can pin its window to a spot
+    in the room — look away and it stays put, waiting where you left it.</p>
+  </section>
+
+  <!-- 5. TRUE STORY -->
+  <section>
+    <h2><span class="nbr">05</span>A true story</h2>
+    <div class="card story">
+      <h3>🌌 The visualizer that was built for a daughter</h3>
+      <p>One of the apps running on these exact glasses contains a hidden night sky. Swipe up while the
+      screen is dimmed, and stars shimmer with the high notes of whatever music is playing. Ribbons of
+      indigo and seafoam ride the melody. A soft orb pulses with the bass — and the whole sky gently
+      brightens and dims in a slow rhythm: <em>breathe in, four seconds… hold… breathe out, six.</em></p>
+      <p>It was made by a dad, for his daughter, as a calm place to put her eyes and her breath.</p>
+      <p>Here is the part that matters: <strong>he didn't type the code.</strong> He described the feeling —
+      "a night sky that breathes with the music, peaceful colors, never neon" — and an AI partner wrote
+      the program, and together they tested it on the glasses until it felt right. The dad brought the
+      taste and the love. The AI brought the syntax.</p>
+      <p>That way of building things has a name.</p>
+    </div>
+  </section>
+
+  <!-- 6. VIBE CODING -->
+  <section>
+    <h2><span class="nbr">06</span>Vibe coding</h2>
+    <p><strong>Vibe coding</strong> is making software by describing what you want — clearly, vividly,
+    honestly — and letting an AI write the actual code. Your job isn't typing; it's
+    <em>noticing</em> and <em>describing</em>. The loop looks like this:</p>
+    <div class="loop">
+      <div class="step">💭 Say it<small>"captions should float lower"</small></div>
+      <div class="arrow">→</div>
+      <div class="step">🤖 AI builds it<small>writes &amp; checks the code</small></div>
+      <div class="arrow">→</div>
+      <div class="step">🥽 Wear it<small>load it onto the glasses</small></div>
+      <div class="arrow">→</div>
+      <div class="step">🔍 Feel it<small>"warmer… slower… yes, that"</small></div>
+      <div class="arrow">↺</div>
+    </div>
+    <p>The best vibe coders aren't the best typists — they're the best <strong>describers</strong>.
+    "The text is ugly" gets you nowhere. "The text is too small to read against a bright sky —
+    make it bigger, white, with a soft black shadow" gets you exactly what you imagined.
+    Specific beats technical, every single time.</p>
+    <div class="card">
+      <h3>What you actually need</h3>
+      <p>🧠 Curiosity &nbsp;·&nbsp; 👀 Patience to test and re-test &nbsp;·&nbsp; 🗣️ Precise words for fuzzy feelings
+      &nbsp;·&nbsp; 💻 A computer with a USB-C cable &nbsp;·&nbsp; 🤝 An AI partner that knows this hardware
+      (there's a 500-line briefing document ready to hand it — see the end).</p>
+    </div>
+  </section>
+
+  <!-- 7. PROOF -->
+  <section>
+    <h2><span class="nbr">07</span>People are already doing this</h2>
+    <p>Real apps, running on these glasses today — several of them vibe-coded, all of them open for you to learn from:</p>
+    <div class="grid2">
+      <div class="card app"><h3>🎙️ TapInsight <span class="tag">voice AI</span></h3>
+        <p>A talking assistant that sees what you see, shows song lyrics on the dimmed lenses, rings a little bell for notifications — and contains the breathing night sky from the story above. <a href="https://github.com/tropicalstream/TapInsight-2b">github.com/tropicalstream/TapInsight-2b</a></p></div>
+      <div class="card app"><h3>🧩 Everyday <span class="tag">widgets</span></h3>
+        <p>A glanceable dashboard — look up to wake it. Proof that a clean, simple idea makes a lovely glasses app. <a href="https://github.com/TheophileGaudin/Everyday">github.com/TheophileGaudin/Everyday</a></p></div>
+      <div class="card app"><h3>📺 SmartTube <span class="tag">video</span></h3>
+        <p>A whole TV-style YouTube app, steered entirely by temple taps. The port that made it work is barely six files. <a href="https://github.com/oliverfederico/SmartTube-RayNeo-X3-Pro">github.com/oliverfederico/SmartTube-RayNeo-X3-Pro</a></p></div>
+      <div class="card app"><h3>🎮 Moonlight <span class="tag">gaming</span></h3>
+        <p>Streams PC games to your eyes at a smooth 60 frames per second — proof these little glasses have real muscle. <a href="https://github.com/informalTechCode/moonlight-android-RayNeoX3">github.com/informalTechCode/moonlight-android-RayNeoX3</a></p></div>
+    </div>
+  </section>
+
+  <!-- 8. GLOSSARY -->
+  <section>
+    <h2><span class="nbr">08</span>Words you'll hear (decoded)</h2>
+    <div class="card">
+      <dl>
+        <dt>app / APK</dt><dd>The finished program, packed in a box. The APK is the box.</dd>
+        <dt>build</dt><dd>Turning human-readable code into that box. Takes about a minute. Sometimes it fails — that's normal, not scary; the error message is just the computer asking a question.</dd>
+        <dt>adb</dt><dd>The cable-whisperer: a little tool that carries your new app from the computer into the glasses through the USB-C cord.</dd>
+        <dt>bug</dt><dd>The app doing what you <em>said</em> instead of what you <em>meant</em>. Fixing them is the actual sport.</dd>
+        <dt>commit</dt><dd>A save-point for code, like in a video game. The house rule on this project, learned the hard way: <strong>save early, save often, push it somewhere safe.</strong></dd>
+        <dt>repo</dt><dd>The shared folder where a project lives, with every save-point remembered.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <!-- 9. FIRST ADVENTURE -->
+  <section>
+    <h2><span class="nbr">09</span>Your first adventure</h2>
+    <ol class="first">
+      <li><strong>Dream small and specific.</strong> Not "an amazing app" — more like: <em>"when I look up, show the time, softly, in the corner."</em> Tiny ideas make magical first apps.</li>
+      <li><strong>Recruit your AI partner</strong> and hand it the briefing: a document called <code style="color:var(--glow1)">FABLE_X3_STARTER_GUIDE.md</code> contains everything it needs to know about these glasses — every quirk already discovered, every mistake already made once so you don't have to.</li>
+      <li><strong>Describe, and let it build.</strong> Answer its questions. Be picky. Picky is a skill.</li>
+      <li><strong>Wear your work.</strong> One cable, one command, and your idea is floating in front of your eyes. (Enabling the connection is a real Easter egg: in the glasses' settings you swipe to the far edge and bounce against it <em>ten times</em>. Yes, really.)</li>
+      <li><strong>Feel it, tweak it, repeat.</strong> The gap between "it works" and "it feels right" is where you become a developer — whether or not you ever type a line of code.</li>
+    </ol>
+    <p style="text-align:center; margin-top:26px;">
+      <a class="cta" href="../FABLE_X3_STARTER_GUIDE.md">Open the deep guide →</a>
+    </p>
+  </section>
+
+  <footer>
+    <hr class="rainbow-rule" style="margin-bottom:28px;">
+    <p>Made with the lessons of many late nights on real hardware.<br>
+    Photos &amp; diagrams: RayNeo X3 Pro Developer Guide (MIT Reality Hack 2026 deck).<br>
+    Deep references: <a href="../FABLE_X3_STARTER_GUIDE.md">the starter guide</a> ·
+    <a href="x3_dossier.md">the hardware dossier</a> · <a href="refapps/">working-app code dives</a>.</p>
+  </footer>
+</main>
+
+<script>
+  // scatter a calm night sky
+  const holder = document.getElementById('stars');
+  for (let i = 0; i < 90; i++) {
+    const s = document.createElement('span');
+    s.style.left = Math.random() * 100 + 'vw';
+    s.style.top = Math.random() * 100 + 'vh';
+    s.style.animationDelay = (Math.random() * 4).toFixed(2) + 's';
+    s.style.animationDuration = (2.4 + Math.random() * 3.2).toFixed(2) + 's';
+    const sz = Math.random() < 0.18 ? 3 : 2;
+    s.style.width = s.style.height = sz + 'px';
+    holder.appendChild(s);
+  }
+</script>
+</body>
+</html>

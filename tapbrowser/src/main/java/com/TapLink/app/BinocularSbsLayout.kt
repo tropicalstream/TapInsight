@@ -214,7 +214,23 @@ class BinocularSbsLayout @JvmOverloads constructor(
             // redraw so the last caption/clock update always lands.
             if (throttleDescendantInvalidates) {
                 val now = android.os.SystemClock.uptimeMillis()
+                // Field instrumentation: one line per 10 s while masked so a
+                // tethered logcat proves the throttle is engaging and shows
+                // how much invisible work it's absorbing.
+                if (now - statsWindowStartMs >= 10_000L) {
+                    if (statsWindowStartMs != 0L) {
+                        android.util.Log.d(
+                            TAG,
+                            "masked throttle: suppressed=$suppressedInWindow " +
+                                "passed=$passedInWindow in 10s"
+                        )
+                    }
+                    statsWindowStartMs = now
+                    suppressedInWindow = 0
+                    passedInWindow = 0
+                }
                 if (now - lastThrottledInvalidateMs < MASKED_INVALIDATE_MIN_MS) {
+                    suppressedInWindow++
                     if (!trailingInvalidatePosted) {
                         trailingInvalidatePosted = true
                         postDelayed({
@@ -225,6 +241,7 @@ class BinocularSbsLayout @JvmOverloads constructor(
                     }
                     return
                 }
+                passedInWindow++
                 lastThrottledInvalidateMs = now
             }
             invalidate()
@@ -235,6 +252,9 @@ class BinocularSbsLayout @JvmOverloads constructor(
 
     private var lastThrottledInvalidateMs: Long = 0L
     private var trailingInvalidatePosted: Boolean = false
+    private var statsWindowStartMs: Long = 0L
+    private var suppressedInWindow: Int = 0
+    private var passedInWindow: Int = 0
 
     private fun logicalViewportWidth(totalWidth: Int): Int {
         return (totalWidth / 2).coerceAtLeast(0)
