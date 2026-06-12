@@ -344,7 +344,21 @@ If the app shows web content: single virtual origin `https://appassets.androidpl
 
 NanoHTTPD on **port 19110**, HTTPS via a self-signed **EC** cert in a PKCS12 file (RSA handshakes stutter audio on this CPU; secure context is required for the browser Geolocation bridge). Auth: one 16-char session token injected into served pages, accepted as Bearer/header/cookie/query. Config endpoint pattern: a single `allowedKeys` whitelist + typed default maps; GET serializes only whitelisted keys, POST writes only whitelisted keys. A tiny JS shim emulates the Android `JavascriptInterface` over REST so identical HTML runs on-glasses and on a phone browser.
 
-## 9. Cross-module architecture (dossier §9.4–9.5)
+## 9. The vendor UI toolkit — official MercurySDK surface
+
+The full official API reference lives at [`docs/MercurySDK_Skill_Reference_EN.md`](docs/MercurySDK_Skill_Reference_EN.md) (v0.2.4 line; **every documented class verified present in the v0.2.2 AAR this repo ships** — checked against the decompile). It documents a complete vendor-native app pattern that none of the five surveyed apps fully use, and it's the most idiomatic starting point for a *new* simple app:
+
+- **Binocular UI without hand-rolling**: `BaseMirrorActivity<B>` (Activity-level mirrored layout via ViewBinding pairs), `BindingPair.updateView { }` (write UI code once, both eyes update), `MirrorContainerView` for view-level embedding, `BaseMirrorFragment` for fragments. This is a *third* display strategy beside TapInsight's duplicate-`dispatchDraw` and Moonlight's PixelCopy — and the only one with official support.
+- **3D parallax**: `make3DEffect(leftView, rightView, enable, parallax)` / `make3DEffectForSide(...)` — real depth on a per-view basis (default parallax 3f). Only ever pass *left* views to `enable3DEffect`; the right is looked up internally and passing a right view NPEs.
+- **The official gesture model**: `TempleActionViewModel.state: SharedFlow<TempleAction>` — `Click`, `DoubleClick`, `TripleClick`, `LongClick`, `SlideForward/Backward/Upwards/Downwards`, `SlideContinuous(delta, longClick, vertical)`, double-finger events. Important nuance the raw-input path never revealed: **slide direction semantics flip with the system's "natural mode" setting** — design for forward/backward, never hardcode left/right.
+- **Official focus management**: `FocusHolder` + `FocusInfo` + `FixPosFocusTracker` (fixed controls), `RecyclerViewFocusTracker` / `RecyclerViewSlidingTracker` + `StartSnapHelper` (lists). Slide = move focus, click = activate, double-click = back — the same conventions the whole ecosystem converged on, here as supported API.
+- **Binocular system UI**: `FToast.show(...)` and `FDialog.Builder<T>` render fused in both eyes — this is the official answer to the "Android toasts/dialogs appear in one eye" problem the Moonlight port solved by hand.
+- **Utilities**: `DeviceUtil.isX3Device()`, `MobileState.isMobileConnected(): Flow<Boolean>` (companion-phone link state), `dp`/`sp` extensions, `FLogger`.
+- **Vendor constraints worth obeying** (their checklist, §9 of the reference): everything UI on the main thread; collect gestures with `repeatOnLifecycle(RESUMED)`; release camera/sensors/GPS in `onPause`/`onDestroy`; pure-black `windowBackground` (their words — confirming the waveguide rule); `scrcpy --crop` for monocular debug mirroring.
+
+When to use which: **vendor toolkit** for a fresh, conventional app (lists, dialogs, settings — least code, official conventions); **TapInsight's duplicate-draw** when the content is a WebView or you need total control of the surface; **PixelCopy** when mirroring something that draws itself (decoder surfaces, SurfaceViews).
+
+## 10. Cross-module architecture (dossier §9.4–9.5)
 
 The shipped shape: a **library module** owns the launcher/UI shell; the **app module** owns heavy services (voice, camera). They talk through tiny static bridge objects (`HudStateBridge`, `ChatCardBridge`, `NowPlayingBridge`...) and a binder interface (`VoiceServiceApi`), with the service bound by FQN string (a library can't import the app's class). Activities warm-start each other with intent extras and a translucent theme + `moveTaskToBack(true)`. Kotlin lets package names diverge from directory paths — this repo uses that (`com.TapLinkX3.app` classes living under `com/TapLink/app/`), and the build is fine with it, but every grep must remember it.
 
@@ -407,9 +421,10 @@ Five real apps run on this hardware today. Together they prove every load-bearin
 
 | Question | Answer the ecosystem gives |
 |---|---|
-| Vendor AARs or not? | Optional. Mercury buys you `MirroringView`; Everyday/Moonlight prove manual dual-draw/PixelCopy works without it. Manifest meta-data is the only hard requirement for launcher visibility. |
-| Cursor or focus navigation? | Both proven. Cursor (TapInsight/Everyday) for web/free-form content; synthetic-D-pad focus (SmartTube) is dramatically less code for list/grid UIs. |
-| Mirroring strategy? | Ordinary Views → duplicate `dispatchDraw` (TapInsight, cheapest). WebView/SurfaceView content → `PixelCopy` blit (TAPLINKX3/Everyday/Moonlight). Mercury `MirroringView` works but steals SurfaceView layers (SmartTube) and ships behind a fallback for a reason (TapInsight). |
+| Vendor AARs or not? | Optional but now well-documented. The Mercury AAR carries a full UI toolkit (Part IV §9: mirrored Activities, gesture stream, focus system, binocular toasts/dialogs, 3D parallax) — not just `MirroringView`. Everyday/Moonlight prove you can skip it entirely; manifest meta-data remains the only hard requirement for launcher visibility. |
+| Cursor or focus navigation? | Both proven, and focus is *officially supported*: Mercury's `FocusHolder`/`TempleAction` (documented API) or SmartTube's synthetic-D-pad hack. Cursor (TapInsight/Everyday) for web/free-form content; focus for list/grid UIs — dramatically less code. |
+| Mirroring strategy? | Ordinary Views → vendor `BaseMirrorActivity`/`BindingPair` (official, least code for new apps) or duplicate `dispatchDraw` (TapInsight, total control). WebView/SurfaceView content → `PixelCopy` blit (TAPLINKX3/Everyday/Moonlight). Mercury `MirroringView` steals SurfaceView layers (SmartTube) and ships behind a fallback for a reason (TapInsight). |
+| System toasts/dialogs (one-eye problem)? | `FToast` / `FDialog` from the vendor toolkit render fused in both eyes — use them instead of Android's, or hand-roll like Moonlight did before this doc surfaced. |
 | Performance budget? | 60 Hz decode + mirror is attainable (Moonlight); but vendor thermal guidance (30 fps UI, APL <13%, >500 mA = trouble) and TapInsight's audio-starvation experience say: render the minimum that looks alive. |
 
 ---
@@ -457,6 +472,7 @@ MultiSet credentials (`multiset.properties`-style, **never committed** — gotch
 | Resource | Where | Notes |
 |---|---|---|
 | Official RayNeo developer guide | https://leiniao-ibg.feishu.cn/wiki/IwTRwecN0ikZcjkHAhicN5lWn0g | JS/auth-walled from Fable's environment — but **local exports live in [`docs/rayneo-devguide/`](docs/rayneo-devguide/)**: Touch Pad, Sharecamera, Audio Focus, Audio Capture Modes, GPS Streaming, Device System Access, Build Your First XR App, ADB (+ Windows driver fix), and the MIT Reality Hack 2026 deck (official spec sheet, slide 9; SDK capability matrix, slides 13–15). |
+| **MercurySDK official API reference** | [`docs/MercurySDK_Skill_Reference_EN.md`](docs/MercurySDK_Skill_Reference_EN.md) | The vendor's full Android SDK surface (v0.2.4 doc; all classes verified in the shipped v0.2.2 AAR): mirrored UI, TempleAction gestures, focus system, FToast/FDialog, 3D parallax, threading/lifecycle checklists. Summarized in Part IV §9. |
 | Working-app extractions | [`docs/refapps/`](docs/refapps/) | Deep dives with snippets: Everyday + TAPLINKX3, SmartTube + Moonlight ports. |
 | Proof-of-code repos | [TAPLINKX3](https://github.com/informalTechCode/TAPLINKX3) · [Everyday](https://github.com/TheophileGaudin/Everyday) · [SmartTube-X3](https://github.com/oliverfederico/SmartTube-RayNeo-X3-Pro) · [Moonlight-X3](https://github.com/informalTechCode/moonlight-android-RayNeoX3) | See Part VI. SmartTube's `libs/rayneo_docs/` bundles extra vendor docs. |
 | Vendor Unity sample | https://github.com/MaxManausa/RayNeoX3Pro-MITSample | Official MIT-hackathon Unity starter (Unity 2022.3.36f1, ARDK 1.1.2) — the Unity-path reference if that door reopens. |
@@ -518,13 +534,16 @@ The honesty ledger. **✅ Tested** = verified on the physical X3 Pro through Tap
 ✅ Tested the hard way: RAM pressure (no `onDestroy` — the official 4 GB explains it), mic revocation without a posted FGS notification, audio-decoder starvation from UI refresh, and one sleep button that pauses Activities while the user is still listening. Vendor docs add: no background multitasking is promised, and the shortcut button is system-owned.
 
 **Q16. Can a focus-driven UI (no cursor) work?**
-✅ Proven at scale by the SmartTube port: temple gestures → synthetic D-pad keys, Leanback navigation untouched. For list/grid apps this is far less code than a cursor. (Part VI.)
+✅ Proven at scale by the SmartTube port — and ✅ **officially supported**: the MercurySDK reference documents the whole model (`FocusHolder`, `TempleAction`, RecyclerView trackers; Part IV §9), with every class verified present in the shipped v0.2.2 AAR. For list/grid apps this is far less code than a cursor.
 
 **Q17. How hard can I push the chip?**
 ✅ Moonlight's measured ceiling: 640×480@60 low-latency hardware decode **plus** a concurrent 60 Hz PixelCopy readback/blit. 📄 Vendor thermal guidance still says target ~30 fps UI, APL <13%, sustained draw <500 mA. Both are true: bursts of 60, cruise at 30-or-less.
 
 **Q18. Do I need the vendor SDKs at all?**
-✅ Proven optional: Everyday and Moonlight ship with zero vendor AARs — the `com.rayneo.mercury.app` manifest meta-data alone gets you into the launcher. The AARs buy `MirroringView` (which steals SurfaceView layers — SmartTube had to move video to TextureView) and the GPS IPC bridge. Take them deliberately, not by default.
+✅ Proven optional: Everyday and Moonlight ship with zero vendor AARs — the `com.rayneo.mercury.app` manifest meta-data alone gets you into the launcher. But the AARs buy more than we knew before the official reference surfaced: a complete binocular UI toolkit (mirrored Activities/Fragments, gesture stream, focus system, fused toasts/dialogs, 3D parallax — Part IV §9), plus the GPS IPC bridge. Known sharp edge stands: `MirroringView` steals SurfaceView layers (SmartTube moved video to TextureView). Take the toolkit deliberately — for a fresh conventional app it's now the least-code path.
+
+**Q19. Is per-view 3D depth real?**
+📄 Officially documented (`make3DEffect` / `make3DEffectForSide`, default parallax 3f) and ✅ the API verified present in the shipped AAR — but ❓ never rendered by any surveyed app. First project to call it owns the test.
 
 ---
 
