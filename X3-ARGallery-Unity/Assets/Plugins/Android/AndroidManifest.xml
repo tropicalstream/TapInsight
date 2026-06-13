@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.yourco.argallery">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- SLAM / 6DoF walk-around tracking runs off the camera (ShareCamera) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="true" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/app_icon"
+        android:theme="@style/UnityThemeSelector"
+        android:usesCleartextTraffic="true">
+
+        <!-- REQUIRED: RayNeo Mercury marker — without it the app won't show in the
+             glasses launcher and won't render binocular. -->
+        <meta-data android:name="com.rayneo.mercury.app" android:value="true" />
+        <!-- DO NOT add ar_mode: it forces left-lens-only rendering. -->
+
+        <activity
+            android:name="com.unity3d.player.UnityPlayerActivity"
+            android:screenOrientation="landscape"
+            android:launchMode="singleTask"
+            android:configChanges="density|orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <!-- RayNeo launcher integration -->
+                <category android:name="com.rayneo.intent.category.AR_APP" />
+            </intent-filter>
+            <meta-data android:name="unityplayer.UnityActivity" android:value="true" />
+        </activity>
+    </application>
+</manifest>

@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RayNeo X3 Pro — Vibe-Coding Guide Library</title>
+<style>
+  :root{
+    --bg:#07090f; --ink:#e8ecf4; --soft:#9aa4b8;
+    --glow1:#5ad7ff; --glow2:#9d8cff; --glow3:#7fffc1; --gold:#ffc857;
+    --card:rgba(255,255,255,.045); --line:rgba(255,255,255,.10);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:
+      radial-gradient(1200px 700px at 80% -10%, rgba(157,140,255,.14), transparent 60%),
+      radial-gradient(900px 600px at 10% 30%, rgba(90,215,255,.10), transparent 60%),
+      var(--bg);
+    color:var(--ink);
+    font-family:"Avenir Next",Avenir,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.65; min-height:100vh;
+  }
+  .stars{position:fixed;inset:0;pointer-events:none;z-index:0}
+  .stars span{position:absolute;width:2px;height:2px;border-radius:50%;background:#fff;opacity:.5;animation:tw 3.4s ease-in-out infinite}
+  @keyframes tw{0%,100%{opacity:.12;transform:scale(.8)}50%{opacity:.7;transform:scale(1.25)}}
+  .wrap{position:relative;z-index:1;max-width:920px;margin:0 auto;padding:0 22px 90px}
+  header.hero{padding:64px 0 26px;text-align:center}
+  .eyebrow{letter-spacing:.22em;text-transform:uppercase;font-size:12px;color:var(--glow1);font-weight:600}
+  h1{font-size:clamp(30px,5.5vw,50px);line-height:1.12;font-weight:800;margin:12px 0 14px;
+     background:linear-gradient(92deg,#fff 10%,var(--glow1) 45%,var(--glow2) 75%,var(--glow3) 100%);
+     -webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p{color:var(--soft);font-size:18px;max-width:620px;margin:0 auto}
+  .rule{height:2px;border:0;margin:34px auto;max-width:440px;
+        background:linear-gradient(90deg,transparent,#ff6b6b,var(--gold),var(--glow3),var(--glow1),var(--glow2),transparent);opacity:.65}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:8px}
+  @media (max-width:680px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;backdrop-filter:blur(6px);display:flex;flex-direction:column}
+  .card.feature{grid-column:1/-1;background:
+      radial-gradient(420px 200px at 12% 0%, rgba(157,140,255,.20), transparent 70%),
+      radial-gradient(420px 240px at 92% 100%, rgba(90,215,255,.14), transparent 70%),var(--card);
+      border-color:rgba(157,140,255,.35)}
+  .tag{align-self:flex-start;font-size:11px;letter-spacing:.08em;font-weight:800;border-radius:6px;padding:2px 9px;margin-bottom:10px}
+  .tag.layman{background:var(--glow3);color:#07241a}
+  .tag.dev{background:var(--glow1);color:#04222b}
+  .tag.deep{background:var(--glow2);color:#160a2e}
+  .tag.ref{background:var(--gold);color:#2a1d00}
+  .card h2{font-size:21px;font-weight:750;margin-bottom:8px}
+  .card p{color:var(--soft);font-size:15px;flex:1;margin-bottom:16px}
+  .btns{display:flex;gap:10px;flex-wrap:wrap}
+  a.btn{display:inline-block;padding:10px 18px;border-radius:10px;font-weight:700;font-size:14.5px;text-decoration:none;cursor:pointer}
+  a.btn.primary{color:var(--bg);background:linear-gradient(92deg,var(--glow1),var(--glow2));box-shadow:0 8px 26px rgba(125,150,255,.3)}
+  a.btn.ghost{color:var(--ink);border:1px solid var(--line);background:rgba(0,0,0,.25)}
+  footer{text-align:center;color:#5a6478;font-size:13px;margin-top:54px}
+  footer a{color:var(--glow1);text-decoration:none}
+
+  /* in-page markdown reader */
+  #reader{position:fixed;inset:0;z-index:50;display:none;background:rgba(5,7,13,.97);backdrop-filter:blur(4px);overflow:auto}
+  #reader.open{display:block}
+  .readerbar{position:sticky;top:0;display:flex;align-items:center;gap:14px;padding:14px 22px;
+             background:linear-gradient(180deg,rgba(7,9,15,.98),rgba(7,9,15,.86));border-bottom:1px solid var(--line)}
+  .readerbar .title{font-weight:700;flex:1;color:var(--ink)}
+  .readerbar a,.readerbar button{color:var(--glow1);background:none;border:1px solid var(--line);
+             border-radius:8px;padding:6px 14px;font:inherit;font-size:14px;cursor:pointer;text-decoration:none}
+  .md{max-width:820px;margin:0 auto;padding:34px 24px 90px;color:var(--ink);line-height:1.7}
+  .md h1,.md h2,.md h3{color:#fff;margin:1.4em 0 .5em;line-height:1.25}
+  .md h1{font-size:30px;border-bottom:1px solid var(--line);padding-bottom:.3em}
+  .md h2{font-size:24px} .md h3{font-size:19px;color:var(--glow1)}
+  .md p,.md li{color:#c9cfdd} .md a{color:var(--glow1)}
+  .md code{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:5px;font-size:.92em}
+  .md pre{background:#0b0f1c;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto}
+  .md pre code{background:none;padding:0}
+  .md table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14.5px}
+  .md th,.md td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+  .md th{background:rgba(255,255,255,.05)}
+  .md blockquote{border-left:3px solid var(--glow2);margin:1em 0;padding:.2em 1em;color:var(--soft)}
+  .fallback{max-width:760px;margin:60px auto;padding:26px;border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--soft)}
+  .fallback a{color:var(--glow1)}
+</style>
+</head>
+<body>
+<div class="stars" id="stars"></div>
+<div class="wrap">
+  <header class="hero">
+    <div class="eyebrow">Documentation Library</div>
+    <h1>RayNeo X3 Pro<br>Vibe-Coding Guides</h1>
+    <p>Everything for building apps on these glasses — start with the friendly tour, go as deep as the verified hardware reference. One page, every guide.</p>
+  </header>
+  <hr class="rule">
+
+  <div class="grid">
+
+    <div class="card feature">
+      <span class="tag layman">Start here · for everyone</span>
+      <h2>🥽 You Can Program a Pair of Glasses</h2>
+      <p>The welcoming, illustrated tour — how light is painted onto the world, why black is invisible, the tap language, and the true story of a breathing visualizer built for a daughter. No coding required; written to draw a newcomer into vibe coding.</p>
+      <div class="btns"><a class="btn primary" href="x3-intro.html">Open the illustrated intro →</a></div>
+    </div>
+
+    <div class="card feature">
+      <span class="tag layman">Example app · for the kids</span>
+      <h2>🦊 AR Gallery — place a 3D model in your room &amp; walk around it</h2>
+      <p>A complete, assemble-and-build Unity project: download free 3D models (GLB), drop them in your real room with a look + tap, lock them in space, and walk all the way around them via SLAM/6DoF. Built from the Unity guide, with honest notes (GLB not USDZ; gaze+tap, not hand-tracking) so it actually works. Scripts + manifest + curated kid-friendly model list + click-by-click setup.</p>
+      <div class="btns">
+        <a class="btn primary" data-md="../X3-ARGallery-Unity/README.md" data-title="AR Gallery — overview &amp; honest truths">Overview</a>
+        <a class="btn ghost" data-md="../X3-ARGallery-Unity/SETUP_CHECKLIST.md" data-title="AR Gallery — setup checklist">Setup checklist</a>
+        <a class="btn ghost" href="../X3-ARGallery-Unity/">Project folder</a>
+      </div>
+    </div>
+
+    <div class="card feature">
+      <span class="tag dev">Unity · official AR path</span>
+      <h2>🎮 Fable Unity Guide — graphics, sound &amp; spatial AR</h2>
+      <p>Build a self-contained AR app from scratch with the official OpenXR ARDK — the only path to gaze interaction, 6DoF, plane &amp; image tracking (the X3 has no ARCore). Bottom-up: environment, manifest, the XR Plugin, waveguide graphics, spatial sound + audio focus, gaze/touch UX, and a worked interactive-orb scene — with every Editor step spelled out for the human half.</p>
+      <div class="btns">
+        <a class="btn primary" href="x3-unity.html">Open the illustrated guide →</a>
+        <a class="btn ghost" data-md="../FABLE_X3_UNITY_GUIDE.md" data-title="Fable Unity Guide — AR from scratch">Full guide in browser</a>
+        <a class="btn ghost" href="../FABLE_X3_UNITY_GUIDE.md">Raw</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <span class="tag dev">Build recipe · the steering prompt</span>
+      <h2>📘 Fable X3 Starter Guide</h2>
+      <p>The complete developer brief: hardware truths, the APK manifest, copyable reference patterns, the gotcha compendium, working agreements, the object-tracking POC plan, and a claimed-vs-tested FAQ. Hand this to your AI partner before anything else.</p>
+      <div class="btns">
+        <a class="btn primary" data-md="../FABLE_X3_STARTER_GUIDE.md" data-title="Fable X3 Starter Guide">Read in browser →</a>
+        <a class="btn ghost" href="../FABLE_X3_STARTER_GUIDE.md">Raw .md</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <span class="tag deep">Deep reference</span>
+      <h2>🔧 Hardware &amp; Platform Dossier</h2>
+      <p>Every constant, file path, and verbatim snippet behind the guide — manifests, binocular layout, the full input scheme, audio, camera, sensors, system UI. The ground-truth extraction from the TapInsight codebase.</p>
+      <div class="btns">
+        <a class="btn primary" data-md="x3_dossier.md" data-title="Hardware &amp; Platform Dossier">Read in browser →</a>
+        <a class="btn ghost" href="x3_dossier.md">Raw .md</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <span class="tag ref">Official vendor API</span>
+      <h2>🛠️ MercurySDK API Reference</h2>
+      <p>RayNeo's own Android SDK surface — mirrored Activities, the TempleAction gesture stream, focus system, fused toasts/dialogs, 3D parallax — every class verified present in the shipped AAR.</p>
+      <div class="btns">
+        <a class="btn primary" data-md="MercurySDK_Skill_Reference_EN.md" data-title="MercurySDK API Reference">Read in browser →</a>
+        <a class="btn ghost" href="MercurySDK_Skill_Reference_EN.md">Raw .md</a>
+      </div>
+    </div>
+
+    <div class="card feature">
+      <span class="tag ref">Android native · 2026 Google AI</span>
+      <h2>🤖 Fable Native — Android APIs, Health Connect &amp; On-Device AI</h2>
+      <p>The glasses <em>are</em> Android, so AI and Google APIs run natively — no bridge. The realistic on-device AI stack (cloud Gemini, MediaPipe/Gemma, ML Kit — and why the AR1 chip can't run Gemini Nano), Health Connect for body metrics, and the Google APIs worth wiring into AR. Grounded in the 2025–2026 Android releases.</p>
+      <div class="btns">
+        <a class="btn primary" href="x3-android-native.html">Open the illustrated guide →</a>
+        <a class="btn ghost" data-md="../FABLE_X3_ANDROID_NATIVE_GUIDE.md" data-title="Fable Native — Android APIs &amp; On-Device AI">API reference</a>
+        <a class="btn ghost" data-md="../FABLE_X3_ANDROID_NATIVE_COOKBOOK.md" data-title="Fable Cookbook — Android-Native App, Bottom-Up">Build cookbook</a>
+        <a class="btn ghost" href="../FABLE_X3_ANDROID_NATIVE_GUIDE.md">Raw</a>
+      </div>
+    </div>
+
+    <div class="card feature">
+      <span class="tag ref">Apple ecosystem · WWDC 2026</span>
+      <h2>🍎 Fable Bridge — Apple Health, iCloud &amp; Apple Intelligence</h2>
+      <p>Bring Apple Watch vitals (heart rate, SpO₂, HRV, live workout zones), iCloud sync, and Apple's new multimodal on-device AI to the Android glasses — via an iPhone companion bridge. Grounded in the WWDC 2026 developer releases, with the flagship use case: fuse the glasses' camera frame with live vitals in one Foundation Models call.</p>
+      <div class="btns">
+        <a class="btn primary" href="x3-apple-bridge.html">Open the illustrated guide →</a>
+        <a class="btn ghost" data-md="../FABLE_X3_APPLE_BRIDGE_GUIDE.md" data-title="Fable Bridge — Apple Health &amp; Intelligence">API reference</a>
+        <a class="btn ghost" data-md="../FABLE_X3_APPLE_BRIDGE_COOKBOOK.md" data-title="Fable Cookbook — Apple-Bridge App, Bottom-Up">Build cookbook</a>
+        <a class="btn ghost" href="../FABLE_X3_APPLE_BRIDGE_GUIDE.md">Raw</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <span class="tag deep">Proof of code</span>
+      <h2>🧩 Everyday &amp; TAPLINKX3</h2>
+      <p>Deep code dive into two working X3 apps — the minimalist widget HUD (zero vendor AARs) and the readable teaching ancestor of TapInsight, with copyable patterns.</p>
+      <div class="btns">
+        <a class="btn primary" data-md="refapps/everyday_taplinkx3.md" data-title="Everyday &amp; TAPLINKX3">Read in browser →</a>
+        <a class="btn ghost" href="refapps/everyday_taplinkx3.md">Raw .md</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <span class="tag deep">Proof of code</span>
+      <h2>📺 SmartTube &amp; Moonlight</h2>
+      <p>How a TV app runs cursor-free via synthetic D-pad keys, and how game-streaming hit 640×480@60 — the performance ceiling, measured, with the reusable mirroring code.</p>
+      <div class="btns">
+        <a class="btn primary" data-md="refapps/smarttube_moonlight.md" data-title="SmartTube &amp; Moonlight">Read in browser →</a>
+        <a class="btn ghost" href="refapps/smarttube_moonlight.md">Raw .md</a>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <hr class="rule" style="margin-bottom:24px">
+    Vibe-coding documentation for the RayNeo X3 Pro · built on lessons from real hardware.<br>
+    Vendor docs &amp; the MIT Reality Hack deck live in <a href="rayneo-devguide/">rayneo-devguide/</a>.
+  </footer>
+</div>
+
+<!-- in-page markdown reader -->
+<div id="reader">
+  <div class="readerbar">
+    <span class="title" id="readerTitle"></span>
+    <a id="readerRaw" href="#" target="_blank">Raw</a>
+    <button id="readerClose">✕ Close</button>
+  </div>
+  <div id="readerBody" class="md"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script>
+  // night sky
+  const sky=document.getElementById('stars');
+  for(let i=0;i<70;i++){const s=document.createElement('span');
+    s.style.left=Math.random()*100+'vw';s.style.top=Math.random()*100+'vh';
+    s.style.animationDelay=(Math.random()*4).toFixed(2)+'s';
+    s.style.animationDuration=(2.4+Math.random()*3.2).toFixed(2)+'s';
+    sky.appendChild(s);}
+
+  const reader=document.getElementById('reader'),
+        body=document.getElementById('readerBody'),
+        rTitle=document.getElementById('readerTitle'),
+        rRaw=document.getElementById('readerRaw');
+
+  function openReader(path,title){
+    rTitle.innerHTML=title; rRaw.href=path;
+    body.innerHTML='<p style="color:#9aa4b8;text-align:center;margin-top:50px">Loading…</p>';
+    reader.classList.add('open'); document.body.style.overflow='hidden';
+    fetch(path).then(r=>{if(!r.ok)throw new Error(r.status);return r.text();})
+      .then(md=>{
+        if(window.marked){body.innerHTML=marked.parse(md);}
+        else{body.innerHTML='<pre>'+md.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+'</pre>';}
+        body.scrollTop=0; reader.scrollTop=0;
+      })
+      .catch(()=>{
+        body.innerHTML='<div class="fallback"><b>Your browser blocked loading this file directly.</b>'
+          +'<p>Most browsers won\'t <code>fetch</code> a local file opened with <code>file://</code> '
+          +'(a security rule). Two easy fixes:</p>'
+          +'<p>• Open the file directly: <a href="'+path+'" target="_blank">'+path+'</a><br>'
+          +'• Or serve this folder over http — from the <code>docs/</code> directory run '
+          +'<code>python3 -m http.server</code> and visit <code>localhost:8000/x3-guide-hub.html</code>. '
+          +'On GitHub Pages it just works.</p></div>';
+      });
+  }
+  function closeReader(){reader.classList.remove('open');document.body.style.overflow='';}
+
+  document.querySelectorAll('a.btn[data-md]').forEach(a=>{
+    a.addEventListener('click',e=>{e.preventDefault();openReader(a.getAttribute('data-md'),a.getAttribute('data-title'));});
+  });
+  document.getElementById('readerClose').addEventListener('click',closeReader);
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')closeReader();});
+</script>
+</body>
+</html>

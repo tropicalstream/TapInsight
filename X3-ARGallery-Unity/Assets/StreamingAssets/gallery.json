@@ -1,0 +1,38 @@
+{
+  "_comment": "AR Gallery model list. Each item needs a name, an optional thumbnail URL, and a DIRECT GLB url (not a web page, not USDZ). Keep models small & low-poly (a few MB) so they download fast and run cool on the X3 Pro's AR1 chip. All entries below should be CC0 / freely-licensed — verify the license before adding your own.",
+  "_free_glb_sources": [
+    "Khronos glTF Sample Assets (CC0/permissive): github.com/KhronosGroup/glTF-Sample-Assets — raw GLB URLs",
+    "Quaternius (CC0, cute low-poly animals/nature): quaternius.com",
+    "Kenney (CC0 game assets): kenney.nl/assets",
+    "Poly Pizza (CC0/CC-BY low-poly, kid-friendly): poly.pizza — use the GLB download link",
+    "Sketchfab downloadable free models (check each license; export GLB)",
+    "USDZ-only model? Convert once on a computer (Apple Reality Converter / Blender glTF export / usd2gltf) and host the GLB."
+  ],
+  "_note": "The URLs below are EXAMPLES pointing at the public Khronos CC0 sample set so the app works out of the box. Replace/extend with your daughter's favorites. Direct-GLB only.",
+  "models": [
+    {
+      "name": "Duck",
+      "thumb": "",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/Duck/glTF-Binary/Duck.glb",
+      "scaleMeters": 0.3
+    },
+    {
+      "name": "Avocado",
+      "thumb": "",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/Avocado/glTF-Binary/Avocado.glb",
+      "scaleMeters": 0.15
+    },
+    {
+      "name": "Fox",
+      "thumb": "",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/Fox/glTF-Binary/Fox.glb",
+      "scaleMeters": 0.5
+    },
+    {
+      "name": "Flight Helmet",
+      "thumb": "",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/FlightHelmet/glTF-Binary/FlightHelmet.glb",
+      "scaleMeters": 0.4
+    }
+  ]
+}
