@@ -7268,6 +7268,7 @@ class MainActivity :
         lastRenderedUnipanelCardText = ""
         findViewById<View?>(R.id.unipanelMiniCardScroll)?.visibility = View.GONE
         findViewById<android.widget.TextView?>(R.id.unipanelMiniCard1)?.text = ""
+        findViewById<android.widget.LinearLayout?>(R.id.unipanelCardLinks)?.removeAllViews()
     }
 
     /**
@@ -7903,6 +7904,86 @@ class MainActivity :
      * caps the box height (grow-to-content up to ~96dp, then scroll).
      * GONE when there's no assistant text.
      */
+    /** Media extensions a link can open in the in-app media player. HTML/HTM
+     *  are deliberately EXCLUDED — a `.html` link is a web page, not a text
+     *  file, so it opens in the browser. */
+    private val LINK_MEDIA_EXTS = setOf(
+        "txt","md","log","csv","json","xml","rtf","ini","cfg","conf","yaml","yml","toml",
+        "mp3","wav","ogg","m4a","aac","flac","wma","opus",
+        "mp4","webm","mkv","avi","mov","m4v","ogv","3gp"
+    )
+
+    private data class CardLink(val url: String, val label: String, val isMedia: Boolean)
+
+    /** Pull http(s) links out of card/notification text, plus MEDIA:/open_taplink:
+     *  directive lines. Classifies each as media (opens in the player) or web
+     *  (opens in the browser) by file extension. */
+    private fun extractCardLinks(text: String): List<CardLink> {
+        if (text.isBlank()) return emptyList()
+        val urls = LinkedHashSet<String>()
+        // directive lines: "MEDIA: <url>" / "open_taplink: <url>"
+        Regex("(?im)^\\s*(?:media|open_taplink)\\s*[:=]\\s*(\\S+)")
+            .findAll(text).forEach { urls.add(it.groupValues[1]) }
+        // any bare http(s) URL
+        Regex("(?i)\\bhttps?://[^\\s<>\"')\\]]+")
+            .findAll(text).forEach { urls.add(it.value) }
+        val out = ArrayList<CardLink>()
+        for (raw in urls) {
+            val url = raw.trim().trimEnd('.', ',', ';', ')', ']', '"', '\'')
+            if (!url.startsWith("http", ignoreCase = true)) continue
+            val path = url.substringBefore('?').substringBefore('#')
+            val ext = path.substringAfterLast('.', "").lowercase()
+            val isMedia = LINK_MEDIA_EXTS.contains(ext)
+            val label = try {
+                java.net.URLDecoder.decode(path.substringAfterLast('/'), "UTF-8")
+                    .ifBlank { java.net.URI(url).host ?: url }
+            } catch (_: Exception) { path.substringAfterLast('/').ifBlank { url } }
+            out.add(CardLink(url, label.take(40), isMedia))
+            if (out.size >= 6) break   // cap so a link-heavy reply can't fill the card
+        }
+        return out
+    }
+
+    /** Render the extracted links as tappable rows beneath the card text. */
+    private fun populateCardLinks(text: String) {
+        val container = findViewById<android.widget.LinearLayout?>(R.id.unipanelCardLinks) ?: return
+        container.removeAllViews()
+        val links = extractCardLinks(text)
+        if (links.isEmpty()) return
+        for (link in links) {
+            val row = android.widget.TextView(this).apply {
+                text = (if (link.isMedia) "▶  " else "🔗  ") + link.label
+                setTextColor(0xFF6FD7FF.toInt())              // link cyan
+                textSize = 11f
+                setPadding(0, 7, 0, 7)
+                isClickable = true
+                isFocusable = true
+                paintFlags = paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG
+                contentDescription = (if (link.isMedia) "Open media: " else "Open page: ") + link.label
+                setOnClickListener { openCardLink(link) }
+            }
+            container.addView(row)
+        }
+    }
+
+    /** Route a tapped link: web pages → browser; media/text files → player. */
+    private fun openCardLink(link: CardLink) {
+        DebugLog.d("Unipanel", "card link tapped media=${link.isMedia} ${link.url.take(120)}")
+        runCatching {
+            showBrowserPanel()
+            if (link.isMedia) {
+                // interceptMediaUrl loads media_player.html into the WebView for
+                // recognized audio/video/text; fall back to a plain open if it
+                // doesn't recognize the URL.
+                if (!interceptMediaUrl(webView, link.url)) openUrlInNewTab(link.url)
+            } else {
+                openUrlInNewTab(link.url)
+            }
+        }.onFailure { DebugLog.w("Unipanel", "openCardLink failed: ${it.message}") }
+        // collapse the card so the opened page/player isn't hidden behind it
+        runCatching { collapseUnipanelChatCardFromOutside() }
+    }
+
     private fun renderUnipanelAssistantCard(
         card: android.widget.TextView,
         scroll: View,
@@ -7915,6 +7996,7 @@ class MainActivity :
         uiHandler.removeCallbacks(hideUnipanelAssistantCardRunnable)
         if (latestAssistant == null) {
             card.text = ""
+            findViewById<android.widget.LinearLayout?>(R.id.unipanelCardLinks)?.removeAllViews()
             scroll.visibility = View.GONE
             lastRenderedUnipanelCardText = ""
             isUnipanelCardExpanded = false
@@ -7952,6 +8034,7 @@ class MainActivity :
         }
         lastRenderedUnipanelCardText = latestAssistant
         card.text = latestAssistant
+        populateCardLinks(latestAssistant)
         scroll.visibility = View.VISIBLE
         repositionUnipanelAssistantCard()
         // Short replies sit at the top, long ones scroll. Auto-scroll
@@ -12156,11 +12239,15 @@ class MainActivity :
                                 )
 
                                 // Inject media listeners with enhanced YouTube support
-                                view?.evaluateJavascript(
-                                        """
-                            (function() {
-                                console.log('[TapLink] Media detection script starting...');
-                                let lastPlayingState = false;
+	                                view?.evaluateJavascript(
+	                                        """
+	                            (function() {
+	                                if (window.__taplink_media_detection_bound) {
+	                                    return;
+	                                }
+	                                window.__taplink_media_detection_bound = true;
+	                                console.log('[TapLink] Media detection script starting...');
+	                                let lastPlayingState = false;
 
                                 function notifyMediaState(isPlaying) {
                                     if (lastPlayingState !== isPlaying) {
@@ -12258,27 +12345,30 @@ class MainActivity :
                             }
                         }
 
-                        override fun onRenderProcessGone(
-                                view: WebView?,
-                                detail: android.webkit.RenderProcessGoneDetail?
-                        ): Boolean {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                if (detail?.didCrash() == true) {
-                                    DebugLog.e("WebView", "Render process crashed!")
-                                    dualWebViewGroup.showConfirmDialog(
-                                            "The web page crashed. Reload?",
-                                            { view?.reload() },
-                                            { /* Do nothing */}
-                                    )
-                                } else {
-                                    DebugLog.e("WebView", "Render process killed by system (OOM).")
-                                    // If system killed it, we can just return true and let the OS
-                                    // handle it,
-                                    // or offer a reload.
-                                }
-                            }
-                            return true // Prevent app crash
-                        }
+	                        override fun onRenderProcessGone(
+	                                view: WebView?,
+	                                detail: android.webkit.RenderProcessGoneDetail?
+	                        ): Boolean {
+	                            val crashed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+	                                runCatching { detail?.didCrash() == true }.getOrDefault(false)
+	                            } else {
+	                                false
+	                            }
+	                            DebugLog.e("WebView", "Render process gone crashed=$crashed url=${view?.url}")
+	                            uiHandler.post {
+	                                runCatching {
+	                                    dualWebViewGroup.resetToSingleWindow(loadDefaultUrl = true)
+	                                }
+	                                runCatching {
+	                                    dualWebViewGroup.showConfirmDialog(
+	                                        "Web page renderer restarted for stability.",
+	                                        { /* acknowledged */ },
+	                                        { /* acknowledged */ }
+	                                    )
+	                                }
+	                            }
+	                            return true
+	                        }
 
                         override fun shouldOverrideUrlLoading(
                                 view: WebView?,

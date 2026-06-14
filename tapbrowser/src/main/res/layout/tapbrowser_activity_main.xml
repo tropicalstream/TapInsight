@@ -557,18 +557,35 @@
                 android:visibility="gone"
                 tools:ignore="UnusedAttribute">
 
-                <TextView
-                    android:id="@+id/unipanelMiniCard1"
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:contentDescription="Gemini reply — tap to search the web"
-                    android:fontFamily="sans-serif-medium"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="11sp"
-                    android:lineSpacingExtra="1dp"
-                    android:text="" />
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/unipanelMiniCard1"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:contentDescription="Gemini reply — tap to search the web"
+                        android:fontFamily="sans-serif-medium"
+                        android:textColor="#FFFFFFFF"
+                        android:textSize="11sp"
+                        android:lineSpacingExtra="1dp"
+                        android:text="" />
+
+                    <!-- Tappable links extracted from the reply/notification:
+                         web pages open in the browser, media/text files open in
+                         the media player. Populated by populateCardLinks(). -->
+                    <LinearLayout
+                        android:id="@+id/unipanelCardLinks"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:orientation="vertical" />
+
+                </LinearLayout>
 
             </ScrollView>
 
