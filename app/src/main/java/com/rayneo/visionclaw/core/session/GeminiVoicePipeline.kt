@@ -997,9 +997,32 @@ class GeminiVoicePipeline(context: Context) {
             return
         }
 
+        // Mute Gemini's own audio the INSTANT an engine-readout tool call
+        // arrives — not at result time. Gemini's native voice can begin
+        // narrating in the gap between the call and the result; suppressing only
+        // at result time lets that narration play through first (the build-1
+        // double-voice). Scoped to the text-result modes: display='glasses'
+        // opens the visual picker (Phase A2) where Gemini may legitimately speak,
+        // so it is left alone. The result-time branch reads the list via the
+        // engine; this just closes the leak window ahead of it.
+        if (toolName in ENGINE_READOUT_TOOLS) {
+            val display = runCatching {
+                org.json.JSONObject(args).optString("display", "")
+            }.getOrNull().orEmpty().trim().lowercase(java.util.Locale.US)
+            // Mirror SendVideoListTool's own text-result set exactly. Only these
+            // modes return recitable text the engine reads; display='glasses'
+            // (or an OMITTED display, which the tool also treats as the picker)
+            // returns taplink:// and must NOT mute Gemini.
+            if (display in setOf("cache", "voice", "none", "no_open", "hidden")) {
+                suppressGeminiOutputUntilMs =
+                    android.os.SystemClock.uptimeMillis() + 30_000L
+                Log.i(TAG, "engine-readout pre-suppress: muting Gemini audio for $toolName display='$display'")
+            }
+        }
+
         scope.launch {
             if (!isSessionEpochCurrent(epoch)) return@launch
-            HudStateBridge.update { it.copy(notification = "Running $toolName…") }
+            HudStateBridge.update { it.copy(notification = "${friendlyToolLabel(toolName)}…") }
             val agentLabel = when (toolName) {
                 "hermes_agent" -> "Hermes"
                 "tapclaw_agent" -> "TapClaw"
@@ -1295,6 +1318,39 @@ class GeminiVoicePipeline(context: Context) {
                 return@launch
             }
 
+            // send_video_list display=cache returns the rundown TEXT. Read it via
+            // the deterministic readout engine and SUPPRESS Gemini's audio — the
+            // native-audio model degenerates (repeats / stops mid-sentence) when
+            // it narrates the list itself. Paired with the Phase-A1 prompt (which
+            // now tells Gemini NOT to narrate the list), this yields ONE voice.
+            // The taplink:// picker result (display=glasses) has no recitable
+            // text and is left to maybeOpenTapLinkResult below.
+            if (toolName in ENGINE_READOUT_TOOLS &&
+                result.isSuccess &&
+                !resultText.startsWith("taplink://")
+            ) {
+                Log.i(TAG, "$toolName text result → readout engine; Gemini audio suppressed")
+                suppressGeminiOutputUntilMs =
+                    android.os.SystemClock.uptimeMillis() + 30_000L
+                suppressGeminiOutputUntilNextInput = true
+                runCatching { audioPlayer.release() }
+                val refResponse =
+                    "[The video list was just read aloud to the user by the device's " +
+                        "readout voice and shown on the chat card. Do NOT speak, narrate, " +
+                        "summarize, or repeat the titles. Stay silent now. Keep this only " +
+                        "as reference so you can answer follow-up questions about it.]\n\n" +
+                        resultText
+                if (isSessionEpochCurrent(epoch) && !callId.startsWith("local-")) {
+                    runCatching {
+                        liveSession?.sendToolResponse(callId, toolName, refResponse)
+                    }
+                }
+                runCatching { viewModel.appendDirectAssistantResponse(resultText) }
+                HudStateBridge.update { it.copy(notification = null) }
+                speakAgentReplyViaEngine(resultText)
+                return@launch
+            }
+
             maybeOpenTapLinkResult(toolName, resultText)
             val ok = runCatching {
                 if (!isSessionEpochCurrent(epoch)) return@runCatching false
@@ -1309,6 +1365,32 @@ class GeminiVoicePipeline(context: Context) {
      *  readout engine instead of being narrated by Gemini Live. */
     private val AGENT_READOUT_TOOLS =
         setOf("hermes_agent", "tapclaw_agent", "research_topic")
+
+    /** Tools whose TEXT result (not a taplink:// picker URL) is read by the
+     *  deterministic readout engine instead of Gemini Live. Gemini Live's
+     *  native-audio model repeats / stops mid-sentence when it narrates a
+     *  multi-item list aloud (the send_video_list double-speak). For this to
+     *  produce ONE voice, the prompt (Phase A1) must also tell Gemini NOT to
+     *  narrate the list — otherwise Gemini speaks AND the engine speaks. */
+    private val ENGINE_READOUT_TOOLS = setOf("send_video_list")
+
+    /** User-facing label for the "Running …" HUD notification, so the ticker
+     *  never shows raw tool names like "send_video_list". Falls back to a
+     *  neutral "Working" for any tool not listed. */
+    private fun friendlyToolLabel(toolName: String): String = when (toolName) {
+        "send_video_list" -> "Finding videos"
+        "send_link_list" -> "Gathering links"
+        "tapradio" -> "Searching radio"
+        "spotify_player" -> "Opening Spotify"
+        "open_taplink" -> "Opening"
+        "ask_maps" -> "Checking maps"
+        "browser_vision" -> "Looking at the screen"
+        "identify_song" -> "Identifying the song"
+        "research_topic" -> "Researching"
+        "hermes_agent" -> "Hermes is working"
+        "tapclaw_agent" -> "TapClaw is working"
+        else -> "Working"
+    }
 
     /** Timestamp backstop for the dispatch-time suppression: if an agent
      *  turn wedges (no reply, no readout), Gemini's voice comes back after
@@ -1440,7 +1522,7 @@ class GeminiVoicePipeline(context: Context) {
         val visionFrame = runCatching { bestVisionFrameBase64(preferBrowser) }
             .getOrNull()?.takeIf { it.isNotBlank() }
         if (!visionFrame.isNullOrBlank()) {
-            HudStateBridge.update { it.copy(notification = "Running $toolName…") }
+            HudStateBridge.update { it.copy(notification = "${friendlyToolLabel(toolName)}…") }
             return runCatching {
                 obj.put("image_base64", visionFrame)
                 obj.put("include_image", true)
@@ -1458,7 +1540,7 @@ class GeminiVoicePipeline(context: Context) {
         val description = runCatching {
             browserVisionTool.execute(mapOf("question" to query))
         }.getOrNull()?.getOrNull()?.trim()
-        HudStateBridge.update { it.copy(notification = "Running $toolName…") }
+        HudStateBridge.update { it.copy(notification = "${friendlyToolLabel(toolName)}…") }
 
         if (description.isNullOrBlank()) {
             Log.w(TAG, "screen-share for $toolName: no description captured; running without it")
@@ -1689,6 +1771,12 @@ class GeminiVoicePipeline(context: Context) {
         return try {
             text.replace("\r\n", "\n")
                 .replace(Regex("(?s)```.*?```"), " ")
+                // Internal routing/bell markers must never be SPOKEN: drop
+                // (type:X)/[media:X] annotations, open_taplink:/MEDIA: directive
+                // labels, and [notify]/[important] bell tags before TTS.
+                .replace(Regex("(?i)[\\[(]\\s*(?:type|media)\\s*[:=]\\s*[a-z]+\\s*[\\])]"), " ")
+                .replace(Regex("(?im)^\\s*open_taplink\\s*[:=]\\s*"), " ")
+                .replace(Regex("(?i)\\[\\s*(?:notify|important)\\b[^\\]]*\\]"), " ")
                 .replace(Regex("(?:https?://|www\\.)[^\\s<>\"']+", RegexOption.IGNORE_CASE), "")
                 .replace(Regex("\\*\\*([^*\\n]+?)\\*\\*"), "$1")
                 .replace(Regex("\\*([^*\\n]+?)\\*"), "$1")

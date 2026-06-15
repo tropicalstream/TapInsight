@@ -87,10 +87,24 @@ class SendVideoListTool(private val context: Context) : AiTapTool {
         cacheRecentSuggestions(payload)
 
         if (display in setOf("cache", "voice", "none", "no_open", "hidden")) {
+            // display=cache: the titles were cached above (cacheRecentSuggestions)
+            // for "play all" follow-ups. This readable list is what the device's
+            // deterministic readout engine speaks to the user (see
+            // ENGINE_READOUT_TOOLS in GeminiVoicePipeline) and shows on the chat
+            // card — GEMINI does NOT narrate it (Phase A1 prompt). So this is a
+            // natural spoken list, NOT model instructions: no "read these aloud",
+            // no RULE 19 block, no TapClaw wider-net offer (all of which made the
+            // native-audio model degenerate when it used to narrate this itself).
             val listText = buildString {
-                append("Cached ${normalized.length()} YouTube suggestions for '$topicArg'. ")
-                append("Read these exact titles aloud, then offer to send the picker or play one/all of them:\n")
-                for (i in 0 until normalized.length()) {
+                val count = normalized.length()
+                append("Here ")
+                append(if (count == 1) "is 1 YouTube video" else "are $count YouTube videos")
+                if (topicArg.isNotBlank()) {
+                    append(" about ")
+                    append(topicArg)
+                }
+                append(":\n")
+                for (i in 0 until count) {
                     val item = normalized.optJSONObject(i) ?: continue
                     append(i + 1)
                     append(". ")
@@ -107,13 +121,7 @@ class SendVideoListTool(private val context: Context) : AiTapTool {
                     }
                     append('\n')
                 }
-                append("\nRULE 19 reminder (media search augmentation): Before speaking, run your built-in ")
-                append("googleSearch tool internally for current context on '$topicArg' and fold the best matches ")
-                append("into a unified spoken response (skip Google augmentation only if the query is an exact ")
-                append("YouTube channel name or unambiguous title). DO NOT call open_taplink to a Google search ")
-                append("URL — that is a separate user-visible action under RULE ZERO-E. Always close with ONE ")
-                append("escalation offer: 'I can also have TapClaw dig deeper if you want a wider net.' Wait for ")
-                append("explicit confirmation before calling tapclaw_agent or open_taplink. ")
+                append("Say the number to play one, or ask me to send the full list.")
             }
             Log.d("SendVideoListTool", "Cached voice list topic='$topicArg' count=${normalized.length()}")
             return Result.success(listText.trim())

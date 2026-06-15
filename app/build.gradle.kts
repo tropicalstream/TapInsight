@@ -13,8 +13,8 @@ android {
         applicationId = "com.rayneo.visionclaw"
         minSdk = 29
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.1.2"
+        versionCode = 10
+        versionName = "Beta .3"
 
         // GEMINI_API_KEY generated HERE (not by the secrets plugin — its
         // empty-value handling emits invalid Java; see ignoreList below).

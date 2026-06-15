@@ -200,22 +200,32 @@ class HermesTool(
             "No concrete media relay URL is configured in TapInsight. If the file only exists locally, " +
                 "first expose it at a public media relay URL and use that exact URL. "
         }
-        return "\n\n[TapInsight media delivery — how to PLAY or SHOW media on the user's AR glasses " +
-            "(not just send a link the user must tap): end your reply with a directive on its OWN " +
-            "final line, exactly 'open_taplink:<URL>'. The <URL> MUST be an absolute, publicly " +
-            "fetchable http(s) URL pointing at the media in its NATIVE format (e.g. .mp3/.m4a/.aac " +
-            "audio, .mp4/.webm video, .jpg/.png image) — NEVER a Hermes server-local path such as " +
-            "/home/.../song.mp3 (the glasses cannot read your filesystem). If the file only exists " +
-            "locally, use the configured media relay below. $relayInstruction Pick the " +
-            "player by type: " +
+        return "\n\n[TapInsight media delivery — how to serve media/text files on the user's AR glasses. " +
+            "There are TWO modes; choose by the user's intent in THIS request:\n" +
+            "MODE 1 — LINK (THE DEFAULT): when the user is ASKING ABOUT, listing, or referencing a file, or " +
+            "you are offering one — and did NOT explicitly ask to open or play it this turn — do NOT auto-open " +
+            "anything. Answer normally and include the file's absolute, publicly fetchable http(s) URL inline " +
+            "in your reply, in its NATIVE format (e.g. .../notes.txt, .../song.mp3, .../clip.mp4, " +
+            ".../photo.jpg). The glasses render that URL as a tappable link in the chat card and open it in " +
+            "the on-glasses media browser when the user taps it. Do NOT emit an open_taplink directive in " +
+            "this mode.\n" +
+            "MODE 2 — OPEN NOW: ONLY when the user EXPLICITLY asks to open/play/show/read/watch/listen to the " +
+            "media this turn (e.g. 'open it', 'play it', 'show me', 'read it'), end your reply with a " +
+            "directive on its OWN final line, exactly 'open_taplink:<URL>'. The glasses open it immediately " +
+            "and the directive line is never read aloud, so keep the spoken sentence short (e.g. 'Playing " +
+            "Woven Strings Atlas.').\n" +
+            "URL rules for BOTH modes: the <URL> MUST be an absolute, publicly fetchable http(s) URL in the " +
+            "media's NATIVE format (.mp3/.m4a/.aac audio, .mp4/.webm video, .jpg/.png image, .txt/.md text) " +
+            "— NEVER a Hermes server-local path such as /home/.../song.mp3 (the glasses cannot read your " +
+            "filesystem). If the file only exists locally, use the configured media relay below. " +
+            "$relayInstruction " +
+            "For MODE 2, pick the player by type: " +
             "AUDIO → open_taplink:https://appassets.androidplatform.net/assets/media_player.html?type=audio&url=<URL-ENCODED-AUDIO-URL>&title=<NAME>; " +
             "VIDEO → the same with type=video; " +
             "IMAGE → open_taplink:<direct-image-URL> (the viewer displays it); " +
             "a direct video page like YouTube → open_taplink:<watch-url>. " +
-            "Keep the SPOKEN sentence short (e.g. 'Playing Woven Strings Atlas.') — the directive " +
-            "line is consumed by the glasses and is never read aloud. " +
             "To additionally SAVE media into the on-glasses Media Library (folders Music/, Videos/, " +
-            "Text/, Playlists/) rather than only playing it, use the TapInsight companion API " +
+            "Text/, Playlists/) rather than only serving it, use the TapInsight companion API " +
             "(POST /api/library/write); only state it was saved after the write or a library " +
             "listing confirms it.]"
     }

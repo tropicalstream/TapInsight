@@ -2490,9 +2490,13 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 val winObj = org.json.JSONObject()
                 winObj.put("id", win.id)
                 winObj.put("title", win.title)
-                winObj.put("url", win.webView.url ?: "")
+                val rawUrl = win.webView.url ?: ""
+                val isYouTubePlayback = try {
+                    MainActivity.isYouTubePlaybackUrl(rawUrl)
+                } catch (_: Throwable) { false }
+                winObj.put("url", if (isYouTubePlayback) Constants.DEFAULT_URL else rawUrl)
 
-                if (includeWebViewState) {
+                if (includeWebViewState && !isYouTubePlayback) {
                     // Save full WebView state (history, etc) - with size limit
                     try {
                         val state = Bundle()
@@ -2517,6 +2521,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         Log.e("Persistence", "Error saving state for window ${win.id}", e)
                         // Continue without state for this window
                     }
+                } else if (isYouTubePlayback) {
+                    Log.w(
+                        "Persistence",
+                        "Dropping YouTube playback state for window ${win.id}: $rawUrl"
+                    )
                 }
 
                 windowsArray.put(winObj)
@@ -2592,22 +2601,24 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     val rawStateString = winObj.optString("state", "")
 
                     // Belt-and-suspenders: if this window was persisted while
-                    // on a TapRadio auto-play URL (radio.html / podcasts.html /
-                    // spotify.html with playurl=/autoplay=1/spotifyqueue=
-                    // query params), the saved state + URL would resurrect
-                    // playback the moment this WebView is restored. Redirect
-                    // it to the default dashboard instead and discard the
-                    // Parcelable state bundle (which holds the nav history
-                    // including that same auto-play URL).
+                    // on a media playback URL, the saved state + URL would
+                    // resurrect playback the moment this WebView is restored.
+                    // Redirect it to the default dashboard instead and discard
+                    // the Parcelable state bundle (which holds the nav history
+                    // including that same playback URL).
                     val isAutoplay = try {
                         MainActivity.isRadioAutoplayUrl(rawUrl)
                     } catch (_: Throwable) { false }
-                    val url = if (isAutoplay) Constants.DEFAULT_URL else rawUrl
-                    val stateString = if (isAutoplay) "" else rawStateString
-                    if (isAutoplay) {
+                    val isYouTubePlayback = try {
+                        MainActivity.isYouTubePlaybackUrl(rawUrl)
+                    } catch (_: Throwable) { false }
+                    val shouldDropPlayback = isAutoplay || isYouTubePlayback
+                    val url = if (shouldDropPlayback) Constants.DEFAULT_URL else rawUrl
+                    val stateString = if (shouldDropPlayback) "" else rawStateString
+                    if (shouldDropPlayback) {
                         Log.w(
                             "Persistence",
-                            "Dropping restored window with radio auto-play URL: $rawUrl"
+                            "Dropping restored window with media playback URL: $rawUrl"
                         )
                     }
 
@@ -2946,8 +2957,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         }
                     }
 
-                    override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
-                        super.onPageFinished(view, url)
+	                    override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
+	                        super.onPageFinished(view, url)
                         mediaBridgeUrlRef.set(url ?: "")
                         try {
                             view?.let { injectPageObservers(it) }
@@ -2997,11 +3008,40 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                     YouTubeDimCaptions.install(view, url)
                                 }
                             }
-                        } catch (e: Exception) {
-                            android.util.Log.e("TapLink", "Error in onPageFinished", e)
-                        }
-                    }
-                }
+	                        } catch (e: Exception) {
+	                            android.util.Log.e("TapLink", "Error in onPageFinished", e)
+	                        }
+	                    }
+
+	                    override fun onRenderProcessGone(
+	                        view: android.webkit.WebView?,
+	                        detail: android.webkit.RenderProcessGoneDetail?
+	                    ): Boolean {
+	                        val crashed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+	                            runCatching { detail?.didCrash() == true }.getOrDefault(false)
+	                        } else {
+	                            false
+	                        }
+	                        android.util.Log.e(
+	                            "TapLink",
+	                            "Browser WebView renderer gone crashed=$crashed url=${view?.url}"
+	                        )
+	                        val deadWindow = windows.find { it.webView == view }
+	                        if (deadWindow != null) {
+	                            post {
+	                                runCatching { closeWindow(deadWindow.id) }
+	                                runCatching {
+	                                    showConfirmDialog(
+	                                        "Web page renderer restarted for stability.",
+	                                        { /* acknowledged */ },
+	                                        { /* acknowledged */ }
+	                                    )
+	                                }
+	                            }
+	                        }
+	                        return true
+	                    }
+	                }
 
         webView.apply {
             setBackgroundColor(Color.BLACK)
@@ -11405,6 +11445,13 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             // install() is idempotent (in-page guard + debounced retry
             // ladder), so calling it on every tick is safe and intended.
             YouTubeDimCaptions.install(webView, url)
+            // Heartbeat the dim engine's activity flag. This poll runs ~750ms
+            // ONLY while the screen is masked, so a fresh timestamp tells the
+            // in-page ticker the mask is up and it should do its scrape/
+            // discovery work. When the mask drops, this stops refreshing and the
+            // ticker idles within ~2.5s — the dim-gate that keeps the caption
+            // engine from heating the SoC during normal viewing.
+            webView.evaluateJavascript("window.__tl_dimcc_active = Date.now();", null)
             // NOTE: this poll is a TITLE carrier only. The caption text
             // itself is pushed by the YouTubeDimCaptions in-page engine
             // through MediaInterface.onDimCaption — the old DOM caption

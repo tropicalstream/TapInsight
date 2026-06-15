@@ -52,12 +52,52 @@ object YouTubeCaptionEnforcer {
                 }
                 window.__taplink_caption_enable_bound = true;
 
+                // Per-video resolution state. We click the CC button at most a
+                // few times per video, and NEVER on a video with no caption track
+                // — clicking there pops YouTube's "This video does not have closed
+                // captions" toast (the flashing bug) and, with the old full-DOM
+                // MutationObserver, churned the CPU for the whole video (a primary
+                // overheat source). State per videoKey: pending|active|unavailable.
+                var state = Object.create(null);
+                var tries = Object.create(null);
+
                 function videoKey() {
                     var v = document.querySelector('video');
                     return location.href.split('&t=')[0] + '|' + (v && (v.currentSrc || v.src) || '');
                 }
-                var attempts = Object.create(null);
-                var timer = 0;
+
+                // Authoritative caption availability from the player response:
+                // true = caption tracks exist, false = player ready with none
+                // (e.g. a live broadcast), null = player not ready yet.
+                function captionTracks() {
+                    try {
+                        var mp = document.getElementById('movie_player');
+                        var pr = (mp && mp.getPlayerResponse && mp.getPlayerResponse())
+                            || window.ytInitialPlayerResponse || null;
+                        if (pr && pr.captions) {
+                            var tl = pr.captions.playerCaptionsTracklistRenderer;
+                            var tracks = tl && tl.captionTracks;
+                            return !!(tracks && tracks.length);
+                        }
+                        if (pr) return false;
+                    } catch (e) {}
+                    try {
+                        var v = document.querySelector('video');
+                        if (v && v.textTracks) {
+                            for (var i = 0; i < v.textTracks.length; i++) {
+                                var k = (v.textTracks[i].kind || '').toLowerCase();
+                                if (k === 'captions' || k === 'subtitles') return true;
+                            }
+                        }
+                    } catch (e) {}
+                    return null;
+                }
+
+                function findCcButton() {
+                    return document.querySelector('.ytp-subtitles-button') ||
+                        document.querySelector('button[aria-label*="captions" i]') ||
+                        document.querySelector('button[title*="captions" i]');
+                }
 
                 function captionsActive(btn) {
                     if (!btn) return false;
@@ -71,82 +111,71 @@ object YouTubeCaptionEnforcer {
                         btn.classList.contains('ytp-button-active');
                 }
 
-                function captionsUnavailable(btn) {
-                    if (!btn) return true;
-                    var label = (
-                        btn.getAttribute('aria-label') || btn.getAttribute('title') || ''
-                    ).toLowerCase();
-                    return label.indexOf('unavailable') !== -1 ||
-                        label.indexOf('disabled') !== -1;
-                }
-
-                function findCcButton() {
-                    return document.querySelector('.ytp-subtitles-button') ||
-                        document.querySelector('button[aria-label*="captions" i]') ||
-                        document.querySelector('button[title*="captions" i]');
-                }
-
                 function showNativeTracks() {
                     var v = document.querySelector('video');
-                    if (!v || !v.textTracks) return false;
-                    var changed = false;
+                    if (!v || !v.textTracks) return;
                     for (var i = 0; i < v.textTracks.length; i++) {
                         var tr = v.textTracks[i];
                         var kind = (tr.kind || '').toLowerCase();
                         if (kind === 'captions' || kind === 'subtitles') {
-                            if (tr.mode !== 'showing') {
-                                tr.mode = 'showing';
-                                changed = true;
-                            }
+                            if (tr.mode !== 'showing') tr.mode = 'showing';
                             break;
                         }
                     }
-                    return changed;
                 }
 
                 function enableNow(reason) {
                     var key = videoKey();
-                    var now = Date.now();
-                    var st = attempts[key] || (attempts[key] = { count: 0, last: 0 });
-                    if (st.count > 8 && now - st.last < 10000) return;
-                    st.count++;
-                    st.last = now;
+                    var s = state[key] || 'pending';
+                    if (s === 'active' || s === 'unavailable') return; // resolved — no churn, no clicks
 
-                    try { showNativeTracks(); } catch (_e) {}
-                    var btn = findCcButton();
-                    if (btn && !captionsUnavailable(btn) && !captionsActive(btn)) {
-                        try {
-                            btn.click();
-                            console.log('[TapLink-CC] enabled via native button reason=' + reason);
-                        } catch (e) {
-                            console.log('[TapLink-CC] button enable failed: ' + e);
-                        }
+                    var avail = captionTracks();
+                    if (avail === false) {
+                        // No caption track (e.g. a live broadcast): resolve as
+                        // unavailable and NEVER click — this stops the flashing.
+                        state[key] = 'unavailable';
+                        return;
                     }
-                }
 
-                function schedule(reason, delay) {
-                    setTimeout(function(){ enableNow(reason); }, delay);
+                    var btn = findCcButton();
+                    if (btn && captionsActive(btn)) {
+                        state[key] = 'active';
+                        return;
+                    }
+
+                    if (avail === true) {
+                        try { showNativeTracks(); } catch (_e) {}
+                        if (btn && !captionsActive(btn)) {
+                            try { btn.click(); } catch (e) {}
+                        }
+                        return; // becomes 'active' on a later tick once it takes
+                    }
+
+                    // avail === null: player not ready. Try a bounded number of
+                    // times, then give up quietly so we never spin or click blind.
+                    var n = (tries[key] || 0) + 1;
+                    tries[key] = n;
+                    if (n >= 15) state[key] = 'unavailable';
                 }
 
                 window.__taplink_enable_captions_once = enableNow;
-                schedule('init-1', 250);
-                schedule('init-2', 900);
-                schedule('init-3', 1800);
-                schedule('init-4', 3500);
-                setInterval(function(){ enableNow('interval'); }, 6000);
 
+                // New videos are caught by play / loadedmetadata events and a slow
+                // 4s interval — NOT a full-DOM-subtree MutationObserver, which
+                // fired on every mutation of a live page and ran the CPU hot for
+                // the whole session. enableNow() returns immediately once a video
+                // is resolved, so the interval is cheap.
+                setTimeout(function(){ enableNow('init-1'); }, 300);
+                setTimeout(function(){ enableNow('init-2'); }, 1200);
+                setTimeout(function(){ enableNow('init-3'); }, 3000);
+                setInterval(function(){ enableNow('interval'); }, 4000);
                 document.addEventListener('play', function(ev) {
-                    if (ev && ev.target && ev.target.tagName === 'VIDEO') enableNow('video-play');
+                    if (ev && ev.target && ev.target.tagName === 'VIDEO') enableNow('play');
                 }, true);
                 document.addEventListener('loadedmetadata', function(ev) {
                     if (ev && ev.target && ev.target.tagName === 'VIDEO') enableNow('metadata');
                 }, true);
-                new MutationObserver(function() {
-                    clearTimeout(timer);
-                    timer = setTimeout(function(){ enableNow('mutation'); }, 250);
-                }).observe(document.documentElement, { childList: true, subtree: true });
-
-                console.log('[TapLink-CC] enforcer = native button/textTracks auto-enable');
+                console.log('[TapLink-CC] enforcer = availability-gated CC enable (no DOM observer)');
             } catch (e) {
                 try { console.log('[TapLink-CC] enforcer init failed: ' + e); } catch (_e) {}
             }

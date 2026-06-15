@@ -95,6 +95,7 @@ class MediaLibraryBridge(
      * so the Activity provides an in-app Media3 player fallback.
      */
     var nativeVideoOpener: ((uriText: String, mimeType: String?, title: String?) -> String)? = null
+    var nativeVideoPlaylistOpener: ((queueJson: String, startIndex: Int) -> String)? = null
 
     companion object {
         private const val TAG = "MediaLibraryBridge"
@@ -697,6 +698,82 @@ class MediaLibraryBridge(
         val opener = nativeVideoOpener
             ?: return JSONObject().put("error", "Native video player unavailable").toString()
         return opener(uriText, mimeType, title)
+    }
+
+    @JavascriptInterface
+    fun openNativeLibraryVideo(relativePath: String?, mimeType: String?, title: String?): String {
+        if (!isTrusted()) return denied("openNativeLibraryVideo")
+        val rel = relativePath?.trim().orEmpty()
+        if (rel.isBlank()) {
+            return JSONObject().put("error", "Missing video path").toString()
+        }
+        val file = service.resolveSafe(rel)
+            ?: return JSONObject().put("error", "Video not found").toString()
+        if (!file.exists() || !file.isFile) {
+            return JSONObject().put("error", "Video not found").toString()
+        }
+        val opener = nativeVideoOpener
+            ?: return JSONObject().put("error", "Native video player unavailable").toString()
+        return opener(Uri.fromFile(file).toString(), mimeType ?: guessVideoMime(file.name), title ?: file.nameWithoutExtension)
+    }
+
+    @JavascriptInterface
+    fun openNativeVideoPlaylist(queueJson: String?, startIndex: Int): String {
+        if (!isTrusted()) return denied("openNativeVideoPlaylist")
+        val raw = queueJson?.trim().orEmpty()
+        if (raw.isBlank()) {
+            return JSONObject().put("error", "Missing video queue").toString()
+        }
+        val arr = try {
+            JSONArray(raw)
+        } catch (_: Exception) {
+            return JSONObject().put("error", "Bad video queue").toString()
+        }
+        val out = JSONArray()
+        for (i in 0 until arr.length()) {
+            val item = arr.optJSONObject(i) ?: continue
+            val title = item.optString("title", "Video")
+            val mime = item.optString("mime", "").takeIf { it.isNotBlank() }
+            val uri = item.optString("uri", "").trim()
+            val rel = item.optString("relativePath", "").trim()
+            val resolvedUri = when {
+                uri.isNotBlank() -> uri
+                rel.isNotBlank() -> {
+                    val file = service.resolveSafe(rel) ?: continue
+                    if (!file.exists() || !file.isFile) continue
+                    Uri.fromFile(file).toString()
+                }
+                else -> continue
+            }
+            out.put(
+                JSONObject()
+                    .put("uri", resolvedUri)
+                    .put("mime", mime ?: guessVideoMime(title.ifBlank { rel.ifBlank { uri } }))
+                    .put("title", title.ifBlank { rel.substringAfterLast('/').ifBlank { "Video" } })
+            )
+        }
+        if (out.length() == 0) {
+            return JSONObject().put("error", "No playable video entries").toString()
+        }
+        val opener = nativeVideoPlaylistOpener
+            ?: return JSONObject().put("error", "Native video playlist unavailable").toString()
+        return opener(out.toString(), startIndex.coerceIn(0, out.length() - 1))
+    }
+
+    private fun guessVideoMime(name: String): String {
+        return when (name.substringAfterLast('.', "").lowercase()) {
+            "mp4", "m4v" -> "video/mp4"
+            "webm" -> "video/webm"
+            "mkv" -> "video/x-matroska"
+            "mov" -> "video/quicktime"
+            "3gp", "3g2" -> "video/3gpp"
+            "avi", "divx" -> "video/x-msvideo"
+            "ts", "m2ts", "mts" -> "video/mp2t"
+            "wmv" -> "video/x-ms-wmv"
+            "flv" -> "video/x-flv"
+            "mpg", "mpeg", "vob" -> "video/mpeg"
+            else -> "video/*"
+        }
     }
 
     /**

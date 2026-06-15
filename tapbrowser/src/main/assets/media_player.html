@@ -391,7 +391,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0a;color:#e8e8e
 <div id="videoPlayer">
   <video id="videoEl" playsinline></video>
   <div id="captionOverlay"><span id="captionText"></span></div>
-  <div id="videoOverlay" class="always">
+  <div id="videoOverlay">
     <div id="videoTopBar">
       <div id="videoTitle">Video</div>
     </div>
@@ -2012,7 +2012,27 @@ var videoOverlay = document.getElementById('videoOverlay');
 var overlayTimer = null;
 var captions = [];
 var captionsEnabled = true;
+var captionsAvailable = false;   // flips true once a caption source yields cues
 var videoLoadSeq = 0;
+
+// Reflect caption availability on the CC button: greyed + non-interactive
+// when this video has no captions, normal (toggleable) when it does.
+function setCaptionsAvailable(avail) {
+  captionsAvailable = !!avail;
+  var btn = document.getElementById('videoCCBtn');
+  if (!btn) return;
+  if (captionsAvailable) {
+    btn.disabled = false;
+    btn.style.pointerEvents = 'auto';
+    btn.style.opacity = captionsEnabled ? 1 : 0.4;
+    btn.title = 'Captions';
+  } else {
+    btn.disabled = true;
+    btn.style.pointerEvents = 'none';
+    btn.style.opacity = 0.25;          // permanently greyed for this video
+    btn.title = 'No captions available';
+  }
+}
 
 function handleVideoLoadFailure(url) {
   var code = videoEl.error ? videoEl.error.code : '?';
@@ -2052,6 +2072,7 @@ function initVideoPlayer(url) {
     // Try to load track element captions
     if (videoEl.textTracks && videoEl.textTracks.length > 0) {
       videoEl.textTracks[0].mode = 'showing';
+      setCaptionsAvailable(true);
     }
   }
   videoEl.addEventListener('loadedmetadata', videoArmedHide);
@@ -2071,11 +2092,17 @@ function initVideoPlayer(url) {
     notifyMediaState(false);
     showVideoOverlay();
   });
+  // Keep the play button in sync with the ACTUAL element state — not just
+  // with toggleVideo. The WebView can start/stop playback on its own (e.g. an
+  // auto-resume after a seek), and without this the button icon inverts, so
+  // the next tap does the opposite of what it shows ("play" actually pauses).
   videoEl.addEventListener('play', function() {
     notifyMediaState(true);
+    playBtn.textContent = '⏸'; playBtn.classList.add('playing');
   });
   videoEl.addEventListener('pause', function() {
     if (!videoEl.ended) notifyMediaState(false);
+    playBtn.textContent = '▶'; playBtn.classList.remove('playing');
   });
   videoEl.addEventListener('error', function() {
     handleVideoLoadFailure(videoEl.currentSrc || videoEl.src || url);
@@ -2096,14 +2123,26 @@ function initVideoPlayer(url) {
     document.getElementById('videoTimeCur').textContent = fmt(parseFloat(this.value));
   });
   seek.addEventListener('change', function() {
+    var wasPaused = videoEl.paused;
     videoEl.currentTime = parseFloat(this.value);
     seek._dragging = false;
+    // Some WebView builds auto-resume playback on a programmatic seek. If the
+    // user had it paused, keep it paused — re-assert once the seek lands so the
+    // scrub doesn't sneakily restart playback.
+    if (wasPaused) {
+      videoEl.pause();
+      var repause = function() { videoEl.pause(); videoEl.removeEventListener('seeked', repause); };
+      videoEl.addEventListener('seeked', repause);
+    }
   });
 
-  // Mouse move to show scrub bar
-  document.getElementById('videoPlayer').addEventListener('mousemove', function() {
-    showVideoOverlay();
-  });
+  // Cursor / pointer movement re-shows the controls (then they auto-hide
+  // again after 4s). Both events are bound so the glasses' synthetic
+  // trackpad pointer wakes the controls the same as a mouse.
+  var wakeControls = function() { showVideoOverlay(); };
+  var vp = document.getElementById('videoPlayer');
+  vp.addEventListener('mousemove', wakeControls);
+  vp.addEventListener('pointermove', wakeControls);
 
   playBtn.addEventListener('click', function(e) { e.stopPropagation(); toggleVideo(); });
   document.getElementById('videoRew').addEventListener('click', function(e) {
@@ -2130,19 +2169,20 @@ function initVideoPlayer(url) {
   videoEl.play().then(function() {
     notifyMediaState(true);
     playBtn.textContent = '⏸'; playBtn.classList.add('playing');
-    hideVideoOverlayDelayed();
+    showVideoOverlay();   // show controls, then auto-hide after 4s
   }).catch(function(){});
 }
 
 function toggleVideo() {
-  var btn = document.getElementById('videoPlayBtn');
+  // Button icon is driven by the element's play/pause events (single source of
+  // truth), so we only flip playback here — never the icon. That keeps the
+  // button correct even if play() rejects on a stalled stream.
   if (videoEl.paused) {
     prepareExclusivePlayback();
     videoEl.play().then(function(){ notifyMediaState(true); }).catch(function(){});
-    btn.textContent = '⏸'; btn.classList.add('playing');
-    hideVideoOverlayDelayed();
+    showVideoOverlay();   // flash controls on resume, then auto-hide
   } else {
-    videoEl.pause(); btn.textContent = '▶'; btn.classList.remove('playing');
+    videoEl.pause();
     notifyMediaState(false);
     showVideoOverlay();
   }
@@ -2157,7 +2197,7 @@ function hideVideoOverlayDelayed() {
   clearTimeout(overlayTimer);
   overlayTimer = setTimeout(function() {
     if (!videoEl.paused) videoOverlay.classList.remove('visible');
-  }, 3500);
+  }, 4000);
 }
 
 // ── Caption engine (SRT + VTT sidecars, ?srt= param, embedded tracks) ──
@@ -2179,7 +2219,7 @@ function loadSrtCaptions(url, seq, onFail) {
   }).then(function(text) {
     if (seq !== undefined && seq !== captionSeq) return;   // stale track
     var cues = parseSrt(text);
-    if (cues.length) { captions = cues; return; }
+    if (cues.length) { captions = cues; setCaptionsAvailable(true); return; }
     if (onFail) onFail();
   }).catch(function(e){
     console.warn('Could not load captions:', e);
@@ -2351,6 +2391,7 @@ function updateAudioCoverArt(url) {
 function initCaptionsForTrack(url) {
   var seq = ++captionSeq;
   captions = [];
+  setCaptionsAvailable(false);   // start greyed; flips on if a source is found
   setCaptionLine('');
   // 1. Explicit ?srt=/&captions= param — applies to the originally
   //    requested file only (queue advances get fresh detection). If the
@@ -2396,7 +2437,7 @@ function detectSidecarOrEmbedded(url, seq) {
         return c && typeof c.start === 'number' &&
                typeof c.end === 'number' && c.text;
       });
-      if (cues.length) captions = cues;
+      if (cues.length) { captions = cues; setCaptionsAvailable(true); }
     }, 350);
   }, 250);
 }

@@ -412,6 +412,9 @@ document.addEventListener('DOMContentLoaded', loadAll);
         MediaLibraryService(context).also { it.ensureBootstrap() }
     }
 
+    /** Encrypted store of user-configured LAN SMB shares (manual-add). */
+    private val smbStore by lazy { com.TapLink.app.smb.SmbShareStore(context) }
+
     /** Session token for authenticating companion page API requests. */
     val sessionToken: String
         get() {
@@ -827,6 +830,15 @@ document.addEventListener('DOMContentLoaded', loadAll);
                 uri == "/api/library/upload" && method == Method.POST -> uploadLibraryMedia(session)
                 uri == "/api/library/mkdir" && method == Method.POST -> mkdirLibraryFolder(session)
                 uri == "/api/library/delete" && method == Method.POST -> deleteLibraryEntry(session)
+                // ── LAN SMB shares (manual-add, browse) ───────────────────────
+                uri == "/smb" || uri == "/smb.html" -> serveRawAsset("companion/smb.html")
+                uri == "/api/smb/list" && method == Method.GET -> serveSmbList()
+                uri == "/api/smb/save" && method == Method.POST -> saveSmbShare(session)
+                uri == "/api/smb/remove" && method == Method.POST -> removeSmbShare(session)
+                uri == "/api/smb/test" && method == Method.POST -> testSmbShare(session)
+                uri == "/api/smb/browse" && method == Method.GET -> browseSmbShare(session)
+                uri == "/api/smb/discover" && method == Method.GET -> discoverSmbHosts()
+                uri == "/api/smb/shares" && method == Method.GET -> listSmbShares(session)
                 // Custom chat-panel orb image (Personalization).
                 // The companion's orb.html cropper produces a square PNG and
                 // POSTs both the cropped square and the user's original
@@ -1163,6 +1175,140 @@ window.__companionToken = '${sessionToken}';
         prefs.edit().putString(DASHBOARD_PREFS_KEY, postData).apply()
         Log.d(TAG, "Dashboard saved from companion app (${postData.length} chars)")
         return newFixedLengthResponse(Response.Status.OK, "application/json", """{"status":"saved"}""")
+    }
+
+    // ── LAN SMB shares ───────────────────────────────────────────────────
+
+    private fun smbShareFromJson(o: JSONObject): com.TapLink.app.smb.SmbShare =
+        com.TapLink.app.smb.SmbShare(
+            id = o.optString("id"),
+            label = o.optString("label").trim(),
+            host = o.optString("host").trim(),
+            share = o.optString("share").trim().trim('/'),
+            path = o.optString("path").trim().trim('/'),
+            domain = o.optString("domain").trim(),
+            username = o.optString("username"),
+            password = o.optString("password")
+        )
+
+    /** Keep an existing stored password when an edit omits it (UI never echoes it). */
+    private fun smbWithKeptPassword(share: com.TapLink.app.smb.SmbShare): com.TapLink.app.smb.SmbShare {
+        if (share.password.isNotEmpty() || share.id.isBlank()) return share
+        val existing = smbStore.get(share.id) ?: return share
+        return share.copy(password = existing.password)
+    }
+
+    private fun serveSmbList(): Response {
+        val arr = JSONArray()
+        smbStore.list().forEach { arr.put(it.toPublicJson()) }
+        return jsonResponse(JSONObject().put("shares", arr))
+    }
+
+    private fun saveSmbShare(session: IHTTPSession): Response {
+        val body = HashMap<String, String>()
+        session.parseBody(body)
+        val postData = body["postData"] ?: ""
+        if (postData.isBlank()) return badRequest("Empty body")
+        val o = runCatching { JSONObject(postData) }.getOrNull() ?: return badRequest("Invalid JSON")
+        if (o.optString("host").isBlank() || o.optString("share").isBlank()) {
+            return badRequest("host and share are required")
+        }
+        val saved = smbStore.save(smbWithKeptPassword(smbShareFromJson(o)))
+        return jsonResponse(JSONObject().put("status", "saved").put("share", saved.toPublicJson()))
+    }
+
+    private fun removeSmbShare(session: IHTTPSession): Response {
+        val body = HashMap<String, String>()
+        session.parseBody(body)
+        val postData = body["postData"] ?: ""
+        val id = runCatching { JSONObject(postData).optString("id") }.getOrNull().orEmpty()
+        if (id.isBlank()) return badRequest("id required")
+        smbStore.remove(id)
+        return jsonResponse(JSONObject().put("status", "removed"))
+    }
+
+    private fun testSmbShare(session: IHTTPSession): Response {
+        val body = HashMap<String, String>()
+        session.parseBody(body)
+        val postData = body["postData"] ?: ""
+        val o = runCatching { JSONObject(postData) }.getOrNull() ?: return badRequest("Invalid JSON")
+        val share = smbWithKeptPassword(smbShareFromJson(o))
+        val result = com.TapLink.app.smb.SmbClient.test(share)
+        return if (result.isSuccess) {
+            jsonResponse(JSONObject().put("ok", true).put("entries", result.getOrDefault(0)))
+        } else {
+            jsonResponse(
+                JSONObject()
+                    .put("ok", false)
+                    .put("error", result.exceptionOrNull()?.message ?: "Connection failed")
+            )
+        }
+    }
+
+    private fun browseSmbShare(session: IHTTPSession): Response {
+        val id = session.parms?.get("id").orEmpty()
+        val path = session.parms?.get("path").orEmpty()
+        val share = smbStore.get(id) ?: return badRequest("Unknown share id")
+        return try {
+            val arr = JSONArray()
+            com.TapLink.app.smb.SmbClient.listDir(share, path).forEach { e ->
+                arr.put(JSONObject().put("name", e.name).put("dir", e.isDirectory).put("size", e.size))
+            }
+            jsonResponse(JSONObject().put("path", path).put("entries", arr))
+        } catch (e: Exception) {
+            jsonResponse(JSONObject().put("error", e.message ?: "Browse failed"))
+        }
+    }
+
+    /** The glasses' own private-LAN IPv4 (used as the subnet to scan). */
+    private fun smbLocalIpv4(): String = runCatching {
+        NetworkInterface.getNetworkInterfaces().toList()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { it.inetAddresses.toList() }
+            .filterIsInstance<Inet4Address>()
+            .mapNotNull { it.hostAddress }
+            .firstOrNull { ip ->
+                ip.startsWith("192.168.") || ip.startsWith("10.") || ip.startsWith("172.")
+            }
+    }.getOrNull().orEmpty()
+
+    private fun discoverSmbHosts(): Response {
+        val ip = smbLocalIpv4()
+        if (ip.isBlank()) {
+            return jsonResponse(
+                JSONObject().put("hosts", JSONArray())
+                    .put("error", "Could not determine the glasses' Wi-Fi address.")
+            )
+        }
+        val arr = JSONArray()
+        runCatching {
+            com.TapLink.app.smb.SmbClient.discoverHosts(ip).forEach { h ->
+                arr.put(JSONObject().put("ip", h.ip).put("name", h.name))
+            }
+        }
+        return jsonResponse(
+            JSONObject().put("subnet", ip.substringBeforeLast('.') + ".0/24").put("hosts", arr)
+        )
+    }
+
+    private fun listSmbShares(session: IHTTPSession): Response {
+        val host = session.parms?.get("host").orEmpty().trim()
+        if (host.isBlank()) return badRequest("host required")
+        val user = session.parms?.get("username").orEmpty()
+        val pass = session.parms?.get("password").orEmpty()
+        val domain = session.parms?.get("domain").orEmpty()
+        return try {
+            val arr = JSONArray()
+            com.TapLink.app.smb.SmbClient.listShares(host, domain, user, pass).forEach { arr.put(it) }
+            jsonResponse(JSONObject().put("host", host).put("shares", arr))
+        } catch (e: Exception) {
+            jsonResponse(
+                JSONObject().put(
+                    "error",
+                    e.message ?: "Could not list shares (credentials may be required)."
+                )
+            )
+        }
     }
 
     // ── TapRadio ───────────────────────────────────────────────────────

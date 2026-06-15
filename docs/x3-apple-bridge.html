@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fable Bridge Guide — X3 Pro × Apple Health, iCloud & Apple Intelligence</title>
+<style>
+  :root{
+    --bg:#07090f; --ink:#e8ecf4; --soft:#9aa4b8;
+    --glow1:#5ad7ff; --glow2:#9d8cff; --glow3:#7fffc1; --gold:#ffc857; --apple:#ff6b8b;
+    --card:rgba(255,255,255,.045); --line:rgba(255,255,255,.10);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:
+      radial-gradient(1100px 650px at 82% -10%, rgba(255,107,139,.13), transparent 60%),
+      radial-gradient(900px 600px at 8% 25%, rgba(90,215,255,.10), transparent 60%),
+      radial-gradient(1000px 800px at 70% 100%, rgba(127,255,193,.06), transparent 60%),
+      var(--bg);
+    color:var(--ink);
+    font-family:"Avenir Next",Avenir,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.66;
+  }
+  .stars{position:fixed;inset:0;pointer-events:none;z-index:0}
+  .stars span{position:absolute;width:2px;height:2px;border-radius:50%;background:#fff;opacity:.5;animation:tw 3.4s ease-in-out infinite}
+  @keyframes tw{0%,100%{opacity:.12;transform:scale(.8)}50%{opacity:.7;transform:scale(1.25)}}
+  main{position:relative;z-index:1;max-width:880px;margin:0 auto;padding:0 22px 90px}
+  .eyebrow{letter-spacing:.22em;text-transform:uppercase;font-size:12px;color:var(--apple);font-weight:600}
+  h1{font-size:clamp(30px,5.4vw,50px);line-height:1.12;font-weight:800;margin:12px 0 16px;
+     background:linear-gradient(92deg,#fff 8%,var(--apple) 38%,var(--glow2) 70%,var(--glow1) 100%);
+     -webkit-background-clip:text;background-clip:text;color:transparent}
+  h2{font-size:clamp(22px,3.4vw,30px);font-weight:750;margin:0 0 14px}
+  h2 .nbr{display:inline-block;font-size:13px;vertical-align:middle;margin-right:11px;color:var(--bg);
+          background:linear-gradient(135deg,var(--apple),var(--glow2));border-radius:999px;padding:3px 11px;font-weight:800}
+  h3{font-size:18px;margin:18px 0 7px}
+  p,li{color:var(--soft);font-size:16.5px;margin-bottom:12px}
+  strong{color:var(--ink)} em{color:var(--ink)}
+  section{padding:46px 0 6px}
+  .hero{padding:66px 0 24px;text-align:center}
+  .hero p.lead{font-size:19px;max-width:640px;margin:0 auto}
+  .rule{height:2px;border:0;margin:30px auto;max-width:440px;
+        background:linear-gradient(90deg,transparent,var(--apple),var(--gold),var(--glow3),var(--glow1),var(--glow2),transparent);opacity:.65}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 24px;margin:18px 0;backdrop-filter:blur(6px)}
+  .card.flag{background:radial-gradient(420px 220px at 12% 0%,rgba(255,107,139,.16),transparent 70%),var(--card);border-color:rgba(255,107,139,.32)}
+  .card.win{background:radial-gradient(420px 220px at 88% 0%,rgba(127,255,193,.14),transparent 70%),var(--card);border-color:rgba(127,255,193,.30)}
+  pre{background:#0b0f1c;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;margin:12px 0;font-size:13px;line-height:1.5}
+  code{font-family:"SF Mono",Menlo,Consolas,monospace}
+  p code,li code,td code{background:rgba(255,255,255,.08);padding:1px 6px;border-radius:5px;font-size:.9em}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;color:var(--soft)}
+  th{background:rgba(255,255,255,.05);color:var(--ink)}
+  .diagram{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:12.5px;color:var(--glow1);white-space:pre;overflow-x:auto;
+           background:#0b0f1c;border:1px solid var(--line);border-radius:10px;padding:16px;line-height:1.45;margin:14px 0}
+  a{color:var(--glow1);text-decoration:none} a:hover{text-decoration:underline}
+  .back{display:inline-block;margin:24px 0 0;color:var(--soft)}
+  footer{text-align:center;color:#5a6478;font-size:13px;margin-top:56px}
+</style>
+</head>
+<body>
+<div class="stars" id="stars"></div>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Fable Bridge Guide · grounded in WWDC 2026</div>
+    <h1>X3 Pro × Apple Health,<br>iCloud &amp; Apple Intelligence</h1>
+    <p class="lead">How to bring Apple Watch vitals, HealthKit metrics, iCloud sync, and Apple's new
+    multimodal on-device AI to a pair of Android AR glasses — built on the developer frameworks Apple
+    shipped at WWDC 2026.</p>
+  </section>
+  <hr class="rule">
+
+  <section>
+    <h2><span class="nbr">00</span>The fact that governs everything</h2>
+    <div class="card flag">
+      <p>The RayNeo X3 Pro runs <strong>Android 14</strong>. HealthKit, CloudKit, Foundation Models,
+      App Intents, VisionKit are <strong>Apple-platform-only</strong> — none can run on the glasses.
+      So "Apple Health on the X3" means a <strong>three-tier bridge</strong>: the Watch senses, an
+      iPhone companion app reads + reasons + relays, the glasses display and act. It's exactly how
+      RayNeo already bridges GPS from the phone — you're extending a proven pattern.</p>
+      <div class="diagram">┌────────────┐   HealthKit /          ┌──────────────┐   relay (TapInsight    ┌────────────┐
+│ Apple Watch│   Foundation Models    │ iPhone app   │   pattern: BLE/HTTPS/  │ RayNeo X3  │
+│ (sensors)  │ ─────────────────────▶ │ (Swift)      │ ─ push / iCloud ─────▶ │ Pro (HUD)  │
+└────────────┘                        └──────────────┘                        └────────────┘
+  SpO₂ HR HRV                          reads Health, runs                       renders metrics,
+  workouts rings                       on-device AI, syncs iCloud               feeds assistant</div>
+      <p style="margin-bottom:0"><strong>One exception:</strong> WeatherKit REST, Apple Maps Server API,
+      MusicKit web, and APNs expose token-auth REST endpoints the Android glasses can call
+      <em>directly</em> — no iPhone (§6).</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="nbr">01</span>What WWDC 2026 changed</h2>
+    <div class="card win">
+      <h3>Foundation Models — now hybrid, provider-agnostic, multimodal</h3>
+      <p>The on-device Apple model is reached through a <strong>Language Model protocol that also accepts
+      Claude, Gemini, or any conforming provider</strong> behind the same Swift API. Prompts are now
+      <strong>multimodal — images alongside text</strong> — with on-device Vision tools (OCR, barcode)
+      the model can call. Private Cloud Compute is free for Small-Business-Program apps under 2M downloads.</p>
+      <p style="margin-bottom:0"><strong>Why it matters for AR:</strong> the iPhone bridge can take a
+      <strong>camera frame from the glasses</strong>, pair it with <strong>live Watch vitals</strong>, and
+      run <strong>one multimodal reasoning step on-device</strong> — "what am I looking at, and is anything
+      notable given my heart rate?" That's the flagship use case in §5.</p>
+    </div>
+    <p><strong>HealthKit:</strong> WWDC26 opened <strong>heart-rate &amp; cycling-power zones</strong> to
+    third-party apps — read the config, get <strong>live zone updates during a workout</strong>, set custom
+    boundaries. iOS 27 adds perimenopause/menopause tracking. <strong>App Intents:</strong> new
+    View Annotations API for on-screen awareness. Plus Image Playground &amp; Visual Intelligence APIs.</p>
+  </section>
+
+  <section>
+    <h2><span class="nbr">02–03</span>Body metrics via HealthKit</h2>
+    <p>A SwiftUI iOS 27 app with the HealthKit (+ Background Delivery), CloudKit, and Background Modes
+    capabilities. Request the narrowest read set; permissions are per-type and user-revocable.</p>
+    <table>
+      <tr><th>Metric</th><th>Identifier</th><th>For AR</th></tr>
+      <tr><td>Heart rate</td><td><code>.heartRate</code></td><td>the live HUD number</td></tr>
+      <tr><td>Blood oxygen</td><td><code>.oxygenSaturation</code></td><td>SpO₂ %, sampled</td></tr>
+      <tr><td>HR variability</td><td><code>.heartRateVariabilitySDNN</code></td><td>stress/recovery</td></tr>
+      <tr><td>Respiratory rate</td><td><code>.respiratoryRate</code></td><td>breaths/min</td></tr>
+      <tr><td>VO₂ max</td><td><code>.vo2Max</code></td><td>fitness trend</td></tr>
+      <tr><td>Live HR zones</td><td>WWDC26 zone API</td><td><strong>new</strong> — live during workout</td></tr>
+      <tr><td>Exercise / energy</td><td><code>.activeEnergyBurned</code>, <code>workoutType()</code></td><td>kcal + sessions</td></tr>
+      <tr><td>Activity rings</td><td><code>activitySummaryType()</code></td><td>Move/Exercise/Stand</td></tr>
+    </table>
+    <p>Live numbers use a long-lived <code>HKAnchoredObjectQuery</code> with an <code>updateHandler</code>;
+    the densest stream comes from an <code>HKLiveWorkoutBuilder</code> in a paired Watch extension.
+    <code>enableBackgroundDelivery</code> + an <code>HKObserverQuery</code> wake the app on each new sample
+    so vitals reach the glasses with the phone in your pocket.</p>
+    <pre><code>store.enableBackgroundDelivery(for: HKQuantityType(.heartRate),
+                              frequency: .immediate) { _, _ in }
+// HKObserverQuery handler → read sample → relay to glasses → completionHandler()</code></pre>
+  </section>
+
+  <section>
+    <h2><span class="nbr">04</span>The relay — one JSON envelope, three transports</h2>
+    <pre><code>{ "type":"health", "ts":1718200000, "hr":78, "spo2":98,
+  "hrZone":2, "kcalActive":142,
+  "rings":{"move":0.62,"exercise":0.40,"stand":0.75} }</code></pre>
+    <p><strong>(a) BLE / LAN</strong> — lowest latency; extend the glasses' companion server
+    (<code>/api/health</code>) or a BLE GATT characteristic. <strong>(b) CloudKit</strong> — the
+    system-of-record; private database + <code>CKQuerySubscription</code> silent push, syncs across the
+    user's own devices. <strong>(c) Cloudflare-tunnelled relay</strong> — the exact TapInsight
+    <code>image_relay.py</code> pull pattern, IP-proof, works on any network. Recommended: (c) for record +
+    away-from-home, (a) for the live tick.</p>
+  </section>
+
+  <section>
+    <h2><span class="nbr">05</span>The Apple Intelligence layer — the point</h2>
+    <p>The iPhone isn't a pipe, it's a <strong>reasoning node</strong> between the Watch's senses and the
+    glasses' eyes. One multimodal call fuses both:</p>
+    <pre><code>import FoundationModels
+let session = LanguageModelSession(model: .systemDefault)  // or Claude / Gemini
+let reply = try await session.respond(to: Prompt {
+    "Heart rate \(hr) bpm, SpO₂ \(spo2)%. The glasses camera sees:"
+    cameraFrame                       // multimodal image input — new in WWDC26
+    "What is this, and anything notable given the vitals?"
+})
+relayToGlasses(text: reply.content)   // HUD + readout-engine TTS</code></pre>
+    <p>On-device keeps vitals private. The provider protocol lets you A/B Apple's model against Claude or
+    Gemini with no rewrite. Threshold events (an SpO₂ dip, a zone change) compose a short on-device summary
+    and ring the glasses' existing notification bell.</p>
+  </section>
+
+  <section>
+    <h2><span class="nbr">06</span>Apple services the glasses call directly</h2>
+    <p>Token-auth REST — no iPhone, straight from the Android OkHttp stack:</p>
+    <table>
+      <tr><th>Service</th><th>Auth</th><th>AR use</th></tr>
+      <tr><td>WeatherKit REST</td><td>JWT (.p8, ES256)</td><td>live weather HUD, phone-free</td></tr>
+      <tr><td>Apple Maps Server API</td><td>JWT → token</td><td>geocode / directions</td></tr>
+      <tr><td>MusicKit web</td><td>dev + user token</td><td>now-playing, library</td></tr>
+      <tr><td>APNs</td><td>JWT (.p8)</td><td>push into a relay</td></tr>
+    </table>
+    <p>WeatherKit is the clean direct win — the glasses already do HTTP, so a weather HUD needs no phone at all.</p>
+  </section>
+
+  <section>
+    <h2><span class="nbr">07–08</span>Glasses side, and the honest limits</h2>
+    <p>The glasses half is light — all patterns from the starter guide: receive the envelope
+    (<code>CompanionServer</code> / relay pull / BLE), render a metrics tier on the binocular HUD
+    (white-on-black, throttled redraws — remember the dim-mode reboot lesson), feed notable changes to the
+    readout engine, and hand health context + camera frames to the assistant.</p>
+    <div class="card flag">
+      <p style="margin-bottom:0"><strong>Limits, honestly:</strong> health data is sensitive — keep it
+      on-device, and any relay must be the user's own and opt-in (App Review enforces this). No medical
+      claims — consumer SpO₂/HR are wellness signals, not diagnostics. The dense live stream needs an
+      <strong>Apple Watch + a Watch extension</strong>; phone-only samples are sparse. And APIs move fast —
+      a frontier model should fetch the live Apple docs and WWDC26 session videos before building, treating
+      every signature here as a shape to confirm, not a contract.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Sources</h2>
+    <p>WWDC26 primary: <a href="https://developer.apple.com/wwdc26/guides/apple-intelligence/">Apple — WWDC26 Apple Intelligence guide</a> ·
+    <a href="https://developer.apple.com/videos/play/wwdc2026/241">Session 241: Foundation Models</a> ·
+    <a href="https://developer.apple.com/videos/play/wwdc2026/339">Session 339: bring an LLM provider</a> ·
+    <a href="https://developer.apple.com/videos/play/wwdc2026/319">Session 319: Foundation Model on PCC</a></p>
+    <p>Coverage: <a href="https://www.macrumors.com/2026/06/08/wwdc-2026-recap/">MacRumors WWDC 2026 recap</a> ·
+    <a href="https://www.iclarified.com/101152/here-are-the-263-new-features-revealed-in-apples-massive-wwdc-2026-slide">iClarified — 263 features</a> ·
+    <a href="https://appbot.co/blog/apple-wwdc-2026-ai-foundation-model-update/">Appbot — hybrid AI platform</a> ·
+    <a href="https://www.techtimes.com/articles/318039/20260609/wwdc-2026-developer-tools-foundation-models-now-swaps-ai-providers-without-code-changes.htm">TechTimes — provider swapping</a> ·
+    <a href="https://the5krunner.com/2026/06/08/watchos-27-features-compatibility/">the5krunner — watchOS 27</a></p>
+    <p>Confirm against live Apple docs before building: HealthKit · CloudKit · FoundationModels · WeatherKit REST.</p>
+    <a class="back" href="x3-guide-hub.html">← Back to the guide library</a>
+  </section>
+
+  <footer>
+    <hr class="rule" style="margin-bottom:22px">
+    Fable Bridge Guide · grounded in the WWDC 2026 releases (June 2026). Full text: <code>FABLE_X3_APPLE_BRIDGE_GUIDE.md</code>.<br>
+    Companion: <a href="x3-guide-hub.html">the X3 vibe-coding guide library</a>.
+  </footer>
+</main>
+<script>
+  const sky=document.getElementById('stars');
+  for(let i=0;i<70;i++){const s=document.createElement('span');
+    s.style.left=Math.random()*100+'vw';s.style.top=Math.random()*100+'vh';
+    s.style.animationDelay=(Math.random()*4).toFixed(2)+'s';
+    s.style.animationDuration=(2.4+Math.random()*3.2).toFixed(2)+'s';sky.appendChild(s);}
+</script>
+</body>
+</html>

@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TapInsight · Network Shares (SMB)</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#0c0f14; color:#e6edf3; font-family:-apple-system,Segoe UI,Roboto,sans-serif; font-size:15px; }
+  header { padding:16px 18px; border-bottom:1px solid #1c2530; background:#0f141b; position:sticky; top:0; }
+  header h1 { margin:0; font-size:17px; font-weight:600; }
+  header p { margin:4px 0 0; color:#8aa0b4; font-size:12px; }
+  .wrap { max-width:680px; margin:0 auto; padding:16px 18px 40px; }
+  .card { background:#121823; border:1px solid #1c2530; border-radius:12px; padding:16px; margin-bottom:16px; }
+  .card h2 { margin:0 0 12px; font-size:14px; color:#9fc6e8; font-weight:600; }
+  label { display:block; font-size:12px; color:#8aa0b4; margin:10px 0 4px; }
+  input { width:100%; padding:9px 10px; background:#0c1118; border:1px solid #28323f; border-radius:8px; color:#e6edf3; font-size:14px; }
+  input:focus { outline:none; border-color:#3d7fb5; }
+  /* Dim placeholders so example hints can't be mistaken for typed values. */
+  input::placeholder { color:#465264; font-style:italic; }
+  .row { display:flex; gap:10px; } .row > div { flex:1; }
+  .btns { display:flex; gap:10px; margin-top:14px; flex-wrap:wrap; }
+  button { padding:9px 14px; border-radius:8px; border:1px solid #28323f; background:#1a2230; color:#e6edf3; font-size:14px; cursor:pointer; }
+  button.primary { background:#1f6feb; border-color:#1f6feb; }
+  button.ghost { background:transparent; }
+  button:active { transform:translateY(1px); }
+  .status { margin-top:10px; font-size:13px; min-height:18px; }
+  .ok { color:#3fb950; } .err { color:#f85149; }
+  .share { display:flex; align-items:center; gap:10px; padding:10px 0; border-top:1px solid #1c2530; }
+  .share:first-child { border-top:none; }
+  .share .meta { flex:1; min-width:0; }
+  .share .meta b { display:block; font-size:14px; }
+  .share .meta span { color:#8aa0b4; font-size:12px; word-break:break-all; }
+  .browse { margin-top:10px; }
+  .crumb { font-size:12px; color:#8aa0b4; margin-bottom:8px; word-break:break-all; }
+  .entry { display:flex; align-items:center; gap:8px; padding:8px 6px; border-radius:8px; cursor:pointer; }
+  .entry:hover { background:#16202c; }
+  .entry .ic { width:18px; text-align:center; }
+  .entry .sz { color:#6b7d8f; font-size:12px; margin-left:auto; }
+  .muted { color:#6b7d8f; font-size:12px; }
+  .hint { background:#10202b; border:1px solid #1d3a47; border-radius:8px; padding:10px 12px; font-size:12px; color:#9fd0e6; margin-bottom:16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Network Shares (SMB)</h1>
+  <p>Browse and play media from a NAS or shared folder on your Wi-Fi.</p>
+</header>
+<div class="wrap">
+  <div style="display:flex;gap:0;margin-bottom:16px;border-radius:8px;overflow:hidden;border:1px solid #28323f">
+    <a href="/" style="flex:1;padding:9px;text-align:center;text-decoration:none;font-size:12px;font-weight:600;color:#8aa0b4;background:#121823">Setup</a>
+    <a href="/dashboard" style="flex:1;padding:9px;text-align:center;text-decoration:none;font-size:12px;font-weight:600;color:#8aa0b4;background:#121823">Dashboard</a>
+    <a href="/radio" style="flex:1;padding:9px;text-align:center;text-decoration:none;font-size:12px;font-weight:600;color:#8aa0b4;background:#121823">TapRadio</a>
+    <a href="/library" style="flex:1;padding:9px;text-align:center;text-decoration:none;font-size:12px;font-weight:600;color:#8aa0b4;background:#121823">Library</a>
+    <a href="/smb" style="flex:1;padding:9px;text-align:center;text-decoration:none;font-size:12px;font-weight:600;color:#000;background:#1f6feb">Shares</a>
+  </div>
+  <div class="hint">Add a share by host/IP and credentials, tap <b>Test</b> to verify, then <b>Save</b>. SMB2/3 only (SMB1 is off for security). Playback on the glasses arrives in the next update — for now this confirms connectivity and lets you browse.</div>
+
+  <div class="card">
+    <h2 id="formTitle">Add a share</h2>
+    <button class="primary" style="width:100%" onclick="scanLan()">🔍&nbsp; Scan my Wi-Fi for shares</button>
+    <div id="discover" class="browse" style="display:none; margin-top:10px"></div>
+    <div class="muted" style="margin:12px 0 2px">…or enter the details manually:</div>
+    <input type="hidden" id="f_id">
+    <label>Label (optional)</label>
+    <input id="f_label" placeholder="Living room NAS">
+    <div class="row">
+      <div><label>Host / IP</label><input id="f_host" placeholder="192.168.1.50"></div>
+      <div><label>Share name</label><input id="f_share" placeholder="media"></div>
+    </div>
+    <label>Subfolder (optional)</label>
+    <input id="f_path" placeholder="Music/Albums">
+    <div class="row">
+      <div><label>Username</label><input id="f_username" placeholder="guest" autocomplete="off"></div>
+      <div><label>Domain (optional)</label><input id="f_domain" placeholder="WORKGROUP"></div>
+    </div>
+    <label>Password</label>
+    <input id="f_password" type="password" placeholder="(leave blank to keep existing)" autocomplete="off">
+    <div class="btns">
+      <button class="primary" onclick="saveShare()">Save</button>
+      <button onclick="testForm()">Test</button>
+      <button class="ghost" onclick="resetForm()">Clear</button>
+    </div>
+    <div class="status" id="formStatus"></div>
+  </div>
+
+  <div class="card">
+    <h2>Saved shares</h2>
+    <div id="shareList"><div class="muted">Loading…</div></div>
+  </div>
+
+  <div class="card" id="browseCard" style="display:none">
+    <h2 id="browseTitle">Browse</h2>
+    <div class="crumb" id="crumb"></div>
+    <div class="browse" id="browseList"></div>
+    <div class="status" id="browseStatus"></div>
+  </div>
+</div>
+<script>
+let shares = [];
+let curShareId = null, curPath = "";
+
+function setStatus(id, msg, cls) { const e=document.getElementById(id); e.textContent=msg||""; e.className="status "+(cls||""); }
+function fmtSize(n){ if(!n) return ""; const u=["B","KB","MB","GB"]; let i=0,v=n; while(v>=1024&&i<u.length-1){v/=1024;i++;} return v.toFixed(v<10&&i>0?1:0)+u[i]; }
+function formShare(){ return {
+  id:document.getElementById('f_id').value,
+  label:document.getElementById('f_label').value,
+  host:document.getElementById('f_host').value,
+  share:document.getElementById('f_share').value,
+  path:document.getElementById('f_path').value,
+  username:document.getElementById('f_username').value,
+  domain:document.getElementById('f_domain').value,
+  password:document.getElementById('f_password').value
+};}
+function resetForm(){ ['f_id','f_label','f_host','f_share','f_path','f_username','f_domain','f_password'].forEach(i=>document.getElementById(i).value=''); document.getElementById('formTitle').textContent='Add a share'; setStatus('formStatus',''); }
+
+async function loadShares(){
+  try {
+    const r = await fetch('/api/smb/list'); const j = await r.json();
+    shares = j.shares || []; renderShares();
+  } catch(e){ document.getElementById('shareList').innerHTML='<div class="err">Failed to load.</div>'; }
+}
+function renderShares(){
+  const el = document.getElementById('shareList');
+  if(!shares.length){ el.innerHTML='<div class="muted">No shares yet.</div>'; return; }
+  el.innerHTML='';
+  shares.forEach(s=>{
+    const d=document.createElement('div'); d.className='share';
+    d.innerHTML=`<div class="meta"><b>${esc(s.label||(s.host+'/'+s.share))}</b><span>\\\\${esc(s.host)}\\${esc(s.share)}${s.path?('\\'+esc(s.path)):''} · ${esc(s.username||'guest')}</span></div>`;
+    const browse=mkBtn('Browse',()=>openBrowse(s.id));
+    const edit=mkBtn('Edit',()=>editShare(s));
+    const del=mkBtn('Remove',()=>removeShare(s.id)); del.classList.add('ghost');
+    d.appendChild(browse); d.appendChild(edit); d.appendChild(del); el.appendChild(d);
+  });
+}
+function mkBtn(t,fn){ const b=document.createElement('button'); b.textContent=t; b.onclick=fn; return b; }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function editShare(s){
+  document.getElementById('f_id').value=s.id;
+  document.getElementById('f_label').value=s.label||'';
+  document.getElementById('f_host').value=s.host||'';
+  document.getElementById('f_share').value=s.share||'';
+  document.getElementById('f_path').value=s.path||'';
+  document.getElementById('f_username').value=s.username||'';
+  document.getElementById('f_domain').value=s.domain||'';
+  document.getElementById('f_password').value='';
+  document.getElementById('formTitle').textContent='Edit share';
+  setStatus('formStatus', s.hasPassword?'Password kept unless you type a new one.':'', 'muted');
+  window.scrollTo(0,0);
+}
+function missingField(s){
+  if(!(s.host||'').trim()) return 'Host / IP is required.';
+  if(!(s.share||'').trim()) return 'Share name is required — type it, the grey "media" is just an example.';
+  return null;
+}
+async function saveShare(){
+  const s=formShare();
+  const miss=missingField(s);
+  if(miss){ setStatus('formStatus',miss,'err'); return; }
+  setStatus('formStatus','Saving…');
+  try{
+    const r=await fetch('/api/smb/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)});
+    const j=await r.json();
+    if(j.status==='saved'){ setStatus('formStatus','Saved.','ok'); resetForm(); loadShares(); }
+    else setStatus('formStatus', j.error||'Save failed.','err');
+  }catch(e){ setStatus('formStatus','Save failed.','err'); }
+}
+async function testForm(){
+  const s=formShare();
+  const miss=missingField(s);
+  if(miss){ setStatus('formStatus',miss,'err'); return; }
+  setStatus('formStatus','Testing connection…');
+  try{
+    const r=await fetch('/api/smb/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)});
+    const j=await r.json();
+    if(j.ok) setStatus('formStatus','Connected — '+j.entries+' item(s) in share root.','ok');
+    else setStatus('formStatus','Failed: '+(j.error||'unknown'),'err');
+  }catch(e){ setStatus('formStatus','Test failed.','err'); }
+}
+async function removeShare(id){
+  if(!confirm('Remove this share?')) return;
+  try{ await fetch('/api/smb/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})}); loadShares(); if(curShareId===id) document.getElementById('browseCard').style.display='none'; }catch(e){}
+}
+
+function openBrowse(id){ curShareId=id; curPath=''; const s=shares.find(x=>x.id===id);
+  document.getElementById('browseCard').style.display='block';
+  document.getElementById('browseTitle').textContent='Browse · '+(s?(s.label||s.host+'/'+s.share):'');
+  document.getElementById('browseCard').scrollIntoView({behavior:'smooth'});
+  loadDir('');
+}
+async function loadDir(path){
+  curPath=path;
+  document.getElementById('crumb').textContent='/'+path;
+  setStatus('browseStatus','Loading…');
+  const list=document.getElementById('browseList'); list.innerHTML='';
+  try{
+    const r=await fetch('/api/smb/browse?id='+encodeURIComponent(curShareId)+'&path='+encodeURIComponent(path));
+    const j=await r.json();
+    if(j.error){ setStatus('browseStatus',j.error,'err'); return; }
+    setStatus('browseStatus','');
+    if(path){ const up=mkEntry('⬆','..',false); up.onclick=()=>loadDir(path.split('/').slice(0,-1).join('/')); list.appendChild(up); }
+    (j.entries||[]).forEach(e=>{
+      const row=mkEntry(e.dir?'📁':'📄', e.name, e.dir, e.size);
+      if(e.dir) row.onclick=()=>loadDir(path?path+'/'+e.name:e.name);
+      list.appendChild(row);
+    });
+    if(!(j.entries||[]).length) list.innerHTML='<div class="muted">Empty folder.</div>';
+  }catch(e){ setStatus('browseStatus','Browse failed.','err'); }
+}
+function mkEntry(ic,name,isDir,size){
+  const d=document.createElement('div'); d.className='entry';
+  d.innerHTML=`<span class="ic">${ic}</span><span>${esc(name)}</span>${size?`<span class="sz">${fmtSize(size)}</span>`:''}`;
+  return d;
+}
+
+// ── LAN discovery: scan → pick server → pick share → prefill form ──
+async function scanLan(){
+  const panel=document.getElementById('discover');
+  panel.style.display='block';
+  panel.innerHTML='<div class="muted">Scanning your Wi-Fi… (a few seconds)</div>';
+  setStatus('formStatus','');
+  try{
+    const r=await fetch('/api/smb/discover'); const j=await r.json();
+    const hosts=j.hosts||[];
+    if(j.error){ panel.innerHTML='<div class="err">'+esc(j.error)+'</div>'; return; }
+    if(!hosts.length){ panel.innerHTML='<div class="muted">No SMB servers found on '+esc(j.subnet||'your network')+'. Enter one manually below.</div>'; return; }
+    panel.innerHTML='<div class="muted">Found '+hosts.length+' server(s) on '+esc(j.subnet||'')+'. Tap one:</div>';
+    hosts.forEach(h=>{
+      const row=mkEntry('🖥', h.name||h.ip, false);
+      if(h.name) row.querySelector('span:last-child').className='';
+      const sz=document.createElement('span'); sz.className='sz'; sz.textContent=h.ip; row.appendChild(sz);
+      row.onclick=()=>pickHost(h.ip,row);
+      panel.appendChild(row);
+    });
+  }catch(e){ panel.innerHTML='<div class="err">Scan failed.</div>'; }
+}
+async function pickHost(ip,row){
+  document.getElementById('f_host').value=ip;
+  // Clear any previously expanded share list under other hosts.
+  document.querySelectorAll('.share-sub').forEach(n=>n.remove());
+  const sub=document.createElement('div'); sub.className='share-sub'; sub.style.margin='4px 0 8px 22px';
+  sub.innerHTML='<div class="muted">Loading shares on '+esc(ip)+'…</div>';
+  row.after(sub);
+  const u=document.getElementById('f_username').value, p=document.getElementById('f_password').value, d=document.getElementById('f_domain').value;
+  try{
+    const q='/api/smb/shares?host='+encodeURIComponent(ip)+'&username='+encodeURIComponent(u)+'&password='+encodeURIComponent(p)+'&domain='+encodeURIComponent(d);
+    const r=await fetch(q); const j=await r.json();
+    const shares=j.shares||[];
+    if(j.error || !shares.length){
+      sub.innerHTML='<div class="err">'+esc(j.error||'No shares visible.')+' Enter username/password below, then tap this server again.</div>';
+      return;
+    }
+    sub.innerHTML='<div class="muted">Tap a share to use it:</div>';
+    shares.forEach(name=>{
+      const e=mkEntry('📁', name, true);
+      e.onclick=()=>{
+        document.getElementById('f_host').value=ip;
+        document.getElementById('f_share').value=name;
+        window.scrollTo(0,0);
+        setStatus('formStatus','Host + share filled. Add username/password if needed, then Save.','ok');
+      };
+      sub.appendChild(e);
+    });
+  }catch(e){ sub.innerHTML='<div class="err">Could not list shares.</div>'; }
+}
+
+loadShares();
+</script>
+</body>
+</html>

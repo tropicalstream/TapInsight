@@ -29,10 +29,9 @@ import kotlin.random.Random
  * central orb swells in time. Music drives the rest:
  *  - sub-bass glows up from the bottom of the frame
  *  - bass pulses the central orb
- *  - mids ripple through three slow ribbon waves, each following its own
- *    slice of the spectrum (hues drift indigo to soft violet, seafoam to
- *    teal, powder blue to gentle lavender; quiet passages desaturate —
- *    never neon)
+ *  - bass, mids, and highs ripple through three distinct ribbons: bass is
+ *    broad and heavy, mids are articulated, highs are tight and quick; each
+ *    keeps its own color family while volume raises color intensity
  *  - highs shimmer as stars; "air" sets how fast they twinkle
  *
  * A "breathe in / hold / breathe out" hint accompanies the first two cycles.
@@ -169,8 +168,6 @@ class BreathingVisualizerView(context: Context) : View(context) {
         isFocusable = false
         setBackgroundColor(Color.BLACK)
     }
-
-    private val ribbonHsv = FloatArray(3)
 
     private data class Star(
         val x: Float,
@@ -399,11 +396,53 @@ class BreathingVisualizerView(context: Context) : View(context) {
             }
         }
 
-        // Mids: three ribbon waves, each following its own spectrum slice.
-        // Hues: indigo->soft violet, seafoam->teal, powder blue->gentle lavender.
-        drawRibbon(canvas, w, h, 0.55f, t * 0.65f, bands[1] * 0.6f + bands[2] * 0.4f, 232f, 268f, 2.6f)
-        drawRibbon(canvas, w, h, 0.62f, t * 0.5f + 2.1f, bands[2], 162f, 184f, 2.2f)
-        drawRibbon(canvas, w, h, 0.69f, t * 0.4f + 4.2f, bands[3], 205f, 252f, 1.8f)
+        // Three frequency-true ribbons. Their shapes read like the sound:
+        // bass rolls broadly, mids articulate, highs ripple tightly.
+        drawRibbon(
+            canvas = canvas,
+            w = w,
+            h = h,
+            yFrac = 0.55f,
+            phase = t * 0.48f,
+            level = bands[1],
+            quietColor = 0xFF263B86.toInt(),
+            loudColor = 0xFF7D5CFF.toInt(),
+            baseWidth = 2.8f,
+            primaryCycles = 1.35f,
+            harmonicCycles = 2.2f,
+            harmonicMix = 0.18f,
+            points = 22
+        )
+        drawRibbon(
+            canvas = canvas,
+            w = w,
+            h = h,
+            yFrac = 0.62f,
+            phase = t * 0.78f + 2.1f,
+            level = bands[2],
+            quietColor = 0xFF2B867D.toInt(),
+            loudColor = 0xFF69FFE1.toInt(),
+            baseWidth = 2.3f,
+            primaryCycles = 2.7f,
+            harmonicCycles = 5.4f,
+            harmonicMix = 0.32f,
+            points = 30
+        )
+        drawRibbon(
+            canvas = canvas,
+            w = w,
+            h = h,
+            yFrac = 0.69f,
+            phase = t * 1.22f + 4.2f,
+            level = bands[3],
+            quietColor = 0xFF7891C8.toInt(),
+            loudColor = 0xFFE7F1FF.toInt(),
+            baseWidth = 1.7f,
+            primaryCycles = 5.8f,
+            harmonicCycles = 11.6f,
+            harmonicMix = 0.42f,
+            points = 44
+        )
 
         // Bass: the central orb, swelling with the breath.
         val cx = w / 2f
@@ -456,29 +495,29 @@ class BreathingVisualizerView(context: Context) : View(context) {
         yFrac: Float,
         phase: Float,
         level: Float,
-        hueCalm: Float,
-        hueLively: Float,
-        baseWidth: Float
+        quietColor: Int,
+        loudColor: Int,
+        baseWidth: Float,
+        primaryCycles: Float,
+        harmonicCycles: Float,
+        harmonicMix: Float,
+        points: Int
     ) {
         val lv = level.coerceIn(0f, 1f)
         val amp = (0.085f * lv + 0.012f) * h
         val baseY = h * yFrac
         ribbonPath.reset()
-        for (i in 0..26) {
-            val x = i * w / 26
-            val k = i / 26f
-            val y = sin(4.2f * k + phase) * amp * 0.85f + baseY +
-                amp * 0.4f * sin(9.1f * k - 1.7f * phase)
+        for (i in 0..points) {
+            val x = i * w / points
+            val k = i / points.toFloat()
+            val primary = sin(6.2831855f * primaryCycles * k + phase)
+            val harmonic = sin(6.2831855f * harmonicCycles * k - 1.7f * phase)
+            val y = baseY + amp * (primary * (1f - harmonicMix) + harmonic * harmonicMix)
             if (i == 0) ribbonPath.moveTo(x, y) else ribbonPath.lineTo(x, y)
         }
-        // Hue drifts from its calm shade toward its lively shade with level;
-        // saturation and value rise with it (quiet = desaturated, never neon).
-        ribbonHsv[0] = hueCalm + (hueLively - hueCalm) * lv
-        ribbonHsv[1] = 0.25f * lv + 0.4f
-        ribbonHsv[2] = 0.3f * lv + 0.7f
-        val alpha = (88 + 70 * lv).toInt().coerceIn(0, 255)
-        ribbonPaint.color = (Color.HSVToColor(ribbonHsv) and 0x00FFFFFF) or (alpha shl 24)
-        ribbonPaint.strokeWidth = baseWidth + 2.2f * lv
+        val alpha = (82 + 128 * lv).toInt().coerceIn(0, 255)
+        ribbonPaint.color = withAlpha(lerpColor(quietColor, loudColor, lv), alpha)
+        ribbonPaint.strokeWidth = baseWidth + 2.6f * lv
         canvas.drawPath(ribbonPath, ribbonPaint)
     }
 

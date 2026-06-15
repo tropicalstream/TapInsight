@@ -344,6 +344,15 @@
       default        : return '·';
     }
   }
+  function extOf(name){ return String(name || '').split('.').pop().toLowerCase(); }
+  function videoMimeForName(name){
+    var ext = extOf(name);
+    return {
+      mp4:'video/mp4', m4v:'video/mp4', webm:'video/webm',
+      mkv:'video/x-matroska', mov:'video/quicktime',
+      '3gp':'video/3gpp', avi:'video/x-msvideo'
+    }[ext] || 'video/*';
+  }
 
   // ── Breadcrumbs ────────────────────────────────────────────────────
   function renderCrumbs(crumbs){
@@ -386,8 +395,30 @@
     renderFolder();
   }
 
+  // Top-level "Network Share" tile → opens the dedicated SMB browser page.
+  // Shown only at the library root so LAN shares sit alongside the on-device
+  // folders without colliding with a local folder of the same name.
+  function appendNetworkShareTile(){
+    var ns = document.createElement('div');
+    ns.className = 'entry folder';
+    ns.tabIndex = 0;
+    ns.innerHTML =
+      '<div class="selbox"></div>' +
+      '<div class="ic">🌐</div>' +
+      '<div class="newdot"></div>' +
+      '<div class="txt"><div class="name"><span class="nm">Network Share</span></div>' +
+        '<div class="meta">SMB / NAS</div></div>' +
+      '<div class="arrow">›</div>';
+    ns.addEventListener('click', function(){
+      window.location.href =
+        'https://appassets.androidplatform.net/assets/smb_browser.html';
+    });
+    $main.appendChild(ns);
+  }
+
   function renderFolder(){
     $main.innerHTML = '';
+    if (state.currentFolder === '') appendNetworkShareTile();
     if (!state.folderEntries.length) {
       renderEmptyFolder();
       return;
@@ -427,6 +458,18 @@
       $main.appendChild(albumBar);
       albumBar.querySelector('#btnFolderPlayAll')
         .addEventListener('click', playFolderAsAlbum);
+    }
+    var videoTracks = sorted.filter(function(x){ return x.kind === 'VIDEO'; }).length;
+    if (albumTracks < 2 && videoTracks >= 2) {
+      var videoBar = document.createElement('div');
+      videoBar.className = 'playall-bar';
+      videoBar.innerHTML =
+        '<button class="playall" id="btnFolderVideoPlayAll">' +
+        '<span class="ico">▶</span><span class="lbl">Play All</span>' +
+        '<span class="ct">' + videoTracks + ' videos</span></button>';
+      $main.appendChild(videoBar);
+      videoBar.querySelector('#btnFolderVideoPlayAll')
+        .addEventListener('click', function(){ openNativeVideoQueue(null); });
     }
 
     sorted.forEach(function(e){
@@ -577,7 +620,15 @@
       // audio/video player. The gallery scrolls/zooms to ?focus=
       // and provides rotate/share/download/delete in a lightbox.
       openPhotoInGallery(e.relativePath);
-    } else if (e.kind === 'AUDIO' || e.kind === 'VIDEO' || e.kind === 'TEXT') {
+    } else if (e.kind === 'VIDEO') {
+      if (openNativeVideoQueue(e)) return;
+      clearStashedQueue();
+      openInPlayer({
+        url:   TM.getMediaUrl(e.relativePath),
+        title: e.name.replace(/\.[^.]+$/, ''),
+        kind:  e.kind
+      });
+    } else if (e.kind === 'AUDIO' || e.kind === 'TEXT') {
       // Hand off to the same media_player.html the browser uses for any
       // tapped audio/video URL — the WebView's shouldInterceptRequest wire
       // covers the /media/... stream with Range-aware partial content.
@@ -598,6 +649,35 @@
         kind:  e.kind
       });
     }
+  }
+
+  function openNativeVideoQueue(tappedEntry){
+    try {
+      if (!(window.TapMedia && typeof TapMedia.openNativeVideoPlaylist === 'function')) return false;
+      if (state.mode !== 'folder') return false;
+      var videos = (state.folderEntries || []).filter(function(s){ return s.kind === 'VIDEO'; });
+      if (!videos.length) return false;
+      videos.sort(function(a,b){ return a.name.localeCompare(b.name); });
+      var start = 0;
+      if (tappedEntry) {
+        for (var i = 0; i < videos.length; i++) {
+          if (videos[i].relativePath === tappedEntry.relativePath) { start = i; break; }
+        }
+      }
+      var queue = videos.map(function(s){
+        return {
+          title: s.name.replace(/\.[^.]+$/, ''),
+          relativePath: s.relativePath,
+          mime: videoMimeForName(s.name)
+        };
+      });
+      var result = JSON.parse(TapMedia.openNativeVideoPlaylist(JSON.stringify(queue), start));
+      if (result && result.status === 'opened') return true;
+      if (result && result.error) toast(result.error, true);
+    } catch (err) {
+      toast('Native video failed', true);
+    }
+    return false;
   }
 
   /**

@@ -101,10 +101,10 @@ class TapRadioTool(private val context: Context) : AiTapTool {
             "irrelevant, or empty, say briefly what TapRadio searched, then call your built-in googleSearch tool " +
             "INTERNALLY (voice-grounded only) to retrieve current podcast availability or context. SPEAK the grounded " +
             "summary aloud. DO NOT call open_taplink to a Google search URL — opening the browser is a separate user-" +
-            "visible action that requires its own consent (see RULE ZERO-E). After the grounded summary, close with " +
-            "ONE offer: 'I can also have TapClaw dig deeper for more options.' That offer is mandatory under RULE 19, " +
-            "even if you are confident about the result. Wait for explicit user confirmation before calling " +
-            "tapclaw_agent or open_taplink. Do not substitute another media type without confirmation."
+            "visible action that requires its own consent (see RULE ZERO-E). Do NOT proactively offer to have " +
+            "TapClaw dig deeper or cast a wider net — answer and stop. Call tapclaw_agent only if the user " +
+            "explicitly asks for more options, and wait for that explicit request (same gate as RULE ZERO-E). " +
+            "Do not substitute another media type without confirmation."
 
     private fun podcastNoResultFallbackInstruction(topic: String): String =
         "TapRadio searched Apple Podcasts/iTunes for podcasts about '$topic' and found nothing useful. " +

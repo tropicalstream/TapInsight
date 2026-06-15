@@ -138,6 +138,13 @@ class MainActivity :
 
     companion object {
         private const val EXTRA_BROWSER_INITIAL_URL = "tapclaw_initial_url"
+        // Battery-temp backstop only. Battery lags the CPU/GPU die by ~20C, so
+        // it's a poor primary signal; the PowerManager thermal-status listener
+        // (SEVERE+) is the real guard. Raised from 365 (36.5C) — which tripped
+        // during NORMAL viewing and paused playback — to a true last-resort near
+        // the observed ~38C reboot point.
+        private const val YOUTUBE_THERMAL_CUTOFF_DECI_C = 380
+        private const val YOUTUBE_THERMAL_COOLDOWN_MS = 60_000L
 
         /**
          * Phase 4v — reader-mode script. Extracts the main article (paragraph
@@ -424,6 +431,28 @@ class MainActivity :
             return lower.contains("playurl=") ||
                 lower.contains("autoplay=1") ||
                 lower.contains("spotifyqueue=")
+        }
+
+        @JvmStatic
+        internal fun containsYouTubePlaybackReference(text: String): Boolean {
+            val lower = text.lowercase(Locale.US)
+            val isYouTube = lower.contains("youtube.com") || lower.contains("youtu.be")
+            if (!isYouTube) return false
+            return lower.contains("/watch") ||
+                lower.contains("/shorts/") ||
+                lower.contains("youtube.com/embed/") ||
+                lower.contains("autoplay=1") ||
+                lower.contains("taplink_autoplay=")
+        }
+
+        /**
+         * True for YouTube URLs that can immediately spin up the video
+         * decoder/compositor on restore. Home/search/results pages are safe
+         * to persist; watch/shorts/embed/autoplay pages are not.
+         */
+        @JvmStatic
+        internal fun isYouTubePlaybackUrl(url: String): Boolean {
+            return containsYouTubePlaybackReference(url)
         }
 
         @JvmStatic
@@ -1125,14 +1154,31 @@ class MainActivity :
     private var nativeVideoPlayer: ExoPlayer? = null
     private var nativeVideoOverlay: FrameLayout? = null
     private var nativeVideoPlayerView: PlayerView? = null
+    private var nativeVideoTitleView: View? = null
     private var nativeVideoCloseButton: View? = null
     private var nativeVideoControlsView: View? = null
+    private var nativeVideoPrevButton: TextView? = null
     private var nativeVideoPlayPauseButton: TextView? = null
+    private var nativeVideoNextButton: TextView? = null
     private var nativeVideoSeekBar: SeekBar? = null
     private var nativeVideoTimeText: TextView? = null
     private var nativeVideoPressedControl: String? = null
+    private var nativeVideoCcButton: TextView? = null
+    private var nativeVideoCaptionsAvailable = false
+    private var nativeVideoCaptionsOn = false
+    private var nativeVideoCcMenu: android.widget.LinearLayout? = null
+    // Flattened selectable caption tracks (excludes the "Off" row at menu top).
+    private var nativeVideoCcFlat: List<Pair<androidx.media3.common.Tracks.Group, Int>> = emptyList()
+    private data class NativeVideoQueueItem(val uriText: String, val mimeType: String?, val title: String)
+    private var nativeVideoQueue: List<NativeVideoQueueItem> = emptyList()
+    private var nativeVideoQueueIndex = 0
+    private var nativeVideoHdrCorrectionEnabled = false
+    private val nativeVideoControlsTimeoutMs = 8_000L
     private val hideNativeVideoControlsRunnable = Runnable {
+        nativeVideoTitleView?.visibility = View.GONE
         nativeVideoControlsView?.visibility = View.GONE
+        nativeVideoCloseButton?.visibility = View.GONE   // X hides with the toolbar
+        nativeVideoCcMenu?.visibility = View.GONE        // caption menu times out too
     }
     private val nativeVideoProgressTicker = object : Runnable {
         override fun run() {
@@ -1358,6 +1404,11 @@ class MainActivity :
                 }
             }
 
+    private var youtubeThermalReceiver: BroadcastReceiver? = null
+    private var youtubeThermalStatusListener:
+        android.os.PowerManager.OnThermalStatusChangedListener? = null
+    private var lastYouTubeThermalStopAtMs = 0L
+
     init {
         DebugLog.d("LinkEditing", "MainActivity initialized, isUrlEditing=$isUrlEditing")
     }
@@ -1487,6 +1538,7 @@ class MainActivity :
         dualWebViewGroup.maskToggleListener = this
         dualWebViewGroup.windowCallback = this
         dualWebViewGroup.restoreState()
+        startYouTubeThermalGuard()
 
         // Dim-mode radio captions: the mask's caption ticker polls this
         // provider while the screen is dimmed and shows whatever line it
@@ -7292,9 +7344,11 @@ class MainActivity :
                 state.agentBusy
         if (outputInFlight) {
             unipanelCardHideAwaitingPhaseExit = true
+            DebugLog.d("Unipanel/cardhide", "deferred: phase=${state.phase} agentBusy=${state.agentBusy}")
         } else {
             unipanelCardHideAwaitingPhaseExit = false
             uiHandler.postDelayed(hideUnipanelAssistantCardRunnable, UNIPANEL_CARD_HIDE_MS)
+            DebugLog.d("Unipanel/cardhide", "scheduled hide in ${UNIPANEL_CARD_HIDE_MS}ms")
         }
     }
 
@@ -7915,6 +7969,44 @@ class MainActivity :
 
     private data class CardLink(val url: String, val label: String, val isMedia: Boolean)
 
+    /** Strip internal routing/bell markers from assistant text before it is
+     *  shown on the chat card, so the user never sees (type:X) annotations,
+     *  an `open_taplink:` / `MEDIA:` directive label, or [notify]/[important]
+     *  bell markers. URLs are preserved so populateCardLinks can still extract
+     *  tappable links. Display-only — the raw text is kept for link extraction
+     *  ordering and continuation checks elsewhere. */
+    private fun stripCardDisplayMarkers(text: String): String {
+        if (text.isBlank()) return text
+        var s = text
+        // (type:podcast) / [type:video] / (media:article) — case-insensitive.
+        s = s.replace(Regex("(?i)[\\[(]\\s*(?:type|media)\\s*[:=]\\s*[a-z]+\\s*[\\])]"), "")
+        // Internal directive label at line start (keep the URL after it).
+        s = s.replace(Regex("(?im)^\\s*open_taplink\\s*[:=]\\s*"), "")
+        s = s.replace(Regex("(?im)^\\s*media\\s*[:=]\\s*(?=https?://)"), "")
+        // Bell markers anywhere: [notify], [important], [notify: …].
+        s = s.replace(Regex("(?i)\\[\\s*(?:notify|important)\\b[^\\]]*\\]"), "")
+        // Tidy the whitespace the removals leave behind.
+        s = s.replace(Regex("[ \\t]{2,}"), " ").replace(Regex("\\n{3,}"), "\n\n")
+        return s.trim()
+    }
+
+    /** Remove URLs (now rendered as clean tappable rows) from the card BODY text
+     *  so a link never shows twice — once as a raw, line-wrapped string that
+     *  looks/loads malformed, and once as the row. Leaves the surrounding prose. */
+    private fun stripCardUrlsForBody(text: String): String {
+        var s = text
+        // Whole directive lines first (MEDIA:/open_taplink: + their URL).
+        s = s.replace(Regex("(?im)^\\s*(?:media|open_taplink)\\s*[:=]\\s*\\S+\\s*$"), "")
+        // Any bare http(s) URL anywhere.
+        s = s.replace(Regex("(?i)\\bhttps?://[^\\s<>\"')\\]]+"), "")
+        // Tidy: collapse the gaps the removals leave, drop now-empty/marker-only
+        // lines, and squeeze blank runs.
+        s = s.replace(Regex("[ \\t]{2,}"), " ")
+            .replace(Regex("(?m)^[ \\t]*[-•:]?[ \\t]*$"), "")
+            .replace(Regex("\\n{2,}"), "\n")
+        return s.trim()
+    }
+
     /** Pull http(s) links out of card/notification text, plus MEDIA:/open_taplink:
      *  directive lines. Classifies each as media (opens in the player) or web
      *  (opens in the browser) by file extension. */
@@ -7949,13 +8041,26 @@ class MainActivity :
         val container = findViewById<android.widget.LinearLayout?>(R.id.unipanelCardLinks) ?: return
         container.removeAllViews()
         val links = extractCardLinks(text)
+        // Diagnostic (grep 'Unipanel/links'): shows whether the card text that
+        // reached us actually carries URLs and how many we extracted, so a
+        // "no links appeared" report can be traced to text-without-URLs vs a
+        // regex miss without another guessing round.
+        DebugLog.d(
+            "Unipanel/links",
+            "populateCardLinks: extracted=${links.size} textLen=${text.length} " +
+                "head='${text.take(180).replace('\n', ' ')}'"
+        )
         if (links.isEmpty()) return
         for (link in links) {
             val row = android.widget.TextView(this).apply {
-                text = (if (link.isMedia) "▶  " else "🔗  ") + link.label
+                this.text = (if (link.isMedia) "▶  " else "🔗  ") + link.label
                 setTextColor(0xFF6FD7FF.toInt())              // link cyan
                 textSize = 11f
                 setPadding(0, 7, 0, 7)
+                // Keep the icon + label on ONE line — the row used to wrap so the
+                // ▶ sat alone above the label. Long labels elide in the middle.
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
                 isClickable = true
                 isFocusable = true
                 paintFlags = paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG
@@ -7982,6 +8087,10 @@ class MainActivity :
         }.onFailure { DebugLog.w("Unipanel", "openCardLink failed: ${it.message}") }
         // collapse the card so the opened page/player isn't hidden behind it
         runCatching { collapseUnipanelChatCardFromOutside() }
+        // Re-arm the auto-hide: the synthesized tap that opened the link also
+        // cancelled the pending hide, so without this the card lingers forever
+        // after a link tap. The user has acted on it — let it time out normally.
+        runCatching { scheduleUnipanelAssistantCardHide() }
     }
 
     private fun renderUnipanelAssistantCard(
@@ -8033,8 +8142,16 @@ class MainActivity :
             }
         }
         lastRenderedUnipanelCardText = latestAssistant
-        card.text = latestAssistant
-        populateCardLinks(latestAssistant)
+        val cardDisplay = runCatching { stripCardDisplayMarkers(latestAssistant) }
+            .getOrDefault(latestAssistant)
+        // Link rendering must NEVER throw past this point — the auto-hide is
+        // scheduled at the end of this method, so an exception here would leave
+        // the card stuck on screen forever. Extract the URLs into tappable rows
+        // FIRST (it needs the URLs present), then show the body with those URLs
+        // stripped so they don't ALSO appear as raw, line-wrapped text.
+        runCatching { populateCardLinks(cardDisplay) }
+        card.text = runCatching { stripCardUrlsForBody(cardDisplay) }
+            .getOrDefault(cardDisplay)
         scroll.visibility = View.VISIBLE
         repositionUnipanelAssistantCard()
         // Short replies sit at the top, long ones scroll. Auto-scroll
@@ -9770,6 +9887,9 @@ class MainActivity :
     }
 
     private fun setupUnipanelNotificationBell() {
+        // The bell's tap target is enlarged via padding on its own container
+        // (see tapbrowser_activity_main.xml) — NOT a TouchDelegate. A delegate
+        // on the shared HUD strip swallowed taps meant for the clock/date.
         findViewById<android.view.View?>(R.id.unipanelHudBellContainer)?.setOnClickListener {
             DebugLog.d("Unipanel", "Bell tapped → toggle notification panel")
             toggleUnipanelNotificationPanel()
@@ -10659,6 +10779,21 @@ class MainActivity :
             return
         }
 
+        // Keep interactive HUD elements (chat card, notification bell, status
+        // chips) tappable even when a YouTube video is FULLSCREEN. Without this
+        // the fullscreen overlay below consumes the tap and the entire HUD is
+        // dead while a video is expanded (Mars: "can't activate anything in the
+        // HUD"). Only an INTERACTIVE hit intercepts here; an empty tap falls
+        // through to the fullscreen player controls (play/pause/seek).
+        if (dualWebViewGroup.isFullScreenOverlayVisible()) {
+            val hudHit = findUnipanelHit(interactionX, interactionY)
+            if (hudHit != null && hudHit.isInteractive) {
+                suppressImmediateWebClickLeak()
+                dispatchUnipanelOverlayTouchIfHit(interactionX, interactionY)
+                return
+            }
+        }
+
         // Intercept touches for fullscreen overlay controls
         if (dualWebViewGroup.isFullScreenOverlayVisible()) {
             suppressImmediateWebClickLeak()
@@ -11519,6 +11654,18 @@ class MainActivity :
             suppressImmediateWebClickLeak()
             dualWebViewGroup.dispatchMaskOverlayTouch(rawScreenX, rawScreenY)
             return true
+        }
+
+        // Interactive HUD elements stay tappable over a fullscreen video (see
+        // the matching guard in dispatchTouchEventAtCursor). Only an interactive
+        // hit intercepts; empty taps fall through to the player controls.
+        if (dualWebViewGroup.isFullScreenOverlayVisible()) {
+            val hudHit = findUnipanelHit(rawScreenX, rawScreenY)
+            if (hudHit != null && hudHit.isInteractive) {
+                suppressImmediateWebClickLeak()
+                dispatchUnipanelOverlayTouchIfHit(rawScreenX, rawScreenY)
+                return true
+            }
         }
 
         if (dualWebViewGroup.isFullScreenOverlayVisible()) {
@@ -12755,6 +12902,11 @@ class MainActivity :
                 openNativeVideoOverlay(uriText, mimeType, title)
             }
         }
+        mediaLibraryBridge.nativeVideoPlaylistOpener = { queueJson, startIndex ->
+            runOnUiBlockingForBridge {
+                openNativeVideoPlaylistOverlay(queueJson, startIndex)
+            }
+        }
         // Add JavaScript interface for custom media handling if needed
         webView.addJavascriptInterface(
                 object {
@@ -12794,17 +12946,14 @@ class MainActivity :
 
             val defaultDashboardUrl = Constants.DEFAULT_URL
 
-            // Belt-and-suspenders: if the persisted session still points at a
-            // TapRadio auto-play URL (radio.html/podcasts.html/spotify.html
-            // carrying playurl=/autoplay=1/spotifyqueue=), refuse to restore
-            // it — those query params cause radio.html to auto-start playback
-            // on load, which is the exact ghost-station bug the user has
-            // reported repeatedly. Wipe the prefs so we don't keep replaying
-            // this on every launch.
-            if (lastUrl != null && isRadioAutoplayUrl(lastUrl)) {
+            // Belt-and-suspenders: refuse restore targets that can restart
+            // hot media loops on launch. Radio autoplay URLs restart audio;
+            // YouTube watch/shorts/embed pages can immediately spin up video
+            // decode after a reboot and push the glasses back into heat.
+            if (lastUrl != null && (isRadioAutoplayUrl(lastUrl) || isYouTubePlaybackUrl(lastUrl))) {
                 DebugLog.w(
                     "WebViewDebug",
-                    "Refusing to restore radio auto-play URL, forcing default dashboard"
+                    "Refusing to restore media playback URL, forcing default dashboard"
                 )
                 try {
                     prefs.edit()
@@ -12997,18 +13146,53 @@ class MainActivity :
 
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     private fun openNativeVideoOverlay(uriText: String, mimeType: String?, title: String?): String {
+        return openNativeVideoQueueOverlay(
+            listOf(
+                NativeVideoQueueItem(
+                    uriText = uriText,
+                    mimeType = mimeType,
+                    title = title?.trim()?.takeIf { it.isNotBlank() } ?: "Video"
+                )
+            ),
+            0
+        )
+    }
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun openNativeVideoPlaylistOverlay(queueJson: String, startIndex: Int): String {
+        val items = try {
+            val arr = org.json.JSONArray(queueJson)
+            (0 until arr.length()).mapNotNull { i ->
+                val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+                val uri = obj.optString("uri", "").trim()
+                if (uri.isBlank()) return@mapNotNull null
+                NativeVideoQueueItem(
+                    uriText = uri,
+                    mimeType = obj.optString("mime", "").takeIf { it.isNotBlank() },
+                    title = obj.optString("title", "Video").takeIf { it.isNotBlank() } ?: "Video"
+                )
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (items.isEmpty()) return JSONObject().put("error", "No playable videos").toString()
+        return openNativeVideoQueueOverlay(items, startIndex)
+    }
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun openNativeVideoQueueOverlay(items: List<NativeVideoQueueItem>, startIndex: Int): String {
         if (!::mainContainer.isInitialized) {
             return JSONObject().put("error", "Native video player is not ready").toString()
         }
-        val uri = try {
-            Uri.parse(uriText)
-        } catch (e: Exception) {
+        val queue = items.filter { it.uriText.isNotBlank() }
+        if (queue.isEmpty()) {
             return JSONObject().put("error", "Bad video URI").toString()
         }
-        val mime = mimeType?.trim()?.takeIf { it.isNotBlank() } ?: "video/mp4"
-        val cleanTitle = title?.trim()?.takeIf { it.isNotBlank() } ?: "Video"
+        val safeStartIndex = startIndex.coerceIn(0, queue.lastIndex)
+        val first = queue[safeStartIndex]
+        val cleanTitle = first.title.trim().takeIf { it.isNotBlank() } ?: "Video"
 
-        DebugLog.d("NativeVideo", "Opening in-app video player title=$cleanTitle mime=$mime uri=$uri")
+        DebugLog.d("NativeVideo", "Opening in-app video player title=$cleanTitle items=${queue.size}")
         pauseNativeRadioStreamInternal(abandonFocus = true)
         hideNativeVideoOverlay()
 
@@ -13081,6 +13265,17 @@ class MainActivity :
             background = nativeVideoPanelBackground(235, Color.rgb(24, 24, 24), radius = 14f)
             setPadding(12, 0, 12, 0)
         }
+        fun queueButton(label: String) = TextView(this).apply {
+            text = label
+            setTextColor(Color.WHITE)
+            textSize = 15f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = nativeVideoPanelBackground(235, Color.rgb(24, 24, 24), radius = 14f)
+            alpha = if (queue.size > 1) 0.9f else 0.25f
+        }
+        val prevButton = queueButton("<<")
+        val nextButton = queueButton(">>")
         val timeText = TextView(this).apply {
             text = "0:00 / 0:00"
             setTextColor(Color.WHITE)
@@ -13092,6 +13287,16 @@ class MainActivity :
             max = 1000
             progress = 0
         }
+        val ccButton = TextView(this).apply {
+            text = "CC"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = nativeVideoPanelBackground(235, Color.rgb(24, 24, 24), radius = 14f)
+            alpha = 0.25f   // greyed until track info says captions exist
+            setPadding(16, 0, 12, 0)
+        }
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -13099,8 +13304,15 @@ class MainActivity :
             background = nativeVideoPanelBackground(220, radius = 18f)
             elevation = 30f
             visibility = View.VISIBLE
+            addView(prevButton, LinearLayout.LayoutParams(54, 48))
             addView(playButton, LinearLayout.LayoutParams(96, 48))
-            addView(timeText, LinearLayout.LayoutParams(140, 48))
+            addView(nextButton, LinearLayout.LayoutParams(54, 48).apply {
+                leftMargin = 8
+            })
+            addView(ccButton, LinearLayout.LayoutParams(70, 48).apply {
+                leftMargin = 8
+            })
+            addView(timeText, LinearLayout.LayoutParams(124, 48))
             addView(seekBar, LinearLayout.LayoutParams(0, 48, 1f))
         }
         overlay.addView(
@@ -13116,6 +13328,28 @@ class MainActivity :
             }
         )
 
+        // Caption/language chooser — populated from the player's text tracks on
+        // onTracksChanged; toggled by the CC button; auto-hidden with the
+        // toolbar. Sits just above the control bar, aligned under CC.
+        val ccMenu = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = nativeVideoPanelBackground(238, Color.rgb(20, 20, 20), radius = 14f)
+            elevation = 42f
+            visibility = View.GONE
+            setPadding(6, 6, 6, 6)
+        }
+        overlay.addView(
+            ccMenu,
+            FrameLayout.LayoutParams(
+                280,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.START
+            ).apply {
+                leftMargin = 202
+                bottomMargin = 100
+            }
+        )
+
         mainContainer.addView(
             overlay,
             FrameLayout.LayoutParams(
@@ -13125,7 +13359,13 @@ class MainActivity :
         )
 
         return try {
-            val player = ExoPlayer.Builder(this)
+            val isSmb = queue.any { it.uriText.startsWith("smbtap://", ignoreCase = true) }
+            // FFmpeg software AUDIO decoder (AC3/E-AC3/DTS/etc.) only — video
+            // stays on the device's hardware decoders so contrast/color is
+            // correct on the additive display.
+            val renderersFactory =
+                com.TapLink.app.media.FfmpegAudioOnlyRenderersFactory(this)
+            val playerBuilder = ExoPlayer.Builder(this, renderersFactory)
                 .setAudioAttributes(
                     androidx.media3.common.AudioAttributes.Builder()
                         .setUsage(androidx.media3.common.C.USAGE_MEDIA)
@@ -13133,30 +13373,68 @@ class MainActivity :
                         .build(),
                     true
                 )
-                .build()
+            if (isSmb) {
+                // Read SMB bytes via jcifs so the extractors (MKV/AVI) and the
+                // device MediaCodec audio decoders (AC3/E-AC3) handle what the
+                // WebView's <video> cannot.
+                playerBuilder.setMediaSourceFactory(
+                    androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
+                        com.TapLink.app.smb.SmbMediaDataSource.Factory(this)
+                    )
+                )
+            }
+            val player = playerBuilder.build()
             player.addListener(object : Player.Listener {
                 override fun onPlayerError(error: PlaybackException) {
                     DebugLog.w("NativeVideo", "Playback error: ${error.message}")
                     dualWebViewGroup.showToast(error.message ?: "Video playback failed", 3500L)
                 }
+                override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                    refreshNativeVideoTextTracks(tracks)
+                    applyNativeVideoDisplayProfile("tracks changed")
+                }
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    val idx = nativeVideoPlayer?.currentMediaItemIndex ?: 0
+                    nativeVideoQueueIndex = idx
+                    (nativeVideoTitleView as? TextView)?.text =
+                        nativeVideoQueue.getOrNull(idx)?.title ?: "Video"
+                    nativeVideoCaptionsOn = false
+                    nativeVideoHdrCorrectionEnabled = false
+                    nativeVideoPlayer?.currentTracks?.let { refreshNativeVideoTextTracks(it) }
+                    updateNativeVideoControlsState()
+                    showNativeVideoControls()
+                    uiHandler.post { applyNativeVideoDisplayProfile("item transition") }
+                    uiHandler.postDelayed({ applyNativeVideoDisplayProfile("item transition delayed") }, 600L)
+                }
             })
             playerView.player = player
-            player.setMediaItem(
-                MediaItem.Builder()
-                    .setUri(uri)
-                    .setMimeType(mime)
-                    .build()
-            )
-            player.prepare()
-            player.playWhenReady = true
+            player.setMediaItems(queue.map { buildNativeVideoMediaItem(it) }, safeStartIndex, 0L)
             nativeVideoOverlay = overlay
             nativeVideoPlayerView = playerView
+            nativeVideoTitleView = titleView
             nativeVideoCloseButton = closeButton
             nativeVideoControlsView = controls
+            nativeVideoPrevButton = prevButton
             nativeVideoPlayPauseButton = playButton
+            nativeVideoNextButton = nextButton
+            nativeVideoCcButton = ccButton
+            nativeVideoCcMenu = ccMenu
+            nativeVideoCcFlat = emptyList()
+            nativeVideoCaptionsAvailable = false
+            nativeVideoCaptionsOn = false
             nativeVideoSeekBar = seekBar
             nativeVideoTimeText = timeText
             nativeVideoPlayer = player
+            nativeVideoQueue = queue
+            nativeVideoQueueIndex = safeStartIndex
+            player.prepare()
+            player.playWhenReady = true
+            uiHandler.post { refreshNativeVideoTextTracks(player.currentTracks) }
+            uiHandler.postDelayed({ refreshNativeVideoTextTracks(player.currentTracks) }, 750L)
+            uiHandler.postDelayed({ refreshNativeVideoTextTracks(player.currentTracks) }, 2000L)
+            uiHandler.post { applyNativeVideoDisplayProfile("prepare") }
+            uiHandler.postDelayed({ applyNativeVideoDisplayProfile("prepare delayed") }, 750L)
+            uiHandler.postDelayed({ applyNativeVideoDisplayProfile("prepare settled") }, 2000L)
             showNativeVideoControls()
             startNativeVideoProgressTicker()
             raiseCursorAboveNativeVideoOverlay()
@@ -13166,10 +13444,37 @@ class MainActivity :
                 .put("engine", "media3")
                 .toString()
         } catch (e: Exception) {
-            DebugLog.w("NativeVideo", "Failed to open $uri: ${e.message}")
+            DebugLog.w("NativeVideo", "Failed to open native video queue: ${e.message}")
             try { mainContainer.removeView(overlay) } catch (_: Exception) {}
             JSONObject().put("error", e.localizedMessage ?: "Video playback failed").toString()
         }
+    }
+
+    private fun buildNativeVideoMediaItem(item: NativeVideoQueueItem): MediaItem {
+        val uri = Uri.parse(item.uriText)
+        val isSmb = item.uriText.startsWith("smbtap://", ignoreCase = true)
+        val itemBuilder = MediaItem.Builder()
+            .setUri(uri)
+            .setMediaMetadata(
+                androidx.media3.common.MediaMetadata.Builder()
+                    .setTitle(item.title)
+                    .build()
+            )
+        if (!isSmb) {
+            item.mimeType?.trim()?.takeIf { it.isNotBlank() }?.let {
+                itemBuilder.setMimeType(it)
+            }
+        }
+        val srtParam = uri.getQueryParameter("srt")
+        if (isSmb && !srtParam.isNullOrBlank()) {
+            runCatching {
+                val sub = MediaItem.SubtitleConfiguration.Builder(Uri.parse(srtParam))
+                    .setMimeType(androidx.media3.common.MimeTypes.APPLICATION_SUBRIP)
+                    .build()
+                itemBuilder.setSubtitleConfigurations(listOf(sub))
+            }
+        }
+        return itemBuilder.build()
     }
 
     private fun hideNativeVideoOverlay() {
@@ -13179,12 +13484,23 @@ class MainActivity :
         nativeVideoPlayer = null
         nativeVideoPlayerView = null
         nativeVideoOverlay = null
+        nativeVideoTitleView = null
         nativeVideoCloseButton = null
         nativeVideoControlsView = null
+        nativeVideoPrevButton = null
         nativeVideoPlayPauseButton = null
+        nativeVideoNextButton = null
+        nativeVideoCcButton = null
+        nativeVideoCcMenu = null
+        nativeVideoCcFlat = emptyList()
+        nativeVideoCaptionsAvailable = false
+        nativeVideoCaptionsOn = false
         nativeVideoSeekBar = null
         nativeVideoTimeText = null
         nativeVideoPressedControl = null
+        nativeVideoQueue = emptyList()
+        nativeVideoQueueIndex = 0
+        nativeVideoHdrCorrectionEnabled = false
         uiHandler.removeCallbacks(hideNativeVideoControlsRunnable)
         uiHandler.removeCallbacks(nativeVideoProgressTicker)
         try {
@@ -13215,10 +13531,127 @@ class MainActivity :
     }
 
     private fun showNativeVideoControls() {
+        nativeVideoTitleView?.visibility = View.VISIBLE
         nativeVideoControlsView?.visibility = View.VISIBLE
+        nativeVideoCloseButton?.visibility = View.VISIBLE   // X returns with the toolbar
         uiHandler.removeCallbacks(hideNativeVideoControlsRunnable)
-        uiHandler.postDelayed(hideNativeVideoControlsRunnable, 3000L)
+        uiHandler.postDelayed(hideNativeVideoControlsRunnable, nativeVideoControlsTimeoutMs)
         updateNativeVideoControlsState()
+    }
+
+    private fun applyNativeVideoDisplayProfile(reason: String) {
+        val player = nativeVideoPlayer ?: return
+        val format = runCatching { player.videoFormat }.getOrNull()
+        val colorInfo = format?.colorInfo
+        val isHdr = runCatching {
+            colorInfo != null && androidx.media3.common.ColorInfo.isTransferHdr(colorInfo)
+        }.getOrDefault(false)
+
+        if (!isHdr) {
+            if (nativeVideoHdrCorrectionEnabled) {
+                runCatching { player.setVideoEffects(emptyList()) }
+                nativeVideoHdrCorrectionEnabled = false
+                DebugLog.d("NativeVideo", "HDR display profile disabled ($reason)")
+            }
+            return
+        }
+
+        if (nativeVideoHdrCorrectionEnabled) return
+
+        val effects = listOf<androidx.media3.common.Effect>(
+            // Non-empty effects opt HDR clips into Media3's GL preview path,
+            // which converts PQ/HLG HDR into an SDR output surface. The small
+            // lift then compensates for the RayNeo X3 Pro's additive optics,
+            // where correctly tone-mapped HDR can still read too dim.
+            androidx.media3.effect.Brightness(0.06f),
+            androidx.media3.effect.HslAdjustment.Builder()
+                .adjustLightness(0.03f)
+                .adjustSaturation(0.04f)
+                .build()
+        )
+        runCatching {
+            player.setVideoEffects(effects)
+            nativeVideoHdrCorrectionEnabled = true
+            DebugLog.w(
+                "NativeVideo",
+                "Enabled HDR->SDR display profile ($reason) transfer=${colorInfo?.colorTransfer} space=${colorInfo?.colorSpace}"
+            )
+        }.onFailure {
+            DebugLog.w("NativeVideo", "HDR display profile failed: ${it.message}")
+        }
+    }
+
+    private fun updateNativeCcButton() {
+        val btn = nativeVideoCcButton ?: return
+        btn.alpha = when {
+            !nativeVideoCaptionsAvailable -> 0.25f          // greyed: no captions
+            nativeVideoCaptionsOn -> 1.0f
+            else -> 0.55f
+        }
+    }
+
+    /** (Re)build the caption/language menu rows from the current text tracks:
+     *  row 0 = "Captions off", then one row per track (label/language). */
+    private fun refreshNativeVideoTextTracks(tracks: androidx.media3.common.Tracks) {
+        val flat = ArrayList<Pair<androidx.media3.common.Tracks.Group, Int>>()
+        tracks.groups.forEach { g ->
+            if (g.type == androidx.media3.common.C.TRACK_TYPE_TEXT) {
+                for (t in 0 until g.length) flat.add(g to t)
+            }
+        }
+        nativeVideoCcFlat = flat
+        nativeVideoCaptionsAvailable = flat.isNotEmpty()
+        DebugLog.d("NativeVideo", "Text tracks refreshed: ${flat.size}")
+        rebuildNativeCcMenu()
+        updateNativeCcButton()
+    }
+
+    private fun rebuildNativeCcMenu() {
+        val menu = nativeVideoCcMenu ?: return
+        menu.removeAllViews()
+        if (nativeVideoCcFlat.isEmpty()) { menu.visibility = View.GONE; return }
+        fun row(label: String) = TextView(this).apply {
+            text = label
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(18, 12, 18, 12)
+            maxLines = 1
+        }
+        menu.addView(row("Captions off"))   // option index 0
+        nativeVideoCcFlat.forEachIndexed { i, pair ->
+            val fmt = pair.first.getTrackFormat(pair.second)
+            val label = listOfNotNull(
+                fmt.label?.takeIf { it.isNotBlank() },
+                fmt.language?.takeIf { it.isNotBlank() }
+            ).distinct().joinToString(" / ").ifBlank { "Track ${i + 1}" }
+            menu.addView(row(label))
+        }
+    }
+
+    /** optionIndex 0 = off; otherwise nativeVideoCcFlat[optionIndex-1]. */
+    private fun selectNativeTextTrack(optionIndex: Int) {
+        val player = nativeVideoPlayer ?: return
+        runCatching {
+            val b = player.trackSelectionParameters.buildUpon()
+            if (optionIndex <= 0) {
+                b.setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true)
+                    .clearOverridesOfType(androidx.media3.common.C.TRACK_TYPE_TEXT)
+                nativeVideoCaptionsOn = false
+            } else {
+                val pair = nativeVideoCcFlat[optionIndex - 1]
+                b.setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, false)
+                    .setOverrideForType(
+                        androidx.media3.common.TrackSelectionOverride(
+                            pair.first.mediaTrackGroup, pair.second
+                        )
+                    )
+                nativeVideoCaptionsOn = true
+            }
+            player.trackSelectionParameters = b.build()
+        }
+        nativeVideoCcMenu?.visibility = View.GONE
+        updateNativeCcButton()
     }
 
     private fun startNativeVideoProgressTicker() {
@@ -13229,6 +13662,9 @@ class MainActivity :
     private fun updateNativeVideoControlsState() {
         val player = nativeVideoPlayer ?: return
         nativeVideoPlayPauseButton?.text = if (player.isPlaying) "Pause" else "Play"
+        val hasQueue = nativeVideoQueue.size > 1
+        nativeVideoPrevButton?.alpha = if (hasQueue && player.currentMediaItemIndex > 0) 0.9f else 0.25f
+        nativeVideoNextButton?.alpha = if (hasQueue && player.currentMediaItemIndex < nativeVideoQueue.lastIndex) 0.9f else 0.25f
         val duration = player.duration.takeIf { it > 0L && it != androidx.media3.common.C.TIME_UNSET } ?: 0L
         val position = player.currentPosition.coerceAtLeast(0L)
         nativeVideoTimeText?.text = "${formatNativeVideoTime(position)} / ${formatNativeVideoTime(duration)}"
@@ -13239,6 +13675,22 @@ class MainActivity :
                 bar.progress = 0
             }
         }
+    }
+
+    private fun playNativeVideoQueueOffset(delta: Int) {
+        val player = nativeVideoPlayer ?: return
+        if (nativeVideoQueue.size <= 1) return
+        val next = (player.currentMediaItemIndex + delta).coerceIn(0, nativeVideoQueue.lastIndex)
+        if (next == player.currentMediaItemIndex) return
+        nativeVideoQueueIndex = next
+        nativeVideoCaptionsOn = false
+        player.seekTo(next, 0L)
+        player.playWhenReady = true
+        player.play()
+        (nativeVideoTitleView as? TextView)?.text = nativeVideoQueue.getOrNull(next)?.title ?: "Video"
+        nativeVideoCcMenu?.visibility = View.GONE
+        updateNativeVideoControlsState()
+        showNativeVideoControls()
     }
 
     private fun formatNativeVideoTime(ms: Long): String {
@@ -13266,8 +13718,18 @@ class MainActivity :
         // report via getLocationOnScreen — so a single direct rect check is
         // correct. The old multi-candidate / eye-width-shifted guessing caused
         // taps far from a control to register as a hit on the dual-eye display.
+        // Caption menu (when open) is topmost — its rows win the hit-test.
+        val menu = nativeVideoCcMenu
+        if (menu != null && menu.visibility == View.VISIBLE) {
+            for (i in 0 until menu.childCount) {
+                if (isPointInViewWithSlop(menu.getChildAt(i), screenX, screenY, 6f)) return "ccrow:$i"
+            }
+        }
         if (isPointInViewWithSlop(nativeVideoCloseButton, screenX, screenY, 22f)) return "close"
+        if (isPointInViewWithSlop(nativeVideoPrevButton, screenX, screenY)) return "prev"
+        if (isPointInViewWithSlop(nativeVideoCcButton, screenX, screenY)) return "cc"
         if (isPointInViewWithSlop(nativeVideoPlayPauseButton, screenX, screenY)) return "play"
+        if (isPointInViewWithSlop(nativeVideoNextButton, screenX, screenY)) return "next"
         if (isPointInViewWithSlop(nativeVideoSeekBar, screenX, screenY, 18f)) return "seek"
         return null
     }
@@ -13345,12 +13807,34 @@ class MainActivity :
                         }
                         true
                     }
+                    "prev" -> {
+                        playNativeVideoQueueOffset(-1)
+                        true
+                    }
+                    "next" -> {
+                        playNativeVideoQueueOffset(1)
+                        true
+                    }
                     "seek" -> {
                         seekNativeVideoFromScreenPoint(point.first, point.second)
                         true
                     }
+                    "cc" -> {
+                        // Open/close the caption-language chooser.
+                        val menu = nativeVideoCcMenu
+                        if (nativeVideoCaptionsAvailable && menu != null) {
+                            menu.visibility =
+                                if (menu.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                        }
+                        true
+                    }
                     "surface" -> true
-                    else -> true
+                    else -> {
+                        if (target.startsWith("ccrow:")) {
+                            selectNativeTextTrack(target.removePrefix("ccrow:").toIntOrNull() ?: 0)
+                        }
+                        true
+                    }
                 }
             }
             MotionEvent.ACTION_CANCEL,
@@ -13381,6 +13865,14 @@ class MainActivity :
                     if (player.isPlaying) player.pause() else player.play()
                 }
                 updateNativeVideoControlsState()
+                true
+            }
+            "prev" -> {
+                playNativeVideoQueueOffset(-1)
+                true
+            }
+            "next" -> {
+                playNativeVideoQueueOffset(1)
                 true
             }
             "seek" -> {
@@ -17299,6 +17791,17 @@ class MainActivity :
             unipanelHudBatteryReceiver?.let { unregisterReceiver(it) }
         } catch (_: Exception) {}
         unipanelHudBatteryReceiver = null
+        try {
+            youtubeThermalReceiver?.let { unregisterReceiver(it) }
+        } catch (_: Exception) {}
+        youtubeThermalReceiver = null
+        try {
+            youtubeThermalStatusListener?.let {
+                (getSystemService(Context.POWER_SERVICE) as android.os.PowerManager)
+                    .removeThermalStatusListener(it)
+            }
+        } catch (_: Exception) {}
+        youtubeThermalStatusListener = null
         // Phase 4f: unregister the network callback so a recreated
         // Activity doesn't accumulate dead listeners.
         try {
@@ -17392,6 +17895,147 @@ class MainActivity :
         )
     }
 
+    private fun startYouTubeThermalGuard() {
+        if (youtubeThermalReceiver != null) return
+
+        val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        fun inspect(intent: Intent?) {
+            val tempDeciC = intent?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+            if (tempDeciC <= 0) return
+            if (tempDeciC >= YOUTUBE_THERMAL_CUTOFF_DECI_C && hasYouTubePlaybackWindow()) {
+                stopHotYouTubePlayback("battery=${tempDeciC / 10f}C", tempDeciC)
+            }
+        }
+
+        runCatching { inspect(registerReceiver(null, filter)) }
+
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                inspect(intent)
+            }
+        }
+        runCatching {
+            registerReceiver(receiver, filter)
+            youtubeThermalReceiver = receiver
+        }.onFailure {
+            DebugLog.w("YouTubeThermal", "Unable to register thermal guard: ${it.message}")
+        }
+
+        // PRIMARY, non-disruptive guard: Android's own thermal status. It
+        // reflects the CPU/skin sensors (not the lagging battery temp) and only
+        // escalates to SEVERE when the OS is actively throttling — genuine
+        // pre-reboot danger. Normal viewing stays at NONE/LIGHT and never trips
+        // this, so it can't interrupt a healthy session. Only SEVERE+ acts; the
+        // battery path above is now a far-backstop.
+        if (youtubeThermalStatusListener == null) {
+            runCatching {
+                val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                val listener =
+                    android.os.PowerManager.OnThermalStatusChangedListener { status ->
+                        if (status >= android.os.PowerManager.THERMAL_STATUS_SEVERE &&
+                            hasYouTubePlaybackWindow()
+                        ) {
+                            stopHotYouTubePlayback("thermalStatus=$status", -1)
+                        }
+                    }
+                pm.addThermalStatusListener(listener)
+                youtubeThermalStatusListener = listener
+                // Act immediately if we're already in the danger zone.
+                if (pm.currentThermalStatus >=
+                    android.os.PowerManager.THERMAL_STATUS_SEVERE &&
+                    hasYouTubePlaybackWindow()
+                ) {
+                    stopHotYouTubePlayback("thermalStatus=${pm.currentThermalStatus}", -1)
+                }
+            }.onFailure {
+                DebugLog.w("YouTubeThermal", "thermal status listener unavailable: ${it.message}")
+            }
+        }
+    }
+
+    private fun hasYouTubePlaybackWindow(): Boolean {
+        if (!::dualWebViewGroup.isInitialized) return false
+        return dualWebViewGroup.getAllWebViews().any { wv ->
+            val url = runCatching { wv.url.orEmpty() }.getOrDefault("")
+            isYouTubePlaybackUrl(url)
+        }
+    }
+
+    private fun stopHotYouTubePlayback(reason: String, tempDeciC: Int) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastYouTubeThermalStopAtMs < YOUTUBE_THERMAL_COOLDOWN_MS) return
+        lastYouTubeThermalStopAtMs = now
+
+        val tempLabel = if (tempDeciC > 0) "${tempDeciC / 10f}C " else ""
+        DebugLog.w(
+            "YouTubeThermal",
+            "Thermal cutoff ($tempLabel$reason); tearing down YouTube playback"
+        )
+
+        if (::dualWebViewGroup.isInitialized) {
+            runCatching { dualWebViewGroup.pauseYouTubeMediaAcrossAllWindows() }
+            dualWebViewGroup.getAllWebViews().forEach { wv ->
+                val url = runCatching { wv.url.orEmpty() }.getOrDefault("")
+                if (!isYouTubePlaybackUrl(url)) return@forEach
+                wv.post {
+                    try { wv.stopLoading() } catch (_: Exception) {}
+                    try {
+                        wv.evaluateJavascript(
+                            """
+                            (function(){
+                              try {
+                                document.querySelectorAll('video,audio').forEach(function(el){
+                                  try {
+                                    el.pause(); el.autoplay = false; el.muted = true;
+                                    el.removeAttribute('src'); el.src = ''; el.load();
+                                  } catch(e) {}
+                                });
+                              } catch(e) {}
+                              try {
+                                var timeoutId = window.setTimeout(function(){}, 0);
+                                while (timeoutId--) window.clearTimeout(timeoutId);
+                                var intervalId = window.setInterval(function(){}, 0);
+                                while (intervalId--) window.clearInterval(intervalId);
+                              } catch(e) {}
+                              try {
+                                var p = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
+                                if (p && typeof p.stopVideo === 'function') p.stopVideo();
+                              } catch(e) {}
+                            })();
+                            """.trimIndent(),
+                            null
+                        )
+                    } catch (_: Exception) {}
+                    try { wv.loadUrl(Constants.DEFAULT_URL) } catch (_: Exception) {}
+                }
+            }
+            runCatching {
+                dualWebViewGroup.showToast("YouTube paused to cool glasses", 3500L)
+            }
+        }
+
+        clearPersistedYouTubePlaybackSession("thermal cutoff")
+    }
+
+    private fun clearPersistedYouTubePlaybackSession(reason: String) {
+        runCatching {
+            getSharedPreferences(prefsName, MODE_PRIVATE)
+                .edit()
+                .putString(keyLastUrl, Constants.DEFAULT_URL)
+                .remove(Constants.KEY_WEBVIEW_STATE)
+                .commit()
+            lastUrl = Constants.DEFAULT_URL
+            DebugLog.w("YouTubeThermal", "Cleared persisted YouTube playback session ($reason)")
+        }
+        runCatching {
+            val prefs = getSharedPreferences(Constants.PREFS_NAME, MODE_PRIVATE)
+            val saved = prefs.getString("saved_windows_state", null)
+            if (saved != null && containsYouTubePlaybackReference(saved)) {
+                prefs.edit().remove("saved_windows_state").commit()
+            }
+        }
+    }
+
     override fun onStop() {
         super.onStop()
 
@@ -17417,6 +18061,15 @@ class MainActivity :
 
         val currentUrl = targetView.url
         if (currentUrl.isNullOrBlank() || currentUrl.startsWith("about:blank")) {
+            return
+        }
+
+        if (isYouTubePlaybackUrl(currentUrl)) {
+            DebugLog.w(
+                "WebViewDebug",
+                "Skipping active state persistence for YouTube playback URL ($reason): $currentUrl"
+            )
+            clearPersistedYouTubePlaybackSession("skip active WebView state")
             return
         }
 
@@ -17458,6 +18111,15 @@ class MainActivity :
         }
 
         if (url.startsWith("about:blank")) {
+            return
+        }
+
+        if (isYouTubePlaybackUrl(url)) {
+            DebugLog.w(
+                "WebViewDebug",
+                "Skipping last-url persistence for YouTube playback URL ($reason): $url"
+            )
+            clearPersistedYouTubePlaybackSession("skip active URL")
             return
         }
 

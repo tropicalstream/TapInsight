@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fable Native Guide — X3 Pro × Android APIs, Health Connect & On-Device AI</title>
+<style>
+  :root{
+    --bg:#07090f; --ink:#e8ecf4; --soft:#9aa4b8;
+    --glow1:#5ad7ff; --glow2:#9d8cff; --glow3:#7fffc1; --gold:#ffc857; --droid:#3ddc84;
+    --card:rgba(255,255,255,.045); --line:rgba(255,255,255,.10);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:
+      radial-gradient(1100px 650px at 82% -10%, rgba(61,220,132,.13), transparent 60%),
+      radial-gradient(900px 600px at 8% 25%, rgba(90,215,255,.10), transparent 60%),
+      radial-gradient(1000px 800px at 70% 100%, rgba(157,140,255,.06), transparent 60%),
+      var(--bg);
+    color:var(--ink);
+    font-family:"Avenir Next",Avenir,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.66;
+  }
+  .stars{position:fixed;inset:0;pointer-events:none;z-index:0}
+  .stars span{position:absolute;width:2px;height:2px;border-radius:50%;background:#fff;opacity:.5;animation:tw 3.4s ease-in-out infinite}
+  @keyframes tw{0%,100%{opacity:.12;transform:scale(.8)}50%{opacity:.7;transform:scale(1.25)}}
+  main{position:relative;z-index:1;max-width:880px;margin:0 auto;padding:0 22px 90px}
+  .eyebrow{letter-spacing:.22em;text-transform:uppercase;font-size:12px;color:var(--droid);font-weight:600}
+  h1{font-size:clamp(28px,5.2vw,48px);line-height:1.13;font-weight:800;margin:12px 0 16px;
+     background:linear-gradient(92deg,#fff 8%,var(--droid) 38%,var(--glow1) 72%,var(--glow2) 100%);
+     -webkit-background-clip:text;background-clip:text;color:transparent}
+  h2{font-size:clamp(22px,3.4vw,30px);font-weight:750;margin:0 0 14px}
+  h2 .nbr{display:inline-block;font-size:13px;vertical-align:middle;margin-right:11px;color:var(--bg);
+          background:linear-gradient(135deg,var(--droid),var(--glow1));border-radius:999px;padding:3px 11px;font-weight:800}
+  h3{font-size:18px;margin:18px 0 7px}
+  p,li{color:var(--soft);font-size:16.5px;margin-bottom:12px}
+  strong{color:var(--ink)} em{color:var(--ink)}
+  section{padding:46px 0 6px}
+  .hero{padding:66px 0 24px;text-align:center}
+  .hero p.lead{font-size:19px;max-width:640px;margin:0 auto}
+  .rule{height:2px;border:0;margin:30px auto;max-width:440px;
+        background:linear-gradient(90deg,transparent,var(--droid),var(--gold),var(--glow3),var(--glow1),var(--glow2),transparent);opacity:.65}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 24px;margin:18px 0;backdrop-filter:blur(6px)}
+  .card.flag{background:radial-gradient(420px 220px at 12% 0%,rgba(255,200,87,.13),transparent 70%),var(--card);border-color:rgba(255,200,87,.30)}
+  .card.win{background:radial-gradient(420px 220px at 88% 0%,rgba(61,220,132,.13),transparent 70%),var(--card);border-color:rgba(61,220,132,.30)}
+  pre{background:#0b0f1c;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;margin:12px 0;font-size:13px;line-height:1.5}
+  code{font-family:"SF Mono",Menlo,Consolas,monospace}
+  p code,li code,td code{background:rgba(255,255,255,.08);padding:1px 6px;border-radius:5px;font-size:.9em}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;color:var(--soft)}
+  th{background:rgba(255,255,255,.05);color:var(--ink)}
+  .diagram{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:12.5px;color:var(--droid);white-space:pre;overflow-x:auto;
+           background:#0b0f1c;border:1px solid var(--line);border-radius:10px;padding:16px;line-height:1.45;margin:14px 0}
+  a{color:var(--glow1);text-decoration:none} a:hover{text-decoration:underline}
+  .back{display:inline-block;margin:24px 0 0;color:var(--soft)}
+  footer{text-align:center;color:#5a6478;font-size:13px;margin-top:56px}
+  .pill{display:inline-block;font-size:11px;font-weight:800;border-radius:6px;padding:2px 8px;margin-right:6px}
+  .pill.yes{background:var(--droid);color:#04240f} .pill.no{background:#ff6b6b;color:#2a0808}
+</style>
+</head>
+<body>
+<div class="stars" id="stars"></div>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Fable Native Guide · grounded in 2025–2026 Android</div>
+    <h1>X3 Pro × Android APIs,<br>Health Connect &amp; On-Device AI</h1>
+    <p class="lead">The X3 Pro <em>is</em> Android — so AI and Google APIs run natively on the glasses, no
+    bridge. Here's the realistic on-device AI stack, Health Connect for body metrics, and the Android/Google
+    APIs worth wiring into AR — with the two constraints that decide what actually runs.</p>
+  </section>
+  <hr class="rule">
+
+  <section>
+    <h2><span class="nbr">00</span>What's native, and two honest constraints</h2>
+    <div class="card win">
+      <p style="margin-bottom:0">Unlike the Apple bridge, <strong>most of this runs directly on the
+      glasses</strong> — the Android SDK, Play services, Health Connect, ML Kit, Maps/Places/Routes,
+      CameraX, and the cloud Gemini API are all in-process. TapInsight proves it: Google Calendar, Tasks,
+      Places, Routes, News, Contacts tools + a cloud-Gemini voice pipeline all ship on the glasses today.</p>
+    </div>
+    <div class="card flag">
+      <h3>⚠️ Constraint 1 — the chip likely can't run AICore / Gemini Nano</h3>
+      <p>On-device Gemini Nano (via Android's AICore + ML Kit GenAI) is gated to flagship silicon —
+      Pixel 8–9, Galaxy S24+, "progressive on Snapdragon <strong>8 Gen 3</strong>." The X3's
+      <strong>AR1 Gen1</strong> is a compact AR chip; assume AICore is <strong>absent</strong>. On-device
+      LLM here means a <strong>bundled Gemma via MediaPipe / LiteRT</strong>, or the <strong>cloud Gemini
+      API</strong>. Probe for AICore; never depend on it.</p>
+      <h3>⚠️ Constraint 2 — the glasses have no heart/SpO₂ sensor</h3>
+      <p style="margin-bottom:0">IMU, cameras, mics — no PPG, no ECG, no pulse oximeter. Health Connect on
+      the glasses is empty unless a <strong>Wear OS watch or wearable</strong> fills it. Compute is native;
+      the <em>sensors</em> still need a wrist.</p>
+    </div>
+    <div class="diagram">Apple guide:   Watch ──▶ iPhone (must bridge: HealthKit/AI) ──▶ glasses
+Android (this): Watch ──▶ Health Connect ──▶ glasses read it natively
+                         AI + Google APIs run ON the glasses (no bridge)
+                         …but live vitals still need the wrist sensor</div>
+  </section>
+
+  <section>
+    <h2><span class="nbr">01</span>What 2025–2026 changed</h2>
+    <p><strong>Gemini Nano 4</strong> (2026) and <strong>Gemini Intelligence</strong> (announced at The
+    Android Show, May 12 2026) — Google's most advanced on-device Android AI, served through
+    <strong>AICore</strong>, but device-gated (Constraint 1). <strong>ML Kit GenAI Prompt API</strong> is
+    the entry point when AICore is present — summarize/rewrite/describe-image, no key, no cloud.
+    <strong>Gemma 4</strong> via AICore preview, and <strong>Gemma runnable locally via MediaPipe / LiteRT</strong>
+    — the device-agnostic path that works on the AR1. <strong>Health Connect</strong> is now the health hub
+    (Google Fit sunsets end of 2026).</p>
+  </section>
+
+  <section>
+    <h2><span class="nbr">02</span>On-device &amp; cloud AI — the realistic stack</h2>
+    <p>Four tiers, "definitely runs on the AR1" → "only if the chip cooperates":</p>
+    <p><span class="pill yes">tier 1</span><strong>Cloud Gemini API</strong> — multimodal, no device gate,
+    already wired in TapInsight. Takes the glasses' camera frame + text. The heavy-reasoning path.</p>
+    <pre><code>val parts = listOf(
+  Part.text("HR $hr bpm. What is the camera looking at, anything notable?"),
+  Part.inlineData("image/jpeg", cameraFrameBase64))
+geminiClient.generateContent("gemini-2.5-flash", parts)</code></pre>
+    <p><span class="pill yes">tier 2</span><strong>MediaPipe LLM Inference / LiteRT</strong> — bundle a
+    quantized <strong>Gemma</strong> and run it in-process. No AICore. The offline path. But it's a
+    sustained load on a 4-core/4 GB/thermally-tight device — gate it, keep generations short, never run it
+    under the dim mask (the reboot lesson).</p>
+    <pre><code>val opts = LlmInference.LlmInferenceOptions.builder()
+  .setModelPath(".../gemma3-2b-it-int4.task").setMaxTokens(512).build()
+LlmInference.createFromOptions(context, opts).generateResponse("Summarize: $text")</code></pre>
+    <p><span class="pill yes">tier 3</span><strong>ML Kit</strong> — on-device OCR, translation (50+ langs),
+    barcode, face/pose, smart reply. Cheap, reliable, offline — the AR HUD primitives (translate a sign in
+    view, read text aloud, scan a QR).</p>
+    <p><span class="pill no">tier 4</span><strong>AICore / Gemini Nano</strong> — probe at runtime; expect
+    absent on the AR1, fall through to tiers 1–2. Write the capability check, not the assumption.</p>
+  </section>
+
+  <section>
+    <h2><span class="nbr">03</span>Body metrics — Health Connect</h2>
+    <p><code>androidx.health.connect:connect-client:1.1.0-beta01</code>; runtime per-type permissions; built
+    into Android 14 — but holds only what a wearable wrote (Constraint 2).</p>
+    <table>
+      <tr><th>Metric</th><th>Record type</th></tr>
+      <tr><td>Heart rate</td><td><code>HeartRateRecord</code></td></tr>
+      <tr><td>Blood oxygen (SpO₂)</td><td><code>OxygenSaturationRecord</code></td></tr>
+      <tr><td>HR variability</td><td><code>HeartRateVariabilityRmssdRecord</code></td></tr>
+      <tr><td>Respiratory rate</td><td><code>RespiratoryRateRecord</code></td></tr>
+      <tr><td>VO₂ max</td><td><code>Vo2MaxRecord</code></td></tr>
+      <tr><td>Exercise / energy</td><td><code>ExerciseSessionRecord</code>, <code>ActiveCaloriesBurnedRecord</code></td></tr>
+      <tr><td>Steps</td><td><code>StepsRecord</code> (June-2026 SPN change)</td></tr>
+    </table>
+    <pre><code>client.readRecords(ReadRecordsRequest(
+  recordType = HeartRateRecord::class,
+  timeRangeFilter = TimeRangeFilter.between(start, Instant.now())
+)).records.flatMap { it.samples }.forEach { /* it.beatsPerMinute */ }</code></pre>
+    <p>Live workout data comes from <strong>Health Services on a Wear OS watch</strong>
+    (<code>MeasureClient</code>/<code>ExerciseClient</code>) — the watch forwards to phone/glasses. Same
+    JSON envelope as the Apple guide, so the <strong>glasses-side consumer is identical</strong> regardless
+    of ecosystem: <code>{"type":"health","hr":78,"spo2":98,"steps":8421}</code>.</p>
+  </section>
+
+  <section>
+    <h2><span class="nbr">04</span>Google &amp; Android APIs for AR</h2>
+    <h3>Native on the glasses (no phone)</h3>
+    <table>
+      <tr><th>API</th><th>AR use</th><th>Status</th></tr>
+      <tr><td>Maps / Places / Routes / Directions</td><td>nav, place cards, geocode</td><td>✅ TapInsight ships these</td></tr>
+      <tr><td>CameraX</td><td>vision pipeline (1280×720, 90° fix)</td><td>✅</td></tr>
+      <tr><td>ML Kit (OCR/translate/barcode/pose)</td><td>translate signs, read text, scan</td><td>✅ offline</td></tr>
+      <tr><td>Account tools (Calendar/Tasks/Keep/Contacts/News)</td><td>HUD tiers</td><td>✅ proven</td></tr>
+      <tr><td>TextToSpeech / SpeechRecognizer</td><td>native TTS/STT (WebView lacks Web Speech)</td><td>✅</td></tr>
+    </table>
+    <h3>Notably NOT on the X3</h3>
+    <p><strong>ARCore</strong> — vendor docs confirm none; 6-DoF is SLAM/ShareCamera only (why the
+    object-tracking POC uses MultiSet REST). <strong>Google Fit APIs</strong> — sunset end of 2026, use
+    Health Connect. <strong>Wear-only live measurement</strong> — needs the watch.</p>
+    <p>The standout direct wins (REST + key, nothing but OkHttp): Maps/Places/Routes/Air-Quality/Directions —
+    the glasses already call these; a new one is a tool class, not an architecture.</p>
+  </section>
+
+  <section>
+    <h2><span class="nbr">05–06</span>Glasses side, and honest limits</h2>
+    <p>The glasses half is light — starter-guide patterns: receive the envelope, render a metrics tier
+    (white-on-black, throttled redraws), feed changes to the readout engine, ring the bell on thresholds.</p>
+    <div class="card flag">
+      <p style="margin-bottom:0"><strong>Limits, honestly:</strong> the AR1 is thermally tight (4 cores,
+      4 GB, >500 mA = trouble) — an on-device LLM is a sustained load; gate it and obey the masked-redraw
+      rule or reproduce the reboot. No on-glasses heart sensor — live vitals need a wearable. No medical
+      claims — consumer SpO₂/HR are wellness signals. APIs move fast — fetch the live Android docs and
+      confirm every signature before building.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Sources</h2>
+    <p>On-device AI: <a href="https://www.ubergizmo.com/2026/04/gemini-nano-4/">Ubergizmo — Gemini Nano 4</a> ·
+    <a href="https://stora.sh/blog/2026-04-13-on-device-ai-android-app-gemini-nano-guide">Stora — AICore guide</a> ·
+    <a href="https://memeburn.com/how-to-check-your-android-phone-supports-gemini-ai-features-in-2026/">Memeburn — device gating</a></p>
+    <p>Health Connect: <a href="https://developer.android.com/health-and-fitness/health-connect">Android Developers — Health Connect</a> ·
+    <a href="https://developer.android.com/health-and-fitness/health-connect/data-types">Data types</a> ·
+    <a href="https://developer.android.com/health-and-fitness/health-services/health-platform">Health Services (Wear OS)</a></p>
+    <a class="back" href="x3-guide-hub.html">← Back to the guide library</a>
+  </section>
+
+  <footer>
+    <hr class="rule" style="margin-bottom:22px">
+    Fable Native Guide · grounded in the 2025–2026 Android releases. Full text: <code>FABLE_X3_ANDROID_NATIVE_GUIDE.md</code>.<br>
+    Mirror: <a href="x3-apple-bridge.html">the Apple bridge guide</a> · Hub: <a href="x3-guide-hub.html">the X3 guide library</a>.
+  </footer>
+</main>
+<script>
+  const sky=document.getElementById('stars');
+  for(let i=0;i<70;i++){const s=document.createElement('span');
+    s.style.left=Math.random()*100+'vw';s.style.top=Math.random()*100+'vh';
+    s.style.animationDelay=(Math.random()*4).toFixed(2)+'s';
+    s.style.animationDuration=(2.4+Math.random()*3.2).toFixed(2)+'s';sky.appendChild(s);}
+</script>
+</body>
+</html>

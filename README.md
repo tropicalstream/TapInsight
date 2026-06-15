@@ -87,8 +87,11 @@ There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (ve
 OC Beta 3 highlights:
 - Customizable avatars and companion-side bookmark editing.
 - Left-arm tap camera toggle for faster privacy/battery control.
-- Tighter Gemini, TapClaw, OpenClaw, TapBrowser, and media-agent handoffs.
-- Recent TapBrowser scrollbar, media-routing, radio/podcast, and HUD cleanup.
+- Native ExoPlayer video for local and SMB library videos, with folder queue, previous/next, CC language selection, and sidecar `.srt` support.
+- HDR video display correction tuned for the RayNeo X3 Pro panel so HDR sources do not render overly dark or metallic.
+- Longer native video controls timeout, giving more time to open CC and choose a subtitle language.
+- YouTube dim-mode stability and thermal/battery guardrails, plus frequency-reactive dim-mode audio waveforms for bass, mids, and highs.
+- Tighter Gemini, TapClaw, OpenClaw, TapBrowser, radio/podcast, and media-agent handoffs.
 
 ---
 

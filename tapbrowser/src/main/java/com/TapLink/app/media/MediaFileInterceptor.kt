@@ -61,6 +61,10 @@ class MediaFileInterceptor(
      */
     private val dcim: DcimEnumerator by lazy { DcimEnumerator(context) }
 
+    /** Reads the same encrypted share store CompanionServer writes (same
+     *  process), so LAN SMB shares browse/stream through this virtual host. */
+    private val smbStore by lazy { com.TapLink.app.smb.SmbShareStore(context) }
+
     companion object {
         private const val TAG = "MediaFileInterceptor"
         const val HOST = "appassets.androidplatform.net"
@@ -141,7 +145,11 @@ class MediaFileInterceptor(
             //   3. Gemini's "open the gallery" voice command.
             // Without this entry the WebView 404s the main-frame load and
             // the browser shows a generic "Not found" page.
-            "photos_gallery.html"
+            "photos_gallery.html",
+            // LAN SMB share browser (reached from the "Network Share" tile at
+            // the Media Browser root). Browses /smb-list and plays via
+            // media_player.html using /smb-file URLs on this same origin.
+            "smb_browser.html"
         )
 
         /**
@@ -254,6 +262,21 @@ class MediaFileInterceptor(
         // gallery grid can paint a real thumbnail.
         if (rawPath.startsWith(LOCAL_VIDEO_THUMB_PREFIX)) {
             return handleLocalVideoThumbRequest(rawPath.removePrefix(LOCAL_VIDEO_THUMB_PREFIX))
+        }
+
+        // ── /smb-shares, /smb-list, /smb-file → LAN SMB shares ──
+        // /smb-shares                       → saved shares (id + label)
+        // /smb-list?id=<id>&p=<encodedPath> → one directory listing (JSON)
+        // /smb-file?id=<id>&p=<encodedPath> → stream a file, Range-aware
+        if (rawPath == "/smb-shares") return handleSmbShares()
+        if (rawPath == "/smb-list") return handleSmbList(uri)
+        if (rawPath == "/smb-file") {
+            val rangeHeader = req.requestHeaders
+                ?.entries
+                ?.firstOrNull { it.key.equals("Range", ignoreCase = true) }
+                ?.value
+                ?.trim()
+            return handleSmbFile(uri, rangeHeader)
         }
 
         if (!rawPath.startsWith(MEDIA_PREFIX)) return null
@@ -756,6 +779,133 @@ class MediaFileInterceptor(
         } finally {
             try { mmr.release() } catch (_: Exception) {}
         }
+    }
+
+    // ── LAN SMB shares ────────────────────────────────────────────────
+
+    private fun jsonResp(json: String): WebResourceResponse {
+        val resp = WebResourceResponse(
+            "application/json", "UTF-8",
+            ByteArrayInputStream(json.toByteArray(Charsets.UTF_8))
+        )
+        resp.responseHeaders = mapOf(
+            "Cache-Control" to "no-store",
+            "Access-Control-Allow-Origin" to "*"
+        )
+        resp.setStatusCodeAndReasonPhrase(200, "OK")
+        return resp
+    }
+
+    private fun handleSmbShares(): WebResourceResponse {
+        val arr = org.json.JSONArray()
+        runCatching {
+            smbStore.list().forEach { s ->
+                arr.put(
+                    org.json.JSONObject()
+                        .put("id", s.id)
+                        .put("label", s.label.ifBlank { "${s.host}/${s.share}" })
+                        .put("share", s.share)
+                )
+            }
+        }
+        return jsonResp(org.json.JSONObject().put("shares", arr).toString())
+    }
+
+    private fun handleSmbList(uri: android.net.Uri): WebResourceResponse {
+        val id = uri.getQueryParameter("id").orEmpty()
+        val path = uri.getQueryParameter("p").orEmpty()
+        val share = smbStore.get(id)
+            ?: return jsonResp("""{"error":"unknown share"}""")
+        return try {
+            val arr = org.json.JSONArray()
+            com.TapLink.app.smb.SmbClient.listDir(share, path).forEach { e ->
+                arr.put(
+                    org.json.JSONObject()
+                        .put("name", e.name)
+                        .put("dir", e.isDirectory)
+                        .put("size", e.size)
+                )
+            }
+            jsonResp(org.json.JSONObject().put("path", path).put("entries", arr).toString())
+        } catch (e: Exception) {
+            jsonResp("""{"error":${org.json.JSONObject.quote(e.message ?: "list failed")}}""")
+        }
+    }
+
+    private fun handleSmbFile(uri: android.net.Uri, rangeHeader: String?): WebResourceResponse {
+        val id = uri.getQueryParameter("id").orEmpty()
+        val path = uri.getQueryParameter("p").orEmpty()
+        val share = smbStore.get(id) ?: return errorResponse(404, "Unknown share")
+        val name = path.substringAfterLast('/')
+        val mime = guessMime(name)
+        val encoding = if (mime.startsWith("text/")) "UTF-8" else null
+        return try {
+            val total = com.TapLink.app.smb.SmbClient.length(share, path)
+            if (total < 0) return errorResponse(404, "Not found")
+            if (!rangeHeader.isNullOrEmpty()) {
+                val pr = parseRange(rangeHeader, total) ?: run {
+                    val r = WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
+                    r.responseHeaders = mapOf(
+                        "Content-Range" to "bytes */$total",
+                        "Access-Control-Allow-Origin" to "*"
+                    )
+                    r.setStatusCodeAndReasonPhrase(416, "Range Not Satisfiable")
+                    return r
+                }
+                val (start, end) = pr
+                val len = end - start + 1
+                val stream = LimitedInputStream(
+                    com.TapLink.app.smb.SmbClient.openStream(share, path, start), len
+                )
+                val resp = WebResourceResponse(mime, encoding, stream)
+                resp.responseHeaders = linkedMapOf(
+                    "Content-Type" to mime,
+                    "Content-Length" to len.toString(),
+                    "Accept-Ranges" to "bytes",
+                    "Content-Range" to "bytes $start-$end/$total",
+                    "Cache-Control" to "no-store",
+                    "Access-Control-Allow-Origin" to "*"
+                )
+                resp.setStatusCodeAndReasonPhrase(206, "Partial Content")
+                resp
+            } else {
+                val stream = com.TapLink.app.smb.SmbClient.openStream(share, path, 0L)
+                val resp = WebResourceResponse(mime, encoding, stream)
+                resp.responseHeaders = linkedMapOf(
+                    "Content-Length" to total.toString(),
+                    "Accept-Ranges" to "bytes",
+                    "Cache-Control" to "no-store",
+                    "Access-Control-Allow-Origin" to "*"
+                )
+                resp.setStatusCodeAndReasonPhrase(200, "OK")
+                resp
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "SMB stream failed for $name: ${e.message}")
+            errorResponse(502, "SMB error")
+        }
+    }
+
+    /** Caps an upstream (SMB) stream to [limit] bytes for Range responses. */
+    private class LimitedInputStream(
+        private val src: InputStream,
+        limit: Long
+    ) : InputStream() {
+        private var remaining = limit
+        override fun read(): Int {
+            if (remaining <= 0) return -1
+            val b = src.read()
+            if (b >= 0) remaining--
+            return b
+        }
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (remaining <= 0) return -1
+            val toRead = minOf(len.toLong(), remaining).toInt()
+            val n = src.read(b, off, toRead)
+            if (n > 0) remaining -= n
+            return n
+        }
+        override fun close() { try { src.close() } catch (_: Exception) {} }
     }
 
     // ── Response builders ─────────────────────────────────────────────

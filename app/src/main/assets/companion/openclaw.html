@@ -46,6 +46,7 @@ button:active{opacity:.7}
   <a href="/dashboard">Dashboard</a>
   <a href="/radio">TapRadio</a>
   <a href="/library">Library</a>
+  <a href="/smb">Shares</a>
   <a href="/openclaw" class="active">Agents</a>
 </div>
 
@@ -67,20 +68,20 @@ button:active{opacity:.7}
   <div class="hint">Where your hermes-agent server is reachable. Defaults to port <code>8642</code>. Bare hostnames assume <code>https://</code>; <code>host:port</code> uses <code>http://</code>.</div>
 
   <!-- LAN setup — promoted to the primary block because for most users
-       (glasses + Mac on same Wi-Fi) it requires zero account, zero
-       account, zero YAML, zero domain. Just a LAN IP and a port. -->
+       (glasses + host computer on same Wi-Fi) it requires zero account,
+       zero YAML, zero domain. Just a LAN IP and a port. -->
   <div style="margin-top:10px;background:#0d2818;border:1px solid #1d5b34;border-radius:8px;padding:12px 14px;font-size:12px;color:#c8efd5">
-    <div style="font-weight:600;color:#7eecaa;font-size:13px;margin-bottom:6px">✅ Easiest: glasses + Mac on the same Wi-Fi</div>
-    <p style="margin:0 0 8px 0;color:#b6dcc4">No Cloudflare account, no domain, no config files. Just paste your Mac's LAN IP into the field above.</p>
+    <div style="font-weight:600;color:#7eecaa;font-size:13px;margin-bottom:6px">✅ Easiest: glasses + host computer on the same Wi-Fi</div>
+    <p style="margin:0 0 8px 0;color:#b6dcc4">No Cloudflare account, no domain, no config files. Just paste your host computer's LAN IP into the field above.</p>
     <ol style="margin:0 0 0 18px;padding:0;line-height:1.6;color:#b6dcc4">
-      <li>On the Mac, find your local IP:
+      <li>On the host computer, find your local IP:
         <div style="background:#062014;padding:6px 8px;border-radius:5px;margin:4px 0;font-family:ui-monospace,Menlo,monospace;color:#c8efd5">ipconfig getifaddr en0</div>
-        (Or: System Settings → Network → Wi-Fi → Details — look for "IP address".)
+        (On macOS: System Settings → Network → Wi-Fi → Details — look for "IP address".)
       </li>
       <li>Paste <code style="background:#062014;padding:1px 5px;border-radius:3px;color:#9ef3ff">http://&lt;that-ip&gt;:8642</code> into the Endpoint URL field above. Example: <code style="background:#062014;padding:1px 5px;border-radius:3px;color:#9ef3ff">http://192.168.1.170:8642</code></li>
-      <li>Make sure Hermes is running on the Mac (<code>hermes start</code> or your usual command).</li>
+      <li>Make sure Hermes is running on the host computer (<code>hermes start</code> or your usual command).</li>
     </ol>
-    <p style="margin:8px 0 0 0;color:#8fb8a0;font-size:11px">⚠ Won't work over cellular — only when the glasses are on the same Wi-Fi as your Mac. If you need remote access, expand the Cloudflare option below.</p>
+    <p style="margin:8px 0 0 0;color:#8fb8a0;font-size:11px">⚠ Won't work over cellular — only when the glasses are on the same Wi-Fi as your host computer. If you need remote access, expand the Cloudflare option below.</p>
   </div>
 
   <details style="margin-top:8px;background:#0d0922;border:1px solid #2a1e54;border-radius:8px;padding:10px 12px;font-size:12px;color:#cfc7ff">
@@ -197,16 +198,16 @@ ingress:
 
   <!-- LAN setup — primary path for same-WiFi users. -->
   <div style="margin-top:10px;background:#0d2818;border:1px solid #1d5b34;border-radius:8px;padding:12px 14px;font-size:12px;color:#c8efd5">
-    <div style="font-weight:600;color:#7eecaa;font-size:13px;margin-bottom:6px">✅ Easiest: glasses + Mac on the same Wi-Fi</div>
-    <p style="margin:0 0 8px 0;color:#b6dcc4">No Cloudflare account, no domain, no config files. Just your Mac's LAN IP and the TapClaw port.</p>
+    <div style="font-weight:600;color:#7eecaa;font-size:13px;margin-bottom:6px">✅ Easiest: glasses + host computer on the same Wi-Fi</div>
+    <p style="margin:0 0 8px 0;color:#b6dcc4">No Cloudflare account, no domain, no config files. Just your host computer's LAN IP and the TapClaw port.</p>
     <ol style="margin:0 0 0 18px;padding:0;line-height:1.6;color:#b6dcc4">
-      <li>On the Mac, find your local IP:
+      <li>On the host computer, find your local IP:
         <div style="background:#062014;padding:6px 8px;border-radius:5px;margin:4px 0;font-family:ui-monospace,Menlo,monospace;color:#c8efd5">ipconfig getifaddr en0</div>
       </li>
       <li>Paste <code style="background:#062014;padding:1px 5px;border-radius:3px;color:#9ef3ff">ws://&lt;that-ip&gt;:18789</code> into the Gateway URL field above. Example: <code style="background:#062014;padding:1px 5px;border-radius:3px;color:#9ef3ff">ws://192.168.1.170:18789</code></li>
-      <li>Make sure the TapClaw gateway is running on the Mac.</li>
+      <li>Make sure the TapClaw gateway is running on the host computer.</li>
     </ol>
-    <p style="margin:8px 0 0 0;color:#8fb8a0;font-size:11px">⚠ Won't work over cellular — only when the glasses are on the same Wi-Fi as your Mac. If you need remote access, expand the Cloudflare option below.</p>
+    <p style="margin:8px 0 0 0;color:#8fb8a0;font-size:11px">⚠ Won't work over cellular — only when the glasses are on the same Wi-Fi as your host computer. If you need remote access, expand the Cloudflare option below.</p>
   </div>
 
   <details style="margin-top:8px;background:#101820;border:1px solid #1f3543;border-radius:8px;padding:10px 12px;font-size:12px;color:#cfe7f5">

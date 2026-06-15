@@ -469,6 +469,17 @@ object YouTubeDimCaptions {
                     try {
                         var vid = videoIdOf(location.href);
                         if (vid !== st.vid) resetForVideo(vid);
+                        // Dim-gate: captions only render on the dim mask. The
+                        // native dim poll refreshes window.__tl_dimcc_active every
+                        // ~750ms while masked; when it goes stale (>2.5s) the mask
+                        // is down, so idle here instead of running the 5x/sec DOM
+                        // scrape + timedtext discovery, which otherwise burned CPU
+                        // for the whole video during normal viewing (overheat).
+                        if (!(window.__tl_dimcc_active &&
+                              Date.now() - window.__tl_dimcc_active < 2500)) {
+                            if (st.lastPushed) { st.lastPushed = ''; push(''); }
+                            return;
+                        }
                         var now = Date.now();
                         if (st.mode === 'cues') {
                             tickCues(now);

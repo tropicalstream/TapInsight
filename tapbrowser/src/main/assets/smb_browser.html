@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Share</title>
+<style>
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; background:#000; color:#eaf2f8; font-family:-apple-system,Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:14px 16px; border-bottom:1px solid #1d2733; position:sticky; top:0; background:#000; }
+  .back { font-size:22px; color:#7fd2ff; padding:4px 8px; cursor:pointer; }
+  header .ttl { font-size:18px; font-weight:600; }
+  .crumb { padding:8px 16px; font-size:13px; color:#7e93a6; border-bottom:1px solid #121a23; word-break:break-all; }
+  .list { padding:4px 0 40px; }
+  .row { display:flex; align-items:center; gap:14px; padding:15px 16px; border-bottom:1px solid #0f1620; cursor:pointer; }
+  .row:active { background:#0c1620; }
+  .row .ic { font-size:22px; width:26px; text-align:center; }
+  .row .nm { flex:1; font-size:16px; word-break:break-all; }
+  .row .sz { color:#5f7385; font-size:13px; }
+  .row .ar { color:#3f5163; font-size:18px; }
+  .row.playall { background:#08210f; }
+  .row.playall .ic, .row.playall .nm { color:#7CFFA8; font-weight:600; }
+  .msg { padding:18px 16px; color:#7e93a6; font-size:15px; }
+  .msg.err { color:#ff8a80; }
+</style>
+</head>
+<body>
+<header>
+  <span class="back" id="back">‹</span>
+  <span class="ttl" id="ttl">Network Share</span>
+</header>
+<div class="crumb" id="crumb"></div>
+<div class="list" id="list"><div class="msg">Loading shares…</div></div>
+<script>
+  var ORIGIN = 'https://appassets.androidplatform.net';
+  var state = { shareId:null, label:'', path:'' };
+
+  function el(html){ var d=document.createElement('div'); d.innerHTML=html; return d.firstChild; }
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  function fmtSize(n){ if(!n) return ''; var u=['B','KB','MB','GB'],i=0,v=n; while(v>=1024&&i<u.length-1){v/=1024;i++;} return (i===0?v.toFixed(0):v.toFixed(1))+u[i]; }
+  // All SMB video goes through native ExoPlayer; audio stays in media_player.
+  var VIDEO_EXTS=['mp4','webm','m4v','mov','3gp','ogv','mkv','avi','ts','m2ts','mts','wmv','flv','mpg','mpeg','vob','divx','3g2'];
+  function extOf(name){ return (name.split('.').pop()||'').toLowerCase(); }
+  function kindOf(name){
+    var ext=extOf(name);
+    if(['mp3','m4a','aac','wav','flac','ogg','opus','wma'].indexOf(ext)>=0) return 'audio';
+    if(VIDEO_EXTS.indexOf(ext)>=0) return 'video';
+    if(['txt','md','log','csv','json','xml','rtf','ini','cfg','conf','yaml','yml','toml'].indexOf(ext)>=0) return 'text';
+    return '';
+  }
+  function isNativeVideo(name){ return kindOf(name)==='video'; }
+  // What the in-WebView media_player (and its folder queue) can handle.
+  function isWebPlayable(name){
+    var k=kindOf(name);
+    if(k==='audio') return true;
+    return false;
+  }
+  function mimeForExt(ext){
+    return {mp4:'video/mp4',m4v:'video/mp4',webm:'video/webm',mov:'video/quicktime',
+            '3gp':'video/3gpp','3g2':'video/3gpp',mkv:'video/x-matroska',
+            avi:'video/x-msvideo',divx:'video/x-msvideo',ts:'video/mp2t',
+            m2ts:'video/mp2t',mts:'video/mp2t',wmv:'video/x-ms-wmv',
+            flv:'video/x-flv',mpg:'video/mpeg',mpeg:'video/mpeg',
+            vob:'video/mpeg',ogv:'video/ogg'}[ext]||'video/*';
+  }
+  // A .srt sidecar in this folder: exact basename match wins, else the folder's
+  // only .srt. Returns the filename or null.
+  function sidecarSrt(name){
+    var base=name.replace(/\.[^.]+$/,'').toLowerCase();
+    var entries=state.entries||[], exact=null, all=[];
+    for(var i=0;i<entries.length;i++){
+      var e=entries[i]; if(e.dir) continue;
+      if(/\.srt$/i.test(e.name)){
+        all.push(e.name);
+        if(e.name.replace(/\.[^.]+$/,'').toLowerCase()===base) exact=e.name;
+      }
+    }
+    return exact || (all.length===1 ? all[0] : null);
+  }
+  // Hand a problem container to the native ExoPlayer via the TapMedia bridge,
+  // attaching a sidecar .srt as &srt=<smbtap uri> when one is present.
+  function playNative(path, ext, name){
+    var uri=nativeVideoUri(path, name);
+    try{
+      if(window.TapMedia && typeof TapMedia.openNativeVideoPlaylist==='function'){
+        var queue=buildNativeVideoQueue(path);
+        if(queue.entries.length){
+          TapMedia.openNativeVideoPlaylist(JSON.stringify(queue.entries), queue.start);
+          return true;
+        }
+      }
+    }catch(e){}
+    try{
+      if(window.TapMedia && typeof TapMedia.openNativeVideo==='function'){
+        TapMedia.openNativeVideo(uri, mimeForExt(ext), name);
+        return true;
+      }
+    }catch(e){}
+    return false;
+  }
+  function nativeVideoUri(path, name){
+    var uri='smbtap://'+encodeURIComponent(state.shareId)+'?p='+encodeURIComponent(path);
+    var srtName=sidecarSrt(name);
+    if(srtName){
+      var srtPath=state.path?state.path+'/'+srtName:srtName;
+      uri+='&srt='+encodeURIComponent('smbtap://'+encodeURIComponent(state.shareId)+'?p='+encodeURIComponent(srtPath));
+    }
+    return uri;
+  }
+  function buildNativeVideoQueue(startPath){
+    var videos=(state.entries||[]).filter(function(e){ return !e.dir && kindOf(e.name)==='video'; });
+    var entries=videos.map(function(e){
+      var child=state.path?state.path+'/'+e.name:e.name;
+      return {
+        title:e.name.replace(/\.[^.]+$/,''),
+        uri:nativeVideoUri(child, e.name),
+        mime:mimeForExt(extOf(e.name))
+      };
+    });
+    var start=0;
+    for(var i=0;i<videos.length;i++){
+      var child=state.path?state.path+'/'+videos[i].name:videos[i].name;
+      if(child===startPath){ start=i; break; }
+    }
+    return {entries:entries,start:start};
+  }
+  function iconFor(name){ var k=kindOf(name); return k==='audio'?'♪':k==='video'?'▶':k==='text'?'📄':'·'; }
+
+  function setMsg(t,err){ document.getElementById('list').innerHTML='<div class="msg'+(err?' err':'')+'">'+esc(t)+'</div>'; }
+
+  // ── Shares (top level) ──
+  function loadShares(){
+    state.shareId=null; state.path='';
+    document.getElementById('ttl').textContent='Network Share';
+    document.getElementById('crumb').textContent='';
+    setMsg('Loading shares…');
+    fetch(ORIGIN+'/smb-shares').then(function(r){return r.json();}).then(function(j){
+      var shares=(j&&j.shares)||[];
+      var list=document.getElementById('list'); list.innerHTML='';
+      if(!shares.length){ setMsg('No shares saved yet. Add one in the companion app → Shares.'); return; }
+      shares.forEach(function(s){
+        var row=el('<div class="row"><span class="ic">🖥</span><span class="nm">'+esc(s.label||s.share)+'</span><span class="ar">›</span></div>');
+        row.onclick=function(){ openShare(s.id, s.label||s.share); };
+        list.appendChild(row);
+      });
+    }).catch(function(){ setMsg('Could not load shares.', true); });
+  }
+
+  function openShare(id,label){ state.shareId=id; state.label=label; loadDir(''); }
+
+  // ── Directory listing ──
+  function loadDir(path){
+    state.path=path;
+    document.getElementById('ttl').textContent=state.label;
+    document.getElementById('crumb').textContent='/'+path;
+    setMsg('Loading…');
+    fetch(ORIGIN+'/smb-list?id='+encodeURIComponent(state.shareId)+'&p='+encodeURIComponent(path))
+      .then(function(r){return r.json();}).then(function(j){
+        if(j&&j.error){ setMsg(j.error,true); return; }
+        var entries=(j&&j.entries)||[];
+        state.entries=entries;
+        var list=document.getElementById('list'); list.innerHTML='';
+        // Up row (to parent folder, or back to shares at root).
+        var up=el('<div class="row"><span class="ic">⬆</span><span class="nm">..</span></div>');
+        up.onclick=function(){ if(path){ loadDir(path.split('/').slice(0,-1).join('/')); } else { loadShares(); } };
+        list.appendChild(up);
+        // Play All: video folders use native ExoPlayer queue; audio stays web.
+        var playable=entries.filter(function(e){ return !e.dir && isWebPlayable(e.name); });
+        var videos=entries.filter(function(e){ return !e.dir && kindOf(e.name)==='video'; });
+        if(videos.length>=2){
+          var vpa=el('<div class="row playall"><span class="ic">▶</span><span class="nm">Play All Videos</span><span class="sz">'+videos.length+' videos</span></div>');
+          vpa.onclick=function(){
+            var first=state.path?state.path+'/'+videos[0].name:videos[0].name;
+            var q=buildNativeVideoQueue(first);
+            if(q.entries.length && window.TapMedia && TapMedia.openNativeVideoPlaylist){
+              TapMedia.openNativeVideoPlaylist(JSON.stringify(q.entries), 0);
+            }
+          };
+          list.appendChild(vpa);
+        }
+        if(playable.length>=2){
+          var pa=el('<div class="row playall"><span class="ic">▶</span><span class="nm">Play All</span><span class="sz">'+playable.length+' tracks</span></div>');
+          pa.onclick=function(){ playAll(); };
+          list.appendChild(pa);
+        }
+        if(!entries.length){ list.appendChild(el('<div class="msg">Empty folder.</div>')); return; }
+        entries.forEach(function(e){
+          var icon=e.dir?'📁':iconFor(e.name);
+          var sz=(!e.dir&&e.size)?'<span class="sz">'+fmtSize(e.size)+'</span>':'';
+          var ar=e.dir?'<span class="ar">›</span>':'';
+          var row=el('<div class="row"><span class="ic">'+icon+'</span><span class="nm">'+esc(e.name)+'</span>'+sz+ar+'</div>');
+          row.onclick=function(){
+            var child=path?path+'/'+e.name:e.name;
+            if(e.dir){ loadDir(child); } else { play(e.name, child); }
+          };
+          list.appendChild(row);
+        });
+      }).catch(function(){ setMsg('Could not list this folder.', true); });
+  }
+
+  // ── Play via media_player.html on the same origin ──
+  function smbFileUrl(p){ return ORIGIN+'/smb-file?id='+encodeURIComponent(state.shareId)+'&p='+encodeURIComponent(p); }
+  function gotoPlayer(kind,url,title){
+    window.location.href=ORIGIN+'/assets/media_player.html?type='+kind+
+      '&url='+encodeURIComponent(url)+'&title='+encodeURIComponent(title);
+  }
+
+  // Build a folder queue (audio+video) and hand it to media_player via the
+  // same sessionStorage('mediaPlayerQueue') contract the on-device library
+  // uses, so prev/next + Play All work. Returns false if <2 playable files.
+  function buildQueue(startPath){
+    var playable=(state.entries||[]).filter(function(e){ return !e.dir && isWebPlayable(e.name); });
+    if(playable.length<2) return false;
+    var entries=playable.map(function(e){
+      var child=state.path?state.path+'/'+e.name:e.name;
+      return { title:e.name.replace(/\.[^.]+$/,''), url:smbFileUrl(child), kind:kindOf(e.name), relativePath:child };
+    });
+    var start=0;
+    for(var i=0;i<entries.length;i++){ if(entries[i].relativePath===startPath){ start=i; break; } }
+    try { sessionStorage.setItem('mediaPlayerQueue', JSON.stringify({
+      name: state.label + (state.path ? (' / '+state.path) : ''),
+      entries: entries, startIndex: start, savedAt: Date.now()
+    })); } catch(_){}
+    var f=entries[start];
+    window.location.href=ORIGIN+'/assets/media_player.html?type='+f.kind+
+      '&url='+encodeURIComponent(f.url)+'&title='+encodeURIComponent(f.title)+'&hasQueue=1';
+    return true;
+  }
+
+  function playAll(){
+    var playable=(state.entries||[]).filter(function(e){ return !e.dir && isWebPlayable(e.name); });
+    if(!playable.length) return;
+    buildQueue(state.path?state.path+'/'+playable[0].name:playable[0].name);
+  }
+
+  function play(name, path){
+    var kind=kindOf(name);
+    if(!kind){ document.getElementById('crumb').textContent='“'+name+'” is not a playable media/text type.'; return; }
+    // MKV/AVI/etc → native ExoPlayer (the WebView can't decode them).
+    if(isNativeVideo(name) && playNative(path, extOf(name), name)) return;
+    // Web-playable audio/video in a multi-file folder → queue it so prev/next
+    // works. Text or a lone file → play just this one.
+    if(isWebPlayable(name) && buildQueue(path)) return;
+    try { sessionStorage.removeItem('mediaPlayerQueue'); } catch(_){}
+    gotoPlayer(kind, smbFileUrl(path), name);
+  }
+
+  // Header back: up one level, or leave to the Media Browser at the root.
+  document.getElementById('back').onclick=function(){
+    if(state.shareId && state.path){ loadDir(state.path.split('/').slice(0,-1).join('/')); }
+    else if(state.shareId){ loadShares(); }
+    else { window.location.href=ORIGIN+'/assets/library_local.html'; }
+  };
+
+  loadShares();
+</script>
+</body>
+</html>

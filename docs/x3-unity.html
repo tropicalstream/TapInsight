@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fable Unity Guide — Building AR Apps for the RayNeo X3 Pro</title>
+<style>
+  :root{
+    --bg:#07090f; --ink:#e8ecf4; --soft:#9aa4b8;
+    --glow1:#5ad7ff; --glow2:#9d8cff; --glow3:#7fffc1; --gold:#ffc857; --unity:#c8b6ff;
+    --card:rgba(255,255,255,.045); --line:rgba(255,255,255,.10);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:
+      radial-gradient(1100px 650px at 82% -10%, rgba(200,182,255,.14), transparent 60%),
+      radial-gradient(900px 600px at 8% 25%, rgba(90,215,255,.10), transparent 60%),
+      radial-gradient(1000px 800px at 70% 100%, rgba(127,255,193,.06), transparent 60%),
+      var(--bg);
+    color:var(--ink);
+    font-family:"Avenir Next",Avenir,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.66;
+  }
+  .stars{position:fixed;inset:0;pointer-events:none;z-index:0}
+  .stars span{position:absolute;width:2px;height:2px;border-radius:50%;background:#fff;opacity:.5;animation:tw 3.4s ease-in-out infinite}
+  @keyframes tw{0%,100%{opacity:.12;transform:scale(.8)}50%{opacity:.7;transform:scale(1.25)}}
+  main{position:relative;z-index:1;max-width:880px;margin:0 auto;padding:0 22px 90px}
+  .eyebrow{letter-spacing:.22em;text-transform:uppercase;font-size:12px;color:var(--unity);font-weight:600}
+  h1{font-size:clamp(28px,5.2vw,48px);line-height:1.13;font-weight:800;margin:12px 0 16px;
+     background:linear-gradient(92deg,#fff 8%,var(--unity) 38%,var(--glow1) 72%,var(--glow3) 100%);
+     -webkit-background-clip:text;background-clip:text;color:transparent}
+  h2{font-size:clamp(22px,3.4vw,30px);font-weight:750;margin:0 0 14px}
+  h2 .nbr{display:inline-block;font-size:13px;vertical-align:middle;margin-right:11px;color:var(--bg);
+          background:linear-gradient(135deg,var(--unity),var(--glow1));border-radius:999px;padding:3px 11px;font-weight:800}
+  h3{font-size:18px;margin:18px 0 7px}
+  p,li{color:var(--soft);font-size:16.5px;margin-bottom:12px}
+  strong{color:var(--ink)} em{color:var(--ink)}
+  section{padding:46px 0 6px}
+  .hero{padding:66px 0 24px;text-align:center}
+  .hero p.lead{font-size:19px;max-width:640px;margin:0 auto}
+  .rule{height:2px;border:0;margin:30px auto;max-width:440px;
+        background:linear-gradient(90deg,transparent,var(--unity),var(--gold),var(--glow3),var(--glow1),var(--glow2),transparent);opacity:.65}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 24px;margin:18px 0;backdrop-filter:blur(6px)}
+  .card.flag{background:radial-gradient(420px 220px at 12% 0%,rgba(255,200,87,.13),transparent 70%),var(--card);border-color:rgba(255,200,87,.30)}
+  .card.win{background:radial-gradient(420px 220px at 88% 0%,rgba(200,182,255,.14),transparent 70%),var(--card);border-color:rgba(200,182,255,.32)}
+  pre{background:#0b0f1c;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;margin:12px 0;font-size:13px;line-height:1.5}
+  code{font-family:"SF Mono",Menlo,Consolas,monospace}
+  p code,li code,td code{background:rgba(255,255,255,.08);padding:1px 6px;border-radius:5px;font-size:.9em}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;color:var(--soft)}
+  th{background:rgba(255,255,255,.05);color:var(--ink)}
+  a{color:var(--glow1);text-decoration:none} a:hover{text-decoration:underline}
+  .back{display:inline-block;margin:24px 0 0;color:var(--soft)}
+  footer{text-align:center;color:#5a6478;font-size:13px;margin-top:56px}
+</style>
+</head>
+<body>
+<div class="stars" id="stars"></div>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Fable Unity Guide · the official RayNeo path</div>
+    <h1>Building AR Apps for the X3 Pro<br>with Unity, from scratch</h1>
+    <p class="lead">The official OpenXR ARDK route — and the only one that unlocks real spatial AR:
+    gaze interaction, 6DoF, plane &amp; image tracking. A self-contained, bottom-up build for graphics,
+    sound, and the glasses' UI/UX, manifest included.</p>
+  </section>
+  <hr class="rule">
+
+  <section>
+    <h2><span class="nbr">00</span>Two honest truths first</h2>
+    <div class="card win">
+      <p style="margin-bottom:0"><strong>Why Unity:</strong> it's RayNeo's officially supported path, and
+      the <strong>only</strong> way to get true spatial AR on the X3 (the device has no ARCore). The XR
+      Plugin renders <strong>both eyes and head tracking for you</strong> — no hand-rolled binocular
+      compositor. Pick Unity for 3D anchored content; pick native Android for 2D HUDs/media/voice.</p>
+    </div>
+    <div class="card flag">
+      <p><strong>⚠️ Truth 1 — Unity is heavier on the AR1 Gen1.</strong> It works (the official sample
+      ships) but the chip is strained; treat <strong>30 fps as the ceiling</strong> and budget aggressively
+      or you hit the thermal-reboot path faster than native.</p>
+      <p style="margin-bottom:0"><strong>⚠️ Truth 2 — an AI can't click the Unity Editor.</strong> A
+      frontier model writes every C# script, the manifest, and Project Settings, and gives exact Editor
+      steps — but a human performs the GUI wiring. Start from the official sample to minimize blind clicks.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="nbr">01–02</span>Setup, version-pinned</h2>
+    <p>Vendor-pinned: <strong>Unity 2022.3.36f1</strong> + Android Build Support, OpenJDK, SDK &amp; NDK.
+    Import the <strong>OpenXR Unity ARDK (1.1.2)</strong>. Fastest start — clone the official sample and edit
+    from a known-good baseline: <a href="https://github.com/MaxManausa/RayNeoX3Pro-MITSample">github.com/MaxManausa/RayNeoX3Pro-MITSample</a>.
+    Get ADB working (Settings → General → swipe far-left, bounce the wall 10×).</p>
+  </section>
+
+  <section>
+    <h2><span class="nbr">03–04</span>Scaffold &amp; manifest</h2>
+    <p>New 3D (URP) project → delete the default Camera + Light → drag the <strong>XR Plugin</strong> prefab
+    from <code>Packages/RayNeo OpenXR ARDK/.../Prefab</code> into the scene. Its children: <strong>Head</strong>
+    (3DoF camera, renders both eyes), <strong>LaserBeam</strong> (gaze ray), <strong>BeamGraphic</strong>
+    (visible ray), <strong>LaserBeamDot</strong> (cursor). Set Game view to <strong>640×480</strong>.</p>
+    <p>Provide a custom manifest at <code>Assets/Plugins/Android/AndroidManifest.xml</code> so Unity merges it.
+    The three non-negotiables (every X3 app):</p>
+    <pre><code>&lt;meta-data android:name="com.rayneo.mercury.app" android:value="true" /&gt;
+&lt;category android:name="com.rayneo.intent.category.AR_APP" /&gt;
+&lt;!-- and NEVER declare ar_mode (forces left-lens-only) --&gt;</code></pre>
+  </section>
+
+  <section>
+    <h2><span class="nbr">06</span>Graphics — for a waveguide</h2>
+    <div class="card flag">
+      <p style="margin-bottom:0"><strong>The one setting that defines AR look:</strong> on the
+      <code>Head</code> camera, <strong>Clear Flags = Solid Color, color = pure black (0,0,0)</strong>. Black
+      isn't drawn — it's the real world showing through. No skybox, no lit background, or you paint a wall of
+      light over reality. This is the #1 beginner mistake.</p>
+    </div>
+    <p><strong>URP</strong>, mobile-tuned (no HDR, MSAA ≤2×, shadows off). <strong>Unlit / emissive</strong>
+    materials for the hologram glow — cheap and gorgeous on a transparent display. Particles: additive,
+    capped at a few hundred, no lights/collision. <strong>TextMeshPro on a world-space Canvas.</strong>
+    Budget: low-thousands of triangles, <strong>under ~50 draw calls</strong>, 30 fps locked.</p>
+  </section>
+
+  <section>
+    <h2><span class="nbr">07</span>Sound</h2>
+    <p>Native Unity <code>AudioSource</code> — no Web Speech limitation here. For spatial audio set
+    <strong>Spatial Blend = 1 (3D)</strong> so sound comes from the object's position. <strong>Request
+    audio focus and release it on pause</strong> via the ARDK: <code>AudioFocus.SetAudioFocusStatus(true/false)</code>
+    + register/unregister the change callback. Mic capture uses
+    <code>audio_source_record=voice_recognition</code> (wearer-only, 16 kHz) — and you
+    <strong>must</strong> set <code>=off</code> on stop or the mic stays seized.</p>
+  </section>
+
+  <section>
+    <h2><span class="nbr">08–09</span>UI/UX &amp; AR capabilities</h2>
+    <p><strong>Gaze is the cursor:</strong> the LaserBeam projects from view-center, the dot marks the hit —
+    put a <strong>Collider</strong> on anything selectable. <strong>TouchPad</strong> (ARDK-abstracted):
+    slide = move focus, single tap = select what the gaze dot is on, <strong>double tap = back/exit</strong>
+    (wire it everywhere — users expect it), triple = special. Slide direction can flip with "natural mode" —
+    design forward/back, not left/right. UI lives on a <strong>world-space Canvas</strong> ~1.5–2 m ahead,
+    inside the ~36° FOV.</p>
+    <p><strong>Unity-only AR</strong> (the native path can't): 3DoF (always on), Gaze Ray, 6DoF
+    (SLAM/ShareCamera — power-hungry, drifts, no ARCore), image tracking, plane detection
+    (<strong>3–5 s, at init only</strong>), face, gestures. Use 3DoF + Gaze for most apps; reach for the rest
+    only when world-anchoring is essential, and budget the thermal cost.</p>
+  </section>
+
+  <section>
+    <h2><span class="nbr">10</span>Worked example — the interactive orb</h2>
+    <p>A glowing orb floats ~2 m ahead; gaze + single-tap pulses its light, fires a particle burst, plays a
+    spatial chime; a world-space panel counts taps; double-tap exits. The full Editor steps + the
+    <code>Orb.cs</code> / <code>AppController.cs</code> scripts are in the MD guide.</p>
+    <pre><code>void OnSingleTap() {
+  if (Physics.Raycast(head.position, head.forward, out var hit, 5f)
+      &amp;&amp; hit.collider.CompareTag("Selectable"))
+    hit.collider.GetComponent&lt;Orb&gt;()?.Activate();   // pulse + spatial sound
+}
+void OnDoubleTap() =&gt; Application.Quit();             // expected exit gesture</code></pre>
+  </section>
+
+  <section>
+    <h2><span class="nbr">12–13</span>Performance &amp; the failure modes</h2>
+    <p><code>Application.targetFrameRate = 30</code>; strip Quality Settings; cap draw calls/particles;
+    disable SLAM/planes when unused (vendor budget: ~30 fps, APL &lt;13%, &lt;500 mA). The big issues:
+    <strong>grey/opaque background</strong> (camera clear not black — occludes the world), <strong>one-eye
+    render</strong> (<code>ar_mode</code> present or no XR Plugin), <strong>can't select</strong> (no
+    Collider), <strong>double-tap doesn't exit</strong> (not wired), <strong>mic stays on</strong> (no
+    <code>=off</code>), <strong>plane detection never fires</strong> (init-only, 3–5 s), <strong>6DoF drift /
+    heat</strong> (SLAM, no ARCore), and <strong>thermal reboot</strong> from over-rendering — Unity reaches
+    it faster than native, so lock 30 and stay lean.</p>
+  </section>
+
+  <section>
+    <h2>Sources</h2>
+    <p>Official sample: <a href="https://github.com/MaxManausa/RayNeoX3Pro-MITSample">RayNeoX3Pro-MITSample</a> ·
+    RayNeo developer manual (Touch Pad, Sharecamera, Audio Focus, Audio Capture, Device System Access,
+    Build Your First XR App) — local exports in <a href="rayneo-devguide/">rayneo-devguide/</a> + the MIT
+    Reality Hack 2026 deck.</p>
+    <a class="back" href="x3-guide-hub.html">← Back to the guide library</a>
+  </section>
+
+  <footer>
+    <hr class="rule" style="margin-bottom:22px">
+    Fable Unity Guide · the official RayNeo OpenXR ARDK path. Full text: <code>FABLE_X3_UNITY_GUIDE.md</code>.<br>
+    Hub: <a href="x3-guide-hub.html">the X3 guide library</a>.
+  </footer>
+</main>
+<script>
+  const sky=document.getElementById('stars');
+  for(let i=0;i<70;i++){const s=document.createElement('span');
+    s.style.left=Math.random()*100+'vw';s.style.top=Math.random()*100+'vh';
+    s.style.animationDelay=(Math.random()*4).toFixed(2)+'s';
+    s.style.animationDuration=(2.4+Math.random()*3.2).toFixed(2)+'s';sky.appendChild(s);}
+</script>
+</body>
+</html>

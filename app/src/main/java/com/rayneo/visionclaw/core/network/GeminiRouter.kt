@@ -77,7 +77,7 @@ class GeminiRouter(
         private const val DEFAULT_MODEL = "gemini-flash"
         private const val AUDIO_MODEL = "gemini-flash"
         // Default Live model is gemini-2.5-flash-native-audio-preview-12-2025.
-        // It's the model Mars validated end-to-end on the X3 glasses (commit
+        // It's the model validated end-to-end on the X3 glasses (commit
         // dedb442's VAD fix targeted exactly this endpoint) and Google's
         // pricing lists it with a free-tier eligible quota. gemini-3.1-flash-
         // live-preview is kept available in the companion-app dropdown as
@@ -115,7 +115,7 @@ class GeminiRouter(
                 "- Web & Media: Display images, videos, web pages, and text files on the AR glasses via open_taplink tool. " +
                 "Use this to show camera images, saved photos, YouTube videos, websites, or any URL the user wants to see.\n" +
                 "- Internet Search: Look up current information, facts, and news using built-in Google Search grounding. ALWAYS speak the answer first, THEN offer to open YouTube or the browser — never open proactively.\n" +
-                "- Browser Automation: TapClaw can control Chrome tabs on the user's Mac — reuse open tabs, open apps, and install new ones with user approval. Progress shown on the glasses.\n" +
+                "- Browser Automation: TapClaw can control browser tabs on the user's host computer — reuse open tabs, open apps, and install new ones with user approval. Progress shown on the glasses.\n" +
                 "- Research: Produce long-form research briefs via research_topic tool\n" +
                 "- Memory: Recall recent conversations from context cache via get_context tool\n" +
                 "- Translation: Translate speech and visible text (signs, menus, documents) to 40+ languages via translate_text tool\n" +
@@ -1041,29 +1041,18 @@ class GeminiRouter(
                 "ZERO-E and requires its own consent. The augmentation is voice-only.\n" +
                 "(B) EXACT-CATEGORY BYPASS. If the user's query was an unambiguous exact chart category — 'top news " +
                 "podcasts', 'top comedy', 'best business podcasts', a single-word genre that exactly matches an " +
-                "Apple chart name — skip the Google augmentation step. The local chart already answers cleanly. The " +
-                "TapClaw offer in step (D) still applies.\n" +
+                "Apple chart name — skip the Google augmentation step. The local chart already answers cleanly.\n" +
                 "(C) SPEAK A UNIFIED ANSWER. Combine the local tool's results with the Google grounding into ONE " +
                 "spoken response. If both sources agree, name the strongest two or three matches. If they differ, " +
                 "name what each source said and let the user choose. Keep the total response to roughly 30 seconds " +
                 "of speech. Do not read both lists separately.\n" +
-                "(D) TAPCLAW ESCALATION OFFER — RESERVED FOR WEAK RESULTS. The TapClaw offer is a deliberate " +
-                "escalation affordance, not a closing pleasantry. Add the line 'I can also have TapClaw dig " +
-                "deeper if you want a wider net.' (or a close paraphrase) ONLY when at least one of these is " +
-                "true:\n" +
-                "  • The local tool returned weak / partial / off-topic results AND the Google grounding pass " +
-                "    didn't fully recover (e.g. you couldn't name 2+ specific items, or the user's query is a " +
-                "    niche topic that produced a generic chart).\n" +
-                "  • The user has explicitly asked something hard or research-flavoured (a question that benefits " +
-                "    from browser-driven exploration: cross-source comparison, recent events, unverified claims, " +
-                "    \"go beyond what's online easily\").\n" +
-                "  • The user used wording that signals depth — 'dig deeper', 'find more', 'really thorough', " +
-                "    'wider search', 'beyond the basics'.\n" +
-                "When local + Google together produced a confident, on-topic answer, DO NOT append the TapClaw " +
-                "offer. Repeating it every turn is verbal clutter; users who want TapClaw can say so. Do not " +
-                "offer TapClaw at all if tapclaw_agent is missing from your tool list this session. If the user " +
-                "declined a TapClaw offer in the immediately prior turn, suppress it for the rest of this topic " +
-                "regardless of result quality.\n" +
+                "(D) NO PROACTIVE TAPCLAW OFFER. Do NOT volunteer 'I can also have TapClaw dig deeper if you " +
+                "want a wider net' or any paraphrase that pitches a wider/deeper search. The unsolicited " +
+                "escalation offer is verbal clutter — answer the question and stop. TapClaw stays fully " +
+                "available, but call tapclaw_agent ONLY when the USER explicitly asks to dig deeper, find more, " +
+                "cast a wider net, or be more thorough, and still wait for that explicit request (same gate as " +
+                "RULE ZERO-E). Never append the offer as a closing pleasantry, and never mention TapClaw if " +
+                "tapclaw_agent is missing from your tool list this session.\n" +
                 "(E) WAIT FOR EXPLICIT CONFIRMATION before calling tapclaw_agent. The offer is a spoken sentence; " +
                 "it does not trigger a tool call by itself. Same gate as RULE ZERO-E.\n" +
                 "(F) NEVER OPEN THE BROWSER AS THE FALLBACK. If the user accepts an offer to 'search more' or " +
@@ -1112,8 +1101,8 @@ class GeminiRouter(
                 "FAILURE MODE THIS RULE PREVENTS: niche queries (e.g. 'San Francisco Tape Music Collective " +
                 "podcasts') falling through to either (1) a generic chart with the wrong content or (2) a browser " +
                 "tab dump instead of an in-conversation grounded answer. The augmentation step gives the user a " +
-                "real answer in voice; the TapClaw offer gives them a consistent way to dig deeper without making " +
-                "the assistant feel needy on every turn.\n" +
+                "real answer in voice; TapClaw remains available on explicit request (see step D) for anyone who " +
+                "wants to dig deeper.\n" +
                 "20) If a tool fails, reply with one short sentence and a retry suggestion. Never show logs."
 
         // Runtime concat of the two const halves. We intentionally use `val`
@@ -1219,26 +1208,27 @@ class GeminiRouter(
                 "search), which is exactly why the user said 'research' instead of 'find'.\n\n" +
                 "YOUTUBE — THREE-PHASE FLOW:\n" +
                 "Phase A1 (CACHE + DESCRIBE — VOICE, NO VISIBLE OPEN) — when the user asks to FIND, SEARCH, " +
-                "LOOK UP, RECOMMEND, SUGGEST, or TELL ABOUT videos on a topic, your FIRST response is " +
-                "a spoken rundown with an invisible cache step. First call send_video_list with display='cache' " +
+                "LOOK UP, RECOMMEND, SUGGEST, or TELL ABOUT videos on a topic, your FIRST action is to " +
+                "silently cache the titles and let the DEVICE read them aloud. First call send_video_list with display='cache' " +
                 "and the exact 3-6 real titles you are about to recommend; this stores the titles for later " +
                 "'play all of those' follow-ups and does NOT open the browser or glasses picker. Do NOT call " +
                 "open_taplink. Do NOT open the browser. After the cache tool returns, do NOT call spotify_player, " +
                 "tapradio, open_taplink, Google Search, or any second media tool in the same turn unless the user " +
-                "explicitly named that different surface. Speak a concise rundown " +
-                "of those same 3-6 real, well-known videos/songs (say the " +
-                "title and creator, and a 1-sentence reason for each). Finish with a clear offer such " +
-                "as: 'Want me to send this list to your glasses so you can pick one, or should I just " +
-                "play one of them? You can also say which one to play.' This is the DEFAULT behavior " +
-                "for search/find/recommend requests — keep the response spoken until the user tells " +
-                "you what they want next. " +
+                "explicitly named that different surface. After the cache tool returns, the DEVICE reads " +
+                "the list aloud to the user via its deterministic readout voice — the titles, creators, " +
+                "reasons, AND the play/send offer are all spoken by the device. You do NOT narrate the " +
+                "list yourself: do NOT speak, repeat, or summarize the titles, and do NOT make the offer " +
+                "— the readout already did. Stay silent after the tool call. (The native voice repeats " +
+                "and stutters when it recites lists, which is exactly why the deterministic readout owns " +
+                "this step.) This is the DEFAULT behavior for search/find/recommend requests. " +
                 "EXISTENCE QUESTIONS ARE ALSO PHASE A1 — 'are there (any|related|good) YouTube " +
                 "videos about X?', 'is there a video on Y?', 'what YouTube videos cover Z?', 'any " +
                 "videos on this topic?' — these are LOOKUP intent, NOT play intent. Treat them " +
                 "exactly like 'find me videos about X'. Use send_video_list display='cache' only; do NOT call open_taplink. Do NOT open the " +
-                "browser. Speak the rundown, then offer list-or-play.\n" +
-                "SONG SAFETY FOR PHASE A1 — For song/music rundowns, cache and speak exact song titles and " +
-                "artists only, with short paraphrased reasons. Do NOT quote lyrics, continue lyric fragments, " +
+                "browser. The device reads the cached list aloud; you stay silent (do not narrate or make the offer).\n" +
+                "SONG SAFETY FOR PHASE A1 — For song/music rundowns, cache exact song titles and " +
+                "artists only, with short paraphrased reasons (the device reads them aloud — you do not). " +
+                "Do NOT quote lyrics, continue lyric fragments, " +
                 "or summarize by reproducing distinctive lines.\n" +
                 "VERBAL-EXPLICIT PHASE A1 — When the user's request contains the word 'verbally', " +
                 "'out loud', 'aloud', 'tell me about', 'speak', 'describe', 'walk me through', or " +
@@ -1246,10 +1236,11 @@ class GeminiRouter(
                 "(e.g. 'verbally tell me about YouTube videos on astrophysics', 'tell me about videos " +
                 "covering X', 'describe the top channels on Y'), that is an ABSOLUTE voice-only request. " +
                 "You may call send_video_list only with display='cache' so follow-up playback has exact titles. DO NOT call open_taplink. DO NOT open the browser. " +
-                "DO NOT offer to 'send the list' preemptively in the SAME turn — just deliver the " +
-                "spoken rundown and wait. Only after the rundown, you may close with 'I can send this " +
-                "as a pickable list to your glasses if you'd like.' but the list offer is a footer, " +
-                "not the reply. Jumping to a list when the user said 'verbally' or 'tell me' is a bug.\n" +
+                "Even when the user says 'verbally' or 'tell me', the DEVICE readout voice delivers the " +
+                "spoken list (titles, creators, reasons, and the play/send offer) — you still do NOT " +
+                "narrate it yourself. Just call send_video_list display='cache' and stay silent; the " +
+                "readout speaks it. Jumping to a visible list (display='glasses') when the user said " +
+                "'verbally' or 'tell me' is a bug.\n" +
                 "Phase A2 (SHOW LIST — ONLY ON USER CONFIRMATION) — ONLY after the user explicitly " +
                 "asks to see the list or send it to the glasses ('send it', 'show me the list', 'put " +
                 "them on my glasses', 'yes, send the list', 'show it', 'send a list'), call " +
@@ -1892,7 +1883,7 @@ class GeminiRouter(
                     // ambient room sound kept the audio level above the LOW
                     // silence threshold for the full 2-second window, so
                     // Gemini never decided we were done talking and never
-                    // generated a response — Mars's "setupComplete arrives,
+                    // generated a response — the "setupComplete arrives,
                     // mic streams, Gemini sends zero bytes back" symptom.
                     // Google's default VAD parameters are tuned for typical
                     // environments and trigger end-of-turn reliably;
@@ -3126,10 +3117,11 @@ class GeminiRouter(
                     "reply to a search/find/recommend request. " +
                     "For initial discovery requests like 'find videos about X', 'search YouTube for Y', " +
                     "'recommend songs like Z', or 'look up documentaries on…', call this tool with display='cache' " +
-                    "before speaking. That silently stores the exact titles for follow-up playback and does NOT " +
-                    "open the browser. Then speak a rundown of the same 3-6 real titles, creators, and " +
-                    "1-sentence reasons, and offer 'send the list to your glasses, or play one/all of them?'. " +
-                    "ONLY call send_video_list with display='glasses' AFTER the user has heard that voice rundown AND has " +
+                    "before speaking. That stores the exact titles for follow-up playback, does NOT open the " +
+                    "browser, and the DEVICE then reads the cached list aloud to the user (titles, creators, " +
+                    "reasons, and the play/send offer). Do NOT narrate the titles yourself — the readout voice " +
+                    "handles it; you stay silent after the cache call. " +
+                    "ONLY call send_video_list with display='glasses' AFTER the user has heard that readout AND has " +
                     "explicitly asked to see the list (e.g. 'yes send it', 'show me the list', 'put " +
                     "them on my glasses', 'send a list', 'give me the picker'). Pass the SAME 3-6 " +
                     "titles you just described verbally — do not swap them out with new titles. " +
@@ -3518,7 +3510,7 @@ class GeminiRouter(
                     "TapClaw runs on the user's own server and handles smart home control, " +
                     "email management, calendar automation, web browsing, health tracking, " +
                     "productivity apps, custom workflows, AND image/vision analysis. " +
-                    "TapClaw can also control Chrome browser tabs on the user's Mac — reusing existing " +
+                    "TapClaw can also control browser tabs on the user's host computer — reusing existing " +
                     "open tabs, opening new apps, and even installing apps with user permission. " +
                     "It reports task progress via heartbeat updates displayed on the glasses. " +
                     "Call this when the user says 'tapclaw' followed by a command, e.g. " +

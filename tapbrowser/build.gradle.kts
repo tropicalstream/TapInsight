@@ -68,10 +68,23 @@ dependencies {
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // SMB/CIFS client (SMB2/3) for LAN network shares. jcifs-ng is the
+    // maintained fork with SMB2/3 support; SMB1 stays off (insecure, and
+    // disabled on modern NAS by default).
+    implementation("eu.agno3.jcifs:jcifs-ng:2.1.10")
+    // Encrypted storage for SMB share credentials (never plaintext prefs).
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
     // ExoPlayer (Media3) for native radio streaming and HEVC gallery playback.
     // MediaPlayer has a tiny fixed buffer that causes ~14s rebuffer stutters on MP3 streams.
-    implementation("androidx.media3:media3-exoplayer:1.5.1")
-    implementation("androidx.media3:media3-ui:1.5.1")
+    implementation("androidx.media3:media3-exoplayer:1.7.1")
+    implementation("androidx.media3:media3-ui:1.7.1")
+    implementation("androidx.media3:media3-effect:1.7.1")
+    // Prebuilt FFmpeg software decoders for ExoPlayer (AC3/E-AC3/DTS/TrueHD/
+    // Vorbis/etc.) so MKV/AVI audio the device MediaCodec can't decode still
+    // plays. NextLib versions are "<media3>-<nextlib>", so this MUST match the
+    // media3 version above (1.7.1).
+    implementation("io.github.anilbeesetti:nextlib-media3ext:1.7.1-0.9.0")
 
     compileOnly(files("libs/MercuryAndroidSDK-v0.2.2-20250717110238_48b655b3.aar"))
     compileOnly(files("libs/RayNeoIPCSDK-For-Android-V0.1.0-20231128201840_9b41f025.aar"))
