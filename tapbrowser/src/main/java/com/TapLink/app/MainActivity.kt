@@ -1197,19 +1197,17 @@ class MainActivity :
             }
     private val nativeRadioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
         when (change) {
-            // Gemini Live requests MAY_DUCK, so when it speaks we get CAN_DUCK.
-            // KEEP PLAYING — just lower the radio so Gemini is clearly audible
-            // over it. (Previously CAN_DUCK (-3) fell into the <= LOSS_TRANSIENT
-            // branch and paused TapRadio, which is the bug being fixed.)
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ->
-                runOnUiThread { runCatching { nativeRadioPlayer?.volume = 0.3f } }
-            // Gemini finished / focus returned — restore full volume.
-            AudioManager.AUDIOFOCUS_GAIN ->
-                runOnUiThread { runCatching { nativeRadioPlayer?.volume = 1.0f } }
-            // Real transient loss (phone call, other exclusive audio) — pause.
-            else -> if (change <= AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+            AudioManager.AUDIOFOCUS_LOSS -> {
                 runOnUiThread { pauseNativeRadioStreamInternal(abandonFocus = false) }
             }
+            // Transient focus events include Gemini/notification audio. Keep
+            // playback alive and duck so short system sounds do not pause
+            // TapInsight media.
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ->
+                runOnUiThread { runCatching { nativeRadioPlayer?.volume = 0.3f } }
+            AudioManager.AUDIOFOCUS_GAIN ->
+                runOnUiThread { runCatching { nativeRadioPlayer?.volume = 1.0f } }
         }
     }
     private var speechRecognizer: SpeechRecognizer? = null
@@ -1755,8 +1753,18 @@ class MainActivity :
                                 // the cursor visible, drags move the pointer and
                                 // taps dispatch at its position; triple-tap still
                                 // switches to scroll mode to scroll a long card.
+                                // Scroll the expanded reader card on a vertical
+                                // drag. Previously gated on !isCursorVisible, so
+                                // with the cursor showing (the normal state) a
+                                // drag moved the pointer and the card could only
+                                // be scrolled via an obscure triple-tap — long
+                                // replies were unreadable past the first screen
+                                // (Mars: "there should be a way to scroll up and
+                                // down"). Now a drag scrolls the expanded card
+                                // regardless of cursor mode; taps still dispatch
+                                // (tap-to-read / link rows) since this only
+                                // consumes drag gestures.
                                 if (isUnipanelCardExpanded &&
-                                        !isCursorVisible &&
                                         !isKeyboardVisible &&
                                         !dualWebViewGroup.isScreenMasked()) {
                                     val chatScroll =
@@ -4969,7 +4977,7 @@ class MainActivity :
         targetWebView.post { performSync() }
         if (!includeDelayedPasses) return
 
-        longArrayOf(250L, 750L, 1500L).forEach { delayMs ->
+        longArrayOf(250L, 750L, 1500L, 3000L, 5000L).forEach { delayMs ->
             uiHandler.postDelayed({ performSync() }, delayMs)
         }
     }
@@ -8021,7 +8029,7 @@ class MainActivity :
             .findAll(text).forEach { urls.add(it.value) }
         val out = ArrayList<CardLink>()
         for (raw in urls) {
-            val url = raw.trim().trimEnd('.', ',', ';', ')', ']', '"', '\'')
+            val url = normalizeRelayMediaUrl(raw.trim().trimEnd('.', ',', ';', ')', ']', '"', '\''))
             if (!url.startsWith("http", ignoreCase = true)) continue
             val path = url.substringBefore('?').substringBefore('#')
             val ext = path.substringAfterLast('.', "").lowercase()
@@ -8320,9 +8328,13 @@ class MainActivity :
         // card's bottom edge no longer overlaps the top of the browser panel.
         val top = if (heartbeatVisible) dp(62) else dp(42)
         // Expanded reader fills the remaining vertical space; collapsed is the
-        // compact 76dp scroll box.
+        // compact 76dp scroll box. Bottom reserve was 8dp, which ran the
+        // expanded card's bottom edge down behind the browser nav bar and
+        // clipped the last lines (Mars: "enlarged chat card cuts off text at
+        // the bottom"). Reserve ~54dp so the final lines clear the nav chrome
+        // and are fully scrollable into view.
         val height = if (expanded) {
-            (overlay.height - top - dp(8)).coerceAtLeast(dp(120))
+            (overlay.height - top - dp(54)).coerceAtLeast(dp(120))
         } else {
             dp(76)
         }
@@ -9960,7 +9972,10 @@ class MainActivity :
         items.forEach { entry ->
             rows.addView(android.widget.TextView(this).apply {
                 text = timeFormat.format(java.util.Date(entry.timestampMs)) +
-                    "  " + entry.title + " — " + entry.message
+                    "  " + entry.title + " — " +
+                    // Collapse newlines for the compact list preview — the
+                    // stored message now keeps full formatting for the card.
+                    entry.message.replace('\n', ' ')
                 setTextColor(colorForUnipanelNotifSource(entry.source))
                 textSize = 11f
                 maxLines = 2
@@ -10001,7 +10016,7 @@ class MainActivity :
      * Tasks &amp; Reminders / News Headlines) in the order the user set in
      * the companion app (state.hudDisplayOrder). Each row is a colour-keyed
      * pill: a bold label in the category colour followed by the value in
-     * soft white, two-line ellipsized so nothing scrolls off-screen.
+     * soft white, two-line ellipsized so it stays inside the HUD lane.
      */
     private data class UnipanelHudTier(val label: String, val value: String, val color: Int)
 
@@ -14335,6 +14350,73 @@ class MainActivity :
         }
     }
 
+    private fun normalizeRelayMediaUrl(url: String): String {
+        if (url.isBlank()) return url
+        return runCatching {
+            val uri = Uri.parse(url)
+            val host = uri.host?.lowercase(Locale.US) ?: return@runCatching url
+            val path = uri.encodedPath ?: uri.path ?: return@runCatching url
+            val isRelayMediaPath = path.startsWith("/media/", ignoreCase = true) ||
+                path.startsWith("/v1/media/", ignoreCase = true) ||
+                path.startsWith("/files/", ignoreCase = true) ||
+                path.startsWith("/v1/files/", ignoreCase = true) ||
+                path.startsWith("/workspace/", ignoreCase = true) ||
+                path.startsWith("/v1/workspace/", ignoreCase = true)
+            if (!isRelayMediaPath) return@runCatching url
+            val localOrRelay = host == "localhost" ||
+                host == "127.0.0.1" ||
+                host == "::1" ||
+                host == "relay.tapinsight.uk" ||
+                uri.port == 18790 ||
+                host.matches(Regex("""\d{1,3}(?:\.\d{1,3}){3}"""))
+            if (!localOrRelay) return@runCatching url
+            val normalizedPath = path
+                .replaceFirst(Regex("^/v1/workspace/", RegexOption.IGNORE_CASE), "/media/")
+                .replaceFirst(Regex("^/workspace/", RegexOption.IGNORE_CASE), "/media/")
+                .replaceFirst(Regex("^/v1/media/", RegexOption.IGNORE_CASE), "/media/")
+                .replaceFirst(Regex("^/v1/files/", RegexOption.IGNORE_CASE), "/media/")
+                .replaceFirst(Regex("^/files/", RegexOption.IGNORE_CASE), "/media/")
+            val query = uri.encodedQuery?.takeIf { it.isNotBlank() }?.let { "?$it" }.orEmpty()
+            "https://relay.tapinsight.uk$normalizedPath$query"
+        }.getOrDefault(url)
+    }
+
+    private fun resolveLocalTextFileForUrl(url: String, title: String? = null): File? {
+        mediaAssetRelativePath(url)?.let { rel ->
+            val file = mediaLibraryBridge.service.resolveSafe(rel)
+            if (file?.exists() == true && file.isFile) return file
+        }
+
+        val candidates = linkedSetOf<String>()
+        runCatching {
+            Uri.parse(url).lastPathSegment
+                ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { candidates.add(it) }
+        }
+        title?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { candidates.add(it) }
+
+        val textNames = candidates
+            .map { it.substringBefore('?').substringBefore('#').trim() }
+            .filter { name ->
+                val ext = name.substringAfterLast('.', "").lowercase(Locale.US)
+                ext in MEDIA_TEXT_EXTS
+            }
+            .toSet()
+        if (textNames.isEmpty()) return null
+
+        return runCatching {
+            mediaLibraryBridge.service.mediaRoot
+                .walkTopDown()
+                .firstOrNull { file ->
+                    file.isFile && textNames.any { it.equals(file.name, ignoreCase = true) }
+                }
+        }.getOrNull()
+    }
+
     private fun sanitizedLibraryFilename(url: String, title: String?, kind: String?): String {
         val cleanKind = kind?.trim()?.lowercase(Locale.US).orEmpty()
         val urlName = try {
@@ -14395,14 +14477,16 @@ class MainActivity :
     }
 
     private fun fetchUrlTextForBridge(url: String): String {
-        mediaAssetRelativePath(url)?.let { rel ->
-            val file = mediaLibraryBridge.service.resolveSafe(rel)
-            if (file != null && file.exists() && file.isFile) {
-                return JSONObject().put("text", file.readText(Charsets.UTF_8)).toString()
+        val resolvedUrl = normalizeRelayMediaUrl(url)
+        resolveLocalTextFileForUrl(resolvedUrl)?.let { file ->
+            return try {
+                JSONObject().put("text", file.readText(Charsets.UTF_8)).toString()
+            } catch (e: Exception) {
+                JSONObject().put("error", e.message ?: "Could not read local file").toString()
             }
         }
         return try {
-            val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+            val conn = java.net.URL(resolvedUrl).openConnection() as java.net.HttpURLConnection
             conn.connectTimeout = 10_000
             conn.readTimeout = 15_000
             conn.setRequestProperty("User-Agent", "TapInsight/1.0")
@@ -15033,18 +15117,19 @@ class MainActivity :
      * subject to CORS restrictions so remote URLs work.
      */
     private fun interceptMediaUrl(view: WebView, url: String): Boolean {
+        val resolvedUrl = normalizeRelayMediaUrl(url)
         // Never treat our own asset pages as "media" — they ARE the media
         // player UI. Navigating to /assets/library_local.html should load
         // the page, not open it in a text reader just because the URL ends
         // in .html.
-        val lower = url.lowercase()
+        val lower = resolvedUrl.lowercase()
         if (lower.startsWith("file:///android_asset/") ||
             lower.startsWith("https://appassets.androidplatform.net/assets/") ||
             lower.startsWith("http://appassets.androidplatform.net/assets/")
         ) return false
 
         // Strip query string and fragment for extension detection
-        val path = url.split("?")[0].split("#")[0]
+        val path = resolvedUrl.split("?")[0].split("#")[0]
         val ext = path.substringAfterLast('.', "").lowercase()
         val mediaType = when {
             MEDIA_TEXT_EXTS.contains(ext) -> "text"
@@ -15068,36 +15153,37 @@ class MainActivity :
         }
 
         if (mediaType == "text") {
+            resolveLocalTextFileForUrl(resolvedUrl, title)?.let { file ->
+                DebugLog.d(
+                    "MediaPlayer",
+                    "Intercepted local text ($ext): ${file.path} — opening via bridge"
+                )
+                return openTextFileInMediaReader(view, file, title, encodedTitle, mediaParams)
+            }
             // Download text content in background to avoid CORS
-            DebugLog.d("MediaPlayer", "Intercepted text ($ext): $url — fetching content")
+            DebugLog.d("MediaPlayer", "Intercepted text ($ext): $resolvedUrl — fetching content")
             Thread {
                 try {
-                    val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                    val conn = java.net.URL(resolvedUrl).openConnection() as java.net.HttpURLConnection
                     conn.connectTimeout = 15000
                     conn.readTimeout = 15000
                     val text = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
                     conn.disconnect()
-                    // Escape for JavaScript injection
-                    val escaped = text
-                        .replace("\\", "\\\\")
-                        .replace("'", "\\'")
-                        .replace("\n", "\\n")
-                        .replace("\r", "\\r")
-                        .replace("<", "\\x3c")
-                        .replace(">", "\\x3e")
                     runOnUiThread {
-                        val playerUrl = "file:///android_asset/media_player.html?type=text&title=$encodedTitle$mediaParams"
-                        view.loadUrl(playerUrl)
-                        // Inject content after page loads via a tiny delay
-                        view.postDelayed({
-                            view.evaluateJavascript("window._textContent='$escaped';", null)
-                        }, 300)
+                        if (text.isBlank()) {
+                            dualWebViewGroup.showToast("File is empty: $title", 2500L)
+                        } else {
+                            ttsAndroidInterface?.setPendingText(text, title)
+                            view.loadUrl(
+                                "file:///android_asset/media_player.html?type=text&title=$encodedTitle$mediaParams"
+                            )
+                        }
                     }
                 } catch (e: Exception) {
                     DebugLog.e("MediaPlayer", "Failed to fetch text: ${e.message}")
                     runOnUiThread {
                         // Fall back to loading the URL directly
-                        val encodedUrl = java.net.URLEncoder.encode(url, "UTF-8")
+                        val encodedUrl = java.net.URLEncoder.encode(resolvedUrl, "UTF-8")
                         view.loadUrl("file:///android_asset/media_player.html?url=$encodedUrl&type=text&title=$encodedTitle$mediaParams")
                     }
                 }
@@ -15106,7 +15192,7 @@ class MainActivity :
         }
 
         // Audio & Video — direct URL works via <audio>/<video> elements
-        val encodedUrl = java.net.URLEncoder.encode(url, "UTF-8")
+        val encodedUrl = java.net.URLEncoder.encode(resolvedUrl, "UTF-8")
         val srtParam = if (mediaType == "video") {
             val srtUrl = path.substringBeforeLast('.') + ".srt"
             "&srt=" + java.net.URLEncoder.encode(srtUrl, "UTF-8")
@@ -15114,6 +15200,36 @@ class MainActivity :
         val playerUrl = "file:///android_asset/media_player.html?url=$encodedUrl&type=$mediaType&title=$encodedTitle$srtParam$mediaParams"
         DebugLog.d("MediaPlayer", "Intercepted $mediaType ($ext): $url")
         view.loadUrl(playerUrl)
+        return true
+    }
+
+    private fun openTextFileInMediaReader(
+        view: WebView,
+        file: File,
+        title: String,
+        encodedTitle: String,
+        mediaParams: String
+    ): Boolean {
+        Thread {
+            try {
+                val text = file.readText(Charsets.UTF_8)
+                runOnUiThread {
+                    if (text.isBlank()) {
+                        dualWebViewGroup.showToast("File is empty: $title", 2500L)
+                        return@runOnUiThread
+                    }
+                    ttsAndroidInterface?.setPendingText(text, title)
+                    view.loadUrl(
+                        "file:///android_asset/media_player.html?type=text&title=$encodedTitle$mediaParams"
+                    )
+                }
+            } catch (e: Exception) {
+                DebugLog.e("MediaPlayer", "Failed to open local text file ${file.path}: ${e.message}")
+                runOnUiThread {
+                    dualWebViewGroup.showToast("Could not open file: $title", 3000L)
+                }
+            }
+        }.start()
         return true
     }
 

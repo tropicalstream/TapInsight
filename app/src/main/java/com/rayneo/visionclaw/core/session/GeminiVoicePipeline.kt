@@ -25,6 +25,7 @@ import com.rayneo.visionclaw.core.tools.ToolDispatcher
 import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -1687,11 +1688,37 @@ class GeminiVoicePipeline(context: Context) {
                     if (small.size <= 1) small
                     else listOf(small.first()) +
                         chunkForReadout(small.drop(1).joinToString(" "), 1600)
-                }
-                for (chunk in chunks) {
+                }.filter { it.isNotBlank() }
+                // Prefetch pipeline (fix for >10s gaps between chunks): playChunk
+                // blocks while the AudioTrack drains, so synthesizing the next
+                // chunk only AFTER the current finished inserted a full Fish TTS
+                // round-trip of silence between chunks. Instead, kick off
+                // synthesis of chunk N+1 BEFORE playing chunk N, so the network
+                // round-trip overlaps with playback and the voice stays gapless.
+                var nextSynth: kotlinx.coroutines.Deferred<Pair<ByteArray, Int>?>? =
+                    if (chunks.isNotEmpty()) async { synthesizeRoutedToPcm(chunks[0]) } else null
+                for (i in chunks.indices) {
                     if (!isActive || !isSessionEpochCurrent(epoch)) break
-                    if (chunk.isBlank()) continue
-                    val pcm = synthesizeRoutedToPcm(chunk) ?: continue
+                    // Await the (already-running) synthesis of THIS chunk. Let a
+                    // cancellation propagate so the readout stops cleanly (same
+                    // as the old isActive break); only a real synth failure is
+                    // swallowed so we skip that chunk and continue, exactly as
+                    // the previous `synthesizeRoutedToPcm(...) ?: continue` did.
+                    val pcm = try {
+                        nextSynth?.await()
+                    } catch (c: kotlinx.coroutines.CancellationException) {
+                        throw c
+                    } catch (e: Exception) {
+                        Log.w(TAG, "readout chunk synth failed: ${e.message}")
+                        null
+                    }
+                    // Start the NEXT chunk's synthesis now, while we play this one.
+                    nextSynth = if (i + 1 < chunks.size && isActive) {
+                        async { synthesizeRoutedToPcm(chunks[i + 1]) }
+                    } else {
+                        null
+                    }
+                    if (pcm == null) continue
                     if (!isActive || !isSessionEpochCurrent(epoch)) break
                     // Keep Gemini's audio suppressed across the whole read.
                     suppressGeminiOutputUntilMs =
@@ -2353,7 +2380,14 @@ class GeminiVoicePipeline(context: Context) {
         val source =
             if (isHermes) NotificationCenter.Source.HERMES
             else NotificationCenter.Source.OPENCLAW
-        val summary = replyText.trim().replace('\n', ' ').take(160)
+        // Keep the FULL formatted reply (was truncated to 160 chars with
+        // newlines collapsed) so tapping the notification opens the complete
+        // reply on the chat card instead of a cut-off one-liner (Mars's
+        // screenshot 2). The notification LIST row collapses newlines + caps
+        // its own preview (see renderUnipanelNotifRows), so a long, multi-line
+        // message here doesn't disturb the list. 2000-char ceiling keeps the
+        // persisted notification store bounded.
+        val summary = replyText.trim().take(2000)
         NotificationCenter.post(
             NotificationCenter.HudNotification(
                 id = "${toolName}_done_${System.currentTimeMillis()}",
