@@ -107,7 +107,6 @@
                     android:text="--:--"
                     android:textColor="#FFE0F4FF"
                     android:textSize="13sp"
-                    android:letterSpacing="0.06"
                     tools:ignore="UnusedAttribute" />
 
                 <!-- Date + day-of-week. Updated on the same 30s tick
@@ -122,7 +121,6 @@
                     android:text="—"
                     android:textColor="#FFB7CEDE"
                     android:textSize="11sp"
-                    android:letterSpacing="0.04"
                     tools:ignore="UnusedAttribute" />
 
                 <!-- Notification bell + unread badge (R3/R5/R6). Sits
@@ -257,7 +255,6 @@
                     android:text="AQI --"
                     android:textColor="#CCFFFFFF"
                     android:textSize="11sp"
-                    android:letterSpacing="0.04"
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
@@ -373,7 +370,7 @@
             <LinearLayout
                 android:id="@+id/unipanelHudTierPanel"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="42dp"
                 android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:orientation="vertical"
@@ -384,53 +381,51 @@
                 <TextView
                     android:id="@+id/unipanelHudTier0"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="2dp"
+                    android:layout_height="14dp"
                     android:background="#B3000000"
-                    android:gravity="start"
-                    android:paddingHorizontal="8dp"
-                    android:paddingVertical="2dp"
+                    android:gravity="center_vertical|start"
+                    android:includeFontPadding="false"
+                    android:paddingHorizontal="6dp"
                     android:fontFamily="sans-serif"
-                    android:maxLines="2"
+                    android:singleLine="true"
+                    android:maxLines="1"
                     android:ellipsize="end"
                     android:textColor="#FFE0F4FF"
-                    android:textSize="11sp"
-                    android:lineSpacingExtra="0dp"
+                    android:textSize="10sp"
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
                 <TextView
                     android:id="@+id/unipanelHudTier1"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="2dp"
+                    android:layout_height="14dp"
                     android:background="#B3000000"
-                    android:gravity="start"
-                    android:paddingHorizontal="8dp"
-                    android:paddingVertical="2dp"
+                    android:gravity="center_vertical|start"
+                    android:includeFontPadding="false"
+                    android:paddingHorizontal="6dp"
                     android:fontFamily="sans-serif"
-                    android:maxLines="2"
+                    android:singleLine="true"
+                    android:maxLines="1"
                     android:ellipsize="end"
                     android:textColor="#FFE0F4FF"
-                    android:textSize="11sp"
-                    android:lineSpacingExtra="0dp"
+                    android:textSize="10sp"
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
                 <TextView
                     android:id="@+id/unipanelHudTier2"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
+                    android:layout_height="14dp"
                     android:background="#B3000000"
-                    android:gravity="start"
-                    android:paddingHorizontal="8dp"
-                    android:paddingVertical="2dp"
+                    android:gravity="center_vertical|start"
+                    android:includeFontPadding="false"
+                    android:paddingHorizontal="6dp"
                     android:fontFamily="sans-serif"
-                    android:maxLines="2"
+                    android:singleLine="true"
+                    android:maxLines="1"
                     android:ellipsize="end"
                     android:textColor="#FFE0F4FF"
-                    android:textSize="11sp"
-                    android:lineSpacingExtra="0dp"
+                    android:textSize="10sp"
                     android:visibility="gone"
                     tools:ignore="UnusedAttribute" />
 
@@ -525,7 +520,6 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:fontFamily="sans-serif-medium"
-                    android:letterSpacing="0.08"
                     android:text="NOTIFICATIONS"
                     android:textColor="#FFFFC857"
                     android:textSize="10sp"
