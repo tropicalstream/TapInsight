@@ -10147,7 +10147,12 @@ class MainActivity :
             .removePrefix("$label:")
             .removePrefix(label.uppercase(Locale.US) + ":")
             .trim()
-        return if (body.isBlank()) "—" else body.take(90)
+        // 90 → 240: the tier rows now grow to 3 lines (see the taller
+        // unipanelHudTierPanel layout), so allow enough text to fill them
+        // instead of truncating at ~1.5 lines (Mars: use the empty space for
+        // more HUD info). The row's own maxLines + ellipsize still cap the
+        // visible amount, so this just stops the early hard truncation.
+        return if (body.isBlank()) "—" else body.take(240)
     }
 
     private fun colorForUnipanelAqi(aqi: Int?): Int {
