@@ -108,6 +108,14 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var lastLiveResponseActivityMs: Long = 0L
     @Volatile private var lastForcedConversationalTranscript: String = ""
 
+    // ── TURN-AUDIT double-response diagnostics (ported from public branch) ──
+    // Accumulates the spoken text of the in-progress turn and flags an
+    // INTERNAL repeat (the model saying a ~50-char phrase twice within one
+    // turn) — the reliable, timing-independent signal for "Gemini repeated
+    // itself". Reset on each new user turn and at turnComplete.
+    private val turnSpokenAccum = StringBuilder()
+    @Volatile private var internalRepeatFlaggedThisTurn = false
+
     /** Elapsed-time heartbeat ticker for an in-flight agent call
      *  ("Hermes working… 15s"). Started at dispatch, canceled at result
      *  arrival / shutdown; self-terminates when agentCallInFlight drops
@@ -667,6 +675,10 @@ class GeminiVoicePipeline(context: Context) {
                 if (dropOutputTranscriptionUntilNextInput) {
                     Log.d(TAG, "onInputTranscription: releasing late-output gate")
                     dropOutputTranscriptionUntilNextInput = false
+                    // New user turn — clear the spoken-text accumulator so the
+                    // internal-repeat detector doesn't compare across turns.
+                    turnSpokenAccum.setLength(0)
+                    internalRepeatFlaggedThisTurn = false
                 }
                 // Release the agent-output suppression on the next user input —
                 // but REFUSE to fire while the agent turn or the Fish readout is
@@ -762,6 +774,24 @@ class GeminiVoicePipeline(context: Context) {
                     return
                 }
                 runCatching { viewModel.appendLiveAssistantStreamChunk(text) }
+                // TURN-AUDIT: accumulate spoken text and flag an INTERNAL
+                // repeat (model says a substantial phrase twice in one turn).
+                runCatching {
+                    turnSpokenAccum.append(text)
+                    if (!internalRepeatFlaggedThisTurn && turnSpokenAccum.length >= 80) {
+                        val whole = turnSpokenAccum.toString()
+                        val tail = whole.takeLast(50)
+                        val earlier = whole.dropLast(50).indexOf(tail)
+                        if (tail.isNotBlank() && earlier >= 0) {
+                            internalRepeatFlaggedThisTurn = true
+                            Log.w(
+                                TAG,
+                                "TURN-AUDIT: INTERNAL-REPEAT — phrase recurs in one turn: " +
+                                    "'${tail.trim()}'"
+                            )
+                        }
+                    }
+                }
                 HudStateBridge.update {
                     it.copy(phase = HudStateBridge.VoicePhase.THINKING)
                 }
@@ -860,6 +890,17 @@ class GeminiVoicePipeline(context: Context) {
                 if (!isSessionEpochCurrent(epoch)) return
                 noteLiveResponseActivity()
                 Log.d(TAG, "onTurnComplete: finishReason=$finishReason")
+                // TURN-AUDIT: log what was spoken this turn (Info level so a
+                // GeminiVoicePipe:I capture catches it), then reset the
+                // accumulator for the next turn.
+                runCatching {
+                    val spoken = viewModel.snapshotLiveAssistantTurn().trim()
+                    if (spoken.isNotEmpty()) {
+                        Log.i(TAG, "TURN-AUDIT: spoken='${spoken.take(140)}'")
+                    }
+                }
+                turnSpokenAccum.setLength(0)
+                internalRepeatFlaggedThisTurn = false
                 // Latch the late-output gate. Any outputTranscription /
                 // modelText arriving from here until the next user turn is
                 // a stray late chunk that would otherwise be appended as a
