@@ -9899,12 +9899,30 @@ class MainActivity :
     }
 
     private fun setupUnipanelNotificationBell() {
-        // The bell's tap target is enlarged via padding on its own container
-        // (see tapbrowser_activity_main.xml) — NOT a TouchDelegate. A delegate
-        // on the shared HUD strip swallowed taps meant for the clock/date.
-        findViewById<android.view.View?>(R.id.unipanelHudBellContainer)?.setOnClickListener {
+        val bell = findViewById<android.view.View?>(R.id.unipanelHudBellContainer) ?: return
+        bell.setOnClickListener {
             DebugLog.d("Unipanel", "Bell tapped → toggle notification panel")
             toggleUnipanelNotificationPanel()
+        }
+        // Enlarge the bell's TAP area without growing its layout footprint
+        // (padding/minWidth pushed the date and battery apart — Mars: "too much
+        // space"). A TouchDelegate forwards touches in an expanded rect to the
+        // bell. Expanded mostly VERTICALLY (≈ double the height → ≈ double the
+        // area) plus a little to the RIGHT toward the battery; it is kept off
+        // the clock/date to the LEFT, since an earlier strip-wide delegate
+        // swallowed those taps.
+        (bell.parent as? android.view.View)?.let { parent ->
+            parent.post {
+                val r = android.graphics.Rect()
+                bell.getHitRect(r)
+                val density = resources.displayMetrics.density
+                val vExpand = r.height().coerceAtLeast((16 * density).toInt())
+                r.top -= vExpand / 2
+                r.bottom += vExpand / 2
+                r.left -= (2 * density).toInt()
+                r.right += (10 * density).toInt()
+                parent.touchDelegate = android.view.TouchDelegate(r, bell)
+            }
         }
     }
 
@@ -9987,11 +10005,15 @@ class MainActivity :
                     DebugLog.d("Unipanel", "Notification tapped → expanded card id=${entry.id}")
                     val api = voiceServiceApi
                     if (api != null) {
-                        // Expanded card, NO auto-readout: TTS only fires
-                        // when the user taps the expanded card (Mars flow).
+                        // Show the expanded card AND read it aloud immediately
+                        // (Mars: tapping a notification should read it out).
+                        // unipanelCardSpeakText stays armed so a later tap on
+                        // the expanded card replays it.
+                        val speakText = "${entry.title}. ${entry.message}"
                         expandNextAssistantCard = true
-                        unipanelCardSpeakText = "${entry.title}. ${entry.message}"
+                        unipanelCardSpeakText = speakText
                         runCatching { api.showAssistantCard("${entry.title} — ${entry.message}") }
+                        runCatching { api.speakAgentReply(speakText) }
                     } else {
                         DebugLog.d("Unipanel", "Voice service not bound — card skipped, kicking rebind")
                         if (!voiceServiceBound) runCatching { startVoiceServiceBinding() }
