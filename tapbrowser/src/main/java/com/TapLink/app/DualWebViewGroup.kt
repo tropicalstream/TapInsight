@@ -8493,10 +8493,21 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 }
     }
 
+    /** True when the screen is actually at (near) max brightness. The saved
+     *  KEY_OUTDOOR_BRIGHTNESS_ACTIVE flag went stale when brightness changed
+     *  by paths that didn't clear it (app restart, dim-mode restore, etc.),
+     *  so the button mislabeled itself "Restore Brightness" at low brightness
+     *  (Mars). Keying off the live window brightness keeps label + action
+     *  honest. applySettingsBrightness sets screenBrightness = progress/100f,
+     *  so outdoor mode = 1.0. */
+    private fun isBrightnessAtMax(): Boolean {
+        val wb = (context as? Activity)?.window?.attributes?.screenBrightness ?: -1f
+        return wb >= 0.97f
+    }
+
     private fun updateOutdoorBrightnessButtonLabel(button: Button?) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         button?.text =
-                if (prefs.getBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, false)) {
+                if (isBrightnessAtMax()) {
                     "Restore Brightness"
                 } else {
                     "Outdoor Brightness"
@@ -8508,7 +8519,11 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             outdoorBrightnessButton: Button?
     ) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val active = prefs.getBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, false)
+        // Decide by the ACTUAL brightness, not the (sometimes stale) saved
+        // flag — so when the button reads "Outdoor Brightness" it always
+        // activates (max brightness + max volume), and "Restore Brightness"
+        // only restores when genuinely at max.
+        val active = isBrightnessAtMax()
         val audio = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
         if (active) {
             val restoreProgress =
