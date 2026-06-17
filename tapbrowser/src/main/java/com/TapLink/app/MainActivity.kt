@@ -8248,6 +8248,24 @@ class MainActivity :
         if (heartbeat.visibility == View.INVISIBLE) {
             heartbeat.visibility = View.VISIBLE
         }
+        // Resize the browser's top reserve to the actual HUD content bottom so
+        // the events/tasks/news + ticker never overlap the web view, and the
+        // browser reclaims the space when the HUD is short (Mars: "resize the
+        // height based on the info shown"). Measured from the heartbeat's
+        // bottom (the lowest HUD element) in window coords, relative to the
+        // browser group's top.
+        heartbeat.post {
+            if (!::dualWebViewGroup.isInitialized) return@post
+            val hb = IntArray(2)
+            val grp = IntArray(2)
+            heartbeat.getLocationInWindow(hb)
+            dualWebViewGroup.getLocationInWindow(grp)
+            val bottomRelToGroup = (hb[1] + heartbeat.height) - grp[1]
+            if (bottomRelToGroup > 0) {
+                val gap = (8 * resources.displayMetrics.density).toInt()
+                runCatching { dualWebViewGroup.setHudLaneReservePx(bottomRelToGroup + gap) }
+            }
+        }
     }
 
     /**
@@ -10152,7 +10170,7 @@ class MainActivity :
         // instead of truncating at ~1.5 lines (Mars: use the empty space for
         // more HUD info). The row's own maxLines + ellipsize still cap the
         // visible amount, so this just stops the early hard truncation.
-        return if (body.isBlank()) "—" else body.take(240)
+        return if (body.isBlank()) "—" else body.take(160)
     }
 
     private fun colorForUnipanelAqi(aqi: Int?): Int {

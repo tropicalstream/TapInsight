@@ -227,11 +227,34 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     // HUD/chat lane reserved at the top of the browser. Dynamic so the
     // double-tap "roll up" can drop it to 0 and let the WebView fill the
     // screen from the very top; restored when the HUD rolls back down.
-    private val hudLaneReservePx = 136.dp()
+    // Now a var: the reserve follows the actual HUD content height (the
+    // events/tasks/news rows + heartbeat ticker grow with their content), set
+    // by the unipanel via setHudLaneReservePx so the HUD never overlaps the web
+    // view and the browser reclaims space when the HUD is short. 136dp is the
+    // initial/fallback until the first measurement lands.
+    private var hudLaneReservePx = 136.dp()
     @Volatile
     private var hudLaneReserved = true
     private val unipanelTopReservePx: Int
         get() = if (hudLaneReserved) hudLaneReservePx else 0
+
+    /**
+     * Resize the top HUD lane to fit the measured HUD content height (called
+     * from the unipanel after the events/tasks/news + heartbeat block lays
+     * out). Clamped so a runaway HUD can't swallow the browser and a too-small
+     * measure can't clip the HUD; only re-lays out when the value changes.
+     */
+    fun setHudLaneReservePx(px: Int) {
+        if (!hudLaneReserved) return
+        val minReserve = 96.dp()
+        val maxReserve = if (height > 0) (height * 0.55f).toInt().coerceAtLeast(minReserve)
+                         else 300.dp()
+        val clamped = px.coerceIn(minReserve, maxReserve)
+        if (clamped != hudLaneReservePx) {
+            hudLaneReservePx = clamped
+            requestLayout()
+        }
+    }
 
     val keyboardContainer: FrameLayout =
             FrameLayout(context).apply {
