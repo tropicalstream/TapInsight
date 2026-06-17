@@ -10072,11 +10072,24 @@ class MainActivity :
         // up 1:1 with the `tiers` list — slot i ↔ filteredKeys[i] ↔ tiers[i].
         // The order itself comes from the companion app (state.hudDisplayOrder),
         // so each slot's tap target follows whatever key the user put there.
+        // Read the companion show-toggles live each render so deselecting a
+        // section (Events/Tasks/News) in the companion app hides it promptly
+        // — the HudStateBridge state re-renders far more often than the
+        // summary StateFlows re-emit (Mars: deselected Tasks still showed).
+        val vcPrefs = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
         val filteredKeys = state.hudDisplayOrder
             .split(",")
             .map { it.trim().lowercase(Locale.US) }
             .filter { it == "calendar" || it == "tasks" || it == "news" }
             .ifEmpty { listOf("calendar", "tasks", "news") }
+            .filter { key ->
+                when (key) {
+                    "calendar" -> vcPrefs.getBoolean("hud_show_calendar", true)
+                    "tasks" -> vcPrefs.getBoolean("hud_show_tasks", true)
+                    "news" -> vcPrefs.getBoolean("hud_show_news", true)
+                    else -> true
+                }
+            }
         val tiers = filteredKeys.map { key ->
             when (key) {
                 "calendar" -> UnipanelHudTier(
@@ -10162,8 +10175,12 @@ class MainActivity :
             .replace('\n', ' ')
             .replace(Regex("\\s+"), " ")
             .trim()
-            .removePrefix("$label:")
-            .removePrefix(label.uppercase(Locale.US) + ":")
+            // Strip a leading copy of the field label with OR without a
+            // trailing separator. The summary providers prefix the value
+            // ("TASKS\n…" → "TASKS …" after the newline collapse, or
+            // "TASKS: …"); without this the row read "TASKS TASKS …" because
+            // the old removePrefix only matched the colon form (Mars).
+            .replace(Regex("(?i)^${Regex.escape(label)}\\s*[:•·\\-—|]?\\s*"), "")
             .trim()
         // 90 → 240: the tier rows now grow to 3 lines (see the taller
         // unipanelHudTierPanel layout), so allow enough text to fill them
