@@ -14975,8 +14975,17 @@ class MainActivity :
                         "window.__tl_nav_sync=setInterval(function(){try{" +
                         "var p=document.querySelector('.html5-video-player');" +
                         "if(!p)return;" +
-                        "if(!p.classList.contains('ytp-autohide')&&window.__tlNavShow)window.__tlNavShow();" +
-                        "}catch(e){}},400);" +
+                        "var nv=document.getElementById('__tl_nav');" +
+                        "if(!nv)return;" +
+                        // YouTube owns visibility on a video: match its control
+                        // bar exactly (.ytp-autohide = controls hidden). Clear our
+                        // own timer so the two can't fight. Tap brings YouTube's
+                        // controls up, which brings ours up on the next tick.
+                        "clearTimeout(window.__tl_nav_hide_t);" +
+                        "var up=!p.classList.contains('ytp-autohide');" +
+                        "nv.style.opacity=up?'1':'0';" +
+                        "nv.style.pointerEvents=up?'auto':'none';" +
+                        "}catch(e){}},250);" +
                         "console.log('[TapLink-YT] Nav button injected on body (View:'+labels[window.__tl_view_mode||0]+')');" +
                         "return 'ok';" +
                         "}catch(err){console.log('[TapLink-YT] injectNav error: '+err);return 'error:'+err;}" +
