@@ -3305,11 +3305,11 @@ class MainActivity :
                     }
 
                     function inTapLinkMode() {
-                        return !!(
-                            document.getElementById('__taplink_fs_style') ||
-                            document.getElementById('__tl_theater_style') ||
-                            document.getElementById('__tl_mini_style')
-                        );
+                        // Defer the pause-chrome hold ONLY in true fullscreen,
+                        // where the automation manages chrome itself. Theater /
+                        // mini ("enlarge window") matched here too, so the pause
+                        // timeline flashed for <1s then auto-hid (Mars).
+                        return !!document.getElementById('__taplink_fs_style');
                     }
 
                     function releaseHold() {
@@ -4329,11 +4329,11 @@ class MainActivity :
                             }
 
                             function inTapLinkMode() {
-                                return !!(
-                                    document.getElementById('__taplink_fs_style') ||
-                                    document.getElementById('__tl_theater_style') ||
-                                    document.getElementById('__tl_mini_style')
-                                );
+                                // Defer the pause-chrome hold ONLY in true
+                                // fullscreen; theater/mini ("enlarge window")
+                                // matched here too, flashing the pause timeline
+                                // for <1s then auto-hiding (Mars).
+                                return !!document.getElementById('__taplink_fs_style');
                             }
 
                             function releaseHold() {
