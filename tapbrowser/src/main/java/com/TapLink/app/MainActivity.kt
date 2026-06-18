@@ -14922,6 +14922,26 @@ class MainActivity :
                         "nav.appendChild(bPrev);" +
                         "nav.appendChild(bNext);" +
                         "document.body.appendChild(nav);" +
+                        // Autohide the view-mode/skip controls like the media
+                        // toolbar (Mars): fade them out after a few idle seconds;
+                        // any tap on the page brings them back and re-arms the
+                        // timer. While hidden, pointer-events:none lets that
+                        // first tap pass through (it only reveals, doesn't
+                        // trigger a button); while visible, taps on the buttons
+                        // also re-arm so they stay up during interaction.
+                        "nav.style.transition='opacity 0.3s ease';" +
+                        "window.__tlNavShow=function(){try{" +
+                        "clearTimeout(window.__tl_nav_hide_t);" +
+                        "nav.style.opacity='1';nav.style.pointerEvents='auto';" +
+                        "window.__tl_nav_hide_t=setTimeout(function(){try{" +
+                        "nav.style.opacity='0';nav.style.pointerEvents='none';" +
+                        "}catch(e){}},3500);" +
+                        "}catch(e){}};" +
+                        "if(!window.__tl_nav_show_bound){window.__tl_nav_show_bound=true;" +
+                        "document.addEventListener('pointerdown',function(){" +
+                        "if(window.__tlNavShow)window.__tlNavShow();},true);" +
+                        "}" +
+                        "window.__tlNavShow();" +
                         // Watchdog: re-inject if YouTube removes buttons
                         "if(window.__tl_nav_watchdog)clearInterval(window.__tl_nav_watchdog);" +
                         "window.__tl_nav_watchdog=setInterval(function(){" +

@@ -60,6 +60,7 @@ object YouTubeCaptionEnforcer {
                 // overheat source). State per videoKey: pending|active|unavailable.
                 var state = Object.create(null);
                 var tries = Object.create(null);
+                var apiDone = Object.create(null);
 
                 function videoKey() {
                     var v = document.querySelector('video');
@@ -128,6 +129,35 @@ object YouTubeCaptionEnforcer {
                     return false;
                 }
 
+                // Drive YouTube's OWN caption module ON via the player API. The
+                // native textTrack.mode does NOT render YouTube's caption overlay
+                // (it's module-driven), which is why captions only appeared after
+                // a manual CC click. Called ONCE per video / per fullscreen
+                // re-enable (apiDone gate), never per tick, so it can't reset the
+                // caption clock. Returns true if a caption track was selected.
+                function forceCaptions() {
+                    var mp = document.getElementById('movie_player');
+                    if (!mp || typeof mp.setOption !== 'function') return false;
+                    try {
+                        var list = null;
+                        try { list = mp.getOption('captions', 'tracklist'); } catch (e) {}
+                        if ((!list || !list.length) && typeof mp.loadModule === 'function') {
+                            try { mp.loadModule('captions'); } catch (e) {}
+                            try { list = mp.getOption('captions', 'tracklist'); } catch (e) {}
+                        }
+                        if (list && list.length) {
+                            var track = null;
+                            for (var i = 0; i < list.length; i++) {
+                                if ((list[i].kind || '') !== 'asr') { track = list[i]; break; }
+                            }
+                            if (!track) track = list[0];
+                            mp.setOption('captions', 'track', track);
+                            return true;
+                        }
+                    } catch (e) {}
+                    return false;
+                }
+
                 function enableNow(reason) {
                     var key = videoKey();
                     var s = state[key] || 'pending';
@@ -157,29 +187,24 @@ object YouTubeCaptionEnforcer {
                         return;
                     }
 
-                    var btn = findCcButton();
-                    // ALWAYS assert the native track to 'showing' — even when the
-                    // CC button already reads "on". YouTube can start a video
-                    // with CC enabled (button pressed) while the track mode is
-                    // NOT 'showing', so nothing rendered until the user toggled
-                    // CC again (Mars). textTrack.mode is idempotent (no flashing,
-                    // unlike clicking / the IFrame API). Resolve to 'active' only
-                    // once a track is genuinely showing, so a too-early call just
-                    // retries on the next tick instead of locking in a blank.
-                    var shown = false;
-                    try { shown = showNativeTracks(); } catch (_e) {}
-
-                    if (btn && captionsActive(btn)) {
-                        if (shown) state[key] = 'active';
-                        return; // not yet showing → stay pending, retry next tick
-                    }
-
                     if (avail === true) {
+                        // Drive YouTube's module ON via the player API — ONCE per
+                        // video (apiDone gate) so the caption clock isn't reset.
+                        // The textTrack.mode + CC-button click are backups for
+                        // layouts where the API isn't exposed.
+                        var forced = apiDone[key] === true;
+                        if (!forced) {
+                            try { forced = forceCaptions(); } catch (_e) {}
+                            if (forced) apiDone[key] = true;
+                        }
+                        try { showNativeTracks(); } catch (_e) {}
+                        var btn = findCcButton();
                         if (btn && !captionsActive(btn)) {
                             try { btn.click(); } catch (e) {}
                         }
-                        if (shown) state[key] = 'active';
-                        return; // becomes 'active' on a later tick once it takes
+                        // Resolved once we forced the module OR the button reads on.
+                        if (apiDone[key] || (btn && captionsActive(btn))) state[key] = 'active';
+                        return;
                     }
 
                     // avail === null: player not ready. Try a bounded number of
@@ -210,7 +235,11 @@ object YouTubeCaptionEnforcer {
                     if (fsNow !== lastFsState) {
                         lastFsState = fsNow;
                         var fk = videoKey();
-                        if (state[fk] === 'active') { state[fk] = 'pending'; tries[fk] = 0; }
+                        // Force a full re-enable (including the player-API call)
+                        // so captions re-render after the fullscreen transition.
+                        if (state[fk] === 'active') {
+                            state[fk] = 'pending'; tries[fk] = 0; apiDone[fk] = false;
+                        }
                     }
                     enableNow('interval');
                 }, 2000);
