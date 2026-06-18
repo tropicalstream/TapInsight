@@ -131,7 +131,23 @@ object YouTubeCaptionEnforcer {
                 function enableNow(reason) {
                     var key = videoKey();
                     var s = state[key] || 'pending';
-                    if (s === 'active' || s === 'unavailable') return; // resolved — no churn, no clicks
+                    if (s === 'unavailable') return;
+                    if (s === 'active') {
+                        // Re-assert on each tick. Entering fullscreen (or any
+                        // player rebuild) silently resets the caption render, so
+                        // captions vanished until a manual CC toggle (Mars,
+                        // fullscreen). Set the track showing again and, if the CC
+                        // button slipped to off, click it back on. Idempotent —
+                        // never an off→on toggle, so no flashing.
+                        try {
+                            showNativeTracks();
+                            var aBtn = findCcButton();
+                            if (aBtn && !captionsActive(aBtn)) {
+                                try { aBtn.click(); } catch (e) {}
+                            }
+                        } catch (_e) {}
+                        return;
+                    }
 
                     var avail = captionTracks();
                     if (avail === false) {
@@ -183,7 +199,21 @@ object YouTubeCaptionEnforcer {
                 setTimeout(function(){ enableNow('init-1'); }, 300);
                 setTimeout(function(){ enableNow('init-2'); }, 1200);
                 setTimeout(function(){ enableNow('init-3'); }, 3000);
-                setInterval(function(){ enableNow('interval'); }, 4000);
+                // 2s (was 4s) so captions return quickly after a fullscreen
+                // enter/exit; the tick is cheap once a video is resolved.
+                var lastFsState = !!document.getElementById('__taplink_fs_style');
+                setInterval(function(){
+                    // A fullscreen enter/exit resets the player's caption
+                    // render — force a full re-enable for the current video so
+                    // captions come back on their own (Mars).
+                    var fsNow = !!document.getElementById('__taplink_fs_style');
+                    if (fsNow !== lastFsState) {
+                        lastFsState = fsNow;
+                        var fk = videoKey();
+                        if (state[fk] === 'active') { state[fk] = 'pending'; tries[fk] = 0; }
+                    }
+                    enableNow('interval');
+                }, 2000);
                 document.addEventListener('play', function(ev) {
                     if (ev && ev.target && ev.target.tagName === 'VIDEO') enableNow('play');
                 }, true);
