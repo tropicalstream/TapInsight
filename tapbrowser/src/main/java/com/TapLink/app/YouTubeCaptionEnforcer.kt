@@ -204,6 +204,15 @@ object YouTubeCaptionEnforcer {
                         }
                         // Resolved once we forced the module OR the button reads on.
                         if (apiDone[key] || (btn && captionsActive(btn))) state[key] = 'active';
+                        try {
+                            var mp = document.getElementById('movie_player');
+                            console.log('[TapLink-CC] enableNow reason=' + reason +
+                                ' avail=' + avail + ' forced=' + forced +
+                                ' apiExposed=' + !!(mp && typeof mp.setOption === 'function') +
+                                ' btn=' + !!btn +
+                                ' btnActive=' + !!(btn && captionsActive(btn)) +
+                                ' state=' + state[key]);
+                        } catch (_e) {}
                         return;
                     }
 

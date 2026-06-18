@@ -14938,8 +14938,12 @@ class MainActivity :
                         "}catch(e){}},3500);" +
                         "}catch(e){}};" +
                         "if(!window.__tl_nav_show_bound){window.__tl_nav_show_bound=true;" +
-                        "document.addEventListener('pointerdown',function(){" +
-                        "if(window.__tlNavShow)window.__tlNavShow();},true);" +
+                        // Reveal on cursor MOVEMENT (trackpad), not just a tap
+                        // (Mars). pointermove/mousemove fire as the pointer
+                        // drifts; __tlNavShow re-arms the hide timer cheaply.
+                        "['pointerdown','pointermove','mousemove'].forEach(function(ev){" +
+                        "document.addEventListener(ev,function(){" +
+                        "if(window.__tlNavShow)window.__tlNavShow();},true);});" +
                         "}" +
                         "window.__tlNavShow();" +
                         // Watchdog: re-inject if YouTube removes buttons
