@@ -14963,6 +14963,20 @@ class MainActivity :
                         "try{window.GroqBridge.injectNavButtons();}catch(x){}" +
                         "}" +
                         "},2000);" +
+                        // Mirror YouTube's OWN control bar. The glasses don't
+                        // emit mouse-move into the WebView, so move listeners
+                        // can't reveal the nav — but YouTube's player already
+                        // shows/hides its control bar in response to whatever
+                        // input the glasses DO send. Piggyback on that: while
+                        // the player controls are up (no .ytp-autohide), keep our
+                        // nav shown + re-armed; when they fade, ours fades too —
+                        // exactly like the media toolbar (Mars).
+                        "if(window.__tl_nav_sync)clearInterval(window.__tl_nav_sync);" +
+                        "window.__tl_nav_sync=setInterval(function(){try{" +
+                        "var p=document.querySelector('.html5-video-player');" +
+                        "if(!p)return;" +
+                        "if(!p.classList.contains('ytp-autohide')&&window.__tlNavShow)window.__tlNavShow();" +
+                        "}catch(e){}},400);" +
                         "console.log('[TapLink-YT] Nav button injected on body (View:'+labels[window.__tl_view_mode||0]+')');" +
                         "return 'ok';" +
                         "}catch(err){console.log('[TapLink-YT] injectNav error: '+err);return 'error:'+err;}" +

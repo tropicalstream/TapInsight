@@ -61,6 +61,11 @@ object YouTubeCaptionEnforcer {
                 var state = Object.create(null);
                 var tries = Object.create(null);
                 var apiDone = Object.create(null);
+                // Cue-feed watchdog: how many consecutive ticks the caption
+                // window has been on-screen but EMPTY, and whether we've already
+                // done the one-time un-stick toggle for this video.
+                var txtEmpty = Object.create(null);
+                var recovered = Object.create(null);
 
                 function videoKey() {
                     var v = document.querySelector('video');
@@ -135,6 +140,33 @@ object YouTubeCaptionEnforcer {
                 // a manual CC click. Called ONCE per video / per fullscreen
                 // re-enable (apiDone gate), never per tick, so it can't reset the
                 // caption clock. Returns true if a caption track was selected.
+                // How much caption text is currently drawn in the window. The
+                // window can read "on" (button pressed, track selected) yet be
+                // EMPTY because the cue feed stalled — this is exactly what the
+                // on-device log showed (txt=0). We use this to detect that.
+                function captionTextLen() {
+                    var cc = document.querySelector(
+                        '.ytp-caption-window-container,.caption-window,' +
+                        '.ytm-caption-window-container,.ytp-mobile-caption-window-container');
+                    return cc ? (cc.textContent || '').trim().length : 0;
+                }
+
+                // One real off->on toggle via the CC button — the same action a
+                // user performs by hand, which is the only thing observed to
+                // actually start the cue feed. Done at most once per video.
+                function recoverCaptions() {
+                    var b = findCcButton();
+                    if (!b) return false;
+                    try { b.click(); } catch (e) {}   // -> off
+                    setTimeout(function() {
+                        try {
+                            var b2 = findCcButton();
+                            if (b2 && !captionsActive(b2)) b2.click();   // -> on, feeds cues
+                        } catch (e) {}
+                    }, 300);
+                    return true;
+                }
+
                 function forceCaptions() {
                     var mp = document.getElementById('movie_player');
                     if (!mp || typeof mp.setOption !== 'function') return false;
@@ -174,6 +206,20 @@ object YouTubeCaptionEnforcer {
                             var aBtn = findCcButton();
                             if (aBtn && !captionsActive(aBtn)) {
                                 try { aBtn.click(); } catch (e) {}
+                            }
+                            // Cue-feed watchdog. The window can read "on" yet
+                            // stay empty (stuck feed — the txt=0 bug). If it's
+                            // been empty for a few ticks, do ONE off->on toggle
+                            // for this video to start the cues drawing (Mars).
+                            if (captionTextLen() > 0) {
+                                txtEmpty[key] = 0;
+                            } else {
+                                txtEmpty[key] = (txtEmpty[key] || 0) + 1;
+                                if (txtEmpty[key] >= 3 && !recovered[key]) {
+                                    recovered[key] = true;
+                                    recoverCaptions();
+                                    try { console.log('[TapLink-CC] recover: off->on toggle (empty window)'); } catch (e) {}
+                                }
                             }
                         } catch (_e) {}
                         return;
@@ -260,6 +306,7 @@ object YouTubeCaptionEnforcer {
                         // so captions re-render after the fullscreen transition.
                         if (state[fk] === 'active') {
                             state[fk] = 'pending'; tries[fk] = 0; apiDone[fk] = false;
+                            txtEmpty[fk] = 0; recovered[fk] = false;
                         }
                     }
                     enableNow('interval');
