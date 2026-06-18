@@ -1069,6 +1069,8 @@ class MainActivity :
     private var lastYouTubeInjectionUrl: String? = null
     private var lastYouTubeDnsRetryUrl: String? = null
     private var youtubeDnsRetryCount: Int = 0
+    private var lastYouTubeNavPointerRevealAtMs = 0L
+    private var lastFullscreenChromeRevealLogAtMs = 0L
     /** Set true during nuclear WebView clearing so onPageStarted's about:blank
      *  recovery doesn't reload the old YouTube page. */
     @Volatile private var nuclearCleanupInProgress = false
@@ -1704,12 +1706,18 @@ class MainActivity :
                             ): Boolean {
                                 tapCount = 0 // Reset tap count on scroll to prevent accidental
                                 // triple-tap detection
-                                totalScrollDistance +=
-                                        kotlin.math.sqrt(
-                                                distanceX * distanceX + distanceY * distanceY
-                                        )
-
-                                // Chat-history overlay scroll routing — only
+	                                totalScrollDistance +=
+	                                        kotlin.math.sqrt(
+	                                                distanceX * distanceX + distanceY * distanceY
+	                                        )
+	                                if (::dualWebViewGroup.isInitialized &&
+	                                        !dualWebViewGroup.isScreenMasked()) {
+	                                    revealFullscreenChromeFromPointerMotion(
+	                                            "gesture-scroll:${e2.device?.name ?: "unknown"}"
+	                                    )
+	                                }
+	
+	                                // Chat-history overlay scroll routing — only
                                 // fires when the user has explicitly chosen
                                 // scroll mode (no cursor). When the cursor
                                 // is visible (the default state we force on
@@ -13935,6 +13943,52 @@ class MainActivity :
         }
     }
 
+    private fun isFullscreenChromeRevealMotion(ev: MotionEvent): Boolean {
+        return ev.actionMasked == MotionEvent.ACTION_HOVER_MOVE ||
+            ev.actionMasked == MotionEvent.ACTION_HOVER_ENTER ||
+            ev.actionMasked == MotionEvent.ACTION_SCROLL ||
+            ev.actionMasked == MotionEvent.ACTION_MOVE
+    }
+
+    private fun revealFullscreenChromeFromPointerMotion(source: String = "pointer") {
+        if (!::dualWebViewGroup.isInitialized) return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastFullscreenChromeRevealLogAtMs > 1200L) {
+            lastFullscreenChromeRevealLogAtMs = now
+            DebugLog.d("ChromeReveal", "Reveal from $source")
+        }
+        if (dualWebViewGroup.isFullScreenOverlayVisible()) {
+            dualWebViewGroup.revealFullScreenControlsFromPointer()
+        }
+        revealYouTubeNavFromPointerMotion()
+    }
+
+    private fun revealYouTubeNavFromPointerMotion() {
+        if (!::dualWebViewGroup.isInitialized) return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastYouTubeNavPointerRevealAtMs < 180L) return
+        lastYouTubeNavPointerRevealAtMs = now
+        val script =
+            "(function(){try{" +
+                "window.__tl_nav_forced_until=Date.now()+4500;" +
+                "if(window.__tlNavShow){window.__tlNavShow('native-pointer');return 'shown';}" +
+                "return 'missing';" +
+            "}catch(e){return 'error:'+e;}})();"
+        dualWebViewGroup.getAllWebViews().forEach { candidate ->
+            val url = candidate.url.orEmpty()
+            if (!url.contains("youtube.com", ignoreCase = true) &&
+                !url.contains("youtu.be", ignoreCase = true)
+            ) {
+                return@forEach
+            }
+            candidate.post {
+                try {
+                    candidate.evaluateJavascript(script, null)
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
     private fun dispatchNativeVideoControlAt(screenX: Float, screenY: Float): Boolean {
         if (nativeVideoOverlay == null) return false
         showNativeVideoControls()
@@ -14930,24 +14984,24 @@ class MainActivity :
                         // trigger a button); while visible, taps on the buttons
                         // also re-arm so they stay up during interaction.
                         "nav.style.transition='opacity 0.3s ease';" +
-                        "window.__tlNavShow=function(){try{" +
+                        "window.__tlNavShow=function(reason){try{" +
                         "clearTimeout(window.__tl_nav_hide_t);" +
+                        "window.__tl_nav_forced_until=Date.now()+4500;" +
                         "nav.style.opacity='1';nav.style.pointerEvents='auto';" +
                         "window.__tl_nav_hide_t=setTimeout(function(){try{" +
                         "nav.style.opacity='0';nav.style.pointerEvents='none';" +
-                        "}catch(e){}},3500);" +
+                        "}catch(e){}},4500);" +
                         "}catch(e){}};" +
                         "if(!window.__tl_nav_show_bound){window.__tl_nav_show_bound=true;" +
                         // Reveal on cursor MOVEMENT (trackpad), not just a tap
                         // (Mars). pointermove/mousemove fire as the pointer
                         // drifts; __tlNavShow re-arms the hide timer cheaply.
-                        // Broaden the reveal triggers and log which ones the
-                        // glasses actually emit — if cursor drift produces no
-                        // move events in the WebView, no DOM listener can reveal
-                        // on movement and only tap will work (hardware limit).
+                        // Keep DOM reveal to actual movement/scroll/key events.
+                        // Native raw pointer movement also calls __tlNavShow()
+                        // from MainActivity, so click/tap is no longer the reveal
+                        // mechanism that risks pausing YouTube.
                         "window.__tl_nav_evlog=0;" +
-                        "['pointerdown','pointermove','mousemove','mouseover'," +
-                        "'touchstart','touchmove','wheel','keydown'].forEach(function(ev){" +
+                        "['pointermove','mousemove','mouseover','touchmove','wheel','keydown'].forEach(function(ev){" +
                         "document.addEventListener(ev,function(){" +
                         "var t=Date.now();if(t-window.__tl_nav_evlog>1500){window.__tl_nav_evlog=t;" +
                         "try{console.log('[TapLink-NAV] reveal ev='+ev);}catch(_e){}}" +
@@ -14963,29 +15017,23 @@ class MainActivity :
                         "try{window.GroqBridge.injectNavButtons();}catch(x){}" +
                         "}" +
                         "},2000);" +
-                        // Mirror YouTube's OWN control bar. The glasses don't
-                        // emit mouse-move into the WebView, so move listeners
-                        // can't reveal the nav — but YouTube's player already
-                        // shows/hides its control bar in response to whatever
-                        // input the glasses DO send. Piggyback on that: while
-                        // the player controls are up (no .ytp-autohide), keep our
-                        // nav shown + re-armed; when they fade, ours fades too —
-                        // exactly like the media toolbar (Mars).
+                        // Mirror YouTube's own control bar only when there is no
+                        // active native-pointer reveal latch. Raw mouse movement
+                        // should be enough to expose TapInsight controls even if
+                        // YouTube keeps its chrome autohidden.
                         "if(window.__tl_nav_sync)clearInterval(window.__tl_nav_sync);" +
                         "window.__tl_nav_sync=setInterval(function(){try{" +
                         "var p=document.querySelector('.html5-video-player');" +
                         "if(!p)return;" +
                         "var nv=document.getElementById('__tl_nav');" +
                         "if(!nv)return;" +
-                        // YouTube owns visibility on a video: match its control
-                        // bar exactly (.ytp-autohide = controls hidden). Clear our
-                        // own timer so the two can't fight. Tap brings YouTube's
-                        // controls up, which brings ours up on the next tick.
+                        "var forced=Date.now()<(window.__tl_nav_forced_until||0);" +
+                        "if(forced)return;" +
                         "clearTimeout(window.__tl_nav_hide_t);" +
                         "var up=!p.classList.contains('ytp-autohide');" +
                         "nv.style.opacity=up?'1':'0';" +
                         "nv.style.pointerEvents=up?'auto':'none';" +
-                        "}catch(e){}},250);" +
+                        "}catch(e){}},500);" +
                         "console.log('[TapLink-YT] Nav button injected on body (View:'+labels[window.__tl_view_mode||0]+')');" +
                         "return 'ok';" +
                         "}catch(err){console.log('[TapLink-YT] injectNav error: '+err);return 'error:'+err;}" +
@@ -17441,6 +17489,12 @@ class MainActivity :
             ensureMouseTapModeDisabled()
         }
 
+        if (::dualWebViewGroup.isInitialized && isFullscreenChromeRevealMotion(ev)) {
+            revealFullscreenChromeFromPointerMotion(
+                "touch:${deviceName ?: "unknown"}:${MotionEvent.actionToString(ev.actionMasked)}"
+            )
+        }
+
         // Temple arm input should only be used for mode-toggle double taps.
         // The temple controller is cyttsp6_mt (NOT cyttsp5_mt which is the main touchpad).
         // Match cyttsp6 specifically but allow suffix variants for hardware revisions.
@@ -17644,6 +17698,7 @@ class MainActivity :
                 MotionEvent.ACTION_MOVE -> {
                     if (::dualWebViewGroup.isInitialized) {
                         dualWebViewGroup.updatePointerHover(mappedX, mappedY)
+                        revealFullscreenChromeFromPointerMotion("mouse-touch-dispatch")
                     }
                 }
                 MotionEvent.ACTION_HOVER_EXIT,
@@ -17826,6 +17881,7 @@ class MainActivity :
                 MotionEvent.ACTION_HOVER_ENTER,
                 MotionEvent.ACTION_MOVE -> {
                     dualWebViewGroup.updatePointerHover(mappedX, mappedY)
+                    revealFullscreenChromeFromPointerMotion("mouse-generic")
                 }
                 MotionEvent.ACTION_HOVER_EXIT,
                 MotionEvent.ACTION_CANCEL -> {
