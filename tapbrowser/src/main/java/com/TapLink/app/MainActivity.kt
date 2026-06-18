@@ -1406,6 +1406,7 @@ class MainActivity :
     private var youtubeThermalStatusListener:
         android.os.PowerManager.OnThermalStatusChangedListener? = null
     private var lastYouTubeThermalStopAtMs = 0L
+    private var youtubeBatterySaverActive = false
 
     init {
         DebugLog.d("LinkEditing", "MainActivity initialized, isUrlEditing=$isUrlEditing")
@@ -12465,17 +12466,17 @@ class MainActivity :
                                 // Inject media listeners with enhanced YouTube support
 	                                view?.evaluateJavascript(
 	                                        """
-	                            (function() {
-	                                if (window.__taplink_media_detection_bound) {
-	                                    return;
-	                                }
-	                                window.__taplink_media_detection_bound = true;
-	                                console.log('[TapLink] Media detection script starting...');
-	                                let lastPlayingState = false;
+		                            (function() {
+		                                if (window.__taplink_media_detection_bound) {
+		                                    return;
+		                                }
+		                                window.__taplink_media_detection_bound = true;
+		                                let lastPlayingState = false;
+		                                let lastMediaCount = -1;
 
-                                function notifyMediaState(isPlaying) {
-                                    if (lastPlayingState !== isPlaying) {
-                                        console.log('[TapLink] Media state changed:', isPlaying);
+	                                function notifyMediaState(isPlaying) {
+	                                    if (lastPlayingState !== isPlaying) {
+	                                        console.log('[TapLink] Media state changed:', isPlaying);
                                         lastPlayingState = isPlaying;
                                         var bridge = window.GroqBridge || window.Android;
                                         if (bridge && typeof bridge.onMediaPlaying === 'function') {
@@ -12502,27 +12503,28 @@ class MainActivity :
                                 }
 
                                 let mediaCheckTimer = null;
-                                function scheduleMediaCheck() {
-                                    if (mediaCheckTimer !== null) return;
-                                    mediaCheckTimer = setTimeout(() => {
-                                        mediaCheckTimer = null;
-                                        checkMediaState();
-                                    }, 300);
-                                }
+	                                function scheduleMediaCheck() {
+	                                    if (mediaCheckTimer !== null) return;
+	                                    mediaCheckTimer = setTimeout(() => {
+	                                        mediaCheckTimer = null;
+	                                        checkMediaState();
+	                                    }, 1000);
+	                                }
 
-                                function attachMediaListeners() {
-                                    const mediaElements = document.querySelectorAll('video, audio');
-                                    console.log('[TapLink] Found', mediaElements.length, 'media elements');
+	                                function attachMediaListeners() {
+	                                    const mediaElements = document.querySelectorAll('video, audio');
+	                                    if (mediaElements.length !== lastMediaCount) {
+	                                        lastMediaCount = mediaElements.length;
+	                                        console.log('[TapLink] Media elements:', mediaElements.length);
+	                                    }
 
-                                    mediaElements.forEach((media, index) => {
-                                        if (media.dataset.taplinkListening) return;
-                                        media.dataset.taplinkListening = 'true';
+	                                    mediaElements.forEach((media, index) => {
+	                                        if (media.dataset.taplinkListening) return;
+	                                        media.dataset.taplinkListening = 'true';
 
-                                        console.log('[TapLink] Attaching listeners to media element', index, media.tagName);
-
-                                        media.addEventListener('play', () => {
-                                            console.log('[TapLink] Play event');
-                                            notifyMediaState(true);
+	                                        media.addEventListener('play', () => {
+	                                            console.log('[TapLink] Play event');
+	                                            notifyMediaState(true);
                                         });
                                         media.addEventListener('playing', () => {
                                             console.log('[TapLink] Playing event');
@@ -12544,11 +12546,15 @@ class MainActivity :
                                 checkMediaState();
                                 scheduleMediaCheck();
 
-                                // Watch for new media elements (YouTube loads videos dynamically)
-                                const observer = new MutationObserver((mutations) => {
-                                    attachMediaListeners();
-                                    scheduleMediaCheck();
-                                });
+	                                // Watch for new media elements (YouTube loads videos dynamically)
+	                                const observer = new MutationObserver((mutations) => {
+	                                    scheduleMediaCheck();
+	                                    if (window.__taplink_attach_timer) return;
+	                                    window.__taplink_attach_timer = setTimeout(function(){
+	                                        window.__taplink_attach_timer = null;
+	                                        attachMediaListeners();
+	                                    }, 1500);
+	                                });
                                 observer.observe(document.body, { childList: true, subtree: true });
 
                                 console.log('[TapLink] Media detection script initialized');
@@ -18079,6 +18085,12 @@ class MainActivity :
         val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
         fun inspect(intent: Intent?) {
             val tempDeciC = intent?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+            val status = intent?.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val plugged = intent?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+            val charging = plugged != 0 ||
+                status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
+                status == android.os.BatteryManager.BATTERY_STATUS_FULL
+            applyYouTubeBatterySaverIfNeeded(!charging, "batteryChanged")
             if (tempDeciC <= 0) return
             if (tempDeciC >= YOUTUBE_THERMAL_CUTOFF_DECI_C && hasYouTubePlaybackWindow()) {
                 stopHotYouTubePlayback("battery=${tempDeciC / 10f}C", tempDeciC)
@@ -18129,6 +18141,75 @@ class MainActivity :
                 DebugLog.w("YouTubeThermal", "thermal status listener unavailable: ${it.message}")
             }
         }
+    }
+
+    private fun applyYouTubeBatterySaverIfNeeded(onBattery: Boolean, reason: String) {
+        if (!::dualWebViewGroup.isInitialized) return
+        val hasYouTube = hasYouTubePlaybackWindow()
+        val shouldEnable = onBattery && hasYouTube
+        if (youtubeBatterySaverActive == shouldEnable) return
+        youtubeBatterySaverActive = shouldEnable
+        DebugLog.w(
+            "YouTubeThermal",
+            "YouTube battery saver ${if (shouldEnable) "ON" else "OFF"} ($reason)"
+        )
+        dualWebViewGroup.getAllWebViews().forEach { wv ->
+            val url = runCatching { wv.url.orEmpty() }.getOrDefault("")
+            if (!isYouTubePlaybackUrl(url)) return@forEach
+            wv.post { applyYouTubeBatterySaverToWebView(wv, shouldEnable) }
+        }
+        if (shouldEnable) {
+            runCatching {
+                dualWebViewGroup.showToast("YouTube battery saver active", 2200L)
+            }
+        }
+    }
+
+    private fun applyYouTubeBatterySaverToWebView(webView: WebView, enabled: Boolean) {
+        val js = if (enabled) {
+            """
+            (function(){
+              try {
+                var style = document.getElementById('__taplink_yt_battery_saver_style');
+                if (!style) {
+                  style = document.createElement('style');
+                  style.id = '__taplink_yt_battery_saver_style';
+                  document.head.appendChild(style);
+                }
+                style.textContent =
+                  'video{filter:brightness(0.55) contrast(0.92) saturate(0.86)!important}' +
+                  '.html5-video-player video{background:#000!important}';
+              } catch(e) {}
+              // NOTE: the playback-quality cap (setPlaybackQuality('small') →
+              // 240p) was removed (Mars): battery saver now only dims the
+              // panel (backlight is the real power draw) and no longer
+              // degrades resolution, since the device runs YouTube without
+              // thermal errors. Re-add a cap here only if overheating returns.
+              try {
+                document.querySelectorAll('video').forEach(function(v){
+                  v.setAttribute('data-taplink-battery-saver','1');
+                });
+              } catch(e) {}
+              return 'yt-battery-saver:on';
+            })();
+            """.trimIndent()
+        } else {
+            """
+            (function(){
+              try {
+                var style = document.getElementById('__taplink_yt_battery_saver_style');
+                if (style && style.parentNode) style.parentNode.removeChild(style);
+              } catch(e) {}
+              try {
+                document.querySelectorAll('video[data-taplink-battery-saver]').forEach(function(v){
+                  v.removeAttribute('data-taplink-battery-saver');
+                });
+              } catch(e) {}
+              return 'yt-battery-saver:off';
+            })();
+            """.trimIndent()
+        }
+        webView.evaluateJavascript(js, null)
     }
 
     private fun hasYouTubePlaybackWindow(): Boolean {

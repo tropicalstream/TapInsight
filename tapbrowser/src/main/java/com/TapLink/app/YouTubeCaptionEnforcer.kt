@@ -111,17 +111,21 @@ object YouTubeCaptionEnforcer {
                         btn.classList.contains('ytp-button-active');
                 }
 
+                // Force a caption/subtitle track to SHOWING. Returns true only
+                // when a track was found AND is now showing — so callers can
+                // tell real rendering from "button looks on but nothing draws".
                 function showNativeTracks() {
                     var v = document.querySelector('video');
-                    if (!v || !v.textTracks) return;
+                    if (!v || !v.textTracks) return false;
                     for (var i = 0; i < v.textTracks.length; i++) {
                         var tr = v.textTracks[i];
                         var kind = (tr.kind || '').toLowerCase();
                         if (kind === 'captions' || kind === 'subtitles') {
                             if (tr.mode !== 'showing') tr.mode = 'showing';
-                            break;
+                            return tr.mode === 'showing';
                         }
                     }
+                    return false;
                 }
 
                 function enableNow(reason) {
@@ -138,16 +142,27 @@ object YouTubeCaptionEnforcer {
                     }
 
                     var btn = findCcButton();
+                    // ALWAYS assert the native track to 'showing' — even when the
+                    // CC button already reads "on". YouTube can start a video
+                    // with CC enabled (button pressed) while the track mode is
+                    // NOT 'showing', so nothing rendered until the user toggled
+                    // CC again (Mars). textTrack.mode is idempotent (no flashing,
+                    // unlike clicking / the IFrame API). Resolve to 'active' only
+                    // once a track is genuinely showing, so a too-early call just
+                    // retries on the next tick instead of locking in a blank.
+                    var shown = false;
+                    try { shown = showNativeTracks(); } catch (_e) {}
+
                     if (btn && captionsActive(btn)) {
-                        state[key] = 'active';
-                        return;
+                        if (shown) state[key] = 'active';
+                        return; // not yet showing → stay pending, retry next tick
                     }
 
                     if (avail === true) {
-                        try { showNativeTracks(); } catch (_e) {}
                         if (btn && !captionsActive(btn)) {
                             try { btn.click(); } catch (e) {}
                         }
+                        if (shown) state[key] = 'active';
                         return; // becomes 'active' on a later tick once it takes
                     }
 
