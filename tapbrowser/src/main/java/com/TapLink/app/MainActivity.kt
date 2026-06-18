@@ -14941,8 +14941,16 @@ class MainActivity :
                         // Reveal on cursor MOVEMENT (trackpad), not just a tap
                         // (Mars). pointermove/mousemove fire as the pointer
                         // drifts; __tlNavShow re-arms the hide timer cheaply.
-                        "['pointerdown','pointermove','mousemove'].forEach(function(ev){" +
+                        // Broaden the reveal triggers and log which ones the
+                        // glasses actually emit — if cursor drift produces no
+                        // move events in the WebView, no DOM listener can reveal
+                        // on movement and only tap will work (hardware limit).
+                        "window.__tl_nav_evlog=0;" +
+                        "['pointerdown','pointermove','mousemove','mouseover'," +
+                        "'touchstart','touchmove','wheel','keydown'].forEach(function(ev){" +
                         "document.addEventListener(ev,function(){" +
+                        "var t=Date.now();if(t-window.__tl_nav_evlog>1500){window.__tl_nav_evlog=t;" +
+                        "try{console.log('[TapLink-NAV] reveal ev='+ev);}catch(_e){}}" +
                         "if(window.__tlNavShow)window.__tlNavShow();},true);});" +
                         "}" +
                         "window.__tlNavShow();" +

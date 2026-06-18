@@ -206,12 +206,24 @@ object YouTubeCaptionEnforcer {
                         if (apiDone[key] || (btn && captionsActive(btn))) state[key] = 'active';
                         try {
                             var mp = document.getElementById('movie_player');
+                            var cc = document.querySelector(
+                                '.ytp-caption-window-container,.caption-window,' +
+                                '.ytm-caption-window-container,.ytp-mobile-caption-window-container');
+                            var ccInfo = 'none';
+                            if (cc) {
+                                var cs = getComputedStyle(cc);
+                                var r = cc.getBoundingClientRect();
+                                ccInfo = 'vis=' + cs.visibility + ' op=' + cs.opacity +
+                                    ' disp=' + cs.display + ' w=' + Math.round(r.width) +
+                                    ' h=' + Math.round(r.height) + ' top=' + Math.round(r.top) +
+                                    ' txt=' + ((cc.textContent || '').trim().length);
+                            }
                             console.log('[TapLink-CC] enableNow reason=' + reason +
                                 ' avail=' + avail + ' forced=' + forced +
                                 ' apiExposed=' + !!(mp && typeof mp.setOption === 'function') +
                                 ' btn=' + !!btn +
                                 ' btnActive=' + !!(btn && captionsActive(btn)) +
-                                ' state=' + state[key]);
+                                ' state=' + state[key] + ' ccWin=[' + ccInfo + ']');
                         } catch (_e) {}
                         return;
                     }
