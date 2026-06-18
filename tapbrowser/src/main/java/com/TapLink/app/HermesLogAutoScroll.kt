@@ -5,7 +5,7 @@ import android.webkit.WebView
 /** Auto-pins the Hermes glasses log tail to the bottom of the WebView.
  *
  * The Hermes session log page at `relay.tapinsight.uk/hermes/log/...` is a
- * static HTML dump that refreshes itself every ~30 seconds. Mars reported
+ * static HTML dump that refreshes itself every ~30 seconds. user reported
  * that opening the page from the H badge lands on the top of the log, and
  * every subsequent refresh resets the scroll back up. To read the latest
  * lines the user had to manually scroll down each time.

@@ -137,7 +137,7 @@ object DimCaptionEngine {
 
     @Throws(IOException::class)
     private fun httpGet(url: String, maxChars: Int): String? {
-        val req = Request.Builder().url(url).header("User-Agent", "TapInsight/1.1.2").build()
+        val req = Request.Builder().url(url).header("User-Agent", "TapInsight/0.3-beta").build()
         http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) return null
             val len = resp.body?.contentLength() ?: -1L

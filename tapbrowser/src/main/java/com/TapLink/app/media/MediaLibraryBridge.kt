@@ -182,6 +182,8 @@ class MediaLibraryBridge(
     private val ttsExecutor = Executors.newCachedThreadPool { r ->
         Thread(r, "GlassesTts").apply { isDaemon = true }
     }
+    @Volatile
+    private var ttsCancelGeneration: Long = 0L
 
     private fun isTrusted(): Boolean {
         // The bridge is attached via `addJavascriptInterface` only to our own
@@ -1340,9 +1342,13 @@ class MediaLibraryBridge(
             return JSONObject().put("error", "TTS not wired on this build.").toString()
         }
         val voice = voiceHint?.trim()?.takeIf { it.isNotBlank() }
+        val generation = ttsCancelGeneration
         ttsExecutor.execute {
             val payload: String = try {
                 val outcome = synthChunk(chunk, voice)
+                if (generation != ttsCancelGeneration) {
+                    return@execute
+                }
                 if (outcome is SynthOutcome.Err) {
                     Log.w(TAG, "TTS error (req=$id): ${outcome.message}")
                 }
@@ -1367,6 +1373,7 @@ class MediaLibraryBridge(
      */
     @JavascriptInterface
     fun stopSpeaking(): String {
+        ttsCancelGeneration += 1L
         TtsCacheStore.clear()
         return JSONObject().put("status", "stopped").toString()
     }

@@ -78,7 +78,7 @@ button:active{opacity:.7}
         <div style="background:#062014;padding:6px 8px;border-radius:5px;margin:4px 0;font-family:ui-monospace,Menlo,monospace;color:#c8efd5">ipconfig getifaddr en0</div>
         (On macOS: System Settings → Network → Wi-Fi → Details — look for "IP address".)
       </li>
-      <li>Paste <code style="background:#062014;padding:1px 5px;border-radius:3px;color:#9ef3ff">http://&lt;that-ip&gt;:8642</code> into the Endpoint URL field above. Example: <code style="background:#062014;padding:1px 5px;border-radius:3px;color:#9ef3ff">http://192.168.1.170:8642</code></li>
+      <li>Paste <code style="background:#062014;padding:1px 5px;border-radius:3px;color:#9ef3ff">http://&lt;that-ip&gt;:8642</code> into the Endpoint URL field above. Example: <code style="background:#062014;padding:1px 5px;border-radius:3px;color:#9ef3ff">http://&lt;HOST-IP&gt;:8642</code></li>
       <li>Make sure Hermes is running on the host computer (<code>hermes start</code> or your usual command).</li>
     </ol>
     <p style="margin:8px 0 0 0;color:#8fb8a0;font-size:11px">⚠ Won't work over cellular — only when the glasses are on the same Wi-Fi as your host computer. If you need remote access, expand the Cloudflare option below.</p>
@@ -204,7 +204,7 @@ ingress:
       <li>On the host computer, find your local IP:
         <div style="background:#062014;padding:6px 8px;border-radius:5px;margin:4px 0;font-family:ui-monospace,Menlo,monospace;color:#c8efd5">ipconfig getifaddr en0</div>
       </li>
-      <li>Paste <code style="background:#062014;padding:1px 5px;border-radius:3px;color:#9ef3ff">ws://&lt;that-ip&gt;:18789</code> into the Gateway URL field above. Example: <code style="background:#062014;padding:1px 5px;border-radius:3px;color:#9ef3ff">ws://192.168.1.170:18789</code></li>
+      <li>Paste <code style="background:#062014;padding:1px 5px;border-radius:3px;color:#9ef3ff">ws://&lt;that-ip&gt;:18789</code> into the Gateway URL field above. Example: <code style="background:#062014;padding:1px 5px;border-radius:3px;color:#9ef3ff">ws://&lt;HOST-IP&gt;:18789</code></li>
       <li>Make sure the TapClaw gateway is running on the host computer.</li>
     </ol>
     <p style="margin:8px 0 0 0;color:#8fb8a0;font-size:11px">⚠ Won't work over cellular — only when the glasses are on the same Wi-Fi as your host computer. If you need remote access, expand the Cloudflare option below.</p>

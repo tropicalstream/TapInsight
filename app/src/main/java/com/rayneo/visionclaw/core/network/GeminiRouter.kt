@@ -3503,7 +3503,7 @@ class GeminiRouter(
                             .put("description", "For action='top_podcasts' or action='search' with display='glasses': comma-separated 1-based indices from the most recent voice list (e.g. '1,3,5' or '1,2,3'). Use this to display a NARROWED subset on the glasses after the user asks to filter the list (e.g. 'just the first three', 'only numbers 2 and 5', 'skip the comedy ones'). The tool caches the last fetch per action+query, so passing selection shows exactly that subset in the same order as the original list. Omit this parameter to display the full list.")))
                     .put("required", JSONArray().put("action"))))
 
-            // tapclaw_agent — personal AI assistant (requires user to enable)
+            // tapclaw_agent — self-hosted AI assistant (requires user to enable)
             tools.put(JSONObject()
                 .put("name", "tapclaw_agent")
                 .put("description", "Forward a request to the user's personal TapClaw AI agent. " +

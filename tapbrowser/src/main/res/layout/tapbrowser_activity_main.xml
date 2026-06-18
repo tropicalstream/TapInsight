@@ -243,7 +243,7 @@
                 <!-- AQI text — placeholder until a follow-up wires
                      viewModel.airQualityClient polling. The literal
                      value shown by default is in android:text below. -->
-                <!-- AQI hidden by default (Mars R6); shown only when
+                <!-- AQI hidden by default (the user R6); shown only when
                      the companion toggle hud_show_aqi is on. Plumbing
                      stays intact either way. -->
                 <TextView
@@ -259,7 +259,7 @@
                     tools:ignore="UnusedAttribute" />
 
                 <!-- Phase 4k — the standalone Hermes status dot was
-                     removed (Mars: "remove the green dot next to the
+                     removed (the user: "remove the green dot next to the
                      Hermes H"). The "H" badge below already carries the
                      reachable/unreachable colour, so the extra dot was
                      redundant. -->
@@ -297,7 +297,7 @@
                     android:background="@drawable/bg_unipanel_voice_pill"
                     tools:ignore="UnusedAttribute" />
 
-                <!-- Phase 4k (Mars revision) — the "MIC" text pill is
+                <!-- Phase 4k (the user revision) — the "MIC" text pill is
                      replaced by the Hermes-branch avatar orb. Tapping
                      the orb does exactly what tapping MIC did: toggle a
                      Gemini Live voice session via the bound
@@ -340,7 +340,7 @@
 
                 </FrameLayout>
 
-                <!-- Phase 4d (Mars revision) — manual CAM toggle
+                <!-- Phase 4d (the user revision) — manual CAM toggle
                      removed. Vision is now voice-triggered: when the
                      user says "look at this" / "what does this say" /
                      etc., the pipeline fires browser_vision against
@@ -350,7 +350,7 @@
                      replaces the CAM button — it lights up while
                      vision is active and turns off otherwise.
 
-                     Phase 4k (Mars): the old 8dp red dot is now a red
+                     Phase 4k (the user): the old 8dp red dot is now a red
                      camera glyph so the "camera is watching" state is
                      unmistakable. Visible only when CameraX is active. -->
                 <ImageView
@@ -449,7 +449,7 @@
             <!-- /unipanelTopHudRow -->
 
             <!-- Phase 4j — Hermes heartbeat ticker, parked DIRECTLY
-                 under the clock strip (Mars: "the heartbeat ticker
+                 under the clock strip (the user: "the heartbeat ticker
                  should be underneath the clock"). Own dark bar so it
                  reads over any browser page. Fixed width so long
                  messages marquee-scroll once via
@@ -617,7 +617,7 @@
 
             </FrameLayout>
 
-            <!-- Phase 4f (Mars revision) — legacy top-right CAM chip
+            <!-- Phase 4f (the user revision) — legacy top-right CAM chip
                  deleted. The unipanelVisionDot inside the HUD strip
                  (added Phase 4e) is now the sole vision-active
                  indicator. Two dots firing off the same

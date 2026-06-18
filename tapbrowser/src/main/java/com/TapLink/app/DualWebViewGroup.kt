@@ -1929,6 +1929,12 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private lateinit var fullScreenControlsContainer: FrameLayout
     private lateinit var fullScreenMediaControls: LinearLayout
     private var suppressFullscreenMediaControls = false
+    private val fullScreenControlsAutoHideDelayMs = 4500L
+    private val hideFullScreenControlsRunnable = Runnable {
+        if (::fullScreenControlsContainer.isInitialized) {
+            fullScreenControlsContainer.visibility = View.GONE
+        }
+    }
     private lateinit var btnFsPrevTrack: FontIconView
     private lateinit var btnFsPrev: FontIconView
     private lateinit var btnFsPlayPause: FontIconView // Single toggle button
@@ -4048,6 +4054,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         if (suppressFullscreenMediaControls) View.GONE else View.VISIBLE
             }
             fullScreenControlsContainer.bringToFront()
+            scheduleFullScreenControlsAutoHide()
         }
 
         // DebugLog.d("FullscreenDebug", "  View added. Container child count:
@@ -4085,6 +4092,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     }
 
     fun hideFullScreenOverlay() {
+        if (::fullScreenControlsContainer.isInitialized) {
+            fullScreenControlsContainer.removeCallbacks(hideFullScreenControlsRunnable)
+        }
 
         // Get reference to the view being removed for logging
         val removedView =
@@ -4762,7 +4772,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
-    // Dim-mode "show lyrics" gesture intentionally removed (Mars
+    // Dim-mode "show lyrics" gesture intentionally removed (user
     // 2026-05-30). Synced lyrics auto-load on track change and the active
     // line is rendered in dim mode by [refreshMaskedNowPlaying]; no
     // explicit gesture is required.
@@ -5091,6 +5101,26 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
     }
 
+    private fun scheduleFullScreenControlsAutoHide() {
+        if (!::fullScreenControlsContainer.isInitialized) return
+        fullScreenControlsContainer.removeCallbacks(hideFullScreenControlsRunnable)
+        fullScreenControlsContainer.postDelayed(
+            hideFullScreenControlsRunnable,
+            fullScreenControlsAutoHideDelayMs
+        )
+    }
+
+    fun revealFullScreenControlsFromPointer() {
+        if (!::fullScreenControlsContainer.isInitialized) return
+        fullScreenControlsContainer.visibility = View.VISIBLE
+        if (::fullScreenMediaControls.isInitialized) {
+            fullScreenMediaControls.visibility =
+                if (suppressFullscreenMediaControls) View.GONE else View.VISIBLE
+        }
+        fullScreenControlsContainer.bringToFront()
+        scheduleFullScreenControlsAutoHide()
+    }
+
     fun dispatchFullScreenOverlayTouch(screenX: Float, screenY: Float) {
         val scale = uiScale
         DebugLog.d("FullscreenTouch", "Touch at screen ($screenX, $screenY), scale: $scale")
@@ -5117,6 +5147,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                 screenY <= btnLocation[1] + btnHeight
                 ) {
                     DebugLog.d("FullscreenTouch", "Exit button HIT!")
+                    scheduleFullScreenControlsAutoHide()
                     btnFsExit.performClick()
                     return
                 }
@@ -5149,6 +5180,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                     screenY <= btnLocation[1] + btnHeight
                     ) {
                         DebugLog.d("FullscreenTouch", "Button $i HIT!")
+                        scheduleFullScreenControlsAutoHide()
                         button.performClick()
                         return
                     }
@@ -5158,16 +5190,8 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             DebugLog.d("FullscreenTouch", "Controls container NOT visible or not initialized")
         }
 
-        // If no button hit, toggle controls visibility
-        DebugLog.d("FullscreenTouch", "No button hit, toggling controls visibility")
-        if (::fullScreenControlsContainer.isInitialized) {
-            if (fullScreenControlsContainer.visibility == View.VISIBLE) {
-                fullScreenControlsContainer.visibility = View.GONE
-            } else {
-                fullScreenControlsContainer.visibility = View.VISIBLE
-                fullScreenControlsContainer.bringToFront()
-            }
-        }
+        DebugLog.d("FullscreenTouch", "No button hit, revealing controls only")
+        revealFullScreenControlsFromPointer()
     }
 
     private fun drawBitmapToSurface() {
@@ -8520,7 +8544,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
      *  KEY_OUTDOOR_BRIGHTNESS_ACTIVE flag went stale when brightness changed
      *  by paths that didn't clear it (app restart, dim-mode restore, etc.),
      *  so the button mislabeled itself "Restore Brightness" at low brightness
-     *  (Mars). Keying off the live window brightness keeps label + action
+     *  (user). Keying off the live window brightness keeps label + action
      *  honest. applySettingsBrightness sets screenBrightness = progress/100f,
      *  so outdoor mode = 1.0. */
     private fun isBrightnessAtMax(): Boolean {
@@ -8585,7 +8609,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     .apply()
             applySettingsBrightness(100, brightnessSeekBar)
             // Outdoor → on: full brightness AND full media volume — wind and
-            // street noise eat the temple speakers (June-12, Mars request).
+            // street noise eat the temple speakers (June-12, user request).
             runCatching {
                 audio.setStreamVolume(
                     android.media.AudioManager.STREAM_MUSIC,
@@ -9397,7 +9421,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     .withEndAction { leftNavigationBar.visibility = View.GONE }
                     .start()
 
-            // Eye/force-show button intentionally suppressed (Mars 2026-05-30):
+            // Eye/force-show button intentionally suppressed (user 2026-05-30):
             // user found the bottom-right eyeball overlay distracting in
             // fullscreen / scroll-mode. Navbars can still be restored via the
             // double-tap right-arm gesture and the empty-HUD toggle.
@@ -9469,7 +9493,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     .withEndAction { leftNavigationBar.visibility = View.GONE }
                     .start()
 
-            // Eye/force-show button intentionally suppressed (Mars 2026-05-30):
+            // Eye/force-show button intentionally suppressed (user 2026-05-30):
             // gestures (double-tap right arm + empty-HUD tap) restore the
             // navbars, so the bottom-right eyeball overlay is unnecessary.
             btnShowNavBars.visibility = View.GONE
@@ -11157,7 +11181,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             maskCaptionText.visibility = View.INVISIBLE
             return
         }
-        // The visualizer is its own calm surface (Mars's daughter's
+        // The visualizer is its own calm surface (user's daughter's
         // breathing screen): captions never draw over it. The heartbeat
         // (≤1.5s) restores the line as soon as the visualizer closes.
         if (isAudioVisualizerShown()) {
@@ -11225,7 +11249,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         // updates with playback). Fall back to a tiny "♪" placeholder during
         // an instrumental gap, or fully hide the row when no synced lyrics
         // are available for the track. When a later track DOES have lyrics,
-        // the row needs to come back — Mars reported it stayed hidden.
+        // the row needs to come back — user reported it stayed hidden.
         //
         // Root cause: when the TextView is GONE, the parent LinearLayout
         // caches the collapsed-to-0 state for that child. Flipping back to

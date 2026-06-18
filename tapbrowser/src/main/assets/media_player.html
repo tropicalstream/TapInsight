@@ -1280,7 +1280,7 @@ function hardStopTtsAudioElement(el) {
 // chunk N+1 BEFORE awaiting the audio for chunk N, which is what actually
 // closes the gap.
 
-var ttsPending = Object.create(null); // requestId → { resolve, reject }
+var ttsPending = Object.create(null); // requestId → { token, resolve, reject }
 var ttsReqCounter = 0;
 var nextChunkPrefetch = null;          // Promise<synthResult> | null
 var ttsAutoplayRequested = (function() {
@@ -1292,6 +1292,10 @@ window.__ttsComplete = function(requestId, jsonPayload) {
   var entry = ttsPending[requestId];
   if (!entry) return;
   delete ttsPending[requestId];
+  if (!ttsPlaying || entry.token !== ttsStartToken) {
+    entry.reject(new Error('stopped'));
+    return;
+  }
   var data;
   try { data = JSON.parse(jsonPayload); }
   catch (e) { entry.reject(new Error('bad-json')); return; }
@@ -1301,6 +1305,15 @@ window.__ttsComplete = function(requestId, jsonPayload) {
   }
   entry.resolve(data);
 };
+
+function rejectPendingTts(reason) {
+  var err = new Error(reason || 'stopped');
+  for (var k in ttsPending) {
+    if (!Object.prototype.hasOwnProperty.call(ttsPending, k)) continue;
+    try { ttsPending[k].reject(err); } catch (_) {}
+    delete ttsPending[k];
+  }
+}
 
 function synthChunkSyncFallback(TM, chunkText, resolve, reject) {
   Promise.resolve().then(function() {
@@ -1331,6 +1344,7 @@ function synthChunkAsync(chunkText) {
     if (!hasAsync && !hasSync) { reject(new Error('no-bridge')); return; }
     if (hasAsync) {
       var id = 'tts_' + (++ttsReqCounter) + '_' + Date.now();
+      var requestToken = ttsStartToken;
       var settled = false;
       var timeoutMs = 25000;
       var timeout = setTimeout(function() {
@@ -1342,6 +1356,7 @@ function synthChunkAsync(chunkText) {
         else reject(new Error('tts-timeout'));
       }, timeoutMs);
       ttsPending[id] = {
+        token: requestToken,
         resolve: function(data) {
           if (settled) return;
           settled = true;
@@ -1401,6 +1416,17 @@ function synthChunkAsync(chunkText) {
  */
 function playChunkAudio(audioUrl, fromIdx, endIdx) {
   return new Promise(function(resolve, reject) {
+    var playToken = ttsStartToken;
+    function isStopped() {
+      return !ttsPlaying || playToken !== ttsStartToken;
+    }
+    function stopAndReject(a, rafId, finishedRef) {
+      finishedRef.value = true;
+      if (rafId) cancelAnimationFrame(rafId);
+      try { if (a) hardStopTtsAudioElement(a); } catch (_) {}
+      reject(new Error('stopped'));
+    }
+    if (isStopped()) { reject(new Error('stopped')); return; }
     // ── Gapless handoff ──
     // If the OTHER pool element (the standby) was preloaded with this
     // exact URL during the previous chunk's playback, promote it to
@@ -1415,6 +1441,7 @@ function playChunkAudio(audioUrl, fromIdx, endIdx) {
     // 10 words into chunk N. We only rotate now when we actually want
     // to swap roles, never speculatively.
     var standby = getStandbyTtsAudio();
+    if (isStopped()) { reject(new Error('stopped')); return; }
     if (standby._loadedUrl && standby._loadedUrl === audioUrl) {
       // Standby has the right URL preloaded → swap. Stop the previous
       // active first so its onended/handlers don't fire late on the
@@ -1426,6 +1453,7 @@ function playChunkAudio(audioUrl, fromIdx, endIdx) {
       ttsAudioActiveSlot = 1 - ttsAudioActiveSlot;
     }
     var a = getActiveTtsAudio();
+    if (isStopped()) { hardStopTtsAudioElement(a); reject(new Error('stopped')); return; }
     if (a._loadedUrl !== audioUrl) {
       // No preload available — load fresh.
       a.src = audioUrl;
@@ -1467,9 +1495,10 @@ function playChunkAudio(audioUrl, fromIdx, endIdx) {
 
     var rafId = 0;
     var finished = false;
+    var finishedRef = { value: false };
     function tick() {
-      if (finished) return;
-      if (!ttsPlaying) { cancelAnimationFrame(rafId); return; }
+      if (finished || finishedRef.value) return;
+      if (isStopped()) { stopAndReject(a, rafId, finishedRef); return; }
       var dur = a.duration && isFinite(a.duration) && a.duration > 0 ? a.duration : 0;
       var cur = a.currentTime || 0;
       var progress = dur > 0 ? Math.min(cur / dur, 1) : 0;
@@ -1497,19 +1526,28 @@ function playChunkAudio(audioUrl, fromIdx, endIdx) {
       rafId = requestAnimationFrame(tick);
     }
 
-    a.onloadedmetadata = function() { rafId = requestAnimationFrame(tick); };
+    a.onloadedmetadata = function() {
+      if (isStopped()) { stopAndReject(a, rafId, finishedRef); return; }
+      rafId = requestAnimationFrame(tick);
+    };
     a.onended = function() {
+      if (isStopped()) { stopAndReject(a, rafId, finishedRef); return; }
       finished = true;
+      finishedRef.value = true;
       if (rafId) cancelAnimationFrame(rafId);
       resolve();
     };
     a.onerror = function() {
+      if (isStopped()) { stopAndReject(a, rafId, finishedRef); return; }
       finished = true;
+      finishedRef.value = true;
       if (rafId) cancelAnimationFrame(rafId);
       reject(new Error('audio-load-failed'));
     };
+    if (isStopped()) { stopAndReject(a, rafId, finishedRef); return; }
     a.play().catch(function(err) {
       finished = true;
+      finishedRef.value = true;
       if (rafId) cancelAnimationFrame(rafId);
       reject(err);
     });
@@ -1518,8 +1556,10 @@ function playChunkAudio(audioUrl, fromIdx, endIdx) {
 
 /** Compose: synth (or reuse prefetch) → play → resolve on ended. */
 function speakChunkViaGemini(chunkText, fromIdx, endIdx, prefetched) {
+  var chunkToken = ttsStartToken;
   var synthPromise = prefetched || synthChunkAsync(chunkText);
   return synthPromise.then(function(data) {
+    if (!ttsPlaying || chunkToken !== ttsStartToken) throw new Error('stopped');
     return playChunkAudio(data.audioUrl, fromIdx, endIdx);
   });
 }
@@ -1529,6 +1569,7 @@ function speakNextChunk(fromIdx) {
     if (fromIdx >= ttsWords.length) stopTts();
     return;
   }
+  var chunkToken = ttsStartToken;
   // Chunk sizing strategy: ramp from small (fast first-byte) to steady
   // state (fewer round-trips) so no chunk's synth outruns the previous
   // chunk's playback. See TTS_CHUNK_RAMP comment for reasoning.
@@ -1578,7 +1619,7 @@ function speakNextChunk(fromIdx) {
       // the perceived 1–2 second "pause around every 10 seconds"
       // between chunks.
       try {
-        if (ttsPlaying && data && data.audioUrl) {
+        if (ttsPlaying && chunkToken === ttsStartToken && data && data.audioUrl) {
           var standby = getStandbyTtsAudio();
           standby.playbackRate = (typeof ttsRate === 'number' && ttsRate > 0) ? ttsRate : 1.0;
           standby.src = data.audioUrl;
@@ -1605,6 +1646,7 @@ function speakNextChunk(fromIdx) {
   // has no browser speechSynthesis). Fallback: browser SpeechSynthesis when
   // available (companion-app browser viewer).
   speakChunkViaGemini(chunkText, fromIdx, endIdx, currentPrefetch).then(function() {
+    if (!ttsPlaying || chunkToken !== ttsStartToken) return;
     setTtsStatus('');
     ttsIndex = endIdx;
     highlightWord(endIdx);
@@ -1615,6 +1657,7 @@ function speakNextChunk(fromIdx) {
     // the JS side; TtsCacheStore's LRU will evict it.
     nextChunkPrefetch = null;
     var reason = (err && err.message) ? err.message : String(err || 'unknown');
+    if (reason === 'stopped') return;
     var hasBrowserTts = (typeof window.speechSynthesis !== 'undefined' &&
                         window.speechSynthesis &&
                         typeof window.SpeechSynthesisUtterance !== 'undefined');
@@ -1698,7 +1741,7 @@ function stopTts() {
   // resolve into the void harmlessly (resolve/reject are no-ops once the
   // entry is removed from the map — see __ttsComplete).
   nextChunkPrefetch = null;
-  for (var k in ttsPending) { if (ttsPending.hasOwnProperty(k)) delete ttsPending[k]; }
+  rejectPendingTts('stopped');
   // Invalidate any pending startTtsFrom rAF callback so it doesn't
   // re-fire with a stale startIdx after we just cleaned up. Without
   // this, a fast FF→word-tap sequence races: FF's startTtsFrom rAF
@@ -3278,6 +3321,26 @@ function tryPullFromBridge() {
   return false;
 }
 
+function tryFetchTextUrlFromBridge(url) {
+  var bridge = window.AndroidInterface || window.MediaInterface;
+  if (!url || !bridge || typeof bridge.fetchUrlText !== 'function') return false;
+  try {
+    diag('text: bridge fetch ' + url.substring(0, 60));
+    var raw = bridge.fetchUrlText(url);
+    var data = raw ? JSON.parse(raw) : {};
+    if (data && typeof data.text === 'string' && data.text.trim().length > 0) {
+      initTextReader(data.text);
+      return true;
+    }
+    if (data && data.error) {
+      diag('text: bridge fetch error ' + data.error);
+    }
+  } catch(e) {
+    diag('text: bridge fetch failed ' + (e && e.message || e));
+  }
+  return false;
+}
+
 window.addEventListener('DOMContentLoaded', function() {
   document.getElementById('loadingText').textContent = 'Loading ' + mediaType + '...';
   diag('DOMContentLoaded  type=' + mediaType);
@@ -3296,9 +3359,11 @@ window.addEventListener('DOMContentLoaded', function() {
     if (tryPullFromBridge()) return;
     // 2. Check if text was already injected into window._textContent
     if (initFromTextContent()) return;
-    // 3. If we have a URL (library flow), fetch directly — no need to wait
-    //    for a bridge that isn't coming.
+    // 3. If we have a URL (library/relay flow), ask Android to fetch/read it
+    //    first. That path can read on-glasses Media files and avoids WebView
+    //    CORS / mixed-origin fetch failures from file:///android_asset.
     if (mediaUrl) {
+      if (tryFetchTextUrlFromBridge(mediaUrl)) return;
       diag('text: fetching ' + mediaUrl.substring(0, 60));
       fetch(mediaUrl).then(function(r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);

@@ -170,7 +170,7 @@ class ToolDispatcher(
                 locationProvider = effectiveLocationProvider
             )
         )
-        // TapClaw personal AI agent — enable if toggled on OR if device pairing token exists
+        // TapClaw self-hosted AI agent — enable if toggled on OR if device pairing token exists
         val hasPairingToken = context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
             .getString("openclaw_pair_device_token", null)?.isNotBlank() == true
         if (openClawClient != null && (prefs.openClawEnabled || hasPairingToken)) {

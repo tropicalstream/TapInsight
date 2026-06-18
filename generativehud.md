@@ -1,7 +1,7 @@
 # Generative HUD — Design Document
 
 **Status:** design-locked for v1, awaiting implementation.
-**Owner:** Mars (TapInsight) + Hermes (Minimax M3 backend).
+**Owner:** the user (TapInsight) + Hermes (Minimax M3 backend).
 **Scope:** replaces the fixed 3-row Events / Tasks / News tier strip on
 the right side of the unipanel HUD with a small WebView whose body is
 generated on demand by Hermes from a user-defined prompt.

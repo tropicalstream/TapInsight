@@ -302,4 +302,4 @@ verification each step. No "do everything in one swing" attempts.
 
 **Current status:** Phase 4h complete. Codex's bb20ac4 in. Phase 4i.1
 (coordinator scaffold) landed. Next session resumes at 4i.2 once
-Mars confirms bb20ac4 still boots clean.
+the user confirms bb20ac4 still boots clean.

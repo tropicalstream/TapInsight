@@ -24,7 +24,7 @@ import kotlin.coroutines.resume
 /**
  * OpenClawClient — WebSocket client for the OpenClaw Gateway.
  *
- * OpenClaw is a personal AI assistant that runs on the user's own devices/server.
+ * OpenClaw is a self-hosted AI assistant that runs on the user's own devices/server.
  * The Gateway exposes a WebSocket endpoint on port 18789 (configurable).
  *
  * Authentication requires Ed25519 device identity (matching OpenClawPairingClient).
@@ -240,7 +240,7 @@ class OpenClawClient(
             put("maxProtocol", 3)
             put("client", JSONObject().apply {
                 put("id", CLIENT_ID)
-                put("version", "1.1.2")
+                put("version", "0.3 beta")
                 put("platform", CLIENT_PLATFORM)
                 put("deviceFamily", CLIENT_DEVICE_FAMILY)
                 put("mode", CLIENT_MODE)
@@ -252,7 +252,7 @@ class OpenClawClient(
                 put("operator.write")
             })
             put("caps", JSONArray())
-            put("userAgent", "TapInsight/1.1.2")
+            put("userAgent", "TapInsight/0.3-beta")
             put("locale", Locale.getDefault().toLanguageTag())
 
             // Auth block

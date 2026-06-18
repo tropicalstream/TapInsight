@@ -92,6 +92,7 @@ class CompanionServer(
         private const val PREFS_NAME = "visionclaw_prefs"
         private const val DASHBOARD_PREFS_KEY = "dashboard_data"
         private const val SESSION_TOKEN_KEY = "companion_session_token"
+        private const val GOOGLE_OAUTH_REDIRECT_URI = "http://localhost:19110/oauth/callback"
 
         /** JS bridge for the Setup page (index.html). */
         private const val SETUP_BRIDGE_JS = """
@@ -473,7 +474,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "hud_show_event_time" to true,
         "hud_show_tasks" to true,
         "hud_show_news" to true,
-        // AQI on the HUD strip — default OFF (Mars R6 declutter); the
+        // AQI on the HUD strip — default OFF (user R6 declutter); the
         // value plumbing stays warm so flipping this shows live data.
         "hud_show_aqi" to false,
         "phone_location_bridge_enabled" to false,
@@ -1554,10 +1555,10 @@ window.__companionToken = '${sessionToken}';
             )
         }
 
-        // Reconstruct the redirect URI from the incoming request
-        val host = session.headers["host"] ?: "localhost:19110"
-        val scheme = if (httpsEnabled) "https" else "http"
-        val redirectUri = "$scheme://$host/oauth/callback"
+        // This must match the redirect_uri used by companion/index.html's
+        // Google authorize URL exactly. The companion intentionally uses
+        // localhost because Google Cloud will not accept private LAN IPs.
+        val redirectUri = GOOGLE_OAUTH_REDIRECT_URI
 
         // Exchange code for tokens (blocking in NanoHTTPD thread)
         val result = runBlocking { mgr.exchangeCodeForTokensDetailed(code, redirectUri) }
@@ -1623,18 +1624,21 @@ window.__companionToken = '${sessionToken}';
                 )
             }
 
-            val success = runBlocking { mgr.exchangeCodeForTokens(code, redirectUri) }
+            val result = runBlocking { mgr.exchangeCodeForTokensDetailed(code, redirectUri) }
 
-            if (success) {
+            if (result.success) {
                 Log.i(TAG, "OAuth exchange: success!")
                 newFixedLengthResponse(
                     Response.Status.OK, "application/json", """{"status":"authorized"}"""
                 )
             } else {
-                Log.e(TAG, "OAuth exchange: token exchange failed")
+                Log.e(TAG, "OAuth exchange: token exchange failed: ${result.errorDetail}")
+                val error = JSONObject()
+                    .put("error", "Token exchange failed: ${result.errorDetail}")
+                    .put("redirect_uri", redirectUri)
                 newFixedLengthResponse(
                     Response.Status.BAD_REQUEST, "application/json",
-                    """{"error":"Token exchange failed. Check Client ID and Secret."}"""
+                    error.toString()
                 )
             }
         } catch (e: Exception) {
@@ -2530,7 +2534,7 @@ window.__companionToken = '${sessionToken}';
                                         put("maxProtocol", 3)
                                         put("client", JSONObject().apply {
                                             put("id", "openclaw-android")
-                                            put("version", "1.1.2")
+                                            put("version", "0.3 beta")
                                             put("platform", "android")
                                             put("mode", "node")
                                         })

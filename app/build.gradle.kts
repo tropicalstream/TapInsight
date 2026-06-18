@@ -14,7 +14,7 @@ android {
         minSdk = 29
         targetSdk = 35
         versionCode = 10
-        versionName = "Beta .3"
+        versionName = "0.3 beta"
 
         // GEMINI_API_KEY generated HERE (not by the secrets plugin — its
         // empty-value handling emits invalid Java; see ignoreList below).

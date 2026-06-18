@@ -1,13 +1,13 @@
 # TapInsight — 10-Minute Demo Script
 
-**Talent:** Mars · **Audio note:** All YouTube playback in this demo is glitch music — any recording-audio skip blends into the genre.
+**Talent:** the user · **Audio note:** All YouTube playback in this demo is glitch music — any recording-audio skip blends into the genre.
 
 ---
 
 ### 0:00 — Cold open *(camera on you, glasses off)*
 > "Most AI assistants live in your phone. This one lives in your line of sight."
 > *(Beat.)*
-> "I'm Mars. This is TapInsight. It turns a regular pair of AR glasses into something that sees what you see, hears what you ask, and actually does the thing. Ten minutes, no slides."
+> "I'm the user. This is TapInsight. It turns a regular pair of AR glasses into something that sees what you see, hears what you ask, and actually does the thing. Ten minutes, no slides."
 
 ### 0:30 — Glasses on, HUD reveal
 > "Glasses on. No menu. No icons. Just this."

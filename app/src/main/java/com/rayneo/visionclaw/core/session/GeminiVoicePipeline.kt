@@ -143,7 +143,7 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var reconnectCountInWindow: Int = 0
 
     /** Hail-and-wait support: after a bare "Hermes" hail goes out and the
-     *  agent acks ("Yes, Mario?"), the user's NEXT utterance routes
+     *  agent acks ("Yes, user?"), the user's NEXT utterance routes
      *  straight to that agent instead of relying on Gemini to re-route. */
     @Volatile private var agentFollowupTool: String? = null
     @Volatile private var agentFollowupUntilMs: Long = 0L
@@ -155,7 +155,7 @@ class GeminiVoicePipeline(context: Context) {
      * keeps emitting outputTranscription / modelText chunks AFTER
      * onTurnComplete has fired but BEFORE the next user turn starts, those
      * late chunks were being appended as a brand-new assistant card —
-     * producing the "Gemini said the same thing twice" symptom Mars hit.
+     * producing the "Gemini said the same thing twice" symptom user hit.
      *
      * One-bit gate:
      *  • set true in onTurnComplete,
@@ -972,7 +972,7 @@ class GeminiVoicePipeline(context: Context) {
                 if (!isSessionEpochCurrent(epoch)) return
                 Log.i(TAG, "onClosed: code=$code reason=$reason")
                 // June-11 round 2: the server closed the session (1008)
-                // mid-question — Mars finished asking into a dead socket
+                // mid-question — user finished asking into a dead socket
                 // and the question silently vanished, with no reconnect
                 // for 42s (until he noticed and re-tapped). Two repairs:
                 //  1) capture the in-progress utterance for replay,
@@ -1072,9 +1072,9 @@ class GeminiVoicePipeline(context: Context) {
             }
             // June-11 round 2 — bare-hail guard. Gemini fires the agent tool
             // off the partial transcript the instant it hears the name:
-            // hermes_agent(query="Hermes") went out alone while Mars was
+            // hermes_agent(query="Hermes") went out alone while user was
             // still mid-sentence, Hermes got hailed with no question and
-            // answered "Yes, Mario?" — and the real question never reached
+            // answered "Yes, user?" — and the real question never reached
             // it. When the query is just a name (≤2 words), HOLD dispatch
             // and watch the utterance buffer: if the sentence keeps growing,
             // dispatch the WHOLE sentence; if the user truly just hailed
@@ -1164,7 +1164,7 @@ class GeminiVoicePipeline(context: Context) {
                 suppressGeminiOutputUntilMs =
                     android.os.SystemClock.uptimeMillis() + AGENT_INFLIGHT_SUPPRESS_MS
                 // June-11 capture fix: Hermes took 63s and the HUD ticker sat
-                // frozen on "Asking Hermes…" the whole time — Mars assumed the
+                // frozen on "Asking Hermes…" the whole time — user assumed the
                 // call died and restarted the session, which is what set up
                 // the answered-for-Hermes failure. Heartbeat now ticks the
                 // elapsed time every 5s so a long call LOOKS alive.
@@ -1203,7 +1203,7 @@ class GeminiVoicePipeline(context: Context) {
             agentProgressJob?.cancel()
             agentProgressJob = null
             // June-11 capture fix (the "Gemini answered for Hermes" bug):
-            // Hermes legitimately ran 63s; 45s in, Mars restarted the voice
+            // Hermes legitimately ran 63s; 45s in, user restarted the voice
             // session, the epoch advanced, and this bail threw away the
             // finished result — then the NEW session answered the re-asked
             // question from its own knowledge. Agent replies don't need the
@@ -1279,7 +1279,7 @@ class GeminiVoicePipeline(context: Context) {
                         heartbeatShouldScroll = false
                     )
                 }
-                // Hail-and-wait: the bare hail just got acked ("Yes, Mario?").
+                // Hail-and-wait: the bare hail just got acked ("Yes, user?").
                 // The user's next utterance is the actual question — route it
                 // straight to this agent instead of hoping Gemini re-routes.
                 if (bareHailDispatched) {
@@ -2382,7 +2382,7 @@ class GeminiVoicePipeline(context: Context) {
             else NotificationCenter.Source.OPENCLAW
         // Keep the FULL formatted reply (was truncated to 160 chars with
         // newlines collapsed) so tapping the notification opens the complete
-        // reply on the chat card instead of a cut-off one-liner (Mars's
+        // reply on the chat card instead of a cut-off one-liner (user's
         // screenshot 2). The notification LIST row collapses newlines + caps
         // its own preview (see renderUnipanelNotifRows), so a long, multi-line
         // message here doesn't disturb the list. 2000-char ceiling keeps the

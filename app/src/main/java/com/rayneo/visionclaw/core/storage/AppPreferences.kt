@@ -175,7 +175,7 @@ class AppPreferences(context: Context) {
     // existing SharedPreferences values are picked up automatically.
     // ══════════════════════════════════════════════════════════════════════
 
-    /** Base URL of the Hermes API server, e.g. http://192.168.1.170:8642 or https://hermes.example.com */
+    /** Base URL of the Hermes API server, e.g. http://<host-ip>:8642 or https://hermes.example.com */
     var hermesEndpoint: String
         get() = prefs.getString(KEY_HERMES_ENDPOINT, "") ?: ""
         set(value) = prefs.edit().putString(KEY_HERMES_ENDPOINT, value).apply()

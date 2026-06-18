@@ -269,7 +269,7 @@ The launcher half lives in the **tapbrowser module** manifest (dossier §1b carr
 
 These are process truths from the sessions that built TapInsight — they steer *how* Fable works, not what it builds:
 
-- **Mars runs all `git push`, `./gradlew`, and `adb` commands** in his own terminal. Fable prepares edits and hands over a single copy-paste command block. The `&&` between build and install matters — a failed build must not install a stale APK.
+- **the user runs all `git push`, `./gradlew`, and `adb` commands** in his own terminal. Fable prepares edits and hands over a single copy-paste command block. The `&&` between build and install matters — a failed build must not install a stale APK.
 - **You cannot run the build.** Verify every Kotlin edit with the brace/paren/comment-depth balance check against `git show HEAD:<file>` (strip strings and comments first; deltas before/after must match). Lint HTML by extracting `<script>` blocks and running `node --check`.
 - **Commit and push at every milestone.** This habit was paid for with a near-total data loss. A stale `.git/HEAD.lock`/`index.lock` recurs — `rm -f .git/HEAD.lock .git/index.lock` before each commit.
 - **Trace before editing.** Grep the symptom, read the region, name the root cause, then edit. The codebase rewards archaeology: most "new" bugs are a missing guard on a path someone else already guarded.
@@ -433,11 +433,11 @@ Five real apps run on this hardware today. Together they prove every load-bearin
 
 ## The goal
 
-Demonstrate on the X3 Pro, indoors and outdoors: the glasses know **where they are** (6-DoF: position + orientation), and can keep virtual markers **anchored to real places and objects** as Mars walks around. This is the capability TapInsight's 3-DoF head-anchoring can't reach — it knows where you *look*, not where you *stand*.
+Demonstrate on the X3 Pro, indoors and outdoors: the glasses know **where they are** (6-DoF: position + orientation), and can keep virtual markers **anchored to real places and objects** as the user walks around. This is the capability TapInsight's 3-DoF head-anchoring can't reach — it knows where you *look*, not where you *stand*.
 
 ## Why not Unity (for now)
 
-Community experience (secondhand, untested by us): the X3 Pro Unity path currently strains the hardware and lacks training data for the on-device tracking stack. Mars is open to revisiting, but the POC should not gamble on it. Everything in Parts II–V is native Android — and the native stack is already proven on this device.
+Community experience (secondhand, untested by us): the X3 Pro Unity path currently strains the hardware and lacks training data for the on-device tracking stack. the user is open to revisiting, but the POC should not gamble on it. Everything in Parts II–V is native Android — and the native stack is already proven on this device.
 
 ## The MultiSet approach
 
@@ -449,19 +449,19 @@ Community experience (secondhand, untested by us): the X3 Pro Unity path current
 
 **Phase 0 — Ground truth (one evening).**
 (a) Confirm the vendor docs empirically: `adb shell pm list packages | grep -iE "arcore|ar\\.core"` (expected: nothing). Probe the perception camera: enumerate Camera2 IDs and try opening ID 1 at 640×480.
-(b) Mars creates a MultiSet account, gets `clientId`/`clientSecret` (free tier), maps one room: the MultiSet Mapping App wants a LiDAR iPhone/iPad; alternatives are 360 video or third-party scans. Outdoors: map a stretch of sidewalk/yard and georeference it.
+(b) the user creates a MultiSet account, gets `clientId`/`clientSecret` (free tier), maps one room: the MultiSet Mapping App wants a LiDAR iPhone/iPad; alternatives are 360 video or third-party scans. Outdoors: map a stretch of sidewalk/yard and georeference it.
 (c) Fable fetches `docs.multiset.ai/llms.txt` and the REST API pages (`.md` suffix) for exact request shapes.
 
 **Phase 1 — "Where am I?" spike (the heart of the POC).**
 A minimal native app (fresh repo, skeleton from Part III): camera frame every ~1 s (existing `FrameCaptureManager`, 90° rotation, JPEG q88) → MultiSet REST query → log + display pose & confidence on a 640×480 black-canvas HUD. Success = stable, repeatable poses walking around the mapped room, and sane behavior outdoors with `geoHint` from the IPC GPS. Measure: query latency over Wi-Fi vs phone hotspot, battery/thermals at 1 Hz duty cycle (untested territory — TapInsight's vision cadence was similar but not sustained for navigation sessions).
 
 **Phase 2 — Anchors you can walk around.**
-Place virtual markers at map coordinates. Render them on the HUD: project anchor direction into the ~36° view using the proven rotation-vector pipeline for orientation *between* VPS fixes, correcting drift at every fix (VPS gives absolute pose; IMU interpolates the 1–2 s gaps). A marker that stays glued to a doorframe while Mars orbits it is the demo. Keep rendering ≤1 Hz-refresh-friendly when audio is involved (gotcha #7); markers are cheap Views/Canvas draws, not WebView.
+Place virtual markers at map coordinates. Render them on the HUD: project anchor direction into the ~36° view using the proven rotation-vector pipeline for orientation *between* VPS fixes, correcting drift at every fix (VPS gives absolute pose; IMU interpolates the 1–2 s gaps). A marker that stays glued to a doorframe while the user orbits it is the demo. Keep rendering ≤1 Hz-refresh-friendly when audio is involved (gotcha #7); markers are cheap Views/Canvas draws, not WebView.
 
 **Phase 3 — Object tracking + polish.**
 Upload a GLB of a real object (MultiSet object codes), query object pose, draw a halo around the physical object. Then the showpiece: indoor→outdoor handoff on one MapSet, with the dim-mode aesthetic (black canvas, white-on-black labels) for daylight readability.
 
-## What Fable should ask Mars for up front
+## What Fable should ask the user for up front
 
 MultiSet credentials (`multiset.properties`-style, **never committed** — gotcha #14 pattern), the mapped map/mapset codes, whether a LiDAR iPhone is available for mapping, ARCore test result from Phase 0(a), and a feishu export (below).
 
@@ -519,7 +519,7 @@ The honesty ledger. **✅ Tested** = verified on the physical X3 Pro through Tap
 📄 Claimed, **Unity-only**, per the vendor matrix: plane detection (horizontal, textured, 3–5 s, init-time only), image recognition & tracking, face detection, 2D gesture recognition ("follow-up capability"), and a `make3DEffect` parallax-depth API. ❓ None verified by us or by any of the four surveyed Android apps — zero native-path evidence. Assume unavailable outside Unity.
 
 **Q11. Unity?**
-📄 Real and officially supported (Unity 2022.3.36f1 + ARDK 1.1.2; official MIT sample repo exists) — but claimed-problematic in practice (community + Mars's report: hardware resource strain, missing training data). Untested by us in either direction. The interesting AR capabilities (Q9/Q10) are locked behind it; that tension is the road not taken in Part VII.
+📄 Real and officially supported (Unity 2022.3.36f1 + ARDK 1.1.2; official MIT sample repo exists) — but claimed-problematic in practice (community + user's report: hardware resource strain, missing training data). Untested by us in either direction. The interesting AR capabilities (Q9/Q10) are locked behind it; that tension is the road not taken in Part VII.
 
 **Q12. MultiSet on the X3 Pro?**
 📄 The Android Native SDK requires ARCore — which the vendor docs confirm the X3 Pro **does not have**. So: the **REST path**, which requires only what's already ✅ tested (camera JPEG + HTTPS + JSON + phone GPS for geo-hints). The SDK door is closed, not ajar; don't spend Phase 0 on it beyond the one confirmation command.

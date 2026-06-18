@@ -732,7 +732,7 @@ class GeminiSessionForegroundService : LifecycleService() {
                 )
                 cameraOn = true
                 CameraStateBridge.publish(true)
-                // Mars: no "Camera streaming" ticker — the red camera indicator
+                // user: no "Camera streaming" ticker — the red camera indicator
                 // already shows the camera is on, and the preview goes straight
                 // to its final position without a ticker to dodge.
             }.onFailure { e ->

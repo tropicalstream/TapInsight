@@ -38,9 +38,16 @@ class TtsController(
     @Volatile
     private var remainingUtteranceCount: Int = 0
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { change ->
-        if (change <= AudioManager.AUDIOFOCUS_LOSS) {
-            stop()
-            abandonAudioFocus()
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                stop()
+                abandonAudioFocus()
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                Log.d(TAG, "Ignoring transient TTS audio-focus loss: $change")
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> Unit
         }
     }
 

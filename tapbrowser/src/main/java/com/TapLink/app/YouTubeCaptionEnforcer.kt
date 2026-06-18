@@ -197,7 +197,7 @@ object YouTubeCaptionEnforcer {
                     if (s === 'active') {
                         // Re-assert on each tick. Entering fullscreen (or any
                         // player rebuild) silently resets the caption render, so
-                        // captions vanished until a manual CC toggle (Mars,
+                        // captions vanished until a manual CC toggle (user,
                         // fullscreen). Set the track showing again and, if the CC
                         // button slipped to off, click it back on. Idempotent —
                         // never an off→on toggle, so no flashing.
@@ -210,7 +210,7 @@ object YouTubeCaptionEnforcer {
                             // Cue-feed watchdog. The window can read "on" yet
                             // stay empty (stuck feed — the txt=0 bug). If it's
                             // been empty for a few ticks, do ONE off->on toggle
-                            // for this video to start the cues drawing (Mars).
+                            // for this video to start the cues drawing (user).
                             if (captionTextLen() > 0) {
                                 txtEmpty[key] = 0;
                             } else {
@@ -297,7 +297,7 @@ object YouTubeCaptionEnforcer {
                 setInterval(function(){
                     // A fullscreen enter/exit resets the player's caption
                     // render — force a full re-enable for the current video so
-                    // captions come back on their own (Mars).
+                    // captions come back on their own (user).
                     var fsNow = !!document.getElementById('__taplink_fs_style');
                     if (fsNow !== lastFsState) {
                         lastFsState = fsNow;

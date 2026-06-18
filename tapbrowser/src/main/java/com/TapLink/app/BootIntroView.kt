@@ -45,7 +45,7 @@ class BootIntroView(context: Context) : View(context) {
         private const val AMBER = 0xFFFFD166.toInt()
         private const val BLUE = 0xFF4C7DFF.toInt()
         private const val WORDMARK = "TAPINSIGHT"
-        private const val TAGLINE = "X3 · SEE DEEPER"
+        private const val TAGLINE = "0.3 BETA · X3"
 
         /**
          * The quote library: one line is picked at random per boot and
@@ -65,7 +65,7 @@ class BootIntroView(context: Context) : View(context) {
             "Sound travels four times faster underwater.",
             "A teaspoon of neutron star outweighs a mountain.",
             "Half the oxygen you breathe comes from the ocean.",
-            // ── library expansion (Mars, June 2026) ────────────────────
+            // ── library expansion (June 2026) ──────────────────────────
             "Jupiter's Great Red Spot has raged for centuries.",
             "Sunlight takes eight minutes to reach your eyes.",
             "Earth has more trees than the Milky Way has stars.",
