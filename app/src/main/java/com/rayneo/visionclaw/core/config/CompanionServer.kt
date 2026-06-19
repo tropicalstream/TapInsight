@@ -1390,6 +1390,7 @@ window.__companionToken = '${sessionToken}';
             "TASK" -> NotificationCenter.Source.TASK
             "HERMES" -> NotificationCenter.Source.HERMES
             "OPENCLAW" -> NotificationCenter.Source.OPENCLAW
+            "RESEARCH" -> NotificationCenter.Source.RESEARCH
             else -> NotificationCenter.Source.SYSTEM
         }
         val id = json.optString("id").trim()

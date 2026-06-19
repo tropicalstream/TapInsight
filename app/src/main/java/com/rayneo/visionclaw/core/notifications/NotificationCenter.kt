@@ -49,6 +49,7 @@ object NotificationCenter {
         TASK,
         HERMES,
         OPENCLAW,
+        RESEARCH,
         SYSTEM
     }
 

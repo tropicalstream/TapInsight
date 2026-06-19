@@ -2384,11 +2384,19 @@ class GeminiVoicePipeline(context: Context) {
      * is timestamped so every completed turn rings once.
      */
     private fun postAgentBellNotifications(toolName: String, replyText: String) {
-        val isHermes = toolName == "hermes_agent"
-        val agentLabel = if (isHermes) "Hermes" else "TapClaw"
-        val source =
-            if (isHermes) NotificationCenter.Source.HERMES
-            else NotificationCenter.Source.OPENCLAW
+        // Attribute the bell to the agent that actually ran. The old code was
+        // binary (Hermes vs. everything-else→TapClaw), so a Groq `research_topic`
+        // turn was filed under TapClaw/OpenClaw (user). Map all three agents.
+        val agentLabel = when (toolName) {
+            "hermes_agent" -> "Hermes"
+            "research_topic" -> "Research"
+            else -> "TapClaw"
+        }
+        val source = when (toolName) {
+            "hermes_agent" -> NotificationCenter.Source.HERMES
+            "research_topic" -> NotificationCenter.Source.RESEARCH
+            else -> NotificationCenter.Source.OPENCLAW
+        }
         // Keep the FULL formatted reply (was truncated to 160 chars with
         // newlines collapsed) so tapping the notification opens the complete
         // reply on the chat card instead of a cut-off one-liner (user's

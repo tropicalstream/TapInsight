@@ -2222,6 +2222,7 @@ class ChatPanelFragment : Fragment(), TrackpadPanel {
             NotificationCenter.Source.TASK -> 0xFF00E676.toInt()
             NotificationCenter.Source.HERMES -> BELL_TINT_UNREAD
             NotificationCenter.Source.OPENCLAW -> 0xFFFF8A65.toInt()
+            NotificationCenter.Source.RESEARCH -> 0xFFB388FF.toInt()
             NotificationCenter.Source.SYSTEM -> 0xFFFFFFFF.toInt()
         }
     }

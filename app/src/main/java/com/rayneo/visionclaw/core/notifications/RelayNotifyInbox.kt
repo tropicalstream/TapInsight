@@ -69,6 +69,7 @@ object RelayNotifyInbox {
                     "TASK" -> NotificationCenter.Source.TASK
                     "HERMES" -> NotificationCenter.Source.HERMES
                     "OPENCLAW" -> NotificationCenter.Source.OPENCLAW
+                    "RESEARCH" -> NotificationCenter.Source.RESEARCH
                     else -> NotificationCenter.Source.SYSTEM
                 }
                 // Deterministic fallback id: the push path receives the same
