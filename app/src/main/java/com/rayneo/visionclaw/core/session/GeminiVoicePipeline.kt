@@ -1683,11 +1683,20 @@ class GeminiVoicePipeline(context: Context) {
                 // short lead chunk (first sentence-ish, ≤240 chars) and start
                 // the voice on that almost immediately, while the remaining
                 // text rides the normal big chunks behind it.
+                // Short lead chunk for fast first audio, then UNIFORM small
+                // chunks (≈500 chars) for the rest. The old code followed the
+                // 240-char lead with one 1600-char chunk; synthesizing 1600
+                // chars takes ~15-20s (a multi-MB WAV) but the lead only buys
+                // ~15s of playback, so the voice stalled for ~15s after the
+                // first sentence. With ≈500-char chunks each synth (~3-5s)
+                // finishes well inside the prior chunk's playback, so the
+                // one-ahead prefetch stays gapless — the same pacing the
+                // media-browser txt-file readout uses (Mars).
                 val chunks = run {
                     val small = chunkForReadout(text, 240)
                     if (small.size <= 1) small
                     else listOf(small.first()) +
-                        chunkForReadout(small.drop(1).joinToString(" "), 1600)
+                        chunkForReadout(small.drop(1).joinToString(" "), 500)
                 }.filter { it.isNotBlank() }
                 // Prefetch pipeline (fix for >10s gaps between chunks): playChunk
                 // blocks while the AudioTrack drains, so synthesizing the next
