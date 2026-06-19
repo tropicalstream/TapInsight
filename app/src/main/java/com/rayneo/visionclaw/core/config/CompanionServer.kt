@@ -524,7 +524,10 @@ document.addEventListener('DOMContentLoaded', loadAll);
         // companion radio page). When ON, the dim screen's caption line
         // shows LRCLIB synced lyrics for the playing radio track. Default
         // ON — it only ever activates when a song is identified anyway.
-        "dim_captions_radio" to true
+        "dim_captions_radio" to true,
+        // YouTube on-battery video dimming. Default OFF (Mars) — video plays at
+        // full brightness on battery unless the user turns this back on.
+        "youtube_battery_saver_enabled" to false
     )
 
     /** Known integer config keys and their defaults. */
@@ -664,6 +667,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "translate_auto_mode",
         // Battery Saver
         "battery_saver_auto_threshold",
+        "youtube_battery_saver_enabled",
         // Dim-mode TapRadio lyrics toggle (companion radio page). The
         // podcast-captions twin was removed with the rest of podcast CC —
         // radio lyrics is the single surviving dim-caption toggle.

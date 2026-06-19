@@ -18257,7 +18257,12 @@ class MainActivity :
     private fun applyYouTubeBatterySaverIfNeeded(onBattery: Boolean, reason: String) {
         if (!::dualWebViewGroup.isInitialized) return
         val hasYouTube = hasYouTubePlaybackWindow()
-        val shouldEnable = onBattery && hasYouTube
+        // YouTube on-battery video dimming is OFF by default (Mars). It only
+        // engages if the user re-enables it from the companion app's Battery
+        // Saver section (youtube_battery_saver_enabled).
+        val saverEnabled = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+            .getBoolean("youtube_battery_saver_enabled", false)
+        val shouldEnable = saverEnabled && onBattery && hasYouTube
         if (youtubeBatterySaverActive == shouldEnable) return
         youtubeBatterySaverActive = shouldEnable
         DebugLog.w(

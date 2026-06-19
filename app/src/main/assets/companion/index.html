@@ -998,6 +998,10 @@
   <label>Auto-Enable Threshold (%)</label>
   <input type="number" id="batterySaverAutoThreshold" placeholder="20" min="0" max="50">
   <div class="hint">Automatically enable battery saver below this level. 0 = manual only (use voice: "save battery").</div>
+
+  <label>Dim YouTube Video on Battery</label>
+  <select id="youtubeBatterySaver"><option value="false">No (default)</option><option value="true">Yes</option></select>
+  <div class="hint">When on, YouTube video is dimmed while running on battery to save power. Off by default — video plays at full brightness.</div>
 </div>
 
 <!-- Step 8h: Quick Actions & Voice Macros -->
@@ -1325,6 +1329,7 @@ const FIELDS = {
   translateAutoMode:    { key: 'translate_auto_mode',       type: 'bool'   },
   // Battery Saver
   batterySaverAutoThreshold: { key: 'battery_saver_auto_threshold', type: 'int' },
+  youtubeBatterySaver: { key: 'youtube_battery_saver_enabled', type: 'bool' },
   // Quick Actions
   homeAddress:          { key: 'home_address',              type: 'string' },
   workAddress:          { key: 'work_address',              type: 'string' },
