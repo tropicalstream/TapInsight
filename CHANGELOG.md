@@ -10,6 +10,7 @@
 - Added YouTube dim-mode stability and thermal/battery guardrails intended to reduce background load while watching YouTube.
 - Added YouTube fullscreen toolbar reveal from X3 Pro touchpad movement, avoiding click-to-reveal pauses.
 - Improved dim-mode audio visualizer behavior so bass, mid, and high waveforms use distinct frequency shapes and volume-reactive color.
+- Added optional AudD song identification for TapRadio, using AudD fingerprinting when a token is configured and station metadata fallback otherwise.
 - Saved Gemini research reports into the Media Browser `Text/` folder with date/time filenames for later reading.
 - Reduced Fish.audio chat-card readout stalls by using larger native readout segments and larger Fish WAV chunks while preserving the Media Browser MP3 reader path.
 - Removed maintainer-specific relay defaults and personal filesystem hints from agent/media-routing code and docs; users must configure their own relay endpoints.

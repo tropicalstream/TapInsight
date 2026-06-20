@@ -91,6 +91,7 @@ There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (ve
 - HDR video display correction tuned for the RayNeo X3 Pro panel so HDR sources do not render overly dark or metallic.
 - Longer native video controls timeout, giving more time to open CC and choose a subtitle language.
 - YouTube dim-mode stability and thermal/battery guardrails, plus frequency-reactive dim-mode audio waveforms for bass, mids, and highs.
+- Song Identification — AudD (optional): ask "what song is this?" while listening to TapRadio. With an AudD token, TapInsight fingerprints the current stream first so stale station metadata does not win; without a token, it falls back to free track metadata broadcast by many stations. Get a free token (300 IDs/month) at audd.io.
 - Gemini research reports save into Media Browser `Text/` with date/time filenames, and Fish.audio chat-card readout handoffs are smoother.
 - Maintainer-specific relay defaults were removed; configure your own relay endpoint for remote media delivery.
 - Tighter Gemini, TapClaw, OpenClaw, TapBrowser, radio/podcast, and media-agent handoffs.

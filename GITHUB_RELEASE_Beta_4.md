@@ -13,6 +13,7 @@
 - YouTube fullscreen toolbars reveal from X3 Pro touchpad movement instead of click-to-reveal.
 - YouTube dim-mode thermal/battery guardrails.
 - Frequency-reactive dim-mode visualizer waveforms for bass, mids, and highs.
+- Song identification for TapRadio with optional AudD fingerprinting first, falling back to station metadata when no AudD token is configured.
 - Gemini research reports now save into Media Browser `Text/` with date/time filenames.
 - Fish.audio chat-card readout handoffs are smoother.
 - Maintainer-specific relay defaults and personal filesystem hints were removed from the public build.
