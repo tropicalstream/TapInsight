@@ -945,7 +945,7 @@ class TapRadioTool(private val context: Context) : AiTapTool {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 5000
         conn.readTimeout = 5000
-        conn.setRequestProperty("User-Agent", "TapInsight/0.3-beta")
+        conn.setRequestProperty("User-Agent", "TapInsight/0.4-beta")
         return try {
             if (conn.responseCode != 200) return emptyList()
             val body = conn.inputStream.bufferedReader().readText()
@@ -1301,7 +1301,7 @@ class TapRadioTool(private val context: Context) : AiTapTool {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 5000
         conn.readTimeout = 5000
-        conn.setRequestProperty("User-Agent", "TapInsight/0.3-beta")
+        conn.setRequestProperty("User-Agent", "TapInsight/0.4-beta")
         return try {
             if (conn.responseCode == 200) {
                 val body = conn.inputStream.bufferedReader().readText()
@@ -1330,7 +1330,7 @@ class TapRadioTool(private val context: Context) : AiTapTool {
         val conn = URL(feedUrl).openConnection() as HttpURLConnection
         conn.connectTimeout = 5000
         conn.readTimeout = 8000
-        conn.setRequestProperty("User-Agent", "TapInsight/0.3-beta")
+        conn.setRequestProperty("User-Agent", "TapInsight/0.4-beta")
         conn.instanceFollowRedirects = true
         return try {
             if (conn.responseCode != 200) return null
@@ -1524,7 +1524,7 @@ class TapRadioTool(private val context: Context) : AiTapTool {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 5000
         conn.readTimeout = 5000
-        conn.setRequestProperty("User-Agent", "TapInsight/0.3-beta")
+        conn.setRequestProperty("User-Agent", "TapInsight/0.4-beta")
         return try {
             if (conn.responseCode == 200) {
                 val body = conn.inputStream.bufferedReader().readText()
@@ -1735,7 +1735,7 @@ class TapRadioTool(private val context: Context) : AiTapTool {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 5000
         conn.readTimeout = 5000
-        conn.setRequestProperty("User-Agent", "TapInsight/0.3-beta")
+        conn.setRequestProperty("User-Agent", "TapInsight/0.4-beta")
         return try {
             if (conn.responseCode == 200) {
                 val body = conn.inputStream.bufferedReader().readText()
@@ -2060,7 +2060,7 @@ class TapRadioTool(private val context: Context) : AiTapTool {
         val conn = URL(urlStr).openConnection() as HttpURLConnection
         conn.connectTimeout = 5000
         conn.readTimeout = 5000
-        conn.setRequestProperty("User-Agent", "TapInsight/0.3-beta")
+        conn.setRequestProperty("User-Agent", "TapInsight/0.4-beta")
         return try {
             if (conn.responseCode == 200) {
                 val body = conn.inputStream.bufferedReader().readText()

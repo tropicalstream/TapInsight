@@ -1,5 +1,5 @@
 # RayNeo X3 Pro — HARDWARE + PLATFORM REFERENCE DOSSIER
-Extracted from the TapInsight codebase (`/Users/me/Downloads/TapInsight-rebuild-6-11-26`), 2026-06-12.
+Extracted from the TapInsight codebase (`<local TapInsight checkout>`), 2026-06-12.
 Two modules: `app/` (package `com.rayneo.visionclaw`, the "visionclaw" AI/voice side) and `tapbrowser/` (Android **library** module, namespace `com.TapLinkX3.app`, the browser/launcher side). Ignore `_backup-tapinsight-unified/` and `_decompile/` (stale copies).
 
 ---
@@ -227,7 +227,7 @@ implementation(files("../tapbrowser/libs/MercuryAndroidSDK-v0.2.2-20250717110238
 implementation(files("../tapbrowser/libs/RayNeoIPCSDK-For-Android-V0.1.0-20231128201840_9b41f025.aar"))
 ```
 
-**app module** (`app/build.gradle.kts`): `buildFeatures { buildConfig = true }`; namespace `com.rayneo.visionclaw`; versionName 0.3 beta. Deps: core-ktx 1.15.0 (also `force`d in `configurations.all`), appcompat 1.7.0, material 1.12.0, constraintlayout 2.2.0, activity-ktx 1.10.0, fragment-ktx 1.8.6, lifecycle 2.8.7 (**incl. `lifecycle-service:2.8.7` — gives the FGS a LifecycleOwner so CameraX can bind to it**), recyclerview 1.4.0, viewpager2 1.1.0, room 2.6.1 (+ksp), **camera-core/camera-camera2/camera-lifecycle 1.4.1**, guava 33.4.0-android, coroutines 1.9.0, okhttp 4.12.0, gson 2.11.0, bouncycastle `bcprov-jdk18on:1.80` (TLS cert generation for companion server), **nanohttpd 2.3.1** (embedded HTTP server). A `GEMINI_API_KEY` BuildConfig field is generated manually (the secrets plugin emits invalid Java `= ;` for blank values — it's in the plugin `ignoreList`).
+**app module** (`app/build.gradle.kts`): `buildFeatures { buildConfig = true }`; namespace `com.rayneo.visionclaw`; versionName 0.4 beta. Deps: core-ktx 1.15.0 (also `force`d in `configurations.all`), appcompat 1.7.0, material 1.12.0, constraintlayout 2.2.0, activity-ktx 1.10.0, fragment-ktx 1.8.6, lifecycle 2.8.7 (**incl. `lifecycle-service:2.8.7` — gives the FGS a LifecycleOwner so CameraX can bind to it**), recyclerview 1.4.0, viewpager2 1.1.0, room 2.6.1 (+ksp), **camera-core/camera-camera2/camera-lifecycle 1.4.1**, guava 33.4.0-android, coroutines 1.9.0, okhttp 4.12.0, gson 2.11.0, bouncycastle `bcprov-jdk18on:1.80` (TLS cert generation for companion server), **nanohttpd 2.3.1** (embedded HTTP server). A `GEMINI_API_KEY` BuildConfig field is generated manually (the secrets plugin emits invalid Java `= ;` for blank values — it's in the plugin `ignoreList`).
 
 **tapbrowser module** (`tapbrowser/build.gradle.kts`): `com.android.library`, namespace `com.TapLinkX3.app`, `buildFeatures { viewBinding = true; buildConfig = true }`. Deps: webkit 1.12.1, **camera-view/camera-core 1.4.1** (hosts only the PreviewView SurfaceProvider; the Service in `app` owns the CameraX pipeline, surface passed across the binder), zxing core 3.5.3 + zxing-android-embedded 4.3.0, **media3-exoplayer 1.5.1 + media3-ui 1.5.1** ("MediaPlayer has a tiny fixed buffer that causes ~14s rebuffer stutters on MP3 streams"), okhttp, gson, coroutines.
 

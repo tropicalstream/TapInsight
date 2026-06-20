@@ -179,7 +179,7 @@ class LockScreenView(context: Context) : FrameLayout(context) {
         // the FrameLayout (not the centered content column) so it stays pinned
         // to the corner regardless of the unlock HUD's vertical centering.
         versionText = TextView(context).apply {
-            text = "beta .2 - unipanel"
+            text = "0.4 beta"
             setTextColor(0xFF607D8B.toInt()) // dim blue-grey, unobtrusive
             setTextSize(TypedValue.COMPLEX_UNIT_PX, 11f)
             gravity = Gravity.END

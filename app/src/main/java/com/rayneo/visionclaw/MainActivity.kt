@@ -218,6 +218,7 @@ class MainActivity : AppCompatActivity() {
         // added timing logs will show whether the bottleneck is
         // synthesizeVerbatim (network/API) or something else.
         private const val READOUT_SEGMENT_MAX_CHARS = 400
+        private const val CHAT_CARD_READOUT_SEGMENT_MAX_CHARS = 1200
         private const val READOUT_DRAIN_TIMEOUT_MS = 5 * 60 * 1000L
 
         // ── Left-arm tap shortcut (cyttsp6_mt) ───────────────────────────
@@ -7732,7 +7733,8 @@ class MainActivity : AppCompatActivity() {
                     when (command.mode) {
                         ReadoutMode.VERBATIM -> {
                             if (artifact.target == ReadoutTarget.RESEARCH_REPORT ||
-                                artifact.target == ReadoutTarget.TAPCLAW_RESULT
+                                artifact.target == ReadoutTarget.TAPCLAW_RESULT ||
+                                artifact.target == ReadoutTarget.LAST_CHAT_CARD
                             ) {
                                 when (
                                     playTrackedResearchReadout(
@@ -7740,8 +7742,15 @@ class MainActivity : AppCompatActivity() {
                                         startSegmentIndex = 0,
                                         hudText = if (artifact.target == ReadoutTarget.TAPCLAW_RESULT) {
                                             "Reading TapClaw result..."
+                                        } else if (artifact.target == ReadoutTarget.LAST_CHAT_CARD) {
+                                            "Reading chat card..."
                                         } else {
                                             "Reading research report…"
+                                        },
+                                        segmentMaxChars = if (artifact.target == ReadoutTarget.LAST_CHAT_CARD) {
+                                            CHAT_CARD_READOUT_SEGMENT_MAX_CHARS
+                                        } else {
+                                            READOUT_SEGMENT_MAX_CHARS
                                         }
                                     )
                                 ) {
@@ -7761,10 +7770,13 @@ class MainActivity : AppCompatActivity() {
                                     ReadoutPlaybackOutcome.FAILED -> {
                                         runOnUiThread {
                                             showHudNotification(
-                                                if (artifact.target == ReadoutTarget.TAPCLAW_RESULT) {
-                                                    "Playback stopped early. Say \"read the TapClaw result\"."
-                                                } else {
-                                                    "Playback stopped early. Say \"resume report\"."
+                                                when (artifact.target) {
+                                                    ReadoutTarget.TAPCLAW_RESULT ->
+                                                        "Playback stopped early. Say \"read the TapClaw result\"."
+                                                    ReadoutTarget.LAST_CHAT_CARD ->
+                                                        "Playback stopped early. Say \"read the chat card\"."
+                                                    else ->
+                                                        "Playback stopped early. Say \"resume report\"."
                                                 }
                                             )
                                         }
@@ -8005,12 +8017,13 @@ class MainActivity : AppCompatActivity() {
     private suspend fun playTrackedResearchReadout(
         artifact: ResolvedReadoutArtifact,
         startSegmentIndex: Int,
-        hudText: String
+        hudText: String,
+        segmentMaxChars: Int = READOUT_SEGMENT_MAX_CHARS
     ): ReadoutPlaybackOutcome {
         val readoutSpeechText = cleanReadoutTextForSpeechIfEnabled(artifact.text)
         val segments = geminiReadoutTtsClient.segmentTranscriptForPlayback(
             readoutSpeechText,
-            READOUT_SEGMENT_MAX_CHARS
+            segmentMaxChars
         )
         if (segments.isEmpty()) {
             // Segmenter produced nothing (edge case — e.g., pathological whitespace or

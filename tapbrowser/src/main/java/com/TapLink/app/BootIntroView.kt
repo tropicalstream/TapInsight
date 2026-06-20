@@ -45,7 +45,7 @@ class BootIntroView(context: Context) : View(context) {
         private const val AMBER = 0xFFFFD166.toInt()
         private const val BLUE = 0xFF4C7DFF.toInt()
         private const val WORDMARK = "TAPINSIGHT"
-        private const val TAGLINE = "0.3 BETA · X3"
+        private const val TAGLINE = "0.4 BETA · X3"
 
         /**
          * The quote library: one line is picked at random per boot and

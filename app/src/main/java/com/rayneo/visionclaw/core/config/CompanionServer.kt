@@ -2539,7 +2539,7 @@ window.__companionToken = '${sessionToken}';
                                         put("maxProtocol", 3)
                                         put("client", JSONObject().apply {
                                             put("id", "openclaw-android")
-                                            put("version", "0.3 beta")
+                                            put("version", "0.4 beta")
                                             put("platform", "android")
                                             put("mode", "node")
                                         })

@@ -5,32 +5,26 @@ import java.util.Locale
 /**
  * Derives the image-relay base URL from a configured agent endpoint.
  *
- * The Mac-side relay (tools/image_relay.py) listens on port 18790 locally
- * and is published at https://relay.tapinsight.uk through a Cloudflare
- * tunnel. Agent endpoints (Hermes / OpenClaw) are configured as full URLs;
- * this helper maps whatever host they point at to the matching relay base:
+ * The optional media relay (tools/image_relay.py) listens on port 18790
+ * locally. Agent endpoints (Hermes / OpenClaw) are configured as full URLs;
+ * this helper maps their host to the matching relay base when it can do so
+ * without relying on a maintainer-owned public domain:
  *
- *  • localhost / 127.0.0.1 / any raw IP  → http://<ip>:18790
- *    (or the public tunnel when [TAPINSIGHT_RELAY_BASE] is preferred —
- *    used by code paths that must work away from the home LAN)
- *  • relay.tapinsight.uk / *.tapinsight.uk → https://relay.tapinsight.uk
- *  • relay.<anything>                      → https://relay.<anything>
- *  • any other domain                      → https://relay.<base-domain>
+ *  • localhost / 127.0.0.1 / any raw IP → http://<ip>:18790
+ *  • relay.<anything>                   → https://relay.<anything>
+ *  • any other domain                   → https://relay.<base-domain>
  */
 object RelayUrlHelper {
-
-    /** Public Cloudflare-tunnelled relay base (no trailing slash). */
-    const val TAPINSIGHT_RELAY_BASE = "https://relay.tapinsight.uk"
 
     /** Port image_relay.py listens on when reached directly over the LAN. */
     private const val RELAY_PORT = 18790
 
     /**
      * First resolvable relay base across several candidate endpoints.
-     * Prefers an https base (the tunnel) over plain-http LAN bases; when
-     * [preferTapInsightPublicForLocal] is set and only LAN bases resolved,
-     * falls back to [TAPINSIGHT_RELAY_BASE] so the URL stays reachable
-     * from any network.
+     * Prefers an https base (the tunnel) over plain-http LAN bases. Public
+     * builds intentionally do not invent a maintainer relay for local/LAN
+     * endpoints; users must configure their own reachable relay when they
+     * need away-from-home access.
      */
     fun baseFromEndpoints(
         vararg endpoints: String?,
@@ -38,9 +32,7 @@ object RelayUrlHelper {
     ): String? {
         val candidates = endpoints.mapNotNull { baseFromEndpoint(it, false) }
         candidates.firstOrNull { it.startsWith("https://", ignoreCase = true) }?.let { return it }
-        if (preferTapInsightPublicForLocal && candidates.any { it.startsWith("http://") }) {
-            return TAPINSIGHT_RELAY_BASE
-        }
+        if (preferTapInsightPublicForLocal && candidates.any { it.startsWith("http://") }) return null
         return candidates.firstOrNull()
     }
 
@@ -51,19 +43,11 @@ object RelayUrlHelper {
         val isIp = Regex("\\d+\\.\\d+\\.\\d+\\.\\d+").matches(lowerHost)
         val isLocal = lowerHost == "localhost" || lowerHost == "127.0.0.1" || isIp
         if (isLocal) {
-            if (preferTapInsightPublicForLocal) {
-                return TAPINSIGHT_RELAY_BASE
-            }
+            if (preferTapInsightPublicForLocal) return null
             return "http://$lowerHost:$RELAY_PORT"
-        }
-        if (lowerHost == "relay.tapinsight.uk") {
-            return TAPINSIGHT_RELAY_BASE
         }
         if (lowerHost.startsWith("relay.")) {
             return "https://$lowerHost"
-        }
-        if (lowerHost == "tapinsight.uk" || lowerHost.endsWith(".tapinsight.uk")) {
-            return TAPINSIGHT_RELAY_BASE
         }
         val parts = lowerHost.split(".").filter { it.isNotBlank() }
         if (parts.isEmpty()) return null

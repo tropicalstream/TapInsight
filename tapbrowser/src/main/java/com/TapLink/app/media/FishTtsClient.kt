@@ -125,13 +125,13 @@ class FishTtsClient(
         if (cfg.volume != 0f) prosody.put("volume", cfg.volume.toDouble())
         if (prosody.length() > 0) payload.put("prosody", prosody)
         // chunk_length tells Fish how to size audio segments inside the
-        // returned stream. Per the docs, smaller values reduce TTFA
-        // (time-to-first-audio) at the cost of more boundaries inside
-        // the MP3. We pass 200 chars (≈ a sentence and a half) which
-        // balances first-byte latency vs. internal coherence — Fish
-        // streams this as one continuous audio file so we don't see
-        // the boundaries on our side, just lower start latency.
-        payload.put("chunk_length", 200)
+        // returned stream. Small chunks help the media-browser MP3 path
+        // start quickly, and Chromium decodes the returned file smoothly.
+        // Native chat-card/readout playback asks for WAV so we can feed
+        // AudioTrack; tiny WAV internals have produced audible multi-second
+        // stalls after the first sentence on glasses. Use larger WAV chunks
+        // there, while preserving the MP3 fast-start behavior.
+        payload.put("chunk_length", if (format.equals("wav", ignoreCase = true)) 1000 else 200)
 
         val conn = (URL(FISH_TTS_URL).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"

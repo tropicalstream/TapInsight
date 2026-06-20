@@ -240,7 +240,7 @@ class OpenClawClient(
             put("maxProtocol", 3)
             put("client", JSONObject().apply {
                 put("id", CLIENT_ID)
-                put("version", "0.3 beta")
+                put("version", "0.4 beta")
                 put("platform", CLIENT_PLATFORM)
                 put("deviceFamily", CLIENT_DEVICE_FAMILY)
                 put("mode", CLIENT_MODE)
@@ -252,7 +252,7 @@ class OpenClawClient(
                 put("operator.write")
             })
             put("caps", JSONArray())
-            put("userAgent", "TapInsight/0.3-beta")
+            put("userAgent", "TapInsight/0.4-beta")
             put("locale", Locale.getDefault().toLanguageTag())
 
             // Auth block

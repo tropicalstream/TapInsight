@@ -1,6 +1,6 @@
-# TapInsight 0.3 beta
+# TapInsight 0.4 beta
 
-0.3 beta focuses on native media playback, YouTube stability, and release hygiene for RayNeo X3 Pro.
+0.4 beta focuses on native media playback, YouTube stability, and release hygiene for RayNeo X3 Pro.
 
 ## Highlights
 
@@ -13,6 +13,9 @@
 - YouTube fullscreen toolbars reveal from X3 Pro touchpad movement instead of click-to-reveal.
 - YouTube dim-mode thermal/battery guardrails.
 - Frequency-reactive dim-mode visualizer waveforms for bass, mids, and highs.
+- Gemini research reports now save into Media Browser `Text/` with date/time filenames.
+- Fish.audio chat-card readout handoffs are smoother.
+- Maintainer-specific relay defaults and personal filesystem hints were removed from the public build.
 - Generic companion app host wording across macOS, Linux, and Windows.
 
 ## Public TODO

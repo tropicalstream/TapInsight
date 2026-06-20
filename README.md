@@ -82,15 +82,17 @@ There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (ve
 
 ## Download
 
-**[TapInsight 0.3 beta APK](https://github.com/tropicalstream/TapInsight/releases/download/TapInsight-OC-Beta-3/TapInsight-0.3-beta.apk)** — Latest publishable debug build for RayNeo X3 Pro.
+**[TapInsight 0.4 beta APK](https://github.com/tropicalstream/TapInsight/releases/download/TapInsight-OC-Beta-4/TapInsight-0.4-beta.apk)** — Latest publishable debug build for RayNeo X3 Pro.
 
-0.3 beta highlights:
+0.4 beta highlights:
 - Customizable avatars and companion-side bookmark editing.
 - Left-arm tap camera toggle for faster privacy/battery control.
 - Native ExoPlayer video for local and SMB library videos, with folder queue, previous/next, CC language selection, and sidecar `.srt` support.
 - HDR video display correction tuned for the RayNeo X3 Pro panel so HDR sources do not render overly dark or metallic.
 - Longer native video controls timeout, giving more time to open CC and choose a subtitle language.
 - YouTube dim-mode stability and thermal/battery guardrails, plus frequency-reactive dim-mode audio waveforms for bass, mids, and highs.
+- Gemini research reports save into Media Browser `Text/` with date/time filenames, and Fish.audio chat-card readout handoffs are smoother.
+- Maintainer-specific relay defaults were removed; configure your own relay endpoint for remote media delivery.
 - Tighter Gemini, TapClaw, OpenClaw, TapBrowser, radio/podcast, and media-agent handoffs.
 - URL read-aloud handling for the TTS reader when Gemini cannot fetch a page directly.
 
@@ -101,7 +103,7 @@ Public TODO:
 
 ## Videos
 
-- **[TapInsight 0.3 beta - New Features](https://youtu.be/EH8dxzB1UKg)** — Customizable avatars, tap-left-arm camera toggle, companion bookmark editing, and tighter agent integration.
+- **[TapInsight 0.4 beta - New Features](https://youtu.be/EH8dxzB1UKg)** — Customizable avatars, tap-left-arm camera toggle, companion bookmark editing, and tighter agent integration.
 - **[How to Set Up TapInsight](https://youtu.be/VxpLvR1Jz2Y)** — A practical setup walkthrough for the glasses and companion app.
 - **[TapInsight Overview](https://youtu.be/42DV0rl1NOo)** — The main walkthrough showing TapInsight running on the glasses, including voice, vision, and companion workflow.
 - **[TapInsight - Learning Partner](https://youtu.be/nUUxjQn-ZgU)** — Based on the video description: a demo of TapInsight acting as a thoughtful learning partner, building on the earlier camera-learning examples.

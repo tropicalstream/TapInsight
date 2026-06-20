@@ -4,7 +4,7 @@ import android.webkit.WebView
 
 /** Auto-pins the Hermes glasses log tail to the bottom of the WebView.
  *
- * The Hermes session log page at `relay.tapinsight.uk/hermes/log/...` is a
+ * Hermes session log pages at `/hermes/log/...` are
  * static HTML dump that refreshes itself every ~30 seconds. user reported
  * that opening the page from the H badge lands on the top of the log, and
  * every subsequent refresh resets the scroll back up. To read the latest
@@ -29,10 +29,7 @@ object HermesLogAutoScroll {
 
     private fun isHermesLogUrl(url: String?): Boolean {
         val lower = url?.lowercase(java.util.Locale.US).orEmpty()
-        // Match the relay host plus the /hermes/log/ path so we don't pin
-        // unrelated pages on the same host (e.g. /media/, /openclaw/...).
-        return lower.contains("relay.tapinsight.uk") &&
-            lower.contains("/hermes/log")
+        return lower.contains("/hermes/log")
     }
 
     private val SCRIPT =

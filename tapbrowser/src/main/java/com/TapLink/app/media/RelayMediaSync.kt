@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit
  * Why PULL instead of push: the glasses roam between networks (and sit
  * behind Cloudflare when remote), so the Mac can never reliably reach them
  * by IP. The glasses, however, can always reach
- * https://relay.tapinsight.uk — so they ask the relay what is staged
+ * a user-configured media relay — so they ask the relay what is staged
  * (GET /media-index.json) and download anything new themselves
  * (GET /media/<filename>). The Mac never needs to know the glasses' IP.
  *
@@ -63,7 +63,6 @@ object RelayMediaSync {
     private const val TAG = "RelayMediaSync"
     private const val PREFS_NAME = "visionclaw_prefs"
     private const val PREF_RELAY_MEDIA_BASE = "relay_media_base"
-    private const val DEFAULT_RELAY_BASE = "https://relay.tapinsight.uk"
 
     /** Hard cap on downloads per run — a fresh install never bulk-slurps. */
     private const val MAX_PER_RUN = 25
@@ -191,15 +190,16 @@ object RelayMediaSync {
     }
 
     /**
-     * Relay base URL — overridable through prefs for testing, defaulting to
-     * the public Cloudflare hostname. Trailing slashes stripped so callers
-     * can append "/media-index.json" etc. directly.
+     * Relay base URL — explicitly configured through prefs. Public builds do
+     * not default to any maintainer-owned relay. Trailing slashes are stripped
+     * so callers can append "/media-index.json" etc. directly.
      */
-    fun relayBase(context: Context): String {
+    fun relayBase(context: Context): String? {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val base = prefs.getString(PREF_RELAY_MEDIA_BASE, null)?.trim()
+        val base = prefs.getString(PREF_RELAY_MEDIA_BASE, null)
+            ?.trim()
             ?.takeIf { it.isNotBlank() }
-            ?: DEFAULT_RELAY_BASE
+            ?: return null
         return base.trimEnd('/')
     }
 
@@ -236,6 +236,12 @@ object RelayMediaSync {
 
         try {
             val base = relayBase(context)
+            if (base == null) {
+                summary = JSONObject()
+                    .put("ok", false)
+                    .put("error", "relay media sync is not configured")
+                DebugLog.d(TAG, "sync skipped: relay media sync is not configured")
+            } else {
             val indexReq = Request.Builder().url("$base/media-index.json").build()
             val indexBody: String = http.newCall(indexReq).execute().use { resp ->
                 if (!resp.isSuccessful) throw Exception("index fetch HTTP ${resp.code}")
@@ -348,6 +354,7 @@ object RelayMediaSync {
                 .put("skipped", skipped)
                 .put("errors", errors)
             DebugLog.d(TAG, "sync done: fetched=$fetched skipped=$skipped errors=$errors")
+            }
         } catch (e: Exception) {
             summary = JSONObject()
                 .put("ok", false)

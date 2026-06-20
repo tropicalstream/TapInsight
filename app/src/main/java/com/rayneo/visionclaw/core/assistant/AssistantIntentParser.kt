@@ -444,15 +444,11 @@ object AssistantIntentParser {
 
     // ── Hallucinated domain rewriter ──────────────────────────────
     //
-    // AI models (GPT-5.4 in OpenClaw, Gemini on glasses) persistently
-    // hallucinate plausible-sounding domains for the media relay when
-    // constructing URLs. The ONLY valid media relay is relay.tapinsight.uk.
-    // This function catches any URL that looks like a TapClaw/OpenClaw
-    // media request on a wrong domain and rewrites it deterministically.
-    // This is a code-level safety net — it does not depend on the model
-    // following instructions.
-
-    private const val CORRECT_MEDIA_RELAY = "relay.tapinsight.uk"
+    // AI models sometimes hallucinate plausible-sounding relay domains when
+    // constructing media URLs. Public builds must not rewrite those guesses
+    // to a maintainer-owned host; instead we leave them untouched so the
+    // normal fetch/open path fails visibly and the user can configure their
+    // own relay endpoint.
 
     /** Domains the AI has hallucinated in the past, and any future
      *  pattern that contains "tapclaw" or "openclaw" in the hostname. */
@@ -480,10 +476,9 @@ object AssistantIntentParser {
     )
 
     /**
-     * If a URL is on a hallucinated domain and has a media-like path,
-     * rewrite it to the correct relay. Also catches any unknown domain
-     * containing "tapclaw" or "openclaw" as a substring.
-     * Non-media URLs and URLs already on the correct domain pass through.
+     * If a URL is on a hallucinated domain, leave it untouched. Older builds
+     * rewrote these to a private relay; the public release deliberately avoids
+     * embedding any maintainer relay or personal infrastructure.
      */
     fun rewriteHallucinatedMediaDomain(url: String): String {
         val schemeEnd = url.indexOf("://")
@@ -494,39 +489,20 @@ object AssistantIntentParser {
             .substringBefore(':')  // strip port if present
         val path = url.substring(pathStart)
 
-        // Already correct
-        if (host == CORRECT_MEDIA_RELAY) return url
-
-        // Check if this looks like a media request on a bad domain
         val isKnownBad = KNOWN_HALLUCINATED_DOMAINS.contains(host)
         val isSuspectHost = host.contains("tapclaw") || host.contains("openclaw")
         val hasMediaPath = MEDIA_PATH_PATTERNS.any { path.lowercase(Locale.US).contains(it) }
 
         if ((isKnownBad || isSuspectHost) && hasMediaPath) {
-            // Normalize the path: strip /v1 prefix if present so we get /media/<file>
-            val normalizedPath = path
-                .replaceFirst(Regex("^/v1/workspace/"), "/media/")
-                .replaceFirst(Regex("^/workspace/"), "/media/")
-                .replaceFirst(Regex("^/v1/media/"), "/media/")
-                .replaceFirst(Regex("^/v1/files/"), "/media/")
-                .replaceFirst(Regex("^/files/"), "/media/")
-                .replaceFirst(Regex("^/v1/audio/"), "/media/")
-                .replaceFirst(Regex("^/audio/"), "/media/")
-            val scheme = url.substring(0, schemeEnd)
-            val corrected = "$scheme://$CORRECT_MEDIA_RELAY$normalizedPath"
             android.util.Log.w("URLRewriter",
-                "Rewrote hallucinated media URL: $url → $corrected")
-            return corrected
+                "Possible hallucinated media relay URL left unchanged: $url")
+            return url
         }
 
-        // Also catch bare hallucinated domains even without a media path
-        // (e.g. "https://api.tapclaw.com/something") — redirect to relay
         if (isKnownBad || isSuspectHost) {
-            val scheme = url.substring(0, schemeEnd)
-            val corrected = "$scheme://$CORRECT_MEDIA_RELAY$path"
             android.util.Log.w("URLRewriter",
-                "Rewrote hallucinated domain URL: $url → $corrected")
-            return corrected
+                "Possible hallucinated agent URL left unchanged: $url")
+            return url
         }
 
         return url

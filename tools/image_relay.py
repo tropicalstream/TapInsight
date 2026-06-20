@@ -735,6 +735,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         return None
 
     def _collect_media_files(self):
+        base_url = self._external_base_url()
         files = []
         for root in self._media_roots():
             root_label = (
@@ -766,7 +767,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 files.append({
                     "filename": name,
                     "url": f"/media/{name}",
-                    "absolute_url": f"https://relay.tapinsight.uk/media/{name}",
+                    "absolute_url": f"{base_url}/media/{name}",
                     "mime": mime_type,
                     "size_bytes": stat.st_size,
                     "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
@@ -775,12 +776,17 @@ class RelayHandler(BaseHTTPRequestHandler):
         files.sort(key=lambda item: item["modified"], reverse=True)
         return files
 
+    def _external_base_url(self):
+        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "localhost"
+        proto = self.headers.get("X-Forwarded-Proto") or ("https" if host != "localhost" else "http")
+        return f"{proto}://{host}".rstrip("/")
+
     def _serve_media_index(self, html_page: bool):
         files = self._collect_media_files()
         if not html_page:
             payload = {
                 "ok": True,
-                "relay": "https://relay.tapinsight.uk",
+                "relay": self._external_base_url(),
                 "roots": self._media_roots(),
                 "configured_roots": self._media_roots_report(),
                 "count": len(files),
@@ -825,7 +831,7 @@ class RelayHandler(BaseHTTPRequestHandler):
 </head>
 <body>
   <h1>TapInsight Media Relay</h1>
-  <div class="meta">Use <code>https://relay.tapinsight.uk/media/&lt;filename&gt;</code> for glasses playback. JSON: <code>/media-index.json</code>.</div>
+  <div class="meta">Use <code>{html.escape(self._external_base_url())}/media/&lt;filename&gt;</code> for glasses playback. JSON: <code>/media-index.json</code>.</div>
   <table>
     <thead><tr><th>File</th><th>Type</th><th>Size</th><th>Modified</th><th>Root</th></tr></thead>
     <tbody>{rows}</tbody>

@@ -8959,7 +8959,16 @@ class MainActivity :
             }
             setOnClickListener {
                 hideChatHistoryOverlay()
-                openInTapBrowser("https://relay.tapinsight.uk/hermes/log/glasses")
+                val relayBase = getSharedPreferences("visionclaw_prefs", MODE_PRIVATE)
+                    .getString("relay_media_base", null)
+                    ?.trim()
+                    ?.trimEnd('/')
+                    .orEmpty()
+                if (relayBase.isNotBlank()) {
+                    openInTapBrowser("$relayBase/hermes/log/glasses")
+                } else {
+                    dualWebViewGroup.showToast("Hermes log relay is not configured")
+                }
             }
         }
         val closeBtn = TextView(this).apply {
@@ -14488,18 +14497,16 @@ class MainActivity :
             val localOrRelay = host == "localhost" ||
                 host == "127.0.0.1" ||
                 host == "::1" ||
-                host == "relay.tapinsight.uk" ||
                 uri.port == 18790 ||
                 host.matches(Regex("""\d{1,3}(?:\.\d{1,3}){3}"""))
             if (!localOrRelay) return@runCatching url
-            val normalizedPath = path
+            path
                 .replaceFirst(Regex("^/v1/workspace/", RegexOption.IGNORE_CASE), "/media/")
                 .replaceFirst(Regex("^/workspace/", RegexOption.IGNORE_CASE), "/media/")
                 .replaceFirst(Regex("^/v1/media/", RegexOption.IGNORE_CASE), "/media/")
                 .replaceFirst(Regex("^/v1/files/", RegexOption.IGNORE_CASE), "/media/")
                 .replaceFirst(Regex("^/files/", RegexOption.IGNORE_CASE), "/media/")
-            val query = uri.encodedQuery?.takeIf { it.isNotBlank() }?.let { "?$it" }.orEmpty()
-            "https://relay.tapinsight.uk$normalizedPath$query"
+            url
         }.getOrDefault(url)
     }
 

@@ -32,6 +32,7 @@ gmp-map-3d{width:100%;height:100%}
 #streetview-container{
   position:absolute;top:0;left:0;width:100%;height:100%;z-index:7;
   display:none;background:#000;
+  filter:none !important;
 }
 #streetview-container.visible{display:block}
 #streetview-label{
@@ -308,6 +309,15 @@ body.streetview-active .quad-zone{display:none;pointer-events:none}
 }
 #map3d-container.dark-mode{
   filter:invert(1) hue-rotate(180deg) brightness(0.9) saturate(0.4) contrast(1.1);
+}
+body.streetview-active #map3d-container,
+body.streetview-active #map3d-container.night-mode,
+body.streetview-active #map3d-container.dark-mode{
+  filter:none !important;
+}
+body.streetview-active #streetview-container,
+body.streetview-active #streetview-container *{
+  filter:none !important;
 }
 /* Keep HUD readable in dark/night mode — applied to HUD overlay */
 body.night-mode-body #hud{ filter:none; }
@@ -2089,135 +2099,32 @@ window.gm_authFailure = function() {
   } catch(ae) {}
 })();
 
-// ── Auto-dismiss Maps alpha developer warning overlay (aggressive) ──
+// ── Maps auth/development warning detector ──
 (function() {
-  var dismissed = false;
+  var reported = false;
 
-  // Search everywhere for buttons/overlays matching warning patterns
-  function nukeWarnings() {
-    if (dismissed) return;
-
-    // 1. Find ALL buttons on page - click any that look like dismiss/close/ok
-    var allBtns = document.querySelectorAll('button');
-    for (var i = 0; i < allBtns.length; i++) {
-      var btn = allBtns[i];
-      var txt = (btn.textContent || '').trim().toLowerCase();
-      var ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-      var cls = (btn.className || '').toLowerCase();
-      if (txt === 'dismiss' || txt === 'ok' || txt === 'close' || txt === 'got it' || txt === 'accept' ||
-          ariaLabel === 'close' || ariaLabel === 'dismiss' ||
-          cls.indexOf('dismiss') !== -1 || cls.indexOf('close') !== -1) {
-        console.log('[ARNav] Clicking warning button: "' + txt + '" class=' + cls);
-        btn.click();
-        dismissed = true;
-        return;
-      }
-    }
-
-    // 2. Find overlays with white/light backgrounds that sit on top (z-index based)
-    var allDivs = document.querySelectorAll('div');
-    for (var d = 0; d < allDivs.length; d++) {
-      var div = allDivs[d];
-      var st = div.style;
-      var txt = (div.textContent || '').toLowerCase();
-      // Check for "development" or "alpha" or "for development purposes" text
-      if ((txt.indexOf('development') !== -1 || txt.indexOf('alpha') !== -1 ||
-           txt.indexOf('for development purposes') !== -1 || txt.indexOf('developer') !== -1) &&
-          txt.length < 500) {
-        // This is likely the warning - hide it and click any button inside
-        div.style.display = 'none';
-        div.style.visibility = 'hidden';
-        div.style.opacity = '0';
-        div.style.height = '0';
-        div.style.overflow = 'hidden';
-        div.style.pointerEvents = 'none';
-        var innerBtn = div.querySelector('button');
-        if (innerBtn) innerBtn.click();
-        console.log('[ARNav] Nuked warning div with text containing development/alpha');
-        dismissed = true;
-        return;
-      }
-    }
-
-    // 3. Probe shadow DOM of gmp-map-3d
-    var map3dEl = document.querySelector('gmp-map-3d');
-    if (map3dEl && map3dEl.shadowRoot) {
-      var shadowBtns = map3dEl.shadowRoot.querySelectorAll('button');
-      for (var sb = 0; sb < shadowBtns.length; sb++) {
-        var sbtn = shadowBtns[sb];
-        var sbtxt = (sbtn.textContent || '').trim().toLowerCase();
-        var sbcls = (sbtn.className || '').toLowerCase();
-        if (sbtxt === 'dismiss' || sbtxt === 'ok' || sbtxt === 'close' || sbtxt === 'got it' ||
-            sbcls.indexOf('dismiss') !== -1) {
-          sbtn.click();
-          console.log('[ARNav] Clicked shadow DOM warning button: "' + sbtxt + '"');
-          dismissed = true;
-          return;
-        }
-      }
-      // Hide any warning-like divs in shadow DOM
-      var shadowDivs = map3dEl.shadowRoot.querySelectorAll('div');
-      for (var sd = 0; sd < shadowDivs.length; sd++) {
-        var sdiv = shadowDivs[sd];
-        var sdtxt = (sdiv.textContent || '').toLowerCase();
-        if ((sdtxt.indexOf('development') !== -1 || sdtxt.indexOf('alpha') !== -1 ||
-             sdtxt.indexOf('developer') !== -1) && sdtxt.length < 500) {
-          sdiv.style.display = 'none';
-          var sdBtn = sdiv.querySelector('button');
-          if (sdBtn) sdBtn.click();
-          console.log('[ARNav] Nuked shadow DOM warning div');
-          dismissed = true;
-          return;
-        }
-      }
-    }
-
-    // 4. Also check iframes
-    var iframes = document.querySelectorAll('iframe');
-    for (var fi = 0; fi < iframes.length; fi++) {
-      try {
-        var fdoc = iframes[fi].contentDocument || iframes[fi].contentWindow.document;
-        var fbtns = fdoc.querySelectorAll('button');
-        for (var fb = 0; fb < fbtns.length; fb++) {
-          var fbtxt = (fbtns[fb].textContent || '').trim().toLowerCase();
-          if (fbtxt === 'dismiss' || fbtxt === 'ok' || fbtxt === 'close' || fbtxt === 'got it') {
-            fbtns[fb].click();
-            console.log('[ARNav] Clicked iframe warning button: "' + fbtxt + '"');
-            dismissed = true;
-            return;
-          }
-        }
-      } catch(ce) {} // cross-origin
+  function detectMapsWarning() {
+    if (reported || !document.body) return;
+    var txt = (document.body.innerText || '').toLowerCase();
+    if (txt.indexOf('for development purposes only') !== -1 ||
+        txt.indexOf('development purposes only') !== -1) {
+      reported = true;
+      console.warn('[ARNav] Google Maps development watermark detected; restore the Maps API key, billing, and API restrictions to remove it.');
     }
   }
 
-  // MutationObserver on body AND gmp-map-3d
-  function observeTarget(target) {
-    if (!target) return;
-    var obs = new MutationObserver(function() {
-      setTimeout(nukeWarnings, 50);
-      setTimeout(nukeWarnings, 200);
-    });
-    obs.observe(target, { childList: true, subtree: true });
-  }
-  observeTarget(document.body);
+  var obs = new MutationObserver(function() { setTimeout(detectMapsWarning, 100); });
+  if (document.body) obs.observe(document.body, { childList: true, subtree: true, characterData: true });
 
-  // Also observe shadow root when map3d is ready
-  var mapWatch = setInterval(function() {
-    var m3 = document.querySelector('gmp-map-3d');
-    if (m3) {
-      if (m3.shadowRoot) { observeTarget(m3.shadowRoot); clearInterval(mapWatch); }
-    }
-  }, 300);
-  setTimeout(function() { clearInterval(mapWatch); }, 15000);
-
-  // Aggressive polling: every 300ms for 30 seconds
   var attempts = 0;
   var interval = setInterval(function() {
     attempts++;
-    nukeWarnings();
-    if (dismissed || attempts >= 100) clearInterval(interval);
-  }, 300);
+    detectMapsWarning();
+    if (reported || attempts >= 60) {
+      clearInterval(interval);
+      obs.disconnect();
+    }
+  }, 500);
 })();
 </script>
 </body>

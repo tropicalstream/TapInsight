@@ -186,13 +186,11 @@ class HermesTool(
         val relayBase = buildRelayBaseUrl()
         val relayInstruction = if (relayBase != null) {
             "The configured media relay for this glasses session is $relayBase. " +
-                "The relay exposes these Mac folders: /Users/me/hermes-media and " +
-                "/Users/me/.openclaw/workspace. When the user says 'media folder', search those " +
-                "exact folders first, especially /Users/me/hermes-media; do not waste time searching " +
-                "Downloads/Desktop/Pictures unless the user specifically asks for those locations. " +
+                "The relay should expose only the user's configured media/workspace folders. " +
+                "When the user says 'media folder', search those configured folders first; " +
+                "do not assume maintainer-specific filesystem paths. " +
                 "For existing media requested by voice, the preferred lookup is: " +
-                "python3 ~/.hermes/skills/mlops/minimax-media/scripts/serve.py \"<user request>\". " +
-                "Use the open_taplink line printed by that script. " +
+                "use the user's configured media serving tool or index, then return a public http(s) URL. " +
                 "You may list exposed files safely at $relayBase/media-index.json or $relayBase/media. " +
                 "If Hermes creates or selects a local file, save/copy it under one of those exposed " +
                 "folders, then use $relayBase/media/<filename>. Do not invent another media host. "
@@ -238,9 +236,9 @@ class HermesTool(
      */
     private fun buildRelayBaseUrl(): String? {
         // Shared RelayUrlHelper logic. Prefer-public flag set: Hermes'
-        // safety layer may reject plain LAN http://192.168.x.x URLs, while
-        // the Cloudflare relay is exactly what the glasses can fetch from
-        // any network.
+        // safety layer may reject plain LAN http://192.168.x.x URLs. Public
+        // builds do not invent a maintainer relay; users must configure
+        // their own public relay when away-from-home access is needed.
         return RelayUrlHelper.baseFromEndpoints(
             prefs.hermesEndpoint.trim(),
             prefs.openClawEndpoint.trim(),

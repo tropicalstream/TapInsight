@@ -54,7 +54,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 // 1) Look up podcast by ID via iTunes to get feedUrl
                 val lookupReq = Request.Builder()
                     .url("https://itunes.apple.com/lookup?id=$collectionId")
-                    .header("User-Agent", "TapInsight/0.3-beta")
+                    .header("User-Agent", "TapInsight/0.4-beta")
                     .build()
                 val feedUrl: String = client.newCall(lookupReq).execute().use { resp ->
                     if (!resp.isSuccessful) {
@@ -86,7 +86,7 @@ class WebAppInterface(private val context: Context, private val webView: WebView
                 // 2) Fetch RSS feed
                 val feedReq = Request.Builder()
                     .url(feedUrl)
-                    .header("User-Agent", "TapInsight/0.3-beta")
+                    .header("User-Agent", "TapInsight/0.4-beta")
                     .build()
                 val xml: String = client.newCall(feedReq).execute().use { resp ->
                     if (!resp.isSuccessful) {

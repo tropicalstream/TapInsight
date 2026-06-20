@@ -2,7 +2,7 @@
 
 Mined 2026-06-12 from shallow clones at `/tmp/ref-Everyday` (TheophileGaudin/Everyday) and
 `/tmp/ref-TAPLINKX3` (informalTechCode/TAPLINKX3). Lineage cross-checked against
-`/Users/me/Downloads/TapInsight-rebuild-6-11-26/tapbrowser`.
+`<local TapInsight checkout>/tapbrowser`.
 
 Shared-ancestry note up front: TAPLINKX3's README credits "originally created by u/glxblt76" —
 the same person as Everyday's author (Théophile Gaudin / BuyMeACoffee "Glxblt76"). So all three
@@ -446,7 +446,7 @@ control), Groq speech-to-text, and notification-listener-driven media keys.
 
 ## 7. Lineage vs TapInsight's tapbrowser — CONFIRMED ancestor
 
-Compared against `/Users/me/Downloads/TapInsight-rebuild-6-11-26/tapbrowser/src/main/java/com/TapLink/app/`:
+Compared against `<local TapInsight checkout>/tapbrowser/src/main/java/com/TapLink/app/`:
 
 - **Same package + class roster.** TapInsight's `MainActivity.kt` and `DualWebViewGroup.kt`
   declare `package com.TapLinkX3.app` — identical to TAPLINKX3 — and share the core file set:
