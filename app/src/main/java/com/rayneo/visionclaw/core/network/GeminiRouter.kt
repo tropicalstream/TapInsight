@@ -1161,15 +1161,22 @@ class GeminiRouter(
                 "'find me text files / transcripts / sources' — your own response cannot reliably " +
                 "produce real, working URLs. Your googleSearch grounding caps at one citation per " +
                 "turn (we measured this empirically), and typing URLs from memory hallucinates. " +
-                "Instead, OFFER one of the two real-web-search paths and wait for the user to pick:\n" +
-                "  (i) tapclaw_agent — TapClaw's full browser-based search. Returns a verified, " +
-                "      multi-source URL list rendered as a chat card. Works for any topic.\n" +
+                "Instead, OFFER a real-web-search path and wait for the user to pick:\n" +
+                "  (i) A GOOGLE SEARCH — the quick, always-available DEFAULT. open_taplink with " +
+                "      https://www.google.com/search?q=QUERY (QUERY = the topic, spaces as +). " +
+                "      This opens a live Google results page of real, current links the user can " +
+                "      tap; it can never 404 and needs nothing set up.\n" +
                 "  (ii) research_topic with mode='links' — a deeper research pass using Gemini Pro " +
                 "      with grounding. Slower but thorough; good for niche / academic / " +
                 "      historical topics where you want curated sources rather than top-page links.\n" +
-                "OFFER PATTERN: 'For real working links I have two options — TapClaw can search " +
-                "the web quickly, or research-mode does a deeper grounded pass that takes longer. " +
-                "Which would you like?' Wait for the user's pick before calling either tool.\n" +
+                "  (iii) tapclaw_agent — ONLY offer this if tapclaw_agent is in your tool list this " +
+                "      session (the user has TapClaw/OpenClaw set up); it returns a verified " +
+                "      multi-source URL list as a chat card. If tapclaw_agent is NOT in your tool " +
+                "      list, do NOT mention TapClaw at all (RULE ZERO-A).\n" +
+                "OFFER PATTERN (default — TapClaw not set up): 'For real working links I can do a " +
+                "quick Google search, or research mode for a deeper grounded pass that takes longer. " +
+                "Which would you like?' Only when tapclaw_agent IS in your tool list may you add " +
+                "TapClaw as a third option. Wait for the user's pick before opening or calling a tool.\n" +
                 "SINGLE-LINK / SEARCH-RESULT URL SAFETY (stop the 404s): when you open ONE link for " +
                 "the user (open_taplink), the PRIMARY source is a real web-search-verified URL — a " +
                 "fresh googleSearch grounding citation or a URL returned verbatim by tapclaw_agent / " +
@@ -1186,12 +1193,13 @@ class GeminiRouter(
                 "'brief me on X', or 'read me a summary' requests. DO NOT call send_link_list yourself. DO NOT promise specific sources " +
                 "by name (Wikipedia / New Yorker / YouTube) before the search has run — the user " +
                 "will compare what you said against the list and notice if it doesn't match.\n" +
-                "If the user picks TapClaw, call tapclaw_agent with their query — the TapClaw " +
-                "chat-card relay handles rendering. If the user picks research mode (says " +
-                "'research', 'deep search', 'use research', 'do research', or names a depth like " +
-                "'thorough'), call research_topic with the topic AND mode='links'. The " +
-                "research_topic links mode returns a structured URL list that renders as a chat " +
-                "card the same way as TapClaw.\n\n" +
+                "If the user picks the Google search, call open_taplink with the " +
+                "https://www.google.com/search?q=QUERY URL above. If the user picks research mode " +
+                "(says 'research', 'deep search', 'use research', 'do research', or names a depth " +
+                "like 'thorough'), call research_topic with the topic AND mode='links' — it returns " +
+                "a structured URL list that renders as a chat card. If the user picks TapClaw (only " +
+                "possible when tapclaw_agent is in your tool list), call tapclaw_agent with their " +
+                "query — the TapClaw chat-card relay handles rendering.\n\n" +
                 "EXPLICIT-RESEARCH OVERRIDE — HIGHEST PRIORITY, READ BEFORE ANY OTHER ROUTING " +
                 "RULE BELOW:\n" +
                 "If the user's request begins with or contains the verb 'research' as an action " +
