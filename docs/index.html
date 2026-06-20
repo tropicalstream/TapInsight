@@ -1185,15 +1185,113 @@ footer .alpha-warn {
 <div class="band"></div>
 
 <!-- ======================== VIDEO SHOWCASE ======================== -->
+<!-- ======================== WHAT'S NEW · 0.4 BETA ======================== -->
+<style>
+  .whatsnew{padding:64px 0}
+  .whatsnew-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin-top:10px}
+  .wn-card{border:1px solid rgba(212,168,75,0.35);border-radius:14px;padding:22px 24px;background:rgba(255,255,255,0.04)}
+  .wn-card h3{margin:0 0 10px;font-size:1.05rem}
+  .wn-card ul,.wn-todo ul{margin:0;padding-left:18px}
+  .wn-card li,.wn-todo li{margin:6px 0;line-height:1.5}
+  .wn-callout,.wn-todo{margin-top:22px;border:1px solid rgba(74,155,154,0.4);border-radius:14px;padding:20px 24px;background:rgba(74,155,154,0.07)}
+  .wn-callout h3,.wn-todo h3{margin:0 0 8px}
+  .wn-callout p{margin:0;line-height:1.6}
+</style>
+<section class="whatsnew" id="whats-new">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-kicker">Release Notes</div>
+      <h2>What's new in 0.4 beta</h2>
+      <p>0.4 beta focuses on native media playback, YouTube stability, and release hygiene for the RayNeo X3 Pro.</p>
+    </div>
+
+    <div class="whatsnew-grid">
+      <div class="wn-card">
+        <h3>Native media playback</h3>
+        <ul>
+          <li>Native ExoPlayer path for local and SMB videos.</li>
+          <li>Folder queue plus previous/next controls for native video playback.</li>
+          <li>CC language picker with available subtitle tracks and sidecar <code>.srt</code> support.</li>
+          <li>Longer media-controls timeout for subtitle selection.</li>
+          <li>HDR display correction tuned for the X3 Pro panel.</li>
+        </ul>
+      </div>
+      <div class="wn-card">
+        <h3>YouTube &amp; dim mode</h3>
+        <ul>
+          <li>Fullscreen toolbars reveal from X3 Pro touchpad movement instead of click-to-reveal.</li>
+          <li>Dim-mode thermal and battery guardrails.</li>
+          <li>Frequency-reactive night-sky dim-mode visualizer that ripples to bass, mids, and highs.</li>
+        </ul>
+      </div>
+      <div class="wn-card">
+        <h3>Assistant &amp; audio</h3>
+        <ul>
+          <li>URL read-aloud handling in the TTS reader for pages Gemini cannot fetch directly.</li>
+          <li>Song identification for TapRadio with optional AudD fingerprinting first, falling back to station metadata when no AudD token is configured.</li>
+          <li>Gemini research reports now save into Media Browser <code>Text/</code> with date/time filenames.</li>
+          <li>Smoother Fish.audio chat-card readout handoffs.</li>
+        </ul>
+      </div>
+      <div class="wn-card">
+        <h3>Release hygiene</h3>
+        <ul>
+          <li>Maintainer-specific relay defaults and personal filesystem hints removed from the public build.</li>
+          <li>Generic companion-app host wording across macOS, Linux, and Windows.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="wn-callout">
+      <h3>Song Identification — AudD (optional)</h3>
+      <p>Ask "what song is this?" while listening to TapRadio. With an AudD token, TapInsight asks AudD to fingerprint the current stream first so stale station metadata doesn't win. Without a token, TapInsight falls back to the free track metadata broadcast by many stations. Get a free token (300 IDs/month) at <a href="https://audd.io" target="_blank" rel="noopener noreferrer">audd.io</a>.</p>
+    </div>
+
+    <div class="wn-todo">
+      <h3>Public TODO</h3>
+      <ul>
+        <li><strong>Bright mode:</strong> continue validating that bright-mode YouTube/video playback does not reboot the glasses.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ======================== VIDEOS ======================== -->
 <section class="videos" id="video">
   <div class="container">
     <div class="section-head">
       <div class="section-kicker">Demonstrations</div>
       <h2>See it in motion</h2>
-      <p>Beta 3 adds a new feature walkthrough alongside setup, learning, and earlier TapInsight demos.</p>
+      <p>0.4 beta adds a RayNeo X3 Pro retrospective and overview, alongside setup, learning, and earlier TapInsight demos.</p>
     </div>
 
     <div class="video-grid">
+      <div class="video-card">
+        <div class="video-embed">
+          <iframe src="https://www.youtube-nocookie.com/embed/KH2PXnyloG4?rel=0&modestbranding=1&playsinline=1"
+                  title="RayNeo X3 Pro &amp; TapInsight 0.4 — Retrospective &amp; Overview"
+                  frameborder="0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  loading="lazy"
+                  referrerpolicy="strict-origin-when-cross-origin"
+                  allowfullscreen></iframe>
+        </div>
+        <div class="video-meta">
+          <h3>RayNeo X3 Pro &amp; TapInsight 0.4 — Retrospective</h3>
+          <p>A retrospective on the RayNeo X3 Pro glasses and an overview of the latest TapInsight 0.4 beta.</p>
+          <div class="video-actions">
+            <a class="video-link" href="https://www.youtube.com/watch?v=KH2PXnyloG4" target="_blank" rel="noopener noreferrer">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.6 31.6 0 0 0 0 12a31.6 31.6 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.6 31.6 0 0 0 24 12a31.6 31.6 0 0 0-.5-5.8ZM9.6 15.7V8.3l6.4 3.7-6.4 3.7Z"/></svg>
+              Watch on YouTube
+            </a>
+            <a class="video-link" href="https://youtu.be/KH2PXnyloG4" target="_blank" rel="noopener noreferrer">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>
+              Short Link
+            </a>
+          </div>
+        </div>
+      </div>
+
       <div class="video-card">
         <div class="video-embed">
           <iframe src="https://www.youtube-nocookie.com/embed/EH8dxzB1UKg?rel=0&modestbranding=1&playsinline=1"
@@ -1562,23 +1660,23 @@ footer .alpha-warn {
     <div class="section-head">
       <div class="section-kicker">Builds</div>
       <h2>Get the glasses flying</h2>
-      <p>TapInsight OC Beta 3 is the latest sanitized build from the active OpenClaw line.</p>
+      <p>TapInsight 0.4 beta is the latest sanitized build from the active OpenClaw line.</p>
     </div>
 
     <div class="download-cards">
 
       <div class="dcard">
-        <span class="dcard-tag">Latest · OpenClaw Beta</span>
-        <h3>TapInsight OC Beta 3</h3>
-        <p>The current OpenClaw beta adds customizable avatars, the left-arm camera toggle, companion bookmark editing, tighter agent integration, TapBrowser scrollbar stabilization, and the latest Gemini/media-routing fixes.</p>
-        <a class="btn btn-primary" href="https://github.com/tropicalstream/TapInsight/releases/download/TapInsight-OC-Beta-3/TapInsight-OC-Beta-3.apk">
+        <span class="dcard-tag">Latest · 0.4 Beta</span>
+        <h3>TapInsight OC Beta 4</h3>
+        <p>0.4 beta adds native ExoPlayer playback for local and SMB videos with a folder queue and prev/next controls, a CC language picker with sidecar <code>.srt</code> support, X3 Pro HDR correction, YouTube fullscreen + dim-mode stability, TapRadio song identification (optional AudD), and release hygiene for the public build.</p>
+        <a class="btn btn-primary" href="https://github.com/tropicalstream/TapInsight/releases/tag/TapInsight-OC-Beta-4">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13m0 0l-5-5m5 5l5-5M5 21h14"/></svg>
           Download APK
         </a>
         <div class="dcard-meta">
           <span>Signed Debug</span>
           <span>Android · X3 Pro</span>
-          <span>Tag: TapInsight-OC-Beta-3</span>
+          <span>Tag: TapInsight-OC-Beta-4</span>
         </div>
       </div>
 

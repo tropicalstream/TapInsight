@@ -591,7 +591,7 @@ footer {
     <li><a href="#hud">HUD (Heads-Up Display)</a></li>
     <li><a href="#tapbrowser">TapBrowser</a></li>
     <li><a href="#library">Library &amp; Local Media</a></li>
-    <li><a href="#visualizers">Audio Visualizers</a></li>
+    <li><a href="#visualizers">The Audio Visualizer</a></li>
     <li><a href="#tapradio">TapRadio &amp; Podcasts</a></li>
     <li><a href="#youtube">YouTube Workflow</a></li>
     <li><a href="#research">Research &amp; Deep Dives</a></li>
@@ -658,7 +658,7 @@ footer {
 <div class="cards">
   <div class="card"><h4>Gemini Live</h4><p>A continuously-streaming voice session with Google's Gemini 3.1 Flash Live — the brain that listens, speaks, and decides.</p></div>
   <div class="card"><h4>Native Tools</h4><p>Two dozen on-device tools for Calendar, Tasks, Spotify, Maps, YouTube, translation, and more. Gemini calls them; you see the results on the HUD.</p></div>
-  <div class="card"><h4>TapBrowser</h4><p>A full-featured AR browser with its own dashboard, music visualizers, and reader mode — so anything Gemini finds becomes something you can actually <em>use</em>.</p></div>
+  <div class="card"><h4>TapBrowser</h4><p>A full-featured AR browser with its own dashboard, a music visualizer, and reader mode — so anything Gemini finds becomes something you can actually <em>use</em>.</p></div>
 </div>
 
 <p>This guide walks through every capability — from the first <code>adb install</code> command, through your API keys, all the way to asking TapClaw to help with your homework. If you only read one section, make it <a href="#routing">How Gemini Routes You</a>; it's the mental model everything else hangs on.</p>
@@ -1185,7 +1185,7 @@ footer {
   <li><strong>Reader mode</strong> for clean article reading.</li>
   <li><strong>Picture-in-picture</strong> for videos.</li>
   <li><strong>TTS read-aloud</strong> for articles and anything selectable.</li>
-  <li><strong>Audio visualizers</strong> (see next section) that activate when music or video is playing.</li>
+  <li><strong>A night-sky audio visualizer</strong> (see next section) you can bring up in dim mode while music or video is playing.</li>
   <li><strong>Desktop or mobile mode</strong> — site compatibility lever for difficult pages.</li>
   <li><strong>Force dark mode</strong> — easier on the eyes at night.</li>
   <li><strong>Volume and brightness</strong> sliders via gestures or a settings overlay.</li>
@@ -1218,6 +1218,9 @@ footer {
   <div class="card"><h4>Playlist aware</h4><p>Each folder can contain its own <code>.m3u</code> or <code>.m3u8</code> playlist, with paths resolved relative to that playlist file.</p></div>
   <div class="card"><h4>Text + TTS</h4><p>Text files open in the media viewer and can be read aloud through Gemini TTS, so notes and transcripts live alongside your media.</p></div>
 </div>
+
+<h3>Native video playback <span class="tag">new in 0.4</span></h3>
+<p>Local and SMB videos play through a native ExoPlayer path. A folder queue with previous/next controls lets you move through everything in a folder, and the media controls stay up longer so you have time to pick subtitles. A CC language picker lists the available subtitle tracks and supports sidecar <code>.srt</code> files placed alongside the video. HDR display correction is tuned for the X3 Pro panel so colors and brightness look right on the glasses.</p>
 
 <h3>Where the files live</h3>
 <p>TapInsight creates an app-private media folder on first run:</p>
@@ -1265,26 +1268,15 @@ coffee.mp3
 </section>
 
 <section id="visualizers">
-<h2><span class="part-tag">§ 4.3</span>Audio Visualizers — All Ten Themes</h2>
+<h2><span class="part-tag">§ 4.3</span>The Audio Visualizer</h2>
 
-<p>Whenever audio or video is playing in TapBrowser, you can tap the visualizer button in the on-screen controls to overlay a music-reactive scene. Tap again to cycle through the themes. Each one is a hand-tuned aesthetic; pick the one that matches your mood or your music.</p>
+<p>In dim mode, swipe up on the right side of the touchpad to bring up the night-sky audio visualizer; swipe down to close it. It's a single calm scene — captions and titles stay out of it — that breathes at a coherent-breathing pace (roughly 4s in, a short hold, 6s out) while reacting to whatever is playing.</p>
 
-<div class="viz-grid">
-  <div class="viz"><div class="swatch breathe"></div><div class="name">1 · Breathing (default)</div><div class="desc">Soft pulsing ring that inhales/exhales with a slow gradient — calm, meditative, unobtrusive.</div></div>
-  <div class="viz"><div class="swatch wave"></div><div class="name">2 · Wave</div><div class="desc">Flowing oscilloscope-style waveform tied to the audio spectrum.</div></div>
-  <div class="viz"><div class="swatch atom"></div><div class="name">3 · Atomic Pulse Ring</div><div class="desc">Electron-orbit rings that pulse out from a nucleus on beats — bass drives the expansion.</div></div>
-  <div class="viz"><div class="swatch medit"></div><div class="name">4 · Meditative</div><div class="desc">12-petal rotating mandala, concentric breathing rings, ambient stars. For long sessions.</div></div>
-  <div class="viz"><div class="swatch tron"></div><div class="name">5 · Tron</div><div class="desc">Tron-arcade light wall, Recognizer tank, bricked spectrum columns, rotating horizon.</div></div>
-  <div class="viz"><div class="swatch ce3k"></div><div class="name">6 · Close Encounters</div><div class="desc">The five CE3K spaceship tones visualized as layered geometric structures against a violet sky.</div></div>
-  <div class="viz"><div class="swatch fractal"></div><div class="name">7 · 3D Fractal</div><div class="desc">Chaos-game IFS points tumbling through 3D space with a warp-speed starfield.</div></div>
-  <div class="viz"><div class="swatch winampbar"></div><div class="name">8 · Winamp Bars</div><div class="desc">Classic spectrum analyzer — yellow→red bars with peak caps and a floor reflection.</div></div>
-  <div class="viz"><div class="swatch scope"></div><div class="name">9 · Winamp Scope</div><div class="desc">Green oscilloscope on black — the purist's choice.</div></div>
-  <div class="viz"><div class="swatch stars"></div><div class="name">10 · Winamp Starfield</div><div class="desc">vis_nsfs warp-speed stars with bass-reactive streaks.</div></div>
-</div>
+<p>The visualizer is frequency-reactive: it splits the audio into bands and maps them to the scene. Sub-bass glows up from the bottom of the frame, bass pulses the central orb, and bass, mids, and highs ripple through three distinct ribbons — bass broad and heavy, mids articulated, highs tight and quick. Highs also shimmer as stars, with an "air" band setting how fast they twinkle. When no audio is captured, it degrades gracefully into a pure breathing exercise with gentle synthetic motion.</p>
 
 <div class="callout tip">
-  <div class="title">Swap themes fast</div>
-  <p>Single-tap the visualizer button to enable/disable. Hold it (or keep single-tapping) to cycle through themes. Your last-used theme is remembered per session.</p>
+  <div class="title">Open and close</div>
+  <p>Swipe up on the right of the touchpad in dim mode to show the visualizer; swipe down to dismiss it. It's the calm wind-down screen — no toolbar, no titles, just the breathing night sky.</p>
 </div>
 </section>
 
@@ -1325,6 +1317,15 @@ coffee.mp3
 
 <h3>Favorites</h3>
 <p>Favorite stations from the <a href="#radio-tab">Radio tab</a> of the companion app sync to the glasses. "Play my favorite station" picks the most-recent favorite, or you can name one — "Play my Radio Paradise favorite."</p>
+
+<h3>Song Identification — AudD (optional) <span class="tag">new in 0.4</span></h3>
+<p>Ask <strong>"what song is this?"</strong> while listening to TapRadio. With an AudD token, TapInsight asks AudD to fingerprint the current stream first so stale station metadata doesn't win. Without a token, TapInsight falls back to the free track metadata broadcast by many stations. Get a free token (300 IDs/month) at <a href="https://audd.io" target="_blank" rel="noopener noreferrer">audd.io</a> and add it in the companion app.</p>
+<div class="sayrow">
+  <div>
+    <span class="say">What song is this?<span class="tag">radio</span></span>
+    <span class="say">Who sings this?<span class="tag">radio</span></span>
+  </div>
+</div>
 </section>
 
 <section id="youtube">
