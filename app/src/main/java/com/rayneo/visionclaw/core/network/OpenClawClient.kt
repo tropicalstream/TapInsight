@@ -155,8 +155,12 @@ class OpenClawClient(
             // The agent can then read the file from its workspace.
             var imageDelivered = false
             if (hasImage) {
+                com.rayneo.visionclaw.core.session.CaptureFeedback.captured()
                 val relayUrl = buildRelayUrl(wsUrl)
                 imageDelivered = uploadToRelay(imageBase64!!, relayUrl)
+                if (imageDelivered) {
+                    com.rayneo.visionclaw.core.session.CaptureFeedback.delivered("your workspace")
+                }
             }
 
             val finalMessage = if (imageDelivered) {

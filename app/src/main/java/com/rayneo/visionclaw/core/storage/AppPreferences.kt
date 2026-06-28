@@ -14,6 +14,21 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_GEMINI_API_KEY, "") ?: ""
         set(value) = prefs.edit().putString(KEY_GEMINI_API_KEY, value).apply()
 
+    /** Optional AudD music-recognition token — only used as the fallback for
+     *  identify_song when a station broadcasts no ICY metadata. Empty = the
+     *  acoustic fallback is disabled (the free ICY path still works). */
+    var auddApiToken: String
+        get() = prefs.getString("audd_api_token", "") ?: ""
+        set(value) = prefs.edit().putString("audd_api_token", value).apply()
+
+    /** How "note that…/jot down…" voice requests are handled:
+     *  "builtin" (default) = capture locally to the glasses notes file;
+     *  "hermes" = route to the Hermes note-taking skill; "off" = let Gemini
+     *  decide. Exposed so the user can manually pick the detector. */
+    var noteCaptureMode: String
+        get() = prefs.getString("note_capture_mode", "builtin") ?: "builtin"
+        set(value) = prefs.edit().putString("note_capture_mode", value).apply()
+
     var researchProvider: String
         get() = prefs.getString(KEY_RESEARCH_PROVIDER, "gemini") ?: "gemini"
         set(value) = prefs.edit().putString(KEY_RESEARCH_PROVIDER, value).apply()

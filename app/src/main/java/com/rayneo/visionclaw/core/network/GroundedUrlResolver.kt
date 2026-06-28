@@ -7,6 +7,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Turns possibly-hallucinated link-list URLs into real, on-topic ones.
@@ -45,6 +46,33 @@ object GroundedUrlResolver {
 
     private val VIDEO_TYPES = setOf("video", "videos")
 
+    // ── Resolution caches ───────────────────────────────────────────────
+    // The two expensive operations here are (a) the per-title googleSearch
+    // grounding call and (b) following a redirect over the network. Both are
+    // effectively idempotent for a given input within a session, yet the same
+    // link lists get re-opened repeatedly, re-running every lookup from
+    // scratch. Caching successful results turns "up to ~8 extra Gemini calls
+    // per list, every open" into "once per distinct title." Only SUCCESSES are
+    // cached, so a transient network failure isn't pinned. Maps are capped and
+    // cleared wholesale when they grow large — cheap and avoids unbounded RAM.
+    private const val CACHE_MAX = 256
+    private val groundedCache = ConcurrentHashMap<String, String>()
+    private val redirectCache = ConcurrentHashMap<String, String>()
+
+    private fun groundedCacheKey(title: String, type: String): String =
+        type.trim().lowercase(Locale.US) + "|" + title.trim().lowercase(Locale.US)
+
+    private fun ConcurrentHashMap<String, String>.putCapped(key: String, value: String) {
+        if (size >= CACHE_MAX) clear()
+        put(key, value)
+    }
+
+    /** Clear cached resolutions (e.g. on explicit user refresh). */
+    fun clearCaches() {
+        groundedCache.clear()
+        redirectCache.clear()
+    }
+
     /** True for Google's opaque grounding-redirect URLs. */
     fun isGroundingRedirect(url: String): Boolean {
         val u = url.lowercase(Locale.US)
@@ -53,8 +81,17 @@ object GroundedUrlResolver {
     }
 
     /** Follow a (grounding) redirect to its final publisher URL. */
-    fun resolveRedirect(url: String): String =
-        ActiveNetworkHttp.resolveFinalUrl(url)?.takeIf { it.isNotBlank() } ?: url
+    fun resolveRedirect(url: String): String {
+        redirectCache[url]?.let { return it }
+        val resolved = ActiveNetworkHttp.resolveFinalUrl(url)?.takeIf { it.isNotBlank() } ?: url
+        // Only cache a genuine resolution (i.e. we actually followed it to a
+        // different, non-redirect URL). Caching the unchanged input or a still-
+        // opaque redirect would just pin a failed follow.
+        if (resolved != url && !isGroundingRedirect(resolved)) {
+            redirectCache.putCapped(url, resolved)
+        }
+        return resolved
+    }
 
     /** On-topic search-results page that can never mis-target (Fallback B). */
     fun searchPageUrl(title: String, type: String): String {
@@ -77,6 +114,8 @@ object GroundedUrlResolver {
     ): String? = withContext(Dispatchers.IO) {
         val key = geminiApiKey?.trim().orEmpty()
         if (key.isBlank() || title.isBlank()) return@withContext null
+        val cacheKey = groundedCacheKey(title, type)
+        groundedCache[cacheKey]?.let { return@withContext it }
         val prompt =
             "Find the single best, real, currently-working source URL for this " +
                 "${type.ifBlank { "web" }} item: \"$title\". " +
@@ -120,6 +159,7 @@ object GroundedUrlResolver {
                 // which 404s in the browser — treat that as "no result" so the
                 // caller falls through to the on-topic search page instead.
                 if (resolved.isNotBlank() && !isGroundingRedirect(resolved)) {
+                    groundedCache.putCapped(cacheKey, resolved)
                     return@withContext resolved
                 }
             }

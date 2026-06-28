@@ -188,6 +188,21 @@ class GeminiRouter(
                 "answer normally. A prior Hermes exchange does NOT make the next, unrelated request a Hermes " +
                 "request. This rule is parallel to RULE ZERO above (TapClaw); " +
                 "the keyword determines the route. This rule overrides all rules below.\n" +
+                "RULE ZERO-S — HERMES SKILLS (PROACTIVE, OPTIONAL OFFERS): The user's Hermes agent has host-side " +
+                "skills that do real work, but the user may not know they exist. When the user's CURRENT activity " +
+                "clearly matches one, you MAY add ONE short, optional offer AFTER your main answer — phrased as a " +
+                "suggestion, never pushy, never more than one per turn, and only when it genuinely helps. The user " +
+                "triggers a skill by saying it out loud. Context → what to tell them: " +
+                "(a) watching or searching a YouTube video → 'If you want the gist, say \"hermes summarize this video.\"' " +
+                "(b) looking at a document, sign, label, menu, book, or page through the camera → 'Say \"hermes scan this\" " +
+                "and Hermes will read the text for you.' " +
+                "(c) a fact, idea, or decision worth keeping → 'Want me to keep that? Say \"hermes note that …\".' " +
+                "(d) a deeper research or academic question → 'Hermes can dig deeper — say \"hermes research …\".' " +
+                "When the user DOES invoke one (their message starts with 'hermes', so RULE ZERO-H routes it), make sure " +
+                "the needed context goes with it: for a video summary include the placeholder {current_video} (TapInsight " +
+                "swaps in the real URL before it leaves the device); for 'scan/read this' the live camera frame is already " +
+                "attached automatically. Do NOT offer a skill when nothing the user did matches, when they're mid-task, " +
+                "when they're clearly busy, or when you already offered one this turn. Suggest, don't nag.\n" +
                 "RULE ZERO-C — 'STATUS' IS ALWAYS status_briefing (HIGH PRIORITY, OVERRIDES ALL TOOL-SPECIFIC RULES): " +
                 "If the user says 'status', 'status update', 'give me a status update', or close variants like " +
                 "'what's my status', you MUST call status_briefing with no arguments. Legacy phrases like " +
@@ -1827,6 +1842,14 @@ class GeminiRouter(
                 // but the raw websocket path has been rejecting it with INVALID_ARGUMENT.
                 val genConfig = JSONObject()
                     .put("responseModalities", JSONArray().put(responseModality))
+                // Send camera frames at full detail. The Live API otherwise
+                // defaults to MEDIA_RESOLUTION_MEDIUM, which heavily downscales
+                // every frame — fine for "what's in front of me" but useless for
+                // the core use cases users actually rely on the camera for:
+                // reading book/menu/sign text, fine print, and sharing
+                // high-quality stills. MEDIA_RESOLUTION_HIGH keeps enough
+                // resolution for OCR-grade text legibility.
+                genConfig.put("mediaResolution", "MEDIA_RESOLUTION_HIGH")
                 val liveTemp = liveTemperatureProvider()
                 if (liveTemp in 0f..2f) {
                     genConfig.put("temperature", liveTemp.toDouble())
@@ -2938,6 +2961,19 @@ class GeminiRouter(
                         .put("query", JSONObject().put("type", "STRING")
                             .put("description", "Song/artist/album/playlist/podcast name or free-text search. Required for play and search; omit for pause/resume/next/previous/save/current.")))
                     .put("required", JSONArray().put("action"))))
+
+            // identify_song
+            tools.put(JSONObject()
+                .put("name", "identify_song")
+                .put("description",
+                    "Identify the song currently playing on TapRadio, the built-in internet-radio player. " +
+                        "USE THIS for 'what song is this', 'what's playing', 'name this song', 'who's the " +
+                        "artist', 'what's this track' when the user is listening to TapRadio or an internet " +
+                        "radio station. It reads the station's live track metadata for free, and falls back " +
+                        "to acoustic matching only if the user configured an AudD token. Takes no arguments.")
+                .put("parameters", JSONObject()
+                    .put("type", "OBJECT")
+                    .put("properties", JSONObject())))
 
             // sonos_control
             tools.put(JSONObject()

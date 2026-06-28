@@ -110,6 +110,7 @@ class ToolDispatcher(
         register(GoogleRoutesTool(context, effectiveDirectionsClient, effectiveLocationProvider))
         register(SpotifyTool(context))
         register(SonosTool(context))
+        register(IdentifySongTool(context))
         register(CommunicationTool(context))
         register(CameraTool(context, frameProvider = cameraFrameProvider ?: { null }))
         register(BrowserVisionTool(

@@ -98,6 +98,9 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var audioThread: Thread? = null
     @Volatile private var latestInputTranscript: String = ""
     @Volatile private var latestCameraFrame: String? = null
+    /** elapsedRealtime of the last non-blank camera frame, so we can tell
+     *  whether the live feed is CURRENTLY active (frames arrive ~1.1s apart). */
+    @Volatile private var lastCameraFrameMs: Long = 0L
     @Volatile private var activeSessionEpoch: Long = 0L
     @Volatile private var youtubePlaybackPreemptInFlight: Boolean = false
     @Volatile private var lastYouTubePlaybackPreemptMs: Long = 0L
@@ -177,7 +180,9 @@ class GeminiVoicePipeline(context: Context) {
     private val browserVisionTool: BrowserVisionTool by lazy {
         BrowserVisionTool(
             context = appContext,
-            frameProvider = ::captureWebViewBase64Logged
+            // Prefer the live camera frame when the feed is active; only fall
+            // back to the WebView screenshot when the camera is off.
+            frameProvider = { bestVisionFrameBase64() }
         )
     }
 
@@ -270,7 +275,9 @@ class GeminiVoicePipeline(context: Context) {
             openClawClient = openClawClient,
             hermesClient = hermesClient,
             cameraFrameProvider = { latestCameraFrame },
-            browserFrameProvider = ::captureWebViewBase64Logged,
+            // browser_vision should look at the live camera when it's on; the
+            // WebView screenshot is the fallback for camera-off browsing.
+            browserFrameProvider = { bestVisionFrameBase64() },
             browserPageTextProvider = { maxChars ->
                 com.TapLink.app.media.BrowserFrameHolder.capturePageText(maxChars)
             }
@@ -285,6 +292,10 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var lastLocalVisionTriggerMs: Long = 0L
     @Volatile private var visionInFlight: Boolean = false
     @Volatile private var pageTextInFlight: Boolean = false
+    @Volatile private var noteCaptureInFlight: Boolean = false
+    @Volatile private var identifySongInFlight: Boolean = false
+    @Volatile private var lastIdentifySongTriggerMs: Long = 0L
+    @Volatile private var lastIdentifySongTranscript: String = ""
     @Volatile private var lastReaderModeTriggerMs: Long = 0L
     @Volatile private var lastGoogleWebAppLaunchMs: Long = 0L
     @Volatile private var lastGoogleWebAppLaunchUrl: String? = null
@@ -393,6 +404,9 @@ class GeminiVoicePipeline(context: Context) {
         runCatching { viewModel.resetLiveAssistantStream() }
         runCatching { viewModel.activateVoiceAssistant() }
         youtubePlaybackPreemptInFlight = false
+        identifySongInFlight = false
+        lastIdentifySongTriggerMs = 0L
+        lastIdentifySongTranscript = ""
 
         HudStateBridge.update {
             it.copy(
@@ -533,6 +547,7 @@ class GeminiVoicePipeline(context: Context) {
      */
     fun sendCameraFrame(base64: String) {
         latestCameraFrame = base64.takeIf { it.isNotBlank() }
+        if (base64.isNotBlank()) lastCameraFrameMs = SystemClock.elapsedRealtime()
         if (!liveSessionReady) return
         if (base64.isBlank()) return
         runCatching {
@@ -590,6 +605,8 @@ class GeminiVoicePipeline(context: Context) {
                 // sees what Gemini heard. Final commit to viewModel
                 // happens on turnComplete to avoid mid-utterance noise.
                 HudStateBridge.update { it.copy(transcript = text) }
+                if (maybeCaptureNoteLocally(text, epoch)) return
+                if (maybeIdentifySongLocally(text, epoch)) return
                 if (maybePreemptYouTubePlaybackLocally(text, epoch)) return
                 // Full-page reading is DOM text, not visible-screen OCR.
                 // Check it before the screenshot fallback so phrases like
@@ -1063,24 +1080,33 @@ class GeminiVoicePipeline(context: Context) {
         val lower = query.lowercase()
         if (SCREEN_REFERENCE_PHRASES.none { lower.contains(it) }) return args
 
-        Log.i(TAG, "agent $toolName references on-screen content — capturing the raw screen frame")
-        HudStateBridge.update { it.copy(notification = "Capturing the screen…") }
+        // When the glasses camera is live, the user is looking at the WORLD, so
+        // the raw camera frame is what the agent should see — NOT the WebView
+        // screenshot (which is just the browser UI with a tiny camera preview).
+        // Only an explicit browser/web reference ("this web page", "the
+        // website") falls back to the WebView while the camera is on.
+        val preferBrowser = queryPrefersBrowserScreen(query)
+        val usingCamera = !preferBrowser && cameraActive()
+        val source = if (usingCamera) "raw camera feed" else "browser screen"
+        Log.i(TAG, "agent $toolName references on-screen content — attaching $source")
+        HudStateBridge.update {
+            it.copy(notification = if (usingCamera) "Sharing the camera view…" else "Capturing the screen…")
+        }
 
-        // Preferred path: attach the ACTUAL on-screen pixels (raw WebView
-        // screenshot) as an image the agent can digest directly, rather than a
-        // text description of them. Hermes/OpenClaw already accept an image
-        // (the camera frame); we hand them the screen frame the same way via an
-        // explicit image_base64 arg that the tools prefer over the camera.
-        val screenFrame = runCatching { captureWebViewBase64Logged() }
+        // Attach the chosen frame as an explicit image the agent digests
+        // directly. HermesTool/OpenClawTool prefer image_base64 over their own
+        // camera frameProvider, so this is also how we guarantee the RAW camera
+        // frame (not the small in-browser preview window) reaches the agent.
+        val visionFrame = runCatching { bestVisionFrameBase64(preferBrowser) }
             .getOrNull()?.takeIf { it.isNotBlank() }
-        if (!screenFrame.isNullOrBlank()) {
+        if (!visionFrame.isNullOrBlank()) {
             HudStateBridge.update { it.copy(notification = "Running $toolName…") }
             return runCatching {
-                obj.put("image_base64", screenFrame)
+                obj.put("image_base64", visionFrame)
                 obj.put("include_image", true)
                 Log.i(
                     TAG,
-                    "screen-share: attached raw screen frame (${screenFrame.length} b64 chars) to $toolName"
+                    "screen-share: attached $source (${visionFrame.length} b64 chars) to $toolName"
                 )
                 obj.toString()
             }.getOrDefault(args)
@@ -1450,6 +1476,15 @@ class GeminiVoicePipeline(context: Context) {
         val matched = PAGE_TEXT_TRIGGER_PHRASES.any { phrase -> lower.contains(phrase) }
         if (!matched) return false
 
+        // Camera live + no explicit web reference → "read the page" means the
+        // physical page in front of the user (e.g. a book), NOT the browser DOM.
+        // Bail so the camera vision path / live stream answers instead of
+        // reading the WebView's text.
+        if (cameraActive() && !queryPrefersBrowserScreen(lower)) {
+            Log.i(TAG, "browser_page_text suppressed: camera live, '${lower.take(60)}' refers to the physical page")
+            return false
+        }
+
         lastLocalVisionTriggerMs = now
         pageTextInFlight = true
         Log.i(TAG, "browser_page_text trigger source=localRegex transcript='${transcript.take(80)}'")
@@ -1487,12 +1522,104 @@ class GeminiVoicePipeline(context: Context) {
      * voice session before Gemini can ask clarification questions or keep the
      * audio path.
      */
+    /**
+     * Local "note that …" capture. Saves the dictated note to the on-glasses
+     * notes file ([NotesStore]) and has Gemini just confirm — no agent
+     * round-trip, works offline. Gated by the note_capture_mode pref (default
+     * "builtin"); "hermes"/"off" fall through to normal routing so the user can
+     * pick the detector. In-flight guarded so one utterance saves once.
+     */
+    private fun maybeCaptureNoteLocally(transcript: String, epoch: Long): Boolean {
+        if (noteCaptureInFlight) return true
+        if (AppPreferences(appContext).noteCaptureMode != "builtin") return false
+        if (liveSession == null || !isSessionEpochCurrent(epoch)) return false
+        val note = AssistantIntentParser.parseNoteRequest(transcript) ?: return false
+
+        noteCaptureInFlight = true
+        Log.i(TAG, "note capture (localRegex): '${note.take(80)}'")
+        HudStateBridge.update { it.copy(notification = "Saving note…") }
+        scope.launch {
+            try {
+                if (!isSessionEpochCurrent(epoch)) return@launch
+                val saved = com.rayneo.visionclaw.core.storage.NotesStore.appendNote(appContext, note)
+                HudStateBridge.update { it.copy(notification = if (saved != null) "Note saved" else null) }
+                val injection = if (saved != null) {
+                    "[NOTE SAVED] The user's note was saved to their glasses notes (" +
+                        com.rayneo.visionclaw.core.storage.NotesStore.NOTES_RELATIVE_PATH +
+                        "): \"" + note + "\". Confirm in ONE short sentence (e.g. 'Noted.') and nothing else."
+                } else {
+                    "[NOTE SAVE FAILED] Briefly tell the user you couldn't save the note and to try again."
+                }
+                runCatching { liveSession?.sendClientText(injection) }
+            } finally {
+                noteCaptureInFlight = false
+            }
+        }
+        return true
+    }
+
+    /**
+     * Deterministic "what song is this?" for TapRadio. Gemini keeps mis-routing
+     * this to spotify_player (whose declaration also claims the phrase) and
+     * then deflecting with "it's not on Spotify." So when TapRadio is the LIVE
+     * source ([NowPlayingBridge.isPlaying]) and the user asks to ID the song,
+     * we run identify_song ourselves and inject the answer — Spotify never
+     * enters the picture. If the user explicitly says "spotify", or TapRadio
+     * isn't playing, we fall through and let Gemini route normally.
+     */
+    private fun maybeIdentifySongLocally(transcript: String, epoch: Long): Boolean {
+        if (identifySongInFlight) return true
+        if (liveSession == null || !isSessionEpochCurrent(epoch)) return false
+        if (transcript.contains("spotify", ignoreCase = true)) return false
+        if (!AssistantIntentParser.isIdentifySongRequest(transcript)) return false
+        if (!com.TapLink.app.unipanel.NowPlayingBridge.isPlaying) return false // not TapRadio → let Gemini route
+        val normalized = normalizeLocalIntentTranscript(transcript)
+        val now = SystemClock.elapsedRealtime()
+        if (
+            normalized.isNotBlank() &&
+            normalized == lastIdentifySongTranscript &&
+            now - lastIdentifySongTriggerMs < 15_000L
+        ) {
+            Log.i(TAG, "identify_song duplicate partial suppressed: '${transcript.take(80)}'")
+            return true
+        }
+
+        identifySongInFlight = true
+        lastIdentifySongTriggerMs = now
+        lastIdentifySongTranscript = normalized
+        Log.i(TAG, "identify_song (localRegex, TapRadio live)")
+        HudStateBridge.update { it.copy(notification = "Identifying song…") }
+        scope.launch {
+            try {
+                if (!isSessionEpochCurrent(epoch)) return@launch
+                val result = toolDispatcher.dispatch("identify_song", "{}")
+                val answer = result.getOrElse { "I couldn't identify the track right now." }
+                HudStateBridge.update { it.copy(notification = null) }
+                val injection = "[TOOL RESULT — identify_song]: $answer Read this answer to the user " +
+                    "verbatim-ish. Do NOT mention Spotify or say it isn't on Spotify — this is the TapRadio " +
+                    "song identifier."
+                runCatching { liveSession?.sendClientText(injection) }
+            } finally {
+                identifySongInFlight = false
+            }
+        }
+        return true
+    }
+
+    private fun normalizeLocalIntentTranscript(transcript: String): String =
+        transcript
+            .lowercase()
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .trim()
+            .replace(Regex("\\s+"), " ")
+
     private fun maybePreemptYouTubePlaybackLocally(transcript: String, epoch: Long): Boolean {
         if (youtubePlaybackPreemptInFlight) return true
         if (!isSessionEpochCurrent(epoch)) return false
         val now = System.currentTimeMillis()
         if (now - lastYouTubePlaybackPreemptMs < 3000L) return false
-        val spec = AssistantIntentParser.parseExplicitYouTubePlaybackRequest(transcript) ?: return false
+        val parsedSpec = AssistantIntentParser.parseExplicitYouTubePlaybackRequest(transcript) ?: return false
+        val spec = resolveYouTubePronounSpec(parsedSpec) ?: parsedSpec
         val first = spec.items.firstOrNull()?.trim().orEmpty()
         if (first.isBlank()) return false
 
@@ -1526,6 +1653,45 @@ class GeminiVoicePipeline(context: Context) {
             launchTapBrowserFromService(url, forcedYouTubeSpec = spec)
         }
         return true
+    }
+
+    private fun resolveYouTubePronounSpec(
+        spec: AssistantIntentParser.YouTubePlaybackSpec
+    ): AssistantIntentParser.YouTubePlaybackSpec? {
+        val first = spec.items.firstOrNull()?.trim().orEmpty()
+        if (!isPronounYouTubeTarget(first)) return null
+        val resolved = currentTapRadioTrackForSearch() ?: return null
+        return spec.copy(items = listOf(resolved) + spec.items.drop(1))
+    }
+
+    private fun isPronounYouTubeTarget(value: String): Boolean {
+        val normalized = normalizeLocalIntentTranscript(value)
+        return normalized in setOf(
+            "it",
+            "that",
+            "this",
+            "that song",
+            "this song",
+            "the song",
+            "that track",
+            "this track",
+            "the track",
+            "current song",
+            "current track"
+        )
+    }
+
+    private fun currentTapRadioTrackForSearch(): String? {
+        val bridge = com.TapLink.app.unipanel.NowPlayingBridge
+        val artist = bridge.trackArtist?.trim().orEmpty()
+        val title = bridge.trackName?.trim().orEmpty()
+        val raw = bridge.trackTitle?.trim().orEmpty()
+        val candidate = when {
+            artist.isNotBlank() && title.isNotBlank() -> "$artist - $title"
+            raw.isNotBlank() -> raw
+            else -> ""
+        }.trim()
+        return candidate.takeIf { it.isNotBlank() }
     }
 
     /**
@@ -1629,6 +1795,12 @@ class GeminiVoicePipeline(context: Context) {
         }
         Log.i(TAG, "BrowserVisionTool result success=${result.getOrNull()?.isSuccess == true} " +
             "text='${responseText.take(160)}'")
+        // The vision model actually answered → the frame reached Gemini. Confirm
+        // delivery so the user knows the image landed (only on a real success;
+        // failures fall through to the error text without a false "delivered").
+        if (result.getOrNull()?.isSuccess == true) {
+            CaptureFeedback.delivered("Gemini")
+        }
         HudStateBridge.update { it.copy(notification = null) }
 
         if (callId != null && toolName != null) {
@@ -1718,6 +1890,11 @@ class GeminiVoicePipeline(context: Context) {
 
         val lower = initialUrl.lowercase()
         if (lower.contains("youtube.com") || lower.contains("youtu.be")) {
+            runCatching {
+                com.TapLinkX3.app.MainActivity.stopOrphanedNativeRadioPlayer(appContext)
+            }.onFailure {
+                Log.w(TAG, "Failed to stop TapRadio before YouTube launch: ${it.message}")
+            }
             val spec = forcedYouTubeSpec
                 ?: AssistantIntentParser.parseExplicitYouTubePlaybackRequest(latestInputTranscript)
             val query = spec?.items?.firstOrNull()?.takeIf { it.isNotBlank() }
@@ -1823,6 +2000,58 @@ class GeminiVoicePipeline(context: Context) {
      * length / non-black pixel count so we can prove the screenshot
      * isn't blank before it goes over the wire to Gemini.
      */
+    /**
+     * True when the glasses camera feed is CURRENTLY live — we have a frame and
+     * it arrived recently. Frames stream ~1.1s apart, so a 4s window means
+     * "still streaming" without being fooled by a stale frame left over after
+     * the camera was closed.
+     */
+    private fun cameraActive(): Boolean {
+        val frame = latestCameraFrame
+        if (frame.isNullOrBlank()) return false
+        return SystemClock.elapsedRealtime() - lastCameraFrameMs < CAMERA_FRESH_WINDOW_MS
+    }
+
+    /**
+     * The frame any "look at this / what does this say / describe this" request
+     * should use. When the camera feed is live, the user is looking at the world
+     * through the glasses, so the RAW camera frame is the subject — NOT the
+     * browser WebView screenshot (which would only show the UI + a tiny camera
+     * preview window). Falls back to the WebView capture when the camera is off,
+     * preserving "read this web page" behavior.
+     *
+     * The one exception is an explicit browser/web reference ("this web page",
+     * "the website", "this tab") — there the WebView is genuinely the subject
+     * even with the camera on.
+     */
+    private fun bestVisionFrameBase64(preferBrowser: Boolean = false): String? {
+        if (!preferBrowser && cameraActive()) {
+            latestCameraFrame?.takeIf { it.isNotBlank() }?.let {
+                // The frame is now locked in for the AI — tell the user so they
+                // can stop holding the shot steady.
+                signalVisionCapture()
+                return it
+            }
+        }
+        return captureWebViewBase64Logged()
+    }
+
+    @Synchronized
+    /**
+     * "Image captured" feedback — the moment a camera frame is grabbed for a
+     * request, so the user can stop holding the shot steady. Delegates to the
+     * shared [CaptureFeedback] so the Service pipeline, Hermes, and OpenClaw all
+     * emit the same tone and share one debounce.
+     */
+    private fun signalVisionCapture() {
+        CaptureFeedback.captured()
+    }
+
+    private fun queryPrefersBrowserScreen(query: String): Boolean {
+        val lower = query.lowercase()
+        return BROWSER_REFERENCE_PHRASES.any { lower.contains(it) }
+    }
+
     private fun captureWebViewBase64Logged(): String? {
         val stats = com.TapLink.app.media.BrowserFrameHolder.captureStats()
         val captured = com.TapLink.app.media.BrowserFrameHolder.captureBase64JpegWithStats()
@@ -2006,6 +2235,23 @@ class GeminiVoicePipeline(context: Context) {
         private const val EXTRA_YOUTUBE_AUTOPLAY_QUEUE = "tapclaw_youtube_autoplay_queue"
         private const val DEFAULT_VISION_QUESTION =
             "Describe what's currently on the screen in plain English."
+
+        /** How recently a camera frame must have arrived for the feed to count
+         *  as "live" (frames stream ~1.1s apart). */
+        private const val CAMERA_FRESH_WINDOW_MS = 4_000L
+
+
+        /** Phrases that mean the user UNAMBIGUOUSLY wants the BROWSER screen,
+         *  not the camera, even when the camera feed is live. Deliberately
+         *  excludes ambiguous words like "the page" / "this page" / "the
+         *  article": with the camera open on a book, "read the page" means the
+         *  physical page, so ambiguous terms default to the camera. Only
+         *  explicit web/browser words force the WebView. */
+        private val BROWSER_REFERENCE_PHRASES = listOf(
+            "web page", "webpage", "web site", "website", "this site", "the site",
+            "this tab", "the tab", "browser", "url", "address bar",
+            "this web page", "the web page"
+        )
 
         private const val CONVERSATIONAL_TEXT_FALLBACK_DELAY_MS = 1_600L
 

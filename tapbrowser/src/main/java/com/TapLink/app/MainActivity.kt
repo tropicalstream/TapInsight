@@ -295,6 +295,7 @@ class MainActivity :
                 staticNativeRadioPlayer?.release()
             } catch (_: Exception) {}
             staticNativeRadioPlayer = null
+            runCatching { com.TapLink.app.unipanel.NowPlayingBridge.stopped() }
 
             // 2. Stop the live Activity instance's player + clear its metadata +
             //    kill any radio WebView pages (HTML5 <audio> / pending JS timers).
@@ -395,6 +396,10 @@ class MainActivity :
                         .remove("tapradio_now_playing_position_ms")
                         .remove("tapradio_now_playing_duration_ms")
                         .remove("tapradio_now_playing_error")
+                        .remove("tapradio_now_playing_track")
+                        .remove("tapradio_now_playing_track_artist")
+                        .remove("tapradio_now_playing_track_title")
+                        .remove("tapradio_now_playing_track_updated_at")
                         .commit()
                 } catch (_: Exception) {}
             }
@@ -905,8 +910,18 @@ class MainActivity :
                 }
             }
     private val nativeRadioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
-        when {
-            change <= AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+        when (change) {
+            // Gemini Live requests MAY_DUCK, so when it speaks we get CAN_DUCK.
+            // KEEP PLAYING — just lower the radio so Gemini is clearly audible
+            // over it. (Previously CAN_DUCK (-3) fell into the <= LOSS_TRANSIENT
+            // branch and paused TapRadio, which is the bug being fixed.)
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ->
+                runOnUiThread { runCatching { nativeRadioPlayer?.volume = 0.3f } }
+            // Gemini finished / focus returned — restore full volume.
+            AudioManager.AUDIOFOCUS_GAIN ->
+                runOnUiThread { runCatching { nativeRadioPlayer?.volume = 1.0f } }
+            // Real transient loss (phone call, other exclusive audio) — pause.
+            else -> if (change <= AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
                 runOnUiThread { pauseNativeRadioStreamInternal(abandonFocus = false) }
             }
         }
@@ -1875,6 +1890,20 @@ class MainActivity :
                                 // The next double-tap (with the card already
                                 // collapsed) falls through to the Gemini
                                 // cancel path below as expected.
+                                // Chat-history overlay: if a history card is
+                                // expanded to its full content, a double-tap
+                                // just collapses that card (and nothing else),
+                                // per the requested interaction. The next
+                                // double-tap (card collapsed) falls through.
+                                if (chatHistoryOverlayView != null && expandedHistoryRow != null) {
+                                    DebugLog.d(
+                                        "DoubleTapDebug",
+                                        "Main-pad double-tap — collapsing expanded history card"
+                                    )
+                                    collapseExpandedHistoryRowIfAny()
+                                    return true
+                                }
+
                                 if (isUnipanelCardExpanded) {
                                     DebugLog.d(
                                         "DoubleTapDebug",
@@ -6112,6 +6141,34 @@ class MainActivity :
                 }
                 return changed;
             }
+            function ensureRadioGarden(parsed) {
+                var changed = false;
+                parsed.apps = parsed.apps || {};
+                parsed.groups = Array.isArray(parsed.groups) ? parsed.groups : [];
+                if (!parsed.apps.radiogarden) {
+                    parsed.apps.radiogarden = { name: 'Radio Garden', url: 'https://radio.garden' };
+                    changed = true;
+                }
+                var music = parsed.groups.find(function(group) {
+                    return String((group && group.title) || '').trim().toLowerCase() === 'music / streaming';
+                });
+                if (!music) {
+                    music = { title: 'Music / Streaming', cls: 'sec-music', keys: ['tapradio', 'radiogarden'] };
+                    parsed.groups.push(music);
+                    changed = true;
+                }
+                if (!Array.isArray(music.keys)) {
+                    music.keys = [];
+                    changed = true;
+                }
+                if (!music.keys.includes('radiogarden')) {
+                    var tapRadioIndex = music.keys.indexOf('tapradio');
+                    if (tapRadioIndex >= 0) music.keys.splice(tapRadioIndex + 1, 0, 'radiogarden');
+                    else music.keys.unshift('radiogarden');
+                    changed = true;
+                }
+                return changed;
+            }
             function ensureMediaLibrary(parsed) {
                 var changed = false;
                 parsed.apps = parsed.apps || {};
@@ -6167,6 +6224,7 @@ class MainActivity :
                     var parsed = JSON.parse(saved);
                     if (parsed.apps && parsed.groups) {
                         var changed = ensureTapRadio(parsed);
+                        changed = ensureRadioGarden(parsed) || changed;
                         changed = ensureMediaLibrary(parsed) || changed;
                         var serialized = JSON.stringify(parsed);
                         localStorage.setItem(KEY, serialized);
@@ -7964,6 +8022,7 @@ class MainActivity :
         chatHistoryScrollTrack = null
         chatHistoryScrollThumb = null
         chatHistoryFocusedRow = null
+        expandedHistoryRow = null
         // Restore the trackpad mode the user had before we opened the
         // overlay. If they were in scroll mode, put them back in scroll
         // mode; otherwise leave the cursor visible.
@@ -7982,6 +8041,26 @@ class MainActivity :
      *  separately from the visual state so the highlight can be cleared when
      *  the focus moves to a different row during scrolling. */
     private var chatHistoryFocusedRow: View? = null
+    /** The history card currently expanded to its full content, if any (only
+     *  one at a time). Single tap on a collapsed card expands it; tapping the
+     *  already-expanded card runs the cache+read action; a double-tap collapses
+     *  it. See [handleHistoryCardClick]. */
+    private var expandedHistoryRow: View? = null
+
+    /** Per-card state attached to each history row's tag so taps can toggle
+     *  between the 2-line preview and the full content. */
+    private class HistoryCardState(
+        val snippetView: TextView,
+        val metaView: TextView,
+        val previewText: String,
+        val fullText: String,
+        val metaText: String,
+        val ts: Long,
+        val agentLabel: String,
+        val query: String,
+        val response: String,
+        var expanded: Boolean = false
+    )
 
     /**
      * Walk the visible card list and pick the topmost row whose top edge is
@@ -8462,9 +8541,7 @@ class MainActivity :
             }
             isClickable = true
             isFocusable = true
-            setOnClickListener {
-                onChatHistoryCardTap(ts, agentLabel, query, response)
-            }
+            setOnClickListener { v -> handleHistoryCardClick(v) }
         }
         // Agent letter badge — G / H / O, colour-matched to the HUD badges
         // so the card glances the same way the strip badge does.
@@ -8511,7 +8588,76 @@ class MainActivity :
         textCol.addView(metaView)
         row.addView(badge)
         row.addView(textCol)
+
+        // Attach per-card state so a tap can expand the 2-line preview into the
+        // full conversation, and a tap on the expanded card runs the original
+        // cache+read action (see [handleHistoryCardClick]).
+        val fullText = buildString {
+            if (query.isNotBlank()) append("You: ").append(query.trim()).append("\n\n")
+            append(response.trim().ifBlank { query.trim() }.ifBlank { "(empty)" })
+        }
+        row.tag = HistoryCardState(
+            snippetView = snippetView,
+            metaView = metaView,
+            previewText = snippetView.text.toString(),
+            fullText = fullText,
+            metaText = metaView.text.toString(),
+            ts = ts,
+            agentLabel = agentLabel,
+            query = query,
+            response = response
+        )
         return row
+    }
+
+    /**
+     * History-card tap router (new interaction):
+     *  • collapsed card  → expand to show the full conversation (no cache/read)
+     *  • expanded card   → run the original action: load into the next-session
+     *    cache AND read it aloud ([onChatHistoryCardTap])
+     *  • double-tap on an expanded card → collapse only (handled in the
+     *    main-pad double-tap path, which calls [collapseExpandedHistoryRowIfAny])
+     */
+    private fun handleHistoryCardClick(row: View) {
+        val st = row.tag as? HistoryCardState ?: run {
+            DebugLog.w("HudTap", "history card tap with no state — ignoring")
+            return
+        }
+        if (!st.expanded) {
+            // Only one card expanded at a time.
+            collapseExpandedHistoryRowIfAny(except = row)
+            expandHistoryRow(row)
+        } else {
+            onChatHistoryCardTap(st.ts, st.agentLabel, st.query, st.response)
+        }
+    }
+
+    private fun expandHistoryRow(row: View) {
+        val st = row.tag as? HistoryCardState ?: return
+        st.snippetView.maxLines = Int.MAX_VALUE
+        st.snippetView.ellipsize = null
+        st.snippetView.text = st.fullText
+        st.metaView.text = st.metaText + "  ·  tap to play  ·  double-tap to close"
+        st.expanded = true
+        expandedHistoryRow = row
+    }
+
+    private fun collapseHistoryRow(row: View) {
+        val st = row.tag as? HistoryCardState ?: return
+        st.snippetView.maxLines = 2
+        st.snippetView.ellipsize = android.text.TextUtils.TruncateAt.END
+        st.snippetView.text = st.previewText
+        st.metaView.text = st.metaText
+        st.expanded = false
+        if (expandedHistoryRow === row) expandedHistoryRow = null
+    }
+
+    /** Collapse the currently-expanded history card (if any). [except] lets the
+     *  expand path skip collapsing the card it's about to expand. */
+    private fun collapseExpandedHistoryRowIfAny(except: View? = null) {
+        val row = expandedHistoryRow ?: return
+        if (row === except) return
+        collapseHistoryRow(row)
     }
 
     private fun relativeTimeLabel(ts: Long): String {
@@ -11177,6 +11323,7 @@ class MainActivity :
                         ): android.webkit.WebResourceResponse? {
                             val mediaResp = mediaFileInterceptor.handle(request)
                             if (mediaResp != null) return mediaResp
+                            WebAdBlocker.intercept(request?.url?.toString())?.let { return it }
                             return super.shouldInterceptRequest(view, request)
                         }
 
@@ -11298,6 +11445,8 @@ class MainActivity :
                                 // Inject location early so it's available before page JS runs
                                 if (lastGpsLat != null && lastGpsLon != null) {
                                     dualWebViewGroup.injectLocation(lastGpsLat!!, lastGpsLon!!)
+                                } else {
+                                    dualWebViewGroup.injectBestKnownLocation()
                                 }
                             } else if (url?.startsWith("about:blank") == true &&
                                             lastValidUrl != null
@@ -11352,10 +11501,13 @@ class MainActivity :
 
                                 // Re-apply saved font settings to new page
                                 dualWebViewGroup.reapplyWebFontSettings()
+                                RadioGardenAdapter.maybeInject(view, url)
 
                                 // Inject last known location if available
                                 if (lastGpsLat != null && lastGpsLon != null) {
                                     dualWebViewGroup.injectLocation(lastGpsLat!!, lastGpsLon!!)
+                                } else {
+                                    dualWebViewGroup.injectBestKnownLocation()
                                 }
 
                                 // ── YouTube autoplay automation ──
@@ -11750,6 +11902,7 @@ class MainActivity :
                             // Always grant permission for WebView content so our injected GPS logic
                             // takes over
                             noteGeolocationUse()
+                            dualWebViewGroup.injectBestKnownLocation()
                             callback.invoke(origin, true, false)
                         }
 
@@ -12069,6 +12222,22 @@ class MainActivity :
         }
     }
 
+    /** Persist the live ICY track title + repaint the now-playing UI so it
+     *  shows next to the station name. Called from the player's onMetadata. */
+    private fun onNativeRadioTrackTitle(title: String) {
+        runCatching {
+            val bridge = com.TapLink.app.unipanel.NowPlayingBridge
+            getSharedPreferences("visionclaw_prefs", MODE_PRIVATE).edit()
+                .putString("tapradio_now_playing_track", title)
+                .putString("tapradio_now_playing_track_artist", bridge.trackArtist.orEmpty())
+                .putString("tapradio_now_playing_track_title", bridge.trackName.orEmpty())
+                .putLong("tapradio_now_playing_track_updated_at", bridge.trackUpdatedAtMs)
+                .putLong("tapradio_now_playing_updated_at", System.currentTimeMillis())
+                .apply()
+        }
+        runCatching { applyNativeRadioPlaybackUiState(scheduleDelayedBroadcasts = false) }
+    }
+
     private fun persistTapRadioPlaybackState(
         stationName: String?,
         genre: String?,
@@ -12099,6 +12268,10 @@ class MainActivity :
                     remove("tapradio_now_playing_position_ms")
                     remove("tapradio_now_playing_duration_ms")
                     remove("tapradio_now_playing_error")
+                    remove("tapradio_now_playing_track")
+                    remove("tapradio_now_playing_track_artist")
+                    remove("tapradio_now_playing_track_title")
+                    remove("tapradio_now_playing_track_updated_at")
                 } else if (hasIdentity) {
                     if (trimmedName != null) putString("tapradio_now_playing_name", trimmedName) else remove("tapradio_now_playing_name")
                     if (trimmedGenre != null) putString("tapradio_now_playing_genre", trimmedGenre) else remove("tapradio_now_playing_genre")
@@ -12115,6 +12288,10 @@ class MainActivity :
                     remove("tapradio_now_playing_position_ms")
                     remove("tapradio_now_playing_duration_ms")
                     remove("tapradio_now_playing_error")
+                    remove("tapradio_now_playing_track")
+                    remove("tapradio_now_playing_track_artist")
+                    remove("tapradio_now_playing_track_title")
+                    remove("tapradio_now_playing_track_updated_at")
                 }
                 apply()
             }
@@ -12139,6 +12316,10 @@ class MainActivity :
             .remove("tapradio_now_playing_position_ms")
             .remove("tapradio_now_playing_duration_ms")
             .remove("tapradio_now_playing_error")
+            .remove("tapradio_now_playing_track")
+            .remove("tapradio_now_playing_track_artist")
+            .remove("tapradio_now_playing_track_title")
+            .remove("tapradio_now_playing_track_updated_at")
             .commit()
     }
 
@@ -12580,6 +12761,11 @@ class MainActivity :
             put("preparing", nativeRadioPreparing)
             put("buffering", nativeRadioBuffering)
             put("stationName", nativeRadioStationName ?: "")
+            val bridge = com.TapLink.app.unipanel.NowPlayingBridge
+            put("track", bridge.trackTitle ?: "")
+            put("trackArtist", bridge.trackArtist ?: "")
+            put("trackTitle", bridge.trackName ?: "")
+            put("trackUpdatedAt", bridge.trackUpdatedAtMs)
             put("genre", nativeRadioGenre ?: "")
             put("url", nativeRadioUrl ?: "")
             put("error", nativeRadioError ?: "")
@@ -12650,6 +12836,7 @@ class MainActivity :
     }
 
     private fun releaseNativeRadioPlayer(clearMetadata: Boolean, abandonFocus: Boolean) {
+        com.TapLink.app.unipanel.NowPlayingBridge.stopped()
         stopNativeRadioProgressTicker()
         val local = nativeRadioPlayer
         val orphan = staticNativeRadioPlayer
@@ -12709,6 +12896,7 @@ class MainActivity :
             if (it == androidx.media3.common.C.TIME_UNSET) 0L else it
         } ?: 0L
         val active = playing || nativeRadioPreparing || nativeRadioBuffering
+        com.TapLink.app.unipanel.NowPlayingBridge.setPlaybackActive(active)
         persistTapRadioPlaybackState(
             nativeRadioStationName,
             nativeRadioGenre,
@@ -12767,6 +12955,20 @@ class MainActivity :
         nativeRadioUrl = trimmedUrl
         nativeRadioStationName = stationName?.trim().takeUnless { it.isNullOrBlank() }
         nativeRadioGenre = genre?.trim().takeUnless { it.isNullOrBlank() }
+        // Publish to the cross-module bridge so the identify_song tool can read
+        // the station's live ICY metadata on demand. Pure data write — never
+        // affects playback.
+        com.TapLink.app.unipanel.NowPlayingBridge.started(nativeRadioStationName, trimmedUrl)
+        // Drop any previous station's track title until this stream's first ICY
+        // metadata arrives, so the HUD never shows a stale song on a new station.
+        runCatching {
+            getSharedPreferences("visionclaw_prefs", MODE_PRIVATE).edit()
+                .remove("tapradio_now_playing_track")
+                .remove("tapradio_now_playing_track_artist")
+                .remove("tapradio_now_playing_track_title")
+                .remove("tapradio_now_playing_track_updated_at")
+                .apply()
+        }
         nativeRadioPreparing = true
         nativeRadioBuffering = false
         nativeRadioError = null
@@ -12794,6 +12996,18 @@ class MainActivity :
                     /* handleAudioFocus = */ false  // we manage focus ourselves
                 )
                 .setWakeMode(androidx.media3.common.C.WAKE_MODE_LOCAL)
+                // Request ICY (SHOUTcast/Icecast) metadata so the stream sends
+                // the live "Artist - Title" as it changes — surfaced via
+                // onMetadata below. allowCrossProtocolRedirects covers stations
+                // that bounce http<->https.
+                .setMediaSourceFactory(
+                    androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
+                        androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                            .setAllowCrossProtocolRedirects(true)
+                            .setUserAgent("TapInsight/1.0")
+                            .setDefaultRequestProperties(mapOf("Icy-MetaData" to "1"))
+                    )
+                )
                 .build()
 
             player.addListener(object : Player.Listener {
@@ -12824,6 +13038,22 @@ class MainActivity :
                     nativeRadioError = "Playback error: ${error.message}"
                     releaseNativeRadioPlayer(clearMetadata = false, abandonFocus = true)
                     applyNativeRadioPlaybackUiState()
+                }
+
+                // Live ICY "Artist - Title" as the track changes. Publishes to
+                // the cross-module bridge (read by identify_song — always
+                // current) and to the now-playing display next to the station.
+                override fun onMetadata(metadata: androidx.media3.common.Metadata) {
+                    for (i in 0 until metadata.length()) {
+                        val entry = metadata.get(i)
+                        if (entry is androidx.media3.extractor.metadata.icy.IcyInfo) {
+                            val title = entry.title?.trim()
+                            if (!title.isNullOrBlank()) {
+                                com.TapLink.app.unipanel.NowPlayingBridge.updateTrack(title)
+                                onNativeRadioTrackTitle(title)
+                            }
+                        }
+                    }
                 }
             })
 
@@ -16743,6 +16973,10 @@ class MainActivity :
                     put("positionMs", prefs.getLong("tapradio_now_playing_position_ms", 0L))
                     put("durationMs", prefs.getLong("tapradio_now_playing_duration_ms", 0L))
                     put("error", prefs.getString("tapradio_now_playing_error", "") ?: "")
+                    put("track", prefs.getString("tapradio_now_playing_track", "") ?: "")
+                    put("trackArtist", prefs.getString("tapradio_now_playing_track_artist", "") ?: "")
+                    put("trackTitle", prefs.getString("tapradio_now_playing_track_title", "") ?: "")
+                    put("trackUpdatedAt", prefs.getLong("tapradio_now_playing_track_updated_at", 0L))
                     put("updatedAt", prefs.getLong("tapradio_now_playing_updated_at", 0L))
                 }.toString()
             } catch (e: Exception) {

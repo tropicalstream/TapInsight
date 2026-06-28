@@ -13,6 +13,9 @@ import android.graphics.PorterDuff
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.media.AudioManager
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -80,6 +83,14 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private val PREFS_NAME = "TapLinkPrefs"
     private val KEY_WINDOWS_STATE = "saved_windows_state"
     private val KEY_BROWSER_SHOW_SYSTEM_INFO = "browser_show_system_info"
+    private val KEY_OUTDOOR_BRIGHTNESS_ACTIVE = "outdoorBrightnessActive"
+    private val KEY_PRE_OUTDOOR_BRIGHTNESS_PROGRESS = "preOutdoorBrightnessProgress"
+    private val BROWSER_LOCATION_REQUEST_THROTTLE_MS = 5_000L
+    private val BROWSER_LOCATION_MAX_AGE_MS = 10 * 60 * 1000L
+    private val GOOGLE_LOCATION_REQUEST_THROTTLE_MS = 30_000L
+    private var freshLocationListener: LocationListener? = null
+    private var lastFreshLocationRequestAtMs = 0L
+    private var lastGoogleLocationRequestAtMs = 0L
     private val sharedConfigPrefs =
             context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
     private val sharedConfigListener =
@@ -522,29 +533,27 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     fun suspendMediaForBoot() {
         bootMediaSuspended = true
         val sweep = "try { document.querySelectorAll('video, audio').forEach(function(e) { " +
-            "try { e.pause(); e.muted = true; } catch (err) {} " +
+            "try { e.pause(); e.autoplay = false; e.removeAttribute('autoplay'); } catch (err) {} " +
             "}); } catch (err) {}"
-        windows.forEach { win ->
-            try {
-                win.webView.post {
-                    try { win.webView.evaluateJavascript(sweep, null) } catch (_: Exception) {}
-                }
-                mediaStateByWindowId[win.id] = false
-            } catch (_: Exception) {}
-        }
-        // Re-sweep after the page has had a chance to load any restored Spotify
-        // / YouTube DOM. Only fires if the boot lock is still up — if the user
-        // already unlocked, the resume path takes over.
-        postDelayed({
-            if (!bootMediaSuspended) return@postDelayed
+        fun runSweep() {
+            if (!bootMediaSuspended) return
             windows.forEach { win ->
                 try {
                     win.webView.post {
                         try { win.webView.evaluateJavascript(sweep, null) } catch (_: Exception) {}
                     }
+                    mediaStateByWindowId[win.id] = false
                 } catch (_: Exception) {}
             }
-        }, 1500)
+        }
+        runSweep()
+        // Re-sweep while the lock/intro is up. Restored YouTube/Spotify pages
+        // can create their media element after the first pass, and a single
+        // delayed sweep was not enough to stop audio leaking through the login
+        // screen on cold restart.
+        repeat(20) { attempt ->
+            postDelayed({ runSweep() }, 500L * (attempt + 1))
+        }
         nativeTapRadioPlaying = false
         updateMediaState(false)
     }
@@ -2716,6 +2725,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     ): WebResourceResponse? {
                         val resp = mediaFileInterceptor.handle(request)
                         if (resp != null) return resp
+                        WebAdBlocker.intercept(request?.url?.toString())?.let { return it }
                         return super.shouldInterceptRequest(view, request)
                     }
 
@@ -2854,6 +2864,12 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         mediaBridgeUrlRef.set(url ?: "")
                         try {
                             view?.let { injectPageObservers(it) }
+                            // Seed the page's geolocation with TapInsight's
+                            // confirmed device location (the same fix the HUD /
+                            // maps use), so sites like radio.garden's "locate
+                            // me" button work even when the browser's own GPS
+                            // path hasn't produced a fix.
+                            injectBestKnownLocation()
                             stabilizeWebViewViewportAfterNavigation(
                                     targetWebView = view,
                                     resetVerticalScroll = false
@@ -2882,6 +2898,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                             if (view != null) {
                                 YouTubeCaptionEnforcer.maybeInject(view, url)
                                 VideoQualityHints.maybeApplyYouTubeQualityShim(view, url)
+                                RadioGardenAdapter.maybeInject(view, url)
                                 // Hermes glasses-log tail: keep the WebView
                                 // pinned to the bottom across the page's
                                 // ~30s self-refresh so the user doesn't have
@@ -5533,6 +5550,13 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
     private var sharedConfigListenerRegistered = false
 
     fun cleanupResources() {
+        freshLocationListener?.let { listener ->
+            runCatching {
+                (context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager)
+                    ?.removeUpdates(listener)
+            }
+        }
+        freshLocationListener = null
         if (maskWakeLock.isHeld) maskWakeLock.release()
         if (pausedMediaWakeLock.isHeld) pausedMediaWakeLock.release()
         try {
@@ -6676,6 +6700,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                 R.id.btnResetWebpageZoom,
                                 R.id.colorWheelView,
                                 R.id.btnResetTextColor,
+                                R.id.btnOutdoorBrightness,
                                 R.id.horizontalPosSeekBar,
                                 R.id.verticalPosSeekBar,
                                 R.id.btnResetPosition,
@@ -7001,6 +7026,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                 R.id.btnResetWebpageZoom,
                                 R.id.colorWheelView,
                                 R.id.btnResetTextColor,
+                                R.id.btnOutdoorBrightness,
                                 R.id.horizontalPosSeekBar,
                                 R.id.verticalPosSeekBar,
                                 R.id.btnResetPosition,
@@ -7826,6 +7852,13 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 showHelpDialog()
             }
 
+            settingsMenu?.findViewById<Button>(R.id.btnOutdoorBrightness)?.setOnClickListener {
+                toggleOutdoorBrightness(
+                        settingsMenu?.findViewById(R.id.brightnessSeekBar),
+                        settingsMenu?.findViewById(R.id.btnOutdoorBrightness)
+                )
+            }
+
             val layoutParams =
                     FrameLayout.LayoutParams(
                                     FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -7855,6 +7888,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 val currentBrightness =
                         (context as? Activity)?.window?.attributes?.screenBrightness ?: 0.5f
                 brightnessSeekBar?.progress = (currentBrightness * 100).toInt()
+                updateOutdoorBrightnessButtonLabel(menu.findViewById(R.id.btnOutdoorBrightness))
                 val forceDarkButton = menu.findViewById<Button>(R.id.btnToggleForceDark)
                 val forceDarkEnabled =
                         context.getSharedPreferences("TapLinkPrefs", Context.MODE_PRIVATE)
@@ -7970,6 +8004,53 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         return Pair(settingsMenu?.width ?: 0, settingsMenu?.height ?: 0)
     }
 
+    private fun applySettingsBrightness(progress: Int, brightnessSeekBar: SeekBar? = null) {
+        val clamped = progress.coerceIn(0, 100)
+        brightnessSeekBar?.progress = clamped
+        (context as? Activity)?.window?.attributes =
+                (context as Activity).window.attributes.apply {
+                    screenBrightness = clamped / 100f
+                }
+    }
+
+    private fun updateOutdoorBrightnessButtonLabel(button: Button?) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        button?.text =
+                if (prefs.getBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, false)) {
+                    "Restore Brightness"
+                } else {
+                    "Outdoor Brightness"
+                }
+    }
+
+    private fun toggleOutdoorBrightness(
+            brightnessSeekBar: SeekBar?,
+            outdoorBrightnessButton: Button?
+    ) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val active = prefs.getBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, false)
+        if (active) {
+            val restoreProgress =
+                    prefs.getInt(KEY_PRE_OUTDOOR_BRIGHTNESS_PROGRESS, 50).coerceIn(0, 100)
+            applySettingsBrightness(restoreProgress, brightnessSeekBar)
+            prefs.edit()
+                    .putBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, false)
+                    .apply()
+        } else {
+            val currentProgress =
+                    (brightnessSeekBar?.progress
+                            ?: (((context as? Activity)?.window?.attributes?.screenBrightness ?: 0.5f) * 100)
+                                    .toInt())
+                            .coerceIn(0, 100)
+            prefs.edit()
+                    .putInt(KEY_PRE_OUTDOOR_BRIGHTNESS_PROGRESS, currentProgress)
+                    .putBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, true)
+                    .apply()
+            applySettingsBrightness(100, brightnessSeekBar)
+        }
+        updateOutdoorBrightnessButtonLabel(outdoorBrightnessButton)
+    }
+
     fun dispatchSettingsTouchEvent(x: Float, y: Float) {
         settingsMenu?.let { menu ->
             // Get locations of all interactive elements
@@ -7987,6 +8068,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
             val fontSizeSeekBar = menu.findViewById<SeekBar>(R.id.fontSizeSeekBar)
             val colorWheelView = menu.findViewById<ColorWheelView>(R.id.colorWheelView)
             val resetTextColorButton = menu.findViewById<Button>(R.id.btnResetTextColor)
+            val outdoorBrightnessButton = menu.findViewById<Button>(R.id.btnOutdoorBrightness)
             val groqKeyButton = menu.findViewById<Button>(R.id.btnGroqApiKey)
 
             fun getRect(view: View?): Rect? {
@@ -8050,12 +8132,12 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                                     brightnessSeekBar.width
                     val newProgress = (percentage * brightnessSeekBar.max).toInt()
 
-                    // Update brightness
-                    brightnessSeekBar.progress = newProgress
-                    (context as? Activity)?.window?.attributes =
-                            (context as Activity).window.attributes.apply {
-                                screenBrightness = newProgress / 100f
-                            }
+                    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                            .edit()
+                            .putBoolean(KEY_OUTDOOR_BRIGHTNESS_ACTIVE, false)
+                            .apply()
+                    updateOutdoorBrightnessButtonLabel(outdoorBrightnessButton)
+                    applySettingsBrightness(newProgress, brightnessSeekBar)
 
                     // Visual feedback
                     brightnessSeekBar.isPressed = true
@@ -8537,6 +8619,15 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                     resetTextColorButton.isPressed = true
                     Handler(Looper.getMainLooper())
                             .postDelayed({ resetTextColorButton.isPressed = false }, 100)
+                    return
+                }
+
+                val outdoorBrightnessRect = getRect(outdoorBrightnessButton)
+                if (outdoorBrightnessButton != null && contains(outdoorBrightnessRect, buttonSlop)) {
+                    toggleOutdoorBrightness(brightnessSeekBar, outdoorBrightnessButton)
+                    outdoorBrightnessButton.isPressed = true
+                    Handler(Looper.getMainLooper())
+                            .postDelayed({ outdoorBrightnessButton.isPressed = false }, 100)
                     return
                 }
 
@@ -10563,7 +10654,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         if (syncedLine != null) {
             maskSpotifyLyricsText.text = syncedLine
             maskSpotifyLyricsText.textSize = 18f
-            maskSpotifyLyricsText.alpha = 0.95f
+            maskSpotifyLyricsText.alpha = 1.0f
             maskSpotifyLyricsText.maxLines = 2
         } else if (info.hasSyncedLyrics) {
             // Lyrics are loaded and timed, but we're between lines (intro /
@@ -10976,7 +11067,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                 (radioPlaying || hasNativeTapRadioSession())
         if (shouldPreferTapRadioLabel) {
             clearFallback()
-            return formatMaskLabel("TapRadio", stationName)
+            val track = (com.TapLink.app.unipanel.NowPlayingBridge.trackTitle
+                ?: prefs.getString("tapradio_now_playing_track", ""))?.trim().orEmpty()
+            return formatMaskLabel("TapRadio", if (track.isNotBlank()) "$stationName - $track" else stationName)
         }
         if (!recentlyPlaying || mediaWebView == null) {
             return fallbackLabel()
@@ -11005,7 +11098,9 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         }
         if (shouldPreferTapRadioLabel) {
             clearFallback()
-            return formatMaskLabel("TapRadio", stationName)
+            val track = (com.TapLink.app.unipanel.NowPlayingBridge.trackTitle
+                ?: prefs.getString("tapradio_now_playing_track", ""))?.trim().orEmpty()
+            return formatMaskLabel("TapRadio", if (track.isNotBlank()) "$stationName - $track" else stationName)
         }
         val fallback = getFreshMaskedDomTitle(currentUrl)
         if (fallback == null) {
@@ -11060,16 +11155,308 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
         return if (service.isNullOrBlank()) cleaned else "$service · $cleaned"
     }
 
+    /**
+     * Install a browser geolocation shim immediately, then seed it from the best
+     * fix available to TapInsight and ask Android for one fresh update. This is
+     * what Radio Garden's locate button talks to; without the pending shim,
+     * getCurrentPosition can fail before the glasses/Google fallback returns.
+     */
+    fun injectBestKnownLocation() {
+        installGeolocationBridge()
+        bestKnownBrowserLocation()?.let { injectLocation(it) }
+        requestFreshBrowserLocation()
+        postDelayed({ requestGoogleBrowserLocationFallback() }, 2500L)
+    }
+
+    private fun bestKnownBrowserLocation(): Location? {
+        val persisted = persistedBrowserLocation()
+        val manager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        val providers = manager?.let { browserLocationProviders(it) }.orEmpty()
+        var best = persisted
+        providers.forEach { provider ->
+            val candidate = runCatching { manager?.getLastKnownLocation(provider) }.getOrNull()
+                ?: return@forEach
+            best = chooseBetterLocation(best, candidate)
+        }
+        return best
+    }
+
+    private fun persistedBrowserLocation(): Location? {
+        val prefs = context.getSharedPreferences("device_location", Context.MODE_PRIVATE)
+        val lat = prefs.getString("lat", null)?.toDoubleOrNull() ?: return null
+        val lon = prefs.getString("lon", null)?.toDoubleOrNull() ?: return null
+        if (lat == 0.0 && lon == 0.0) return null
+        return Location(prefs.getString("provider", null).takeUnless { it.isNullOrBlank() } ?: "tapinsight_cache").apply {
+            latitude = lat
+            longitude = lon
+            val acc = prefs.getFloat("acc", -1f)
+            if (acc >= 0f) accuracy = acc
+            time = prefs.getLong("ts", 0L).takeIf { it > 0L } ?: System.currentTimeMillis()
+        }
+    }
+
+    private fun hasBrowserLocationPermission(): Boolean =
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    private fun browserLocationProviders(manager: LocationManager): List<String> {
+        val hasFine = androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val hasCoarse = androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val candidates = mutableListOf<String>()
+        if (hasFine || hasCoarse) candidates += LocationManager.FUSED_PROVIDER
+        if (hasFine) candidates += LocationManager.GPS_PROVIDER
+        if (hasCoarse || hasFine) candidates += LocationManager.NETWORK_PROVIDER
+        if (hasCoarse || hasFine) candidates += LocationManager.PASSIVE_PROVIDER
+        return candidates.distinct().filter { provider ->
+            runCatching {
+                manager.allProviders.contains(provider) && manager.isProviderEnabled(provider)
+            }.getOrDefault(false)
+        }
+    }
+
+    private fun chooseBetterLocation(current: Location?, candidate: Location): Location {
+        if (current == null) return candidate
+        val now = System.currentTimeMillis()
+        val currentTime = current.time.takeIf { it > 0L } ?: 0L
+        val candidateTime = candidate.time.takeIf { it > 0L } ?: now
+        val currentAge = now - currentTime
+        val candidateAge = now - candidateTime
+        val currentAcc = if (current.hasAccuracy()) current.accuracy else Float.MAX_VALUE
+        val candidateAcc = if (candidate.hasAccuracy()) candidate.accuracy else Float.MAX_VALUE
+        return when {
+            currentAge > BROWSER_LOCATION_MAX_AGE_MS && candidateAge <= BROWSER_LOCATION_MAX_AGE_MS -> candidate
+            candidateTime - currentTime > 120_000L -> candidate
+            currentTime - candidateTime > 120_000L -> current
+            candidate.provider == LocationManager.GPS_PROVIDER &&
+                current.provider != LocationManager.GPS_PROVIDER &&
+                candidateAcc <= currentAcc + 50f -> candidate
+            candidate.provider == LocationManager.FUSED_PROVIDER &&
+                current.provider == LocationManager.NETWORK_PROVIDER &&
+                candidateAcc <= currentAcc + 50f -> candidate
+            candidateAcc + 25f < currentAcc -> candidate
+            candidateTime > currentTime && candidateAcc <= currentAcc + 75f -> candidate
+            else -> current
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun requestFreshBrowserLocation() {
+        if (!hasBrowserLocationPermission()) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastFreshLocationRequestAtMs < BROWSER_LOCATION_REQUEST_THROTTLE_MS) return
+        lastFreshLocationRequestAtMs = now
+        val manager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+        val providers = browserLocationProviders(manager)
+        if (providers.isEmpty()) return
+
+        freshLocationListener?.let { old -> runCatching { manager.removeUpdates(old) } }
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                persistBrowserLocation(location)
+                injectLocation(location)
+                runCatching { manager.removeUpdates(this) }
+                if (freshLocationListener === this) freshLocationListener = null
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+            override fun onProviderEnabled(provider: String) = Unit
+            override fun onProviderDisabled(provider: String) = Unit
+        }
+        freshLocationListener = listener
+        providers.forEach { provider ->
+            runCatching { manager.requestSingleUpdate(provider, listener, Looper.getMainLooper()) }
+        }
+    }
+
+    private fun requestGoogleBrowserLocationFallback() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastGoogleLocationRequestAtMs < GOOGLE_LOCATION_REQUEST_THROTTLE_MS) return
+        val apiKey = context.getSharedPreferences("visionclaw_prefs", Context.MODE_PRIVATE)
+            .getString("google_maps_api_key", "")
+            ?.trim()
+            .orEmpty()
+        if (apiKey.isBlank()) return
+        val cached = persistedBrowserLocation()
+        val cachedAgeMs = cached?.let {
+            System.currentTimeMillis() - (it.time.takeIf { ts -> ts > 0L } ?: 0L)
+        } ?: Long.MAX_VALUE
+        val cachedAcc = cached?.takeIf { it.hasAccuracy() }?.accuracy ?: Float.MAX_VALUE
+        if (cachedAgeMs <= 2 * 60 * 1000L && cachedAcc <= 250f) return
+
+        lastGoogleLocationRequestAtMs = now
+        Thread {
+            runCatching {
+                val url = java.net.URL(
+                    "https://www.googleapis.com/geolocation/v1/geolocate?key=" +
+                        java.net.URLEncoder.encode(apiKey, "UTF-8")
+                )
+                val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 8000
+                    readTimeout = 12000
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json")
+                }
+                val body = """{"considerIp":true}"""
+                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
+                val response = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                if (conn.responseCode !in 200..299) {
+                    Log.w("RadioGardenLocation", "Google geolocation HTTP ${conn.responseCode}: ${response.take(180)}")
+                    return@runCatching
+                }
+                val json = JSONObject(response)
+                val loc = json.optJSONObject("location") ?: return@runCatching
+                val lat = loc.optDouble("lat", Double.NaN)
+                val lon = loc.optDouble("lng", Double.NaN)
+                if (!lat.isFinite() || !lon.isFinite() || (lat == 0.0 && lon == 0.0)) return@runCatching
+                val accuracy = json.optDouble("accuracy", 1000.0).takeIf { it.isFinite() } ?: 1000.0
+                val googleLocation = Location("google_geolocation").apply {
+                    latitude = lat
+                    longitude = lon
+                    this.accuracy = accuracy.toFloat()
+                    time = System.currentTimeMillis()
+                }
+                post {
+                    persistBrowserLocation(googleLocation)
+                    injectLocation(googleLocation)
+                }
+            }.onFailure {
+                Log.w("RadioGardenLocation", "Google geolocation fallback failed: ${it.message}")
+            }
+        }.start()
+    }
+
+    private fun persistBrowserLocation(location: Location) {
+        context.getSharedPreferences("device_location", Context.MODE_PRIVATE)
+            .edit()
+            .putString("lat", location.latitude.toString())
+            .putString("lon", location.longitude.toString())
+            .putFloat("acc", if (location.hasAccuracy()) location.accuracy else -1f)
+            .putString("provider", location.provider ?: "")
+            .putLong("ts", location.time.takeIf { it > 0L } ?: System.currentTimeMillis())
+            .apply()
+    }
+
+    private fun injectLocation(location: Location) {
+        if (location.latitude == 0.0 && location.longitude == 0.0) return
+        persistBrowserLocation(location)
+        injectLocation(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            accuracyMeters = if (location.hasAccuracy()) location.accuracy.toDouble() else 50.0
+        )
+    }
+
     fun injectLocation(latitude: Double, longitude: Double) {
+        if (latitude == 0.0 && longitude == 0.0) return
+        persistBrowserLocation(Location("tapinsight_browser").apply {
+            this.latitude = latitude
+            this.longitude = longitude
+            accuracy = 50f
+            time = System.currentTimeMillis()
+        })
+        injectLocation(latitude, longitude, 50.0)
+    }
+
+    private fun installGeolocationBridge() {
         val script =
                 """
             (function() {
+                if (window.__geoMockInstalled) return;
+                window.__geoMockInstalled = true;
+                if (!window.__geoWatchers) window.__geoWatchers = {};
+                if (!window.__geoNextWatchId) window.__geoNextWatchId = 1;
+
+                function waitForPosition(success, error) {
+                    if (window.__injectedPosition) {
+                        setTimeout(function(){ success(window.__injectedPosition); }, 10);
+                        return;
+                    }
+                    var settled = false;
+                    function done(pos) {
+                        if (settled) return;
+                        settled = true;
+                        window.removeEventListener('taplink-location-updated', onUpdate);
+                        success(pos || window.__injectedPosition);
+                    }
+                    function onUpdate(ev) { done(ev && ev.detail); }
+                    window.addEventListener('taplink-location-updated', onUpdate);
+                    setTimeout(function() {
+                        if (settled) return;
+                        window.removeEventListener('taplink-location-updated', onUpdate);
+                        if (window.__injectedPosition) done(window.__injectedPosition);
+                        else if (error) error({ code: 2, message: 'Position unavailable' });
+                    }, 8000);
+                }
+
+                if (navigator.permissions) {
+                    var originalQuery = navigator.permissions.query.bind(navigator.permissions);
+                    navigator.permissions.query = function(parameters) {
+                        if (parameters && parameters.name === 'geolocation') {
+                            return Promise.resolve({ state: 'granted', onchange: null });
+                        }
+                        return originalQuery(parameters);
+                    };
+                }
+
+                var mockGeolocation = {
+                    getCurrentPosition: function(success, error, options) {
+                        waitForPosition(success, error);
+                    },
+                    watchPosition: function(success, error, options) {
+                        var watchId = window.__geoNextWatchId++;
+                        window.__geoWatchers[watchId] = success;
+                        waitForPosition(success, error);
+                        return watchId;
+                    },
+                    clearWatch: function(id) {
+                        delete window.__geoWatchers[id];
+                    }
+                };
+
+                try {
+                    Object.defineProperty(navigator, 'geolocation', {
+                        value: mockGeolocation,
+                        writable: false,
+                        configurable: true
+                    });
+                } catch (e) {
+                    navigator.geolocation.getCurrentPosition = mockGeolocation.getCurrentPosition;
+                    navigator.geolocation.watchPosition = mockGeolocation.watchPosition;
+                    navigator.geolocation.clearWatch = mockGeolocation.clearWatch;
+                }
+                console.log('[TapLink] Geolocation bridge installed; waiting for device fix');
+            })();
+        """.trimIndent()
+        post { webView.evaluateJavascript(script, null) }
+    }
+
+    private fun injectLocation(latitude: Double, longitude: Double, accuracyMeters: Double) {
+        val script =
+                """
+            (function() {
+                if (!window.__geoWatchers) window.__geoWatchers = {};
+                if (!window.__geoNextWatchId) window.__geoNextWatchId = 1;
                 // Store the position globally so it persists
                 window.__injectedPosition = {
                     coords: {
                         latitude: $latitude,
                         longitude: $longitude,
-                        accuracy: 5.0,
+                        accuracy: $accuracyMeters,
                         altitude: null,
                         altitudeAccuracy: null,
                         heading: null,
@@ -11091,6 +11478,7 @@ constructor(context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
                         }
                     }
                 }
+                window.dispatchEvent(new CustomEvent('taplink-location-updated', { detail: window.__injectedPosition }));
 
                 // Only set up the mock geolocation API once
                 if (window.__geoMockInstalled) {

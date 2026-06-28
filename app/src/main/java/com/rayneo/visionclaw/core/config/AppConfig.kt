@@ -32,7 +32,7 @@ data class AppConfig(
     }
 
     data class ApiKeys(
-        val geminiModel: String = "gemini-3-flash-preview",
+        val geminiModel: String = "gemini-2.5-flash",
         val geminiKey: String = "YOUR_KEY_HERE"
     )
 
@@ -108,7 +108,7 @@ data class AppConfig(
                     timeoutMs = gateway.optInt("timeout_ms", 15000).coerceAtLeast(1000)
                 ),
                 apiKeys = ApiKeys(
-                    geminiModel = keys.optString("gemini_model", "gemini-3-flash-preview"),
+                    geminiModel = keys.optString("gemini_model", "gemini-2.5-flash"),
                     geminiKey = keys.optString("gemini_key", "YOUR_KEY_HERE")
                 ),
                 mouseSettings = MouseSettings(

@@ -316,6 +316,19 @@
             android:textAllCaps="false"
             android:clickable="true"
             android:focusable="true"
+            android:layout_marginBottom="8dp"/>
+
+        <Button
+            android:id="@+id/btnOutdoorBrightness"
+            android:layout_width="match_parent"
+            android:layout_height="28dp"
+            android:text="Outdoor Brightness"
+            android:textColor="#82B1FF"
+            android:textSize="11sp"
+            android:background="@drawable/settings_outlined_button_background"
+            android:textAllCaps="false"
+            android:clickable="true"
+            android:focusable="true"
             android:layout_marginBottom="12dp"/>
 
 

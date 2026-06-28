@@ -893,6 +893,7 @@
       audiomack: { name: 'Audiomack', url: 'https://audiomack.com' },
       soundcloud: { name: 'SoundCloud', url: 'https://soundcloud.com' },
       jamendo: { name: 'Jamendo Music', url: 'https://www.jamendo.com/radios' },
+      radiogarden: { name: 'Radio Garden', url: 'https://radio.garden' },
 
       // Creativity / Multimedia
       photopea: { name: 'Photopea (Photo)', url: 'https://www.photopea.com' },
@@ -948,7 +949,7 @@
       { title: 'Navigation / Entertainment', cls: 'sec-nav', keys: ['medialibrary', 'youtube', 'informaltech', 'gmaps', 'minijuegos', 'tiktok'] },
       { title: 'AI / Chatbots', cls: 'sec-llm', keys: ['gemini', 'googleaistudio', 'jules', 'perplexity', 'chatgpt', 'claude', 'deepseek', 'grok'] },
       { title: 'Social / Communication', cls: 'sec-social', keys: ['gmessages', 'discord', 'whatsapp', 'instagram', 'reddit', 'telegram'] },
-      { title: 'Music / Streaming', cls: 'sec-music', keys: ['tapradio', 'ytmusic', 'spotify', 'applemusic', 'tidal', 'deezer', 'audiomack', 'soundcloud', 'jamendo'] },
+      { title: 'Music / Streaming', cls: 'sec-music', keys: ['tapradio', 'radiogarden', 'ytmusic', 'spotify', 'applemusic', 'tidal', 'deezer', 'audiomack', 'soundcloud', 'jamendo'] },
       { title: 'Creativity / Multimedia', cls: 'sec-creative', keys: ['photopea', 'clipchamp', 'bandlab', 'wireframe', 'kleki'] },
       { title: 'Productivity / Documents', cls: 'sec-prod', keys: ['todoist', 'stackedit', 'sejda'] },
       { title: 'Utilities / Reference', cls: 'sec-util', keys: ['wikipedia', 'translate', 'wolfram', 'openclawdashboard', 'tapinsightcompanion'] },
@@ -1047,6 +1048,38 @@
         changed = true;
       }
 
+      return changed;
+    }
+
+    // Ensures the Radio Garden tile appears in Music / Streaming after a fresh
+    // install AND for existing users whose dashboard was saved to localStorage
+    // before this tile shipped. Mirrors ensureTapRadioMigration.
+    function ensureRadioGardenMigration(dashboardState) {
+      let changed = false;
+      if (!dashboardState.apps.radiogarden) {
+        dashboardState.apps.radiogarden = { ...defaultApps.radiogarden };
+        changed = true;
+      }
+
+      let music = dashboardState.groups.find(
+        group => normalizeTitle(group.title).toLowerCase() === 'music / streaming'
+      );
+      if (!music) {
+        music = { title: 'Music / Streaming', cls: 'sec-music', keys: ['tapradio', 'radiogarden'] };
+        dashboardState.groups.push(music);
+        changed = true;
+      }
+      if (!Array.isArray(music.keys)) {
+        music.keys = [];
+        changed = true;
+      }
+      if (!music.keys.includes('radiogarden')) {
+        // Place it right after TapRadio when present, else at the front.
+        const idx = music.keys.indexOf('tapradio');
+        if (idx >= 0) music.keys.splice(idx + 1, 0, 'radiogarden');
+        else music.keys.unshift('radiogarden');
+        changed = true;
+      }
       return changed;
     }
 
@@ -1179,12 +1212,13 @@
     // tripped up by a weird saved state shape (which we observed on at
     // least one device — the per-migration checks said "already present"
     // even though the tiles weren't actually in any group's keys array).
-    const CURRENT_MIGRATION_VERSION = 2;
+    const CURRENT_MIGRATION_VERSION = 3;
     const savedMigrationVersion =
       typeof state.migrationVersion === 'number' ? state.migrationVersion : 0;
     const forceReapply = savedMigrationVersion < CURRENT_MIGRATION_VERSION;
     const migratedReddit = ensureRedditMigration(state);
     const migratedTapRadio = ensureTapRadioMigration(state);
+    const migratedRadioGarden = ensureRadioGardenMigration(state);
     const migratedMediaLib = ensureMediaLibraryMigration(state);
     const migratedOpenClaw = ensureOpenClawDashboardMigration(state);
     if (forceReapply) {
@@ -1194,6 +1228,7 @@
       sanitizeGroups(state.groups) ||
       migratedReddit ||
       migratedTapRadio ||
+      migratedRadioGarden ||
       migratedMediaLib ||
       migratedOpenClaw ||
       forceReapply

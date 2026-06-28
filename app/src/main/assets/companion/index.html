@@ -602,6 +602,18 @@
   </div>
 </div>
 
+<!-- Song Identification (AudD) -->
+<div class="step" id="sAudd">
+  <div class="step-head">
+    <div class="step-num">&#9835;</div>
+    <div class="step-title">Song Identification &mdash; AudD (Optional)</div>
+  </div>
+  <p class="step-desc">Ask <em>"what song is this?"</em> while listening to TapRadio. With an AudD token, TapInsight asks AudD to fingerprint the current stream first so stale station metadata does not win. Without a token, TapInsight falls back to the free track metadata broadcast by many stations. Get a free token (300 IDs/month) at <a href="https://audd.io" target="_blank" style="color:#00e5ff">audd.io</a>.</p>
+  <label>AudD API Token</label>
+  <input type="password" id="auddApiToken" placeholder="e.g. 1234567890abcdef...">
+  <div class="hint">Leave blank to use only the free station-metadata path. Tap <b>Save configuration</b> at the bottom after entering it.</div>
+</div>
+
 <!-- Step 7: Personality & Prompt -->
 <div class="step" id="s7">
   <div class="step-head">
@@ -1257,6 +1269,7 @@ const FIELDS = {
   googleOAuthClientSecret: { key: 'google_oauth_client_secret', type: 'string' },
   spotifyClientId:         { key: 'spotify_client_id',          type: 'string' },
   spotifyClientSecret:     { key: 'spotify_client_secret',      type: 'string' },
+  auddApiToken:            { key: 'audd_api_token',             type: 'string' },
   personality:         { key: 'personality',             type: 'string' },
   customSystemPrompt:  { key: 'custom_system_prompt',   type: 'string' },
   promptIdentity:      { key: 'prompt_identity',        type: 'string' },

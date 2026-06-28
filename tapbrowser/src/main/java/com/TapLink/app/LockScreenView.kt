@@ -56,6 +56,7 @@ class LockScreenView(context: Context) : FrameLayout(context) {
     private val loadingText: TextView
     private val pipRow: LinearLayout
     private val statusText: TextView
+    private val versionText: TextView
 
     private var expected: List<Char> = emptyList()
     private val entered = ArrayList<Char>()
@@ -172,6 +173,28 @@ class LockScreenView(context: Context) : FrameLayout(context) {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = 18 }
+        )
+
+        // Tiny build-version label in the top-right corner. Added directly to
+        // the FrameLayout (not the centered content column) so it stays pinned
+        // to the corner regardless of the unlock HUD's vertical centering.
+        versionText = TextView(context).apply {
+            text = "beta .2 - unipanel"
+            setTextColor(0xFF607D8B.toInt()) // dim blue-grey, unobtrusive
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, 11f)
+            gravity = Gravity.END
+            alpha = 0.7f
+        }
+        addView(
+            versionText,
+            LayoutParams(
+                LayoutParams.WRAP_CONTENT,
+                LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.END
+                topMargin = 6
+                rightMargin = 10
+            }
         )
     }
 

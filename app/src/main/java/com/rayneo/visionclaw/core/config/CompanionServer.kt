@@ -584,6 +584,7 @@ document.addEventListener('DOMContentLoaded', loadAll);
         "google_oauth_client_secret",
         "spotify_client_id",
         "spotify_client_secret",
+        "audd_api_token",
         "personality",
         "custom_system_prompt",
         "tts_volume",
@@ -4959,7 +4960,7 @@ window.__companionToken = '${sessionToken}';
             else JSONObject(postData).optString("model", "").trim()
         } catch (_: Exception) { "" }
         val savedModel = (prefs.getString("gemini_model_override", "") ?: "").trim()
-        val model = bodyOverride.ifBlank { savedModel.ifBlank { "gemini-3.1-flash-live-preview" } }
+        val model = bodyOverride.ifBlank { savedModel.ifBlank { "gemini-2.5-flash-native-audio-preview-12-2025" } }
         // Allow the dropdown's "Default (Gemini decides)" empty value
         // to fall through here too — strip the leading "models/" if
         // any caller accidentally included it.

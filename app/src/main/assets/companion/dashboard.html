@@ -147,6 +147,7 @@ const defaultApps = {
   gmaps:{name:'Google Maps',url:'https://www.google.com/maps'},
   minijuegos:{name:'Minijuegos',url:'https://www.minijuegos.com'},
   tapradio:{name:'TapRadio',url:'file:///android_asset/radio.html'},
+  radiogarden:{name:'Radio Garden',url:'https://radio.garden'},
   ytmusic:{name:'YouTube Music',url:'https://music.youtube.com'},
   spotify:{name:'Spotify',url:'https://open.spotify.com'},
   applemusic:{name:'Apple Music',url:'https://music.apple.com'},
@@ -188,7 +189,7 @@ const defaultGroups = [
   {title:'Navigation / Entertainment',cls:'sec-nav',keys:['medialibrary','youtube','informaltech','gmaps','minijuegos','tiktok']},
   {title:'AI / Chatbots',cls:'sec-llm',keys:['gemini','googleaistudio','jules','perplexity','chatgpt','claude','deepseek','grok']},
   {title:'Social / Communication',cls:'sec-social',keys:['gmessages','discord','whatsapp','instagram','reddit','telegram']},
-  {title:'Music / Streaming',cls:'sec-music',keys:['tapradio','ytmusic','spotify','applemusic','tidal','deezer','audiomack','soundcloud','jamendo']},
+  {title:'Music / Streaming',cls:'sec-music',keys:['tapradio','radiogarden','ytmusic','spotify','applemusic','tidal','deezer','audiomack','soundcloud','jamendo']},
   {title:'Creativity / Multimedia',cls:'sec-creative',keys:['photopea','clipchamp','bandlab','wireframe','kleki']},
   {title:'Productivity / Documents',cls:'sec-prod',keys:['todoist','stackedit','sejda']},
   {title:'Utilities / Reference',cls:'sec-util',keys:['wikipedia','translate','wolfram']},
@@ -230,6 +231,41 @@ function ensureTapRadioMigration(dashboardState) {
 
   if (!musicGroup.keys.includes('tapradio')) {
     musicGroup.keys.unshift('tapradio');
+    changed = true;
+  }
+
+  return changed;
+}
+
+function ensureRadioGardenMigration(dashboardState) {
+  let changed = false;
+  if (!dashboardState.apps) dashboardState.apps = {};
+  if (!Array.isArray(dashboardState.groups)) {
+    dashboardState.groups = JSON.parse(JSON.stringify(defaultGroups));
+    changed = true;
+  }
+
+  if (!dashboardState.apps.radiogarden) {
+    dashboardState.apps.radiogarden = {...defaultApps.radiogarden};
+    changed = true;
+  }
+
+  let musicGroup = dashboardState.groups.find(group => String(group.title || '').trim().toLowerCase() === 'music / streaming');
+  if (!musicGroup) {
+    musicGroup = { title: 'Music / Streaming', cls: 'sec-music', keys: ['tapradio', 'radiogarden'] };
+    dashboardState.groups.push(musicGroup);
+    changed = true;
+  }
+
+  if (!Array.isArray(musicGroup.keys)) {
+    musicGroup.keys = [];
+    changed = true;
+  }
+
+  if (!musicGroup.keys.includes('radiogarden')) {
+    const tapRadioIndex = musicGroup.keys.indexOf('tapradio');
+    if (tapRadioIndex >= 0) musicGroup.keys.splice(tapRadioIndex + 1, 0, 'radiogarden');
+    else musicGroup.keys.unshift('radiogarden');
     changed = true;
   }
 
@@ -312,8 +348,19 @@ async function loadAll() {
   } catch(e) {
     state = { apps: {...defaultApps}, groups: JSON.parse(JSON.stringify(defaultGroups)) };
   }
-  ensureTapRadioMigration(state);
-  ensureMediaLibraryMigration(state);
+  const migratedTapRadio = ensureTapRadioMigration(state);
+  const migratedRadioGarden = ensureRadioGardenMigration(state);
+  const migratedMediaLibrary = ensureMediaLibraryMigration(state);
+  const migrated = migratedTapRadio || migratedRadioGarden || migratedMediaLibrary;
+  if (migrated) {
+    try {
+      await fetch('/api/dashboard', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(state)
+      });
+    } catch(e) {}
+  }
   renderAll();
   showStatus('Dashboard loaded.', 'ok');
 }
