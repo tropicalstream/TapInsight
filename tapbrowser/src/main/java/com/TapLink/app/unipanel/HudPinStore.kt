@@ -33,6 +33,16 @@ object HudPinStore {
     const val TYPE_NOTE = "note"
     const val TYPE_PICTURE = "picture"
 
+    /**
+     * Live card — [payload] is a natural-language WATCH QUERY ("Warriors
+     * score", "top AI headline", "new trending Rust repos", "changes to
+     * <page>"), optionally scoped to [HudPin.sourceUrl]. The
+     * LiveCardEngine (visionclaw side) refreshes [HudPin.content] every
+     * [HudPin.intervalSec] and flips [HudPin.stale] on fetch failure;
+     * the board renders content and dims stale cards.
+     */
+    const val TYPE_LIVE = "live"
+
     /** Hard cap — the pin zone is small (~150×90dp usable). */
     const val MAX_PINS = 10
 
@@ -61,7 +71,18 @@ object HudPinStore {
         val linkUrl: String? = null,
         val customX: Int = -1,
         val customY: Int = -1,
-        val createdAt: Long = System.currentTimeMillis()
+        val createdAt: Long = System.currentTimeMillis(),
+        // ── live-card fields (TYPE_LIVE only; inert defaults otherwise) ──
+        /** Optional URL to watch (a scoreboard, feed, repo list, any page). */
+        val sourceUrl: String? = null,
+        /** Latest engine-produced display text ("" until first refresh). */
+        val content: String = "",
+        /** Wall-clock ms of the last SUCCESSFUL refresh; 0 = never. */
+        val updatedAt: Long = 0L,
+        /** Refresh cadence in seconds; 0 = not a live pin. */
+        val intervalSec: Int = 0,
+        /** True when the last refresh attempt failed — UI dims the card. */
+        val stale: Boolean = false
     ) {
         fun toJson(): JSONObject = JSONObject()
             .put("id", id)
@@ -72,6 +93,11 @@ object HudPinStore {
             .put("customX", customX)
             .put("customY", customY)
             .put("createdAt", createdAt)
+            .put("sourceUrl", sourceUrl ?: JSONObject.NULL)
+            .put("content", content)
+            .put("updatedAt", updatedAt)
+            .put("intervalSec", intervalSec)
+            .put("stale", stale)
 
         companion object {
             fun fromJson(o: JSONObject): HudPin? {
@@ -86,7 +112,14 @@ object HudPinStore {
                     },
                     customX = o.optInt("customX", -1),
                     customY = o.optInt("customY", -1),
-                    createdAt = o.optLong("createdAt", System.currentTimeMillis())
+                    createdAt = o.optLong("createdAt", System.currentTimeMillis()),
+                    sourceUrl = o.optString("sourceUrl").takeIf {
+                        it.isNotBlank() && it != "null"
+                    },
+                    content = o.optString("content"),
+                    updatedAt = o.optLong("updatedAt", 0L),
+                    intervalSec = o.optInt("intervalSec", 0),
+                    stale = o.optBoolean("stale", false)
                 )
             }
         }
@@ -209,9 +242,60 @@ object HudPinStore {
         notifyListeners()
     }
 
+    /** Engine writes a live card's fresh display text (success path). */
+    fun updateContent(id: String, content: String) {
+        synchronized(lock) {
+            val current = all()
+            val idx = current.indexOfFirst { it.id == id }
+            if (idx < 0) return
+            val next = current.toMutableList()
+            next[idx] = next[idx].copy(
+                content = content,
+                updatedAt = System.currentTimeMillis(),
+                stale = false
+            )
+            persist(next)
+        }
+        notifyListeners()
+    }
+
+    /** Engine flags a live card whose refresh attempt failed. */
+    fun markStale(id: String) {
+        synchronized(lock) {
+            val current = all()
+            val idx = current.indexOfFirst { it.id == id }
+            if (idx < 0 || current[idx].stale) return
+            val next = current.toMutableList()
+            next[idx] = next[idx].copy(stale = true)
+            persist(next)
+        }
+        notifyListeners()
+    }
+
     fun clear() {
         synchronized(lock) { persist(emptyList()) }
         notifyListeners()
+    }
+
+    // ── Refresh-request bus (UI → engine, same-process) ──────────────
+
+    private val refreshListeners = CopyOnWriteArrayList<(String) -> Unit>()
+
+    /** LiveCardEngine subscribes; fires with the pin id to refresh NOW. */
+    fun onRefreshRequest(listener: (String) -> Unit): AutoCloseable {
+        refreshListeners.add(listener)
+        return AutoCloseable { refreshListeners.remove(listener) }
+    }
+
+    /** UI asks for an immediate refresh (tap on a live card). */
+    fun requestRefresh(id: String) {
+        for (l in refreshListeners) {
+            try {
+                l(id)
+            } catch (_: Throwable) {
+                // never let a consumer crash the publisher
+            }
+        }
     }
 
     /**

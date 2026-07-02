@@ -48,6 +48,7 @@ class HudPinTool(
             "add_icon" -> addIcon(args)
             "add_note" -> addNote(args)
             "add_picture" -> addPicture(args)
+            "add_live" -> addLive(args)
             "remove" -> remove(args)
             "list" -> list()
             "clear" -> {
@@ -57,10 +58,56 @@ class HudPinTool(
             else -> Result.failure(
                 IllegalArgumentException(
                     "Unknown hud_pin action '$action'. Use add_icon, add_note, " +
-                        "add_picture, remove, list, or clear."
+                        "add_picture, add_live, remove, list, or clear."
                 )
             )
         }
+    }
+
+    /**
+     * Live card — a watch query over ANY source: "Warriors score",
+     * "top AI headline", "new trending Rust repos on GitHub", "changes
+     * to <url>". The LiveCardEngine refreshes it on interval; a
+     * sourceUrl scopes the watch to one page, otherwise the engine
+     * answers with web-search grounding.
+     */
+    private fun addLive(args: Map<String, String>): Result<String> {
+        val query = (args["query"] ?: args["text"] ?: "").trim()
+        if (query.isBlank()) {
+            return Result.failure(
+                IllegalArgumentException(
+                    "hud_pin add_live needs 'query' — what to watch, e.g. " +
+                        "'Warriors score' or 'top AI headline'."
+                )
+            )
+        }
+        val source = (args["source"] ?: "").trim().takeIf {
+            it.startsWith("http://") || it.startsWith("https://")
+        }
+        val label = (args["label"] ?: "").trim().ifBlank {
+            query.split(Regex("\\s+")).take(3).joinToString(" ")
+        }.take(24)
+        val intervalMin = (args["interval_minutes"] ?: "").trim()
+            .toIntOrNull()?.coerceIn(1, 180) ?: 5
+        com.rayneo.visionclaw.core.live.LiveCardEngine.ensureStarted(context)
+        val added = HudPinStore.add(
+            HudPinStore.HudPin(
+                type = HudPinStore.TYPE_LIVE,
+                label = label,
+                payload = query,
+                sourceUrl = source,
+                intervalSec = intervalMin * 60
+            )
+        )
+        if (added) HudPinStore.all()
+            .firstOrNull { it.type == HudPinStore.TYPE_LIVE && it.payload == query }
+            ?.let { HudPinStore.requestRefresh(it.id) }
+        return capacityResult(
+            added,
+            "Added the live card \"$label\" — it will refresh every $intervalMin minute(s)" +
+                (source?.let { " from $it" } ?: " via web search") +
+                ". First update is fetching now."
+        )
     }
 
     private fun addIcon(args: Map<String, String>): Result<String> {

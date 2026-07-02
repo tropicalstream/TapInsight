@@ -53,4 +53,13 @@ class VisionClawApp : Application() {
     val viewModel: MainViewModel by lazy {
         MainViewModel(this)
     }
+
+    override fun onCreate() {
+        super.onCreate()
+        // HUD live cards refresh process-wide (a live score card must
+        // keep updating while the user just browses, no voice session
+        // required), so the engine is Application-scoped. Idles at a
+        // cheap no-op tick when no live pins exist.
+        com.rayneo.visionclaw.core.live.LiveCardEngine.ensureStarted(this)
+    }
 }

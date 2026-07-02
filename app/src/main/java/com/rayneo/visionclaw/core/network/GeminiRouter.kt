@@ -3096,23 +3096,34 @@ class GeminiRouter(
                         "from text on their screen, first read it with browser_vision, then call add_note with what you read. " +
                         "add_picture — pin a picture; source='screen' captures what the user is currently looking at " +
                         "(e.g. 'pin that picture of a cat to my HUD'), or pass an https image URL in 'source'. " +
+                        "add_live — pin a LIVE card that auto-refreshes: sports scores, news topics, particular " +
+                        "headlines, new GitHub repositories, changes to a web page — ANY watchable info. Pass the " +
+                        "watch request in 'query' (e.g. 'Warriors score', 'top AI headline'); optionally scope it to " +
+                        "one page by passing its URL in 'source' (e.g. the scoreboard page the user is looking at — " +
+                        "get the real URL from context, never invent one); optional 'interval_minutes' (default 5). " +
+                        "Use add_live whenever the user wants something that UPDATES ('live scores', 'keep me " +
+                        "posted', 'track/watch/follow X on my HUD'); use add_icon/add_note for static pins. " +
                         "remove — delete a pin by its (approximate) label. list — say what's pinned. clear — remove all. " +
-                        "Deleting and moving pins is ALSO possible by hand: the user long-presses a pin with the right " +
-                        "trackpad — mention that if they ask how to rearrange. " +
+                        "Deleting and moving pins is ALSO possible by hand: the user double-taps a pin with the right " +
+                        "trackpad cursor over it — mention that if they ask how to rearrange. " +
                         "After the tool returns, tell the user in one short sentence what happened.")
                 .put("parameters", JSONObject()
                     .put("type", "OBJECT")
                     .put("properties", JSONObject()
                         .put("action", JSONObject().put("type", "STRING")
-                            .put("description", "One of: add_icon, add_note, add_picture, remove, list, clear."))
+                            .put("description", "One of: add_icon, add_note, add_picture, add_live, remove, list, clear."))
                         .put("label", JSONObject().put("type", "STRING")
                             .put("description", "Short display label for the pin (max ~24 chars). For remove: the label to delete (fuzzy matched)."))
                         .put("url", JSONObject().put("type", "STRING")
-                            .put("description", "add_icon only: http(s) URL the icon opens, or 'current' for the page/station open in the browser right now."))
+                            .put("description", "add_icon only: http(s) URL the icon opens, or 'current' for the page/station/media playing or open right now."))
                         .put("text", JSONObject().put("type", "STRING")
                             .put("description", "add_note only: the note body text."))
                         .put("source", JSONObject().put("type", "STRING")
-                            .put("description", "add_picture only: 'screen' to capture the current view (default), or an https image URL.")))
+                            .put("description", "add_picture: 'screen' (default) or an https image URL. add_live: optional http(s) URL of the page to watch."))
+                        .put("query", JSONObject().put("type", "STRING")
+                            .put("description", "add_live only: what to watch, in plain language. Examples: 'Warriors score', 'top 3 tech headlines', 'new trending Rust repos', 'changes to this page'."))
+                        .put("interval_minutes", JSONObject().put("type", "STRING")
+                            .put("description", "add_live only: refresh cadence in minutes, 1-180. Default 5. Use 1-2 for live game scores.")))
                     .put("required", JSONArray().put("action"))))
 
             // open_taplink

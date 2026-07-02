@@ -277,6 +277,7 @@ class HudPinBoardController(
         val (w, h) = when (pin.type) {
             HudPinStore.TYPE_NOTE -> dp(92) to dp(64)
             HudPinStore.TYPE_PICTURE -> dp(64) to dp(48)
+            HudPinStore.TYPE_LIVE -> dp(150) to dp(48)
             else -> dp(54) to dp(46)
         }
         container.layoutParams = FrameLayout.LayoutParams(w, h)
@@ -288,6 +289,7 @@ class HudPinBoardController(
         val content: View = when (pin.type) {
             HudPinStore.TYPE_NOTE -> buildNoteContent(pin)
             HudPinStore.TYPE_PICTURE -> buildPictureContent(pin)
+            HudPinStore.TYPE_LIVE -> buildLiveContent(pin)
             else -> buildIconContent(pin)
         }
         content.layoutParams = FrameLayout.LayoutParams(
@@ -379,6 +381,65 @@ class HudPinBoardController(
         return tv
     }
 
+    /**
+     * Live card: tier-row-style dark chip. Header = accent label +
+     * last-update age; body = the engine's latest text. Stale (fetch
+     * failing) or never-refreshed cards render dimmed — the feature is
+     * honest about being offline (generativehud D10 spirit).
+     */
+    private fun buildLiveContent(pin: HudPin): View {
+        val col = LinearLayout(activity)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(7), dp(3), dp(7), dp(4))
+        col.background = GradientDrawable().apply {
+            setColor(0xB3000000.toInt())
+            cornerRadius = 3f * density
+            if (pin.stale) setStroke(dp(1), 0x66FF5252)
+        }
+
+        val header = LinearLayout(activity)
+        header.orientation = LinearLayout.HORIZONTAL
+        val label = TextView(activity)
+        label.layoutParams = LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+        )
+        label.text = pin.label.uppercase(Locale.US)
+        label.setTextColor(0xFF7FDBFF.toInt())
+        label.textSize = 8f
+        label.typeface = Typeface.DEFAULT_BOLD
+        label.maxLines = 1
+        label.ellipsize = android.text.TextUtils.TruncateAt.END
+        header.addView(label)
+        val age = TextView(activity)
+        age.text = if (pin.stale) "!" else ageText(pin.updatedAt)
+        age.setTextColor(if (pin.stale) 0xFFFF5252.toInt() else 0x99FFFFFF.toInt())
+        age.textSize = 8f
+        header.addView(age)
+        col.addView(header)
+
+        val body = TextView(activity)
+        body.text = pin.content.ifBlank { "…" }
+        body.setTextColor(Color.WHITE)
+        body.textSize = 9f
+        body.maxLines = 2
+        body.ellipsize = android.text.TextUtils.TruncateAt.END
+        body.setLineSpacing(0f, 1.05f)
+        col.addView(body)
+
+        col.alpha = if (pin.stale || pin.content.isBlank()) 0.72f else 1f
+        return col
+    }
+
+    private fun ageText(updatedAt: Long): String {
+        if (updatedAt <= 0L) return ""
+        val mins = (System.currentTimeMillis() - updatedAt) / 60_000L
+        return when {
+            mins < 1 -> "now"
+            mins < 60 -> "${mins}m"
+            else -> "${mins / 60}h"
+        }
+    }
+
     private fun buildPictureContent(pin: HudPin): View {
         val iv = ImageView(activity)
         iv.scaleType = ImageView.ScaleType.CENTER_CROP
@@ -396,6 +457,17 @@ class HudPinBoardController(
         when (pin.type) {
             HudPinStore.TYPE_PICTURE -> showFullscreenPicture(pin)
             HudPinStore.TYPE_NOTE -> openUrl(pin.linkUrl ?: "https://tasks.google.com")
+            HudPinStore.TYPE_LIVE -> {
+                // Watched-URL cards open their source; search-grounded
+                // cards have no page to open, so tap = refresh now.
+                val src = pin.sourceUrl
+                if (!src.isNullOrBlank()) {
+                    openUrl(src)
+                } else {
+                    HudPinStore.requestRefresh(pin.id)
+                    showToast("Refreshing \"${pin.label}\"…")
+                }
+            }
             else -> {
                 var target = pin.linkUrl ?: pin.payload
                 if (target.isBlank()) return
