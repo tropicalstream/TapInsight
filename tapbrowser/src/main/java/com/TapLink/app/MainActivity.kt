@@ -9508,33 +9508,84 @@ class MainActivity :
     private fun repositionUnipanelCameraPreview(forceBelowHeartbeat: Boolean = false) {
         val preview = findViewById<View?>(R.id.unipanelCameraPreviewFrame) ?: return
         if (preview.visibility != View.VISIBLE) return
-        val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText)
-        // Phase 4k.4 (Mars) — restore the two-stage placement that worked
-        // best: while the heartbeat ticker is showing ("Camera streaming
-        // to Gemini"), the preview sits just BELOW it; once the ticker
-        // auto-clears, the preview rises to 50dp under the clock. The only
-        // problem before was the lower stage (78dp) reaching down onto the
-        // dashboard tiles, so the initial stage is nudged up to 70dp —
-        // still clear of the heartbeat text (which ends ~69dp) but high
-        // enough to clear the browser tiles below. The heartbeat row spans
-        // ~50–72dp, so 70dp keeps the ticker readable directly above.
-        // dp/layout-space margins are scale-correct under the SBS transform
-        // (window-coordinate math from earlier builds was not).
+        val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return
+        // Mars: the old 96×72 frame was off-center in the gutter and wasted
+        // the empty HUD space. Instead of magic dp constants, MEASURE the
+        // gutter (below the clock strip, left of the battery icon — the pin
+        // zone starts at the battery's left edge) and the HUD bottom line
+        // (same candidate set as isUnipanelGeminiActivationZone, so the
+        // preview can never reach past the HUD onto the browser), then size
+        // the preview to fill that box at the camera's 4:3 aspect and
+        // center it horizontally. dp/layout-space margins stay
+        // scale-correct under the SBS transform (window-coordinate math
+        // from earlier builds was not).
         val density = resources.displayMetrics.density
-        // Phase 4k.9 — when the camera first turns on, force the BELOW-
-        // heartbeat stage (70dp) even if the "Camera streaming to Gemini"
-        // ticker hasn't published yet. Otherwise, depending on event
-        // order, the preview could momentarily land at 50dp — right on
-        // top of the heartbeat text. The preview only rises to 50dp once
-        // the ticker has actually cleared (renderUnipanelHeartbeat's empty
-        // branch calls this with the default false).
-        val heartbeatShown = forceBelowHeartbeat ||
-            (heartbeat != null && heartbeat.visibility == View.VISIBLE)
-        val topDp = if (heartbeatShown) 70f else 50f
-        val newTop = (topDp * density).toInt()
+        fun dp(value: Int): Int = (value * density).toInt()
+        if (overlay.width <= 0) {
+            // Pre-layout — keep the XML fallback frame; a reposition will
+            // fire again from the heartbeat / tier render paths.
+            return
+        }
+        val overlayLoc = IntArray(2)
+        overlay.getLocationOnScreen(overlayLoc)
+        fun localX(v: View): Int {
+            val l = IntArray(2); v.getLocationOnScreen(l); return l[0] - overlayLoc[0]
+        }
+        fun localY(v: View): Int {
+            val l = IntArray(2); v.getLocationOnScreen(l); return l[1] - overlayLoc[1]
+        }
+
+        val topRow = findViewById<View?>(R.id.unipanelTopHudRow)
+        val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText)
+        val tierPanel = findViewById<View?>(R.id.unipanelHudTierPanel)
+        val battery = findViewById<View?>(R.id.unipanelHudBattery)
+
+        // Top edge: just under the clock strip. The heartbeat ticker now
+        // parks under the tier list on the RIGHT, so it normally doesn't
+        // constrain the left gutter — but when it IS in the gutter lane
+        // (older layout states / forceBelowHeartbeat during camera-on,
+        // the Phase 4k.9 event-order guard), drop below it.
+        var top = if (topRow != null && topRow.height > 0) {
+            localY(topRow) + topRow.height + dp(4)
+        } else dp(42)
+        val heartbeatShown = heartbeat != null && heartbeat.visibility == View.VISIBLE &&
+            heartbeat.height > 0
+        if ((forceBelowHeartbeat && heartbeatShown) ||
+            (heartbeatShown && heartbeat != null && localX(heartbeat) < dp(160))
+        ) {
+            top = maxOf(top, localY(heartbeat!!) + heartbeat.height + dp(4))
+        }
+
+        // HUD bottom line — mirrors isUnipanelGeminiActivationZone.
+        var hudBottom = dp(112)
+        listOf(topRow, heartbeat, tierPanel).forEach { v ->
+            if (v != null && v.visibility == View.VISIBLE && v.height > 0) {
+                hudBottom = maxOf(hudBottom, localY(v) + v.height + dp(8))
+            }
+        }
+
+        // Gutter right edge = battery icon's left edge (pin zone start).
+        val gutterRight = if (battery != null && battery.width > 0) {
+            localX(battery)
+        } else dp(150)
+
+        // Fill the box at 4:3; never smaller than the classic 96×72,
+        // capped at 120dp tall so the preview can't dominate the HUD.
+        var h = (hudBottom - top - dp(4)).coerceIn(dp(72), dp(120))
+        var w = h * 4 / 3
+        val maxW = (gutterRight - dp(8)).coerceAtLeast(dp(96))
+        if (w > maxW) {
+            w = maxW
+            h = w * 3 / 4
+        }
+        val left = ((gutterRight - w) / 2).coerceAtLeast(dp(4))
+
         val lp = preview.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
-        if (lp.topMargin != newTop) {
-            lp.topMargin = newTop
+        if (lp.topMargin != top || lp.marginStart != left || lp.width != w || lp.height != h) {
+            lp.topMargin = top
+            lp.marginStart = left
+            lp.width = w
+            lp.height = h
             preview.layoutParams = lp
         }
         repositionUnipanelAssistantCard()
