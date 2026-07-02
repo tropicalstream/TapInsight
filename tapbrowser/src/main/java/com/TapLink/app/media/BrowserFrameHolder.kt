@@ -94,6 +94,46 @@ object BrowserFrameHolder {
     @JvmStatic
     fun hasWebView(): Boolean = webViewRef?.get() != null
 
+    data class PageInfo(val url: String, val title: String?)
+
+    /**
+     * Lightweight LIVE snapshot of what the browser shows right now —
+     * URL + document title, read from the actual WebView on the UI
+     * thread. This is the ground truth for "pin the current video /
+     * page": LastUrlStore only ledgers tool-opened URLs, so manual
+     * in-page navigation (tapping a YouTube thumbnail) is invisible to
+     * it, and an assistant's memory of a URL can't be trusted at all.
+     * Cheap property reads — no JS evaluation.
+     */
+    @JvmStatic
+    fun currentPageInfo(): PageInfo? {
+        val webView = webViewRef?.get() ?: return null
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return runCatching { readPageInfo(webView) }.getOrNull()
+        }
+        val holder = arrayOfNulls<PageInfo>(1)
+        val latch = CountDownLatch(1)
+        mainHandler.post {
+            try {
+                holder[0] = readPageInfo(webView)
+            } catch (_: Throwable) {
+                // fall through with null
+            } finally {
+                latch.countDown()
+            }
+        }
+        return try {
+            if (latch.await(1000, TimeUnit.MILLISECONDS)) holder[0] else null
+        } catch (_: InterruptedException) {
+            null
+        }
+    }
+
+    private fun readPageInfo(webView: WebView): PageInfo? {
+        val url = webView.url?.takeIf { it.isNotBlank() } ?: return null
+        return PageInfo(url, webView.title?.trim()?.takeIf { it.isNotBlank() })
+    }
+
     data class PageTextResult(
         val title: String,
         val url: String,

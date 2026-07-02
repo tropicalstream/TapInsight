@@ -3090,8 +3090,10 @@ class GeminiRouter(
                         "'make a HUD note', 'remove the ... pin', 'what's pinned on my HUD', 'clear my HUD pins'. " +
                         "Actions: " +
                         "add_icon — pin an icon that opens a URL. Pass url='current' when the user means the page, " +
-                        "station, or app that is open right now (e.g. 'pin this Spotify station to my HUD'); the tool " +
-                        "resolves the real current URL itself — do NOT guess it. " +
+                        "video, station, or app that is open or playing right now (e.g. 'pin this Spotify station', " +
+                        "'pin the current video'); the tool resolves the real current URL AND the real media title " +
+                        "itself — do NOT guess the URL, and OMIT 'label' (never send fillers like 'Current Video'; " +
+                        "the actual metadata title is used automatically). " +
                         "add_note — pin a post-it note; pass the note body in 'text'. If the user wants a note made " +
                         "from text on their screen, first read it with browser_vision, then call add_note with what you read. " +
                         "add_picture — pin a picture; source='screen' captures what the user is currently looking at " +
@@ -3101,8 +3103,10 @@ class GeminiRouter(
                         "watch request in 'query' (e.g. 'Warriors score', 'top AI headline'); optionally scope it to " +
                         "one page by passing its URL in 'source' (e.g. the scoreboard page the user is looking at — " +
                         "get the real URL from context, never invent one); optional 'interval_minutes' (default 5). " +
-                        "Use add_live whenever the user wants something that UPDATES ('live scores', 'keep me " +
-                        "posted', 'track/watch/follow X on my HUD'); use add_icon/add_note for static pins. " +
+                        "Use add_live ONLY for information that CHANGES over time ('live scores', 'keep me posted', " +
+                        "'track/watch/follow X'). NEVER use add_live for a station, video, playlist, or page the user " +
+                        "just wants to OPEN from their HUD — a link is static; that is add_icon, even when the user " +
+                        "found it by looking at the screen. " +
                         "remove — delete a pin by its (approximate) label. list — say what's pinned. clear — remove all. " +
                         "Deleting and moving pins is ALSO possible by hand: the user double-taps a pin with the right " +
                         "trackpad cursor over it — mention that if they ask how to rearrange. " +

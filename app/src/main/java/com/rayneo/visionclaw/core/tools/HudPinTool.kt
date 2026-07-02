@@ -81,7 +81,58 @@ class HudPinTool(
                 )
             )
         }
-        val source = (args["source"] ?: "").trim().takeIf {
+        val rawSource = (args["source"] ?: "").trim()
+
+        // GUARDRAIL — a live card must WATCH something that CHANGES.
+        // Gemini has been observed routing a static radio-station link
+        // into add_live ('add the first station from the tapradio list'),
+        // which produced a pointlessly self-refreshing link card. Same
+        // philosophy as TapLinkTool's YouTube guardrail: the tool knows
+        // better than the caller. Static media links, and open/play-shaped
+        // queries with no changing-info words, become ICON pins instead.
+        val staticMediaLink = rawSource.isNotBlank() && Regex(
+            "radio\\.html|media_player\\.html|youtube\\.com/watch|youtu\\.be/|" +
+                "open\\.spotify\\.com|\\.(mp3|m4a|aac|flac|ogg|m3u8?|pls|mp4|mkv|webm)([?#]|$)",
+            RegexOption.IGNORE_CASE
+        ).containsMatchIn(rawSource)
+        val opensSomething = Regex(
+            "^(open|play|launch|tune|start|link|shortcut|go to|pin)\\b",
+            RegexOption.IGNORE_CASE
+        ).containsMatchIn(query)
+        val watchesChanges = Regex(
+            "score|news|headline|update|change|track|watch|follow|monitor|" +
+                "latest|price|weather|status|new\\b",
+            RegexOption.IGNORE_CASE
+        ).containsMatchIn(query)
+        if (staticMediaLink || (opensSomething && !watchesChanges)) {
+            val staticUrl = rawSource.takeIf {
+                it.startsWith("http://") || it.startsWith("https://") ||
+                    it.startsWith("file:///android_asset/")
+            } ?: return Result.failure(
+                IllegalArgumentException(
+                    "'$query' is a static thing to OPEN, not information that changes — " +
+                        "use add_icon (with the real URL, or url='current' if it's open or " +
+                        "playing right now) instead of add_live."
+                )
+            )
+            val iconLabel = (args["label"] ?: "").trim()
+                .ifBlank { query.removePrefix("open").removePrefix("play").trim() }
+                .ifBlank { hostLabel(staticUrl) }
+                .take(24)
+            val addedIcon = HudPinStore.add(
+                HudPinStore.HudPin(
+                    type = HudPinStore.TYPE_ICON, label = iconLabel, payload = staticUrl
+                )
+            )
+            return capacityResult(
+                addedIcon,
+                "That target is a static link, so it's pinned as a regular icon " +
+                    "(\"$iconLabel\") instead of a live card — live cards are only for " +
+                    "information that changes over time. Tell the user it's pinned."
+            )
+        }
+
+        val source = rawSource.takeIf {
             it.startsWith("http://") || it.startsWith("https://")
         }
         val label = (args["label"] ?: "").trim().ifBlank {
@@ -112,28 +163,35 @@ class HudPinTool(
 
     private fun addIcon(args: Map<String, String>): Result<String> {
         var url = (args["url"] ?: "").trim()
-        var label = (args["label"] ?: "").trim()
+        val givenLabel = (args["label"] ?: "").trim()
+        // Real metadata title, resolved alongside the URL below. It BEATS
+        // a generic caller label: Gemini routinely passes fillers like
+        // 'Current Video' even when told not to, and a pin labeled
+        // 'Current Video' labels nothing (Mars's exact complaint).
+        var metaTitle: String? = null
+
+        val live = com.TapLink.app.media.BrowserFrameHolder.currentPageInfo()
         if (url.isBlank() || url.equals("current", ignoreCase = true)) {
             // "pin this station / this video / this page" → resolve from
-            // REAL playback state, never from Gemini's memory of a URL.
-            // Ladder (most-specific first):
-            //   1. NowPlayingBridge — the native TapRadio player. Rebuild
-            //      the radio.html autoplay URL exactly like TapRadioTool
-            //      does, so tapping the pin restarts the actual stream.
-            //      Label = station name (what Mars saw instead: the page
-            //      title 'Now Playing', which labels nothing).
-            //   2. LastUrlStore.currentMedia() — YouTube/Spotify media
-            //      entries carry real titles.
-            //   3. LastUrlStore.latest() — any page, incl. our own asset
-            //      viewers.
+            // REAL state, never from Gemini's memory of a URL. Ladder:
+            //   1. NowPlayingBridge — native TapRadio player. Rebuild the
+            //      radio.html autoplay URL like TapRadioTool does, so the
+            //      pin restarts the actual stream. Title = station name.
+            //   2. BrowserFrameHolder.currentPageInfo() — the LIVE WebView
+            //      URL + document title. Catches manual in-page navigation
+            //      (tapping a YouTube thumbnail) that the LastUrlStore
+            //      ledger never sees.
+            //   3. LastUrlStore currentMedia()/latest() — tool-opened URLs
+            //      with recorded titles, as the fallback.
             val np = com.TapLink.app.unipanel.NowPlayingBridge
             val npStream = np.streamUrl
             if (np.isPlaying && !npStream.isNullOrBlank()) {
                 val station = np.stationName?.trim().orEmpty()
                 url = buildRadioReplayUrl(npStream, station)
-                if (label.isBlank()) {
-                    label = station.ifBlank { np.trackName ?: np.trackTitle ?: "Radio" }
-                }
+                metaTitle = station.ifBlank { np.trackName ?: np.trackTitle ?: "Radio" }
+            } else if (live != null) {
+                url = live.url
+                metaTitle = cleanMediaTitle(live.title)
             } else {
                 val store = LastUrlStore(context)
                 val entry = store.currentMedia() ?: store.latest()
@@ -144,12 +202,12 @@ class HudPinTool(
                         )
                     )
                 url = entry.url
-                if (label.isBlank()) {
-                    label = entry.title?.trim()
-                        ?.takeIf { it.isNotBlank() && !it.equals("Now Playing", true) }
-                        ?: hostLabel(url)
-                }
+                metaTitle = cleanMediaTitle(entry.title)
             }
+        } else if (live != null && url == live.url) {
+            // Explicit URL that happens to BE the live page — use its
+            // real document title for the same reason.
+            metaTitle = cleanMediaTitle(live.title)
         }
         val isAsset = url.startsWith("file:///android_asset/")
         if (!url.startsWith("http://") && !url.startsWith("https://") && !isAsset) {
@@ -159,13 +217,37 @@ class HudPinTool(
                 )
             )
         }
-        if (label.isBlank()) label = hostLabel(url)
-        label = label.take(24)
+        val label = (
+            if (isGenericLabel(givenLabel)) metaTitle?.takeIf { it.isNotBlank() }
+                ?: givenLabel.ifBlank { hostLabel(url) }
+            else givenLabel
+        ).take(24)
         val added = HudPinStore.add(
             HudPinStore.HudPin(type = HudPinStore.TYPE_ICON, label = label, payload = url)
         )
         return capacityResult(added, "Pinned \"$label\" to the HUD — tapping it opens it.")
     }
+
+    /** Filler labels an assistant emits when it doesn't know the name.
+     *  Any of these lose to real metadata. */
+    private fun isGenericLabel(label: String): Boolean {
+        val l = label.trim().lowercase(Locale.US)
+        return l.isBlank() || l in setOf(
+            "current", "current video", "this video", "the video", "video",
+            "current page", "this page", "the page", "page",
+            "current station", "this station", "station",
+            "current media", "this media", "media",
+            "now playing", "current song", "this song", "link", "pin"
+        )
+    }
+
+    /** Strip platform suffixes so 'Cat Video - YouTube' pins as 'Cat Video'. */
+    private fun cleanMediaTitle(title: String?): String? =
+        title?.trim()
+            ?.replace(Regex("\\s*[-–|—]\\s*YouTube( Music)?\\s*$", RegexOption.IGNORE_CASE), "")
+            ?.replace(Regex("\\s*[-–|—]\\s*Spotify\\s*$", RegexOption.IGNORE_CASE), "")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() && !it.equals("Now Playing", ignoreCase = true) }
 
     /**
      * Rebuild the radio.html autoplay URL the way TapRadioTool's
