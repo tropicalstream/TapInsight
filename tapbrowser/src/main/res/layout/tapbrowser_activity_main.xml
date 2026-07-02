@@ -464,6 +464,25 @@
 
             </ScrollView>
 
+            <!-- HUD pin board — user-pinned "hud posts" (icons / post-it
+                 notes / pictures) rendered programmatically by
+                 HudPinBoardController into the empty HUD zone: below the
+                 clock/battery strip, right of the battery icon's left
+                 edge, above the HUD bottom line. The container itself is
+                 transparent + clickable=false so the three-state hit-test
+                 passes empty-space taps through (the Gemini activation
+                 zone keeps working); individual pins are clickable=true
+                 and consume their own cursor taps. -->
+            <FrameLayout
+                android:id="@+id/unipanelPinBoard"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@android:color/transparent"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:clickable="false"
+                android:focusable="false" />
+
             <!-- Phase 4g/4j — Hermes-style camera preview frame. 96dp ×
                  72dp burgundy-stroked container holding a PreviewView
                  fed by the Service-side CameraX pipeline. Lives in the

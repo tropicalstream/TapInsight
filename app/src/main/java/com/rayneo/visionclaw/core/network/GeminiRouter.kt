@@ -3080,6 +3080,41 @@ class GeminiRouter(
                         .put("max_chars", JSONObject().put("type", "STRING")
                             .put("description", "Optional maximum characters of page text to return. Default is 30000.")))))
 
+            // hud_pin — pin content to the HUD pin board ("hud posts").
+            tools.put(JSONObject()
+                .put("name", "hud_pin")
+                .put("description",
+                    "Manage the user's HUD pin board — small pinned items shown on the heads-up display: " +
+                        "icons that open web pages, post-it notes, and pictures. " +
+                        "Use when the user says 'pin/post/add ... to my HUD', 'put that on my HUD', " +
+                        "'make a HUD note', 'remove the ... pin', 'what's pinned on my HUD', 'clear my HUD pins'. " +
+                        "Actions: " +
+                        "add_icon — pin an icon that opens a URL. Pass url='current' when the user means the page, " +
+                        "station, or app that is open right now (e.g. 'pin this Spotify station to my HUD'); the tool " +
+                        "resolves the real current URL itself — do NOT guess it. " +
+                        "add_note — pin a post-it note; pass the note body in 'text'. If the user wants a note made " +
+                        "from text on their screen, first read it with browser_vision, then call add_note with what you read. " +
+                        "add_picture — pin a picture; source='screen' captures what the user is currently looking at " +
+                        "(e.g. 'pin that picture of a cat to my HUD'), or pass an https image URL in 'source'. " +
+                        "remove — delete a pin by its (approximate) label. list — say what's pinned. clear — remove all. " +
+                        "Deleting and moving pins is ALSO possible by hand: the user long-presses a pin with the right " +
+                        "trackpad — mention that if they ask how to rearrange. " +
+                        "After the tool returns, tell the user in one short sentence what happened.")
+                .put("parameters", JSONObject()
+                    .put("type", "OBJECT")
+                    .put("properties", JSONObject()
+                        .put("action", JSONObject().put("type", "STRING")
+                            .put("description", "One of: add_icon, add_note, add_picture, remove, list, clear."))
+                        .put("label", JSONObject().put("type", "STRING")
+                            .put("description", "Short display label for the pin (max ~24 chars). For remove: the label to delete (fuzzy matched)."))
+                        .put("url", JSONObject().put("type", "STRING")
+                            .put("description", "add_icon only: http(s) URL the icon opens, or 'current' for the page/station open in the browser right now."))
+                        .put("text", JSONObject().put("type", "STRING")
+                            .put("description", "add_note only: the note body text."))
+                        .put("source", JSONObject().put("type", "STRING")
+                            .put("description", "add_picture only: 'screen' to capture the current view (default), or an https image URL.")))
+                    .put("required", JSONArray().put("action"))))
+
             // open_taplink
             tools.put(JSONObject()
                 .put("name", "open_taplink")

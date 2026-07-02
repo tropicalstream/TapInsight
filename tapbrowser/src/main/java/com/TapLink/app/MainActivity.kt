@@ -668,6 +668,16 @@ class MainActivity :
 
     private fun refreshCursor() {
         dualWebViewGroup.updateCursorPosition(lastCursorX, lastCursorY, isCursorVisible)
+        // HUD pin modify mode tracks the pointer: carries the pin while
+        // in move mode; cancels the mode when the pointer wanders off
+        // the pin (Mars's spec: "if the mouse pointer is moved away from
+        // that hud post then it would cancel the hud modify mode").
+        hudPinBoardController?.let { c ->
+            if (c.isInModifyMode()) {
+                val (x, y) = cursorInteractionPoint()
+                c.onCursorMoved(x, y)
+            }
+        }
     }
 
     private fun refreshCursor(visible: Boolean) {
@@ -1216,6 +1226,10 @@ class MainActivity :
         // Phase 4g — configure the burgundy preview frame's
         // PreviewView and seed its SurfaceProvider into the Service.
         startUnipanelCameraPreviewBinding()
+        // HUD pin board — user-pinned icons / post-it notes / pictures
+        // in the empty HUD zone. Fed by HudPinStore (Gemini's hud_pin
+        // voice tool writes there); long-press a pin for modify mode.
+        setupHudPinBoard()
 
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
@@ -1368,6 +1382,14 @@ class MainActivity :
             Duration: ${e.eventTime - e.downTime}ms
         """.trimIndent()
                                 )
+                                // HUD pin board — a right-arm long-press with
+                                // the cursor resting on a pin enters "hud
+                                // modify" mode (✕ delete / ✥ move chips). The
+                                // stub above was a no-op before, so nothing
+                                // else competes for this gesture.
+                                if (handleHudPinLongPress()) {
+                                    DebugLog.d("HudTap", "Long press → hud pin modify mode")
+                                }
                             }
 
                             override fun onScroll(
@@ -9270,6 +9292,9 @@ class MainActivity :
         findViewById<View?>(R.id.unipanelHudTierPanel)?.post {
             repositionUnipanelAssistantCard()
             repositionUnipanelHeartbeat()
+            // Tier rows appearing/disappearing move the HUD bottom line —
+            // re-slot the pin grid so pins stay inside the HUD.
+            hudPinBoardController?.refreshZone()
         }
     }
 
@@ -9513,6 +9538,54 @@ class MainActivity :
             preview.layoutParams = lp
         }
         repositionUnipanelAssistantCard()
+    }
+
+    /**
+     * HUD pin board — user-pinned "hud posts" (icons / post-it notes /
+     * pictures) rendered into the empty HUD zone by
+     * [HudPinBoardController]. State lives in [com.TapLink.app.unipanel.HudPinStore]
+     * so Gemini's hud_pin voice tool (visionclaw side) and this UI share
+     * it without IPC — same pattern as ChatCardBridge.
+     */
+    private var hudPinBoardController: HudPinBoardController? = null
+
+    private fun setupHudPinBoard() {
+        val board =
+            findViewById<android.widget.FrameLayout?>(R.id.unipanelPinBoard) ?: return
+        val controller = HudPinBoardController(
+            activity = this,
+            board = board,
+            uiHandler = uiHandler,
+            openUrl = { url -> openInTapBrowser(url) },
+            forceCursorVisible = {
+                // Same lesson as the chat-history overlay (7bb660a): a
+                // surface the user must aim at needs the pointer.
+                if (!isCursorVisible) toggleCursorVisibility(forceShow = true)
+            },
+            showToast = { msg ->
+                if (::dualWebViewGroup.isInitialized) {
+                    runCatching { dualWebViewGroup.showToast(msg) }
+                }
+            }
+        )
+        hudPinBoardController = controller
+        controller.start()
+    }
+
+    /**
+     * Right-arm long-press → hud-modify mode when the cursor rests on a
+     * pin. Returns true when consumed. Suppressed while the HUD is
+     * rolled up (double-tap full-screen browser) or the screen is
+     * masked (dim mode) — the pins aren't visible in either state.
+     */
+    private fun handleHudPinLongPress(): Boolean {
+        val controller = hudPinBoardController ?: return false
+        if (hudRolledUp) return false
+        if (::dualWebViewGroup.isInitialized && dualWebViewGroup.isScreenMasked()) return false
+        val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return false
+        if (overlay.visibility != View.VISIBLE) return false
+        val pt = runCatching { currentCursorInteractionPoint() }.getOrNull() ?: return false
+        return controller.onLongPressAt(pt.first, pt.second)
     }
 
     private fun startUnipanelVisionDotObserver() {
@@ -16583,6 +16656,11 @@ class MainActivity :
         try {
             unipanelChatCardSubscription?.close()
         } catch (_: Exception) {}
+        // HUD pin board — same pattern for the HudPinStore listener.
+        try {
+            hudPinBoardController?.stop()
+        } catch (_: Exception) {}
+        hudPinBoardController = null
         unipanelChatCardSubscription = null
         try {
             browserCommandSubscription?.close()

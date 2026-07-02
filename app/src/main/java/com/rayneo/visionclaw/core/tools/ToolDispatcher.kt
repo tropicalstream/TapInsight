@@ -121,6 +121,14 @@ class ToolDispatcher(
             context,
             pageTextProvider = browserPageTextProvider ?: { null }
         ))
+        // HUD pin board — "pin that to my HUD". Shares the vision frame
+        // provider with browser_vision so add_picture(source="screen")
+        // grabs whatever the user is looking at (camera when on, else
+        // the browser viewport).
+        register(HudPinTool(
+            context,
+            frameProvider = browserFrameProvider ?: { null }
+        ))
         register(TapLinkTool(context))
         register(SendVideoListTool(context))
         register(SendLinkListTool(
