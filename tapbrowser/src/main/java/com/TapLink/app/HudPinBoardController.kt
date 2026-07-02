@@ -51,7 +51,17 @@ class HudPinBoardController(
     private val uiHandler: Handler,
     private val openUrl: (String) -> Unit,
     private val forceCursorVisible: () -> Unit,
-    private val showToast: (String) -> Unit
+    private val showToast: (String) -> Unit,
+    /**
+     * Screen-space Y of the browser's top edge (the WebView container).
+     * This is the AUTHORITATIVE HUD bottom line: everything the board
+     * places — grid pins, manual drops, carried pins — is hard-clamped
+     * above it, because sibling-view bottoms (heartbeat, tier rows) can
+     * legitimately sit below where the browser starts and using them as
+     * the boundary let pins bleed onto the web page. Null when the
+     * browser isn't laid out yet.
+     */
+    private val browserTopScreenY: () -> Int?
 ) {
 
     private val density = activity.resources.displayMetrics.density
@@ -106,6 +116,9 @@ class HudPinBoardController(
         return a[1] - b[1]
     }
 
+    /** Zone from the LAST render — carried pins clamp against this. */
+    private var lastZone: Zone? = null
+
     private fun computeZone(): Zone {
         val battery = activity.findViewById<View?>(R.id.unipanelHudBattery)
         val topRow = activity.findViewById<View?>(R.id.unipanelTopHudRow)
@@ -126,15 +139,61 @@ class HudPinBoardController(
             (board.width.takeIf { it > 0 } ?: dp(632)) - dp(8)
         }
 
-        // HUD bottom — same candidate set as isUnipanelGeminiActivationZone
-        // so the pin board never claims space the HUD doesn't own.
+        // HUD bottom, two-step methodology:
+        //   1. candidates — the same view-bottom set as
+        //      isUnipanelGeminiActivationZone, so the two surfaces agree;
+        //   2. HARD CLAMP to the browser's measured top edge. Step 1 alone
+        //      let a post-it overlap the web page (heartbeat/tier bottoms
+        //      can sit below where the browser actually starts).
         var bottom = dp(112)
         listOf(topRow, heartbeat, tierPanel).forEach { v ->
             if (v != null && v.visibility == View.VISIBLE && v.height > 0) {
                 bottom = maxOf(bottom, boardLocalY(v) + v.height + dp(8))
             }
         }
-        return Zone(left, top, maxOf(right, left + dp(60)), bottom)
+        val boardLoc = IntArray(2)
+        board.getLocationOnScreen(boardLoc)
+        val browserTopLocal = browserTopScreenY()?.let { it - boardLoc[1] }
+        if (browserTopLocal != null && browserTopLocal > top + dp(24)) {
+            bottom = minOf(bottom, browserTopLocal - dp(2))
+        }
+        val zone = Zone(left, top, maxOf(right, left + dp(60)), maxOf(bottom, top + dp(28)))
+        android.util.Log.d(
+            "HudPin",
+            "zone L=${zone.left} T=${zone.top} R=${zone.right} B=${zone.bottom} " +
+                "browserTopLocal=$browserTopLocal board=${board.width}x${board.height}"
+        )
+        return zone
+    }
+
+    /** Clamp a pin's margins so its rect stays fully inside [zone]. */
+    private fun clampToZone(lp: FrameLayout.LayoutParams, w: Int, h: Int, zone: Zone) {
+        lp.leftMargin = lp.leftMargin.coerceIn(zone.left, maxOf(zone.left, zone.right - w))
+        lp.topMargin = lp.topMargin.coerceIn(zone.top, maxOf(zone.top, zone.bottom - h))
+    }
+
+    /** adb-settable outline for on-device zone verification:
+     *  `adb shell` → am broadcast is overkill; just flip the pref:
+     *  run-as com.rayneo.visionclaw + set hud_pin_store debug_zone true,
+     *  or toggle from the companion console. */
+    private fun debugZoneEnabled(): Boolean =
+        activity.getSharedPreferences("hud_pin_store", 0).getBoolean("debug_zone", false)
+
+    private fun addDebugZoneOutline(zone: Zone) {
+        val outline = View(activity)
+        outline.layoutParams = FrameLayout.LayoutParams(
+            zone.right - zone.left, zone.bottom - zone.top
+        ).apply {
+            leftMargin = zone.left
+            topMargin = zone.top
+        }
+        outline.background = GradientDrawable().apply {
+            setColor(Color.TRANSPARENT)
+            setStroke(dp(1), 0xFF00E5FF.toInt())
+        }
+        outline.isClickable = false
+        outline.isFocusable = false
+        board.addView(outline)
     }
 
     // ------------------------------------------------------------------
@@ -154,28 +213,56 @@ class HudPinBoardController(
         }
 
         val zone = computeZone()
+        lastZone = zone
+        if (debugZoneEnabled()) addDebugZoneOutline(zone)
         val gap = dp(6)
         var x = zone.left
         var y = zone.top
         var rowH = 0
 
-        for (pin in pins) {
+        // TWO passes: custom-positioned pins first, so the flow grid can
+        // route around every one of them regardless of store order.
+        val customRects = mutableListOf<IntArray>() // [l, t, r, b]
+        val ordered = pins.sortedBy { if (it.customX >= 0 && it.customY >= 0) 0 else 1 }
+        for (pin in ordered) {
             val container = buildPinView(pin)
             val w = container.layoutParams.width
             val h = container.layoutParams.height
             val lp = container.layoutParams as FrameLayout.LayoutParams
             if (pin.customX >= 0 && pin.customY >= 0) {
-                lp.leftMargin = pin.customX.coerceIn(0, maxOf(0, board.width - w))
-                lp.topMargin = pin.customY.coerceIn(0, maxOf(0, board.height - h))
+                lp.leftMargin = pin.customX
+                lp.topMargin = pin.customY
+                clampToZone(lp, w, h, zone)
+                customRects += intArrayOf(
+                    lp.leftMargin, lp.topMargin, lp.leftMargin + w, lp.topMargin + h
+                )
             } else {
-                if (x + w > zone.right && x > zone.left) {
-                    x = zone.left
-                    y += rowH + gap
-                    rowH = 0
+                // Flow grid: wrap at the zone's right edge, skip past any
+                // custom pin the candidate cell would overlap, and hard-
+                // clamp the result inside the zone (never onto the page).
+                var guard = 0
+                while (guard++ < 64) {
+                    if (x + w > zone.right && x > zone.left) {
+                        x = zone.left
+                        y += rowH + gap
+                        rowH = 0
+                        continue
+                    }
+                    val blocker = customRects.firstOrNull { r ->
+                        x < r[2] + gap && x + w + gap > r[0] &&
+                            y < r[3] + gap && y + h + gap > r[1]
+                    }
+                    if (blocker != null) {
+                        x = blocker[2] + gap
+                        continue
+                    }
+                    break
                 }
                 lp.leftMargin = x
                 lp.topMargin = y
-                x += w + gap
+                clampToZone(lp, w, h, zone)
+                x = lp.leftMargin + w + gap
+                y = lp.topMargin
                 rowH = maxOf(rowH, h)
             }
             container.layoutParams = lp
@@ -258,13 +345,17 @@ class HudPinBoardController(
         return col
     }
 
-    /** Glyph for the icon pill, keyed off the target URL's host. */
+    /** Glyph for the icon pill, keyed off the target URL — the glyph
+     *  must MATCH the media type (Mars: a radio pin looks like radio,
+     *  a video pin looks like video, not a generic letter). */
     private fun iconGlyph(pin: HudPin): String {
         val u = (pin.linkUrl ?: pin.payload).lowercase(Locale.US)
         return when {
+            u.contains("radio.html") || u.contains("radio") -> "♪"
             u.contains("youtube.com") || u.contains("youtu.be") -> "▶"
             u.contains("spotify") -> "♫"
-            u.contains("radio") -> "♪"
+            u.contains("media_player.html") ||
+                Regex("""\.(mp3|m4a|flac|wav|ogg|mp4|mkv|webm)(\?|$)""").containsMatchIn(u) -> "♬"
             u.contains("tasks.google") -> "✓"
             u.contains("calendar.google") -> "▦"
             u.contains("news.google") -> "N"
@@ -306,8 +397,17 @@ class HudPinBoardController(
             HudPinStore.TYPE_PICTURE -> showFullscreenPicture(pin)
             HudPinStore.TYPE_NOTE -> openUrl(pin.linkUrl ?: "https://tasks.google.com")
             else -> {
-                val target = pin.linkUrl ?: pin.payload
-                if (target.isNotBlank()) openUrl(target)
+                var target = pin.linkUrl ?: pin.payload
+                if (target.isBlank()) return
+                // The stored radio.html URL is nonce-FREE so identical
+                // stations dedupe in the store; the nonce is appended at
+                // tap time because the WebView short-circuits reloading
+                // an identical URL and ExoPlayer would sit idle (same
+                // lesson as TapRadioTool's buildNativePlayUrl).
+                if (target.contains("radio.html?")) {
+                    target += "&_t=${System.currentTimeMillis()}"
+                }
+                openUrl(target)
             }
         }
     }
@@ -394,10 +494,13 @@ class HudPinBoardController(
     // ------------------------------------------------------------------
 
     /**
-     * Right-arm long-press hook. Returns true when the press landed on
-     * a pin and modify mode engaged (caller should consume the event).
+     * Double-tap hook (long-press turned out to open a RayNeo SYSTEM
+     * menu, so the gesture moved). Returns true when the tap landed on
+     * a pin and modify mode engaged (caller should consume the event
+     * and skip the HUD roll-up stage). Exiting on a second double-tap
+     * is the caller's branch — it checks [isInModifyMode] first.
      */
-    fun onLongPressAt(screenX: Float, screenY: Float): Boolean {
+    fun onDoubleTapAt(screenX: Float, screenY: Float): Boolean {
         val hit = pinViews.entries.firstOrNull { (_, v) ->
             viewContains(v, screenX, screenY)
         } ?: return false
@@ -486,9 +589,16 @@ class HudPinBoardController(
             val h = container.height
             val lp = container.layoutParams as FrameLayout.LayoutParams
             lp.leftMargin = (screenX - boardLoc[0] - w / 2f).toInt()
-                .coerceIn(0, maxOf(0, board.width - w))
             lp.topMargin = (screenY - boardLoc[1] - h / 2f).toInt()
-                .coerceIn(0, maxOf(0, board.height - h))
+            // Carried pins are confined to the pin zone — dropping one on
+            // the web page (below the HUD bottom line) must be impossible.
+            val zone = lastZone
+            if (zone != null) {
+                clampToZone(lp, w, h, zone)
+            } else {
+                lp.leftMargin = lp.leftMargin.coerceIn(0, maxOf(0, board.width - w))
+                lp.topMargin = lp.topMargin.coerceIn(0, maxOf(0, board.height - h))
+            }
             container.layoutParams = lp
         } else if (!viewContains(container, screenX, screenY, slackPx = dp(28))) {
             exitModifyMode()

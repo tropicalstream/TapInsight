@@ -67,22 +67,49 @@ class HudPinTool(
         var url = (args["url"] ?: "").trim()
         var label = (args["label"] ?: "").trim()
         if (url.isBlank() || url.equals("current", ignoreCase = true)) {
-            // "pin this station / this page" → the ground-truth ledger of
-            // what's actually open in TapBrowser (same source tapclaw uses
-            // for "email me this page").
-            val entry = LastUrlStore(context).latest()
-                ?: return Result.failure(
-                    IllegalStateException(
-                        "No current page to pin — nothing has been opened in the browser yet. " +
-                            "Ask the user for a URL or what they want pinned."
+            // "pin this station / this video / this page" → resolve from
+            // REAL playback state, never from Gemini's memory of a URL.
+            // Ladder (most-specific first):
+            //   1. NowPlayingBridge — the native TapRadio player. Rebuild
+            //      the radio.html autoplay URL exactly like TapRadioTool
+            //      does, so tapping the pin restarts the actual stream.
+            //      Label = station name (what Mars saw instead: the page
+            //      title 'Now Playing', which labels nothing).
+            //   2. LastUrlStore.currentMedia() — YouTube/Spotify media
+            //      entries carry real titles.
+            //   3. LastUrlStore.latest() — any page, incl. our own asset
+            //      viewers.
+            val np = com.TapLink.app.unipanel.NowPlayingBridge
+            val npStream = np.streamUrl
+            if (np.isPlaying && !npStream.isNullOrBlank()) {
+                val station = np.stationName?.trim().orEmpty()
+                url = buildRadioReplayUrl(npStream, station)
+                if (label.isBlank()) {
+                    label = station.ifBlank { np.trackName ?: np.trackTitle ?: "Radio" }
+                }
+            } else {
+                val store = LastUrlStore(context)
+                val entry = store.currentMedia() ?: store.latest()
+                    ?: return Result.failure(
+                        IllegalStateException(
+                            "Nothing is playing and nothing has been opened in the browser " +
+                                "yet — ask the user for a URL or what they want pinned."
+                        )
                     )
-                )
-            url = entry.url
-            if (label.isBlank()) label = entry.title ?: hostLabel(url)
+                url = entry.url
+                if (label.isBlank()) {
+                    label = entry.title?.trim()
+                        ?.takeIf { it.isNotBlank() && !it.equals("Now Playing", true) }
+                        ?: hostLabel(url)
+                }
+            }
         }
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+        val isAsset = url.startsWith("file:///android_asset/")
+        if (!url.startsWith("http://") && !url.startsWith("https://") && !isAsset) {
             return Result.failure(
-                IllegalArgumentException("hud_pin add_icon needs an http(s) URL, got: $url")
+                IllegalArgumentException(
+                    "hud_pin add_icon needs an http(s) URL (or url='current'), got: $url"
+                )
             )
         }
         if (label.isBlank()) label = hostLabel(url)
@@ -90,7 +117,22 @@ class HudPinTool(
         val added = HudPinStore.add(
             HudPinStore.HudPin(type = HudPinStore.TYPE_ICON, label = label, payload = url)
         )
-        return capacityResult(added, "Pinned \"$label\" to the HUD — tapping it opens $url")
+        return capacityResult(added, "Pinned \"$label\" to the HUD — tapping it opens it.")
+    }
+
+    /**
+     * Rebuild the radio.html autoplay URL the way TapRadioTool's
+     * buildNativePlayUrl does (playUrl/playName/autoplay), minus the
+     * timestamp nonce — the pin must be STABLE so re-pinning the same
+     * station dedupes in the store; the player adds its own cache
+     * busting on load.
+     */
+    private fun buildRadioReplayUrl(streamUrl: String, name: String): String {
+        val enc = { s: String -> java.net.URLEncoder.encode(s, "UTF-8") }
+        val params = mutableListOf("playUrl=${enc(streamUrl)}")
+        if (name.isNotBlank()) params += "playName=${enc(name)}"
+        params += "autoplay=1"
+        return "file:///android_asset/radio.html?${params.joinToString("&")}"
     }
 
     private fun addNote(args: Map<String, String>): Result<String> {

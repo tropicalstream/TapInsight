@@ -124,12 +124,35 @@ object HudPinStore {
         }
     }
 
-    /** Adds [pin]; returns false when at [MAX_PINS] capacity. */
+    /**
+     * Adds [pin]; returns false when at [MAX_PINS] capacity.
+     *
+     * Dedupe: re-pinning the SAME target (same type + payload, e.g.
+     * asking Gemini to pin the current station twice, or the same
+     * station with fresher metadata) REPLACES the existing pin in
+     * place — keeping its id and any manual position — instead of
+     * stacking an identical twin on the board.
+     */
     fun add(pin: HudPin): Boolean {
         synchronized(lock) {
             val current = all()
-            if (current.size >= MAX_PINS) return false
-            persist(current + pin)
+            val existingIdx = current.indexOfFirst {
+                it.type == pin.type && it.payload == pin.payload
+            }
+            if (existingIdx >= 0) {
+                val existing = current[existingIdx]
+                val next = current.toMutableList()
+                next[existingIdx] = pin.copy(
+                    id = existing.id,
+                    customX = existing.customX,
+                    customY = existing.customY,
+                    createdAt = existing.createdAt
+                )
+                persist(next)
+            } else {
+                if (current.size >= MAX_PINS) return false
+                persist(current + pin)
+            }
         }
         notifyListeners()
         return true

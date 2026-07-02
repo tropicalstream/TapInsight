@@ -1382,14 +1382,12 @@ class MainActivity :
             Duration: ${e.eventTime - e.downTime}ms
         """.trimIndent()
                                 )
-                                // HUD pin board — a right-arm long-press with
-                                // the cursor resting on a pin enters "hud
-                                // modify" mode (✕ delete / ✥ move chips). The
-                                // stub above was a no-op before, so nothing
-                                // else competes for this gesture.
-                                if (handleHudPinLongPress()) {
-                                    DebugLog.d("HudTap", "Long press → hud pin modify mode")
-                                }
+                                // HUD pin modify is NOT on long-press: Mars
+                                // found the right-arm long-press invokes a
+                                // RayNeo SYSTEM menu we can't suppress. Pin
+                                // modify moved to double-tap-on-pin — see
+                                // handleHudPinDoubleTap() in
+                                // performDoubleTapBackNavigation.
                             }
 
                             override fun onScroll(
@@ -2064,6 +2062,14 @@ class MainActivity :
                                     )
                                     runCatching { dualWebViewGroup.unmaskScreen() }
                                     setUnipanelHudVisible(true)
+                                    return
+                                }
+                                // HUD pin modify stage — toggles on double-tap
+                                // (enter when the cursor rests on a pin, exit
+                                // when the mode is already active). Runs before
+                                // the roll-up stage so modifying a pin doesn't
+                                // yank the whole HUD off-screen.
+                                if (handleHudPinDoubleTap()) {
                                     return
                                 }
                                 // Double-tap priority: if a Gemini voice session is
@@ -9556,11 +9562,26 @@ class MainActivity :
             top = maxOf(top, localY(heartbeat!!) + heartbeat.height + dp(4))
         }
 
-        // HUD bottom line — mirrors isUnipanelGeminiActivationZone.
+        // HUD bottom line — the view-bottom candidates (mirroring
+        // isUnipanelGeminiActivationZone) HARD-CLAMPED to the browser's
+        // measured top edge. Candidates alone let the preview overlap
+        // the web page (Mars saw exactly that): heartbeat/tier bottoms
+        // can sit below where the WebView actually starts.
         var hudBottom = dp(112)
         listOf(topRow, heartbeat, tierPanel).forEach { v ->
             if (v != null && v.visibility == View.VISIBLE && v.height > 0) {
                 hudBottom = maxOf(hudBottom, localY(v) + v.height + dp(8))
+            }
+        }
+        if (::dualWebViewGroup.isInitialized) {
+            runCatching {
+                val container = dualWebViewGroup.webViewsContainer
+                if (container.height > 0) {
+                    val webTopLocal = localY(container)
+                    if (webTopLocal > top + dp(24)) {
+                        hudBottom = minOf(hudBottom, webTopLocal - dp(2))
+                    }
+                }
             }
         }
 
@@ -9617,6 +9638,17 @@ class MainActivity :
                 if (::dualWebViewGroup.isInitialized) {
                     runCatching { dualWebViewGroup.showToast(msg) }
                 }
+            },
+            browserTopScreenY = {
+                // The WebView container's top edge — the authoritative HUD
+                // bottom line the board clamps everything against.
+                if (::dualWebViewGroup.isInitialized) {
+                    runCatching {
+                        val l = IntArray(2)
+                        dualWebViewGroup.webViewsContainer.getLocationOnScreen(l)
+                        l[1].takeIf { dualWebViewGroup.webViewsContainer.height > 0 }
+                    }.getOrNull()
+                } else null
             }
         )
         hudPinBoardController = controller
@@ -9624,19 +9656,32 @@ class MainActivity :
     }
 
     /**
-     * Right-arm long-press → hud-modify mode when the cursor rests on a
-     * pin. Returns true when consumed. Suppressed while the HUD is
-     * rolled up (double-tap full-screen browser) or the screen is
-     * masked (dim mode) — the pins aren't visible in either state.
+     * Double-tap stage for the HUD pin board (long-press was abandoned:
+     * the right-arm long-press opens a RayNeo SYSTEM menu we can't
+     * suppress). Semantics per Mars:
+     *   • modify mode already active → double-tap EXITS it (wherever
+     *     the cursor is), consuming the gesture;
+     *   • cursor resting on a pin → ENTER modify mode, consume;
+     *   • otherwise not consumed — the double-tap chain proceeds to
+     *     its usual browser-restore / HUD-roll stages.
+     * Suppressed while the HUD is rolled up or the screen is masked —
+     * pins aren't visible in either state.
      */
-    private fun handleHudPinLongPress(): Boolean {
+    private fun handleHudPinDoubleTap(): Boolean {
         val controller = hudPinBoardController ?: return false
+        if (controller.isInModifyMode()) {
+            controller.exitModifyMode()
+            DebugLog.d("HudTap", "Double-tap → exit hud pin modify mode")
+            return true
+        }
         if (hudRolledUp) return false
         if (::dualWebViewGroup.isInitialized && dualWebViewGroup.isScreenMasked()) return false
         val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return false
         if (overlay.visibility != View.VISIBLE) return false
         val pt = runCatching { currentCursorInteractionPoint() }.getOrNull() ?: return false
-        return controller.onLongPressAt(pt.first, pt.second)
+        val consumed = controller.onDoubleTapAt(pt.first, pt.second)
+        if (consumed) DebugLog.d("HudTap", "Double-tap on pin → hud pin modify mode")
+        return consumed
     }
 
     private fun startUnipanelVisionDotObserver() {
