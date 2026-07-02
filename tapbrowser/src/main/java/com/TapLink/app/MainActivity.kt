@@ -668,16 +668,6 @@ class MainActivity :
 
     private fun refreshCursor() {
         dualWebViewGroup.updateCursorPosition(lastCursorX, lastCursorY, isCursorVisible)
-        // HUD pin modify mode tracks the pointer: carries the pin while
-        // in move mode; cancels the mode when the pointer wanders off
-        // the pin (Mars's spec: "if the mouse pointer is moved away from
-        // that hud post then it would cancel the hud modify mode").
-        hudPinBoardController?.let { c ->
-            if (c.isInModifyMode()) {
-                val (x, y) = cursorInteractionPoint()
-                c.onCursorMoved(x, y)
-            }
-        }
     }
 
     private fun refreshCursor(visible: Boolean) {
@@ -9511,100 +9501,52 @@ class MainActivity :
      * is hidden. The preview stays in the left gutter; the chat card
      * is centered, so the two never overlap horizontally.
      */
+    @Suppress("UNUSED_PARAMETER") // heartbeat staging is obsolete under the
+    // calibrated shelf; the parameter stays so existing call sites compile.
     private fun repositionUnipanelCameraPreview(forceBelowHeartbeat: Boolean = false) {
         val preview = findViewById<View?>(R.id.unipanelCameraPreviewFrame) ?: return
         if (preview.visibility != View.VISIBLE) return
         val overlay = findViewById<View?>(R.id.unipanelOverlay) ?: return
-        // Mars: the old 96×72 frame was off-center in the gutter and wasted
-        // the empty HUD space. Instead of magic dp constants, MEASURE the
-        // gutter (below the clock strip, left of the battery icon — the pin
-        // zone starts at the battery's left edge) and the HUD bottom line
-        // (same candidate set as isUnipanelGeminiActivationZone, so the
-        // preview can never reach past the HUD onto the browser), then size
-        // the preview to fill that box at the camera's 4:3 aspect and
-        // center it horizontally. dp/layout-space margins stay
-        // scale-correct under the SBS transform (window-coordinate math
-        // from earlier builds was not).
-        val density = resources.displayMetrics.density
-        fun dp(value: Int): Int = (value * density).toInt()
-        if (overlay.width <= 0) {
-            // Pre-layout — keep the XML fallback frame; a reposition will
-            // fire again from the heartbeat / tier render paths.
-            return
-        }
+        // Calibrated placement (HUD_PIN_ZONE_CALIBRATION_HANDOFF.md):
+        // the preview lives in the SAME shelf as the pin board —
+        // HudPinBoardController.HUD_PIN_CAMERA_SHELF, the rect codex
+        // wireframed and Mars confirmed — TOP-ALIGNED to the shelf's y
+        // start (Mars: "begin at 0 y axis" of the pinnable area) and
+        // anchored at its left edge, keeping the camera's 4:3 aspect.
+        // Height fills the shelf; a defensive clamp against the measured
+        // browser top edge survives so a future layout change can't put
+        // the preview on the web page. Shelf units are raw overlay px
+        // (the calibration space), not dp.
+        if (overlay.width <= 0) return
+        val shelf = HudPinBoardController.HUD_PIN_CAMERA_SHELF
         val overlayLoc = IntArray(2)
         overlay.getLocationOnScreen(overlayLoc)
-        fun localX(v: View): Int {
-            val l = IntArray(2); v.getLocationOnScreen(l); return l[0] - overlayLoc[0]
-        }
-        fun localY(v: View): Int {
-            val l = IntArray(2); v.getLocationOnScreen(l); return l[1] - overlayLoc[1]
-        }
-
-        val topRow = findViewById<View?>(R.id.unipanelTopHudRow)
-        val heartbeat = findViewById<View?>(R.id.unipanelHudHeartbeatText)
-        val tierPanel = findViewById<View?>(R.id.unipanelHudTierPanel)
-        val battery = findViewById<View?>(R.id.unipanelHudBattery)
-
-        // Top edge: just under the clock strip. The heartbeat ticker now
-        // parks under the tier list on the RIGHT, so it normally doesn't
-        // constrain the left gutter — but when it IS in the gutter lane
-        // (older layout states / forceBelowHeartbeat during camera-on,
-        // the Phase 4k.9 event-order guard), drop below it.
-        var top = if (topRow != null && topRow.height > 0) {
-            localY(topRow) + topRow.height + dp(4)
-        } else dp(42)
-        val heartbeatShown = heartbeat != null && heartbeat.visibility == View.VISIBLE &&
-            heartbeat.height > 0
-        if ((forceBelowHeartbeat && heartbeatShown) ||
-            (heartbeatShown && heartbeat != null && localX(heartbeat) < dp(160))
-        ) {
-            top = maxOf(top, localY(heartbeat!!) + heartbeat.height + dp(4))
-        }
-
-        // HUD bottom line — the view-bottom candidates (mirroring
-        // isUnipanelGeminiActivationZone) HARD-CLAMPED to the browser's
-        // measured top edge. Candidates alone let the preview overlap
-        // the web page (Mars saw exactly that): heartbeat/tier bottoms
-        // can sit below where the WebView actually starts.
-        var hudBottom = dp(112)
-        listOf(topRow, heartbeat, tierPanel).forEach { v ->
-            if (v != null && v.visibility == View.VISIBLE && v.height > 0) {
-                hudBottom = maxOf(hudBottom, localY(v) + v.height + dp(8))
-            }
-        }
+        var bottom = shelf.bottom
         if (::dualWebViewGroup.isInitialized) {
             runCatching {
                 val container = dualWebViewGroup.webViewsContainer
                 if (container.height > 0) {
-                    val webTopLocal = localY(container)
-                    if (webTopLocal > top + dp(24)) {
-                        hudBottom = minOf(hudBottom, webTopLocal - dp(2))
+                    val l = IntArray(2)
+                    container.getLocationOnScreen(l)
+                    val webTopLocal = l[1] - overlayLoc[1]
+                    if (webTopLocal > shelf.top + 24) {
+                        bottom = minOf(bottom, webTopLocal - 2)
                     }
                 }
             }
         }
-
-        // Gutter right edge = battery icon's left edge (pin zone start).
-        val gutterRight = if (battery != null && battery.width > 0) {
-            localX(battery)
-        } else dp(150)
-
-        // Fill the box at 4:3; never smaller than the classic 96×72,
-        // capped at 120dp tall so the preview can't dominate the HUD.
-        var h = (hudBottom - top - dp(4)).coerceIn(dp(72), dp(120))
+        var h = (bottom - shelf.top).coerceAtLeast(48)
         var w = h * 4 / 3
-        val maxW = (gutterRight - dp(8)).coerceAtLeast(dp(96))
-        if (w > maxW) {
-            w = maxW
+        if (w > shelf.width()) {
+            w = shelf.width()
             h = w * 3 / 4
         }
-        val left = ((gutterRight - w) / 2).coerceAtLeast(dp(4))
-
         val lp = preview.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
-        if (lp.topMargin != top || lp.marginStart != left || lp.width != w || lp.height != h) {
-            lp.topMargin = top
-            lp.marginStart = left
+        if (lp.topMargin != shelf.top || lp.marginStart != shelf.left ||
+            lp.width != w || lp.height != h
+        ) {
+            lp.topMargin = shelf.top
+            lp.marginStart = shelf.left
             lp.width = w
             lp.height = h
             preview.layoutParams = lp
@@ -9655,6 +9597,14 @@ class MainActivity :
         controller.start()
     }
 
+    // Codex's temporary hud_pinnable_wireframe_test overlay was removed
+    // after its calibrated rectangle (6,44–337,131) was ported into
+    // HudPinBoardController.HUD_PIN_CAMERA_SHELF — see
+    // HUD_PIN_ZONE_CALIBRATION_HANDOFF.md. To re-verify the shelf on
+    // device, set debug_zone=true in the hud_pin_store prefs instead:
+    // the board draws the live zone outline from the REAL constant, so
+    // there's no second copy of the numbers to drift.
+
     /**
      * Double-tap stage for the HUD pin board (long-press was abandoned:
      * the right-arm long-press opens a RayNeo SYSTEM menu we can't
@@ -9704,6 +9654,10 @@ class MainActivity :
                     if (on) repositionUnipanelCameraPreview()
                     unipanelCameraOnState = on
                     updateMinimalIndicators()
+                    // The preview shares the calibrated shelf with the pin
+                    // board (it's a grid blocker while visible) — re-slot
+                    // the pins once the frame has its final bounds.
+                    previewFrame?.post { hudPinBoardController?.refreshZone() }
                 }
             }
     }
@@ -9857,6 +9811,31 @@ class MainActivity :
         interactionX: Float,
         interactionY: Float
     ): Boolean {
+        runCatching {
+            val overlay = findViewById<View?>(R.id.unipanelOverlay)
+            if (overlay != null && overlay.visibility == View.VISIBLE) {
+                val loc = IntArray(2)
+                overlay.getLocationOnScreen(loc)
+                DebugLog.d(
+                    "HudCal",
+                    "tap screen=($interactionX,$interactionY) overlayLocal=" +
+                        "(${interactionX - loc[0]},${interactionY - loc[1]}) " +
+                        "overlayLoc=(${loc[0]},${loc[1]}) overlay=${overlay.width}x${overlay.height}"
+                )
+            }
+        }
+        // HUD pin modify mode consumes the NEXT tap before any hit-test:
+        // tap on ✕ deletes, tap anywhere else moves the pin to that spot;
+        // both exit the mode immediately. Without this first-refusal the
+        // placement tap would fall through to a widget or the Gemini
+        // activation zone.
+        hudPinBoardController?.let { c ->
+            if (c.isInModifyMode() &&
+                c.onOverlayTapWhileModify(interactionX, interactionY)
+            ) {
+                return true
+            }
+        }
         val hit = findUnipanelHit(interactionX, interactionY)
         if (hit == null) {
             if (isUnipanelGeminiActivationZone(interactionX, interactionY)) {

@@ -28,13 +28,13 @@ import java.util.Locale
  *
  * Interaction model (glasses trackpad):
  *   • Tap a pin → open it (icon → its URL, note → Google Tasks,
- *     picture → fullscreen viewer; tap again to dismiss).
- *   • RIGHT-ARM LONG-PRESS with the cursor over a pin → "hud modify"
- *     mode: the pin highlights and grows an ✕ (delete) chip and a ✥
- *     (move) chip. Tap ✥ → the pin follows the cursor; tap again to
- *     drop it (position persists). Tap ✕ → delete.
- *   • Moving the pointer OFF the pin (while not carrying it) cancels
- *     modify mode — mirrors Mars's spec exactly.
+ *     picture → fullscreen viewer; tap again to dismiss, live card →
+ *     its source page, or refresh when search-grounded).
+ *   • DOUBLE-TAP with the cursor over a pin → "hud modify" mode: the
+ *     pin highlights and grows an ✕ (delete) chip. The NEXT tap ends
+ *     the mode immediately: on ✕ → delete; anywhere else → the pin
+ *     moves to that spot (clamped to the shelf) and the position
+ *     persists. Double-tap again also exits without changes.
  *
  * All pin views are clickable=true so the existing three-state
  * unipanel hit-test (commit #280) routes cursor taps to them and the
@@ -73,7 +73,6 @@ class HudPinBoardController(
 
     // hud-modify state
     private var modifyPinId: String? = null
-    private var carrying = false
     private var fullscreenView: FrameLayout? = null
 
     private val bitmapCache = LruCache<String, Bitmap>(8)
@@ -120,44 +119,22 @@ class HudPinBoardController(
     private var lastZone: Zone? = null
 
     private fun computeZone(): Zone {
-        val battery = activity.findViewById<View?>(R.id.unipanelHudBattery)
-        val topRow = activity.findViewById<View?>(R.id.unipanelTopHudRow)
-        val tierPanel = activity.findViewById<View?>(R.id.unipanelHudTierPanel)
-        val heartbeat = activity.findViewById<View?>(R.id.unipanelHudHeartbeatText)
-
-        val left = if (battery != null && battery.width > 0) {
-            boardLocalX(battery)
-        } else dp(150)
-
-        val top = if (topRow != null && topRow.height > 0) {
-            boardLocalY(topRow) + topRow.height + dp(4)
-        } else dp(42)
-
-        val right = if (tierPanel != null && tierPanel.width > 0 && tierPanel.height > 0) {
-            boardLocalX(tierPanel) - dp(6)
-        } else {
-            (board.width.takeIf { it > 0 } ?: dp(632)) - dp(8)
-        }
-
-        // HUD bottom, two-step methodology:
-        //   1. candidates — the same view-bottom set as
-        //      isUnipanelGeminiActivationZone, so the two surfaces agree;
-        //   2. HARD CLAMP to the browser's measured top edge. Step 1 alone
-        //      let a post-it overlap the web page (heartbeat/tier bottoms
-        //      can sit below where the browser actually starts).
-        var bottom = dp(112)
-        listOf(topRow, heartbeat, tierPanel).forEach { v ->
-            if (v != null && v.visibility == View.VISIBLE && v.height > 0) {
-                bottom = maxOf(bottom, boardLocalY(v) + v.height + dp(8))
-            }
-        }
+        // The CALIBRATED shelf is the zone (see companion). The old
+        // approach — deriving from battery.left / tierPanel.left /
+        // view-bottom candidates — collapsed to a 29px sliver at
+        // L126,T93,R334,B122; the calibrated footprint Mars confirmed
+        // is 6,44–337,131. The only dynamic input left is a DEFENSIVE
+        // clamp against the browser's measured top edge, so even a
+        // mis-calibration can never put pins on the web page.
+        val shelf = HUD_PIN_CAMERA_SHELF
         val boardLoc = IntArray(2)
         board.getLocationOnScreen(boardLoc)
         val browserTopLocal = browserTopScreenY()?.let { it - boardLoc[1] }
-        if (browserTopLocal != null && browserTopLocal > top + dp(24)) {
-            bottom = minOf(bottom, browserTopLocal - dp(2))
+        var bottom = shelf.bottom
+        if (browserTopLocal != null && browserTopLocal > shelf.top + 24) {
+            bottom = minOf(bottom, browserTopLocal - 2)
         }
-        val zone = Zone(left, top, maxOf(right, left + dp(60)), maxOf(bottom, top + dp(28)))
+        val zone = Zone(shelf.left, shelf.top, shelf.right, maxOf(bottom, shelf.top + 28))
         android.util.Log.d(
             "HudPin",
             "zone L=${zone.left} T=${zone.top} R=${zone.right} B=${zone.bottom} " +
@@ -223,6 +200,16 @@ class HudPinBoardController(
         // TWO passes: custom-positioned pins first, so the flow grid can
         // route around every one of them regardless of store order.
         val customRects = mutableListOf<IntArray>() // [l, t, r, b]
+        // The camera preview shares the calibrated shelf — while it's
+        // visible, treat its rect as a blocker so grid pins never tile
+        // underneath it.
+        activity.findViewById<View?>(R.id.unipanelCameraPreviewFrame)?.let { cam ->
+            if (cam.visibility == View.VISIBLE && cam.width > 0) {
+                val l = boardLocalX(cam)
+                val t = boardLocalY(cam)
+                customRects += intArrayOf(l, t, l + cam.width, t + cam.height)
+            }
+        }
         val ordered = pins.sortedBy { if (it.customX >= 0 && it.customY >= 0) 0 else 1 }
         for (pin in ordered) {
             val container = buildPinView(pin)
@@ -302,11 +289,12 @@ class HudPinBoardController(
         container.addView(content)
 
         container.setOnClickListener {
-            when {
-                carrying && pin.id == modifyPinId -> dropCarriedPin()
-                modifyPinId != null -> exitModifyMode()
-                else -> openPin(pin)
-            }
+            // Modify-mode taps are consumed upstream by
+            // onOverlayTapWhileModify (move-or-delete-then-exit); this
+            // listener only ever fires for a plain open. The guard is
+            // belt-and-braces for any dispatch path that skips the
+            // intercept.
+            if (modifyPinId != null) exitModifyMode() else openPin(pin)
         }
         return container
     }
@@ -584,23 +572,21 @@ class HudPinBoardController(
         if (modifyPinId != null && modifyPinId != pinId) exitModifyMode()
         val container = pinViews[pinId] ?: return
         modifyPinId = pinId
-        carrying = false
         forceCursorVisible()
         container.scaleX = 1.08f
         container.scaleY = 1.08f
         container.elevation = 12f * density
 
+        // One chip only: ✕ deletes. Moving needs no chip — the NEXT tap
+        // anywhere in the HUD places the pin there and the mode exits
+        // immediately (Mars's spec). Both paths are one tap long.
         container.addView(buildChip("✕", 0xE6D32F2F.toInt(), Gravity.TOP or Gravity.END) {
             val id = modifyPinId ?: return@buildChip
             exitModifyMode()
             HudPinStore.remove(id)
             showToast("Pin removed")
         }.also { it.tag = CHIP_TAG })
-
-        container.addView(buildChip("✥", 0xE60288D1.toInt(), Gravity.TOP or Gravity.START) {
-            startCarrying()
-        }.also { it.tag = CHIP_TAG })
-        showToast("Pin: ✕ delete · ✥ move")
+        showToast("Tap a spot to move it · ✕ deletes")
     }
 
     private fun buildChip(
@@ -628,63 +614,57 @@ class HudPinBoardController(
         return chip
     }
 
-    private fun startCarrying() {
-        val container = pinViews[modifyPinId] ?: return
-        carrying = true
-        // chips off while carrying — the next tap anywhere on the pin drops it
-        removeChips(container)
-        showToast("Move the pointer — tap to drop")
-    }
-
-    private fun dropCarriedPin() {
-        val id = modifyPinId ?: return
-        val container = pinViews[id] ?: return
-        carrying = false
-        val lp = container.layoutParams as FrameLayout.LayoutParams
-        exitModifyMode()
-        // persists + triggers re-render through the store observer
-        HudPinStore.updatePosition(id, lp.leftMargin, lp.topMargin)
-    }
-
     /**
-     * Cursor-position feed from MainActivity.refreshCursor(). Carries
-     * the pin while in move mode; cancels modify mode when the pointer
-     * wanders off the pin (with 28dp slack) without carrying it.
+     * Consumes the NEXT tap while modify mode is active — called by
+     * MainActivity at the top of the overlay tap dispatch, before the
+     * normal hit-test, so the empty-space tap can't fall through to
+     * the Gemini activation zone or the browser.
+     *
+     *   • Tap on the ✕ chip → DELETE the pin, exit modify mode.
+     *   • Tap anywhere else → MOVE the pin there (centered on the tap,
+     *     clamped inside the shelf), exit modify mode.
+     *
+     * Either way the mode ends after exactly one tap — the UI never
+     * lingers in modify state (Mars's spec).
      */
-    fun onCursorMoved(screenX: Float, screenY: Float) {
-        val id = modifyPinId ?: return
-        val container = pinViews[id] ?: return
-        if (carrying) {
-            val boardLoc = IntArray(2)
-            board.getLocationOnScreen(boardLoc)
-            val w = container.width
-            val h = container.height
-            val lp = container.layoutParams as FrameLayout.LayoutParams
-            lp.leftMargin = (screenX - boardLoc[0] - w / 2f).toInt()
-            lp.topMargin = (screenY - boardLoc[1] - h / 2f).toInt()
-            // Carried pins are confined to the pin zone — dropping one on
-            // the web page (below the HUD bottom line) must be impossible.
-            val zone = lastZone
-            if (zone != null) {
-                clampToZone(lp, w, h, zone)
-            } else {
-                lp.leftMargin = lp.leftMargin.coerceIn(0, maxOf(0, board.width - w))
-                lp.topMargin = lp.topMargin.coerceIn(0, maxOf(0, board.height - h))
-            }
-            container.layoutParams = lp
-        } else if (!viewContains(container, screenX, screenY, slackPx = dp(28))) {
+    fun onOverlayTapWhileModify(screenX: Float, screenY: Float): Boolean {
+        val id = modifyPinId ?: return false
+        val container = pinViews[id] ?: run {
             exitModifyMode()
+            return false
         }
+        val chip = (0 until container.childCount)
+            .map { container.getChildAt(it) }
+            .firstOrNull { it.tag == CHIP_TAG }
+        if (chip != null && viewContains(chip, screenX, screenY, slackPx = dp(6))) {
+            exitModifyMode()
+            HudPinStore.remove(id)
+            showToast("Pin removed")
+            return true
+        }
+        val boardLoc = IntArray(2)
+        board.getLocationOnScreen(boardLoc)
+        val w = container.width.takeIf { it > 0 } ?: container.layoutParams.width
+        val h = container.height.takeIf { it > 0 } ?: container.layoutParams.height
+        val lp = container.layoutParams as FrameLayout.LayoutParams
+        lp.leftMargin = (screenX - boardLoc[0] - w / 2f).toInt()
+        lp.topMargin = (screenY - boardLoc[1] - h / 2f).toInt()
+        clampToZone(lp, w, h, lastZone ?: computeZone())
+        container.layoutParams = lp
+        exitModifyMode()
+        // persists + re-renders through the store observer
+        HudPinStore.updatePosition(id, lp.leftMargin, lp.topMargin)
+        return true
     }
 
     fun isInModifyMode(): Boolean = modifyPinId != null
 
     fun exitModifyMode() {
         val container = pinViews[modifyPinId] ?: run {
-            modifyPinId = null; carrying = false; return
+            modifyPinId = null
+            return
         }
         modifyPinId = null
-        carrying = false
         container.scaleX = 1f
         container.scaleY = 1f
         container.elevation = 6f * density
@@ -708,5 +688,17 @@ class HudPinBoardController(
 
     companion object {
         private const val CHIP_TAG = "hud_pin_chip"
+
+        /**
+         * Calibrated pinnable/camera shelf in the overlay's LOGICAL
+         * 640×480 coordinate space — codex's wireframe test, confirmed
+         * visually by Mars ("looked perfect"), July 2 2026. See
+         * HUD_PIN_ZONE_CALIBRATION_HANDOFF.md. This is the shared
+         * source of truth for pin placement AND the camera preview;
+         * do NOT re-derive it from battery/tier-panel view edges —
+         * that produced the old 29px-tall sliver. Raw px on purpose:
+         * the calibration is in overlay units, not dp.
+         */
+        val HUD_PIN_CAMERA_SHELF = android.graphics.Rect(6, 44, 337, 131)
     }
 }
