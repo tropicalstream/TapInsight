@@ -82,13 +82,14 @@ There are also diagnostic tools: Test Location (verify GPS) and Test Traffic (ve
 
 ## Download
 
-**[TapInsight OC Beta 3 APK](https://github.com/tropicalstream/TapInsight/releases/download/TapInsight-OC-Beta-3/TapInsight-OC-Beta-3.apk)** — Latest publishable debug build for RayNeo X3 Pro.
+**[TapInsight OC Beta 6 APK](https://github.com/tropicalstream/TapInsight/releases/download/TapInsight-OC-Beta-6/TapInsight-OC-Beta-6.apk)** — Latest publishable debug build for RayNeo X3 Pro.
 
-OC Beta 3 highlights:
-- Customizable avatars and companion-side bookmark editing.
-- Left-arm tap camera toggle for faster privacy/battery control.
-- Tighter Gemini, TapClaw, OpenClaw, TapBrowser, and media-agent handoffs.
-- Recent TapBrowser scrollbar, media-routing, radio/podcast, and HUD cleanup.
+OC Beta 6 highlights:
+- Custom HUD pin board for icons, post-it notes, image pins, live cards, and browser/media metadata.
+- One-tap HUD modify mode for moving or deleting pinned HUD objects.
+- Calibrated camera-preview/HUD shelf that keeps pinned content out of the browser surface.
+- Live HUD cards that refresh on interval and dim when stale.
+- Browser-aware live pinning so HUD cards follow the active WebView content.
 
 ---
 
