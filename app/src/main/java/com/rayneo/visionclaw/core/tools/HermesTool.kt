@@ -185,13 +185,11 @@ class HermesTool(
         val relayBase = buildRelayBaseUrl()
         val relayInstruction = if (relayBase != null) {
             "The configured media relay for this glasses session is $relayBase. " +
-                "The relay exposes these Mac folders: /Users/me/hermes-media and " +
-                "/Users/me/.openclaw/workspace. When the user says 'media folder', search those " +
-                "exact folders first, especially /Users/me/hermes-media; do not waste time searching " +
-                "Downloads/Desktop/Pictures unless the user specifically asks for those locations. " +
-                "For existing media requested by voice, the preferred lookup is: " +
-                "python3 ~/.hermes/skills/mlops/minimax-media/scripts/serve.py \"<user request>\". " +
-                "Use the open_taplink line printed by that script. " +
+                "The relay exposes the configured local media folder and workspace media folder. " +
+                "When the user says 'media folder', search those configured relay folders first; " +
+                "do not waste time searching unrelated desktop folders unless the user specifically " +
+                "asks for those locations. For existing media requested by voice, use the configured " +
+                "media relay lookup tool and return the open_taplink line it prints. " +
                 "You may list exposed files safely at $relayBase/media-index.json or $relayBase/media. " +
                 "If Hermes creates or selects a local file, save/copy it under one of those exposed " +
                 "folders, then use $relayBase/media/<filename>. Do not invent another media host. "
